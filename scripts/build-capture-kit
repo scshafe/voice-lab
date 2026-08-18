@@ -97,7 +97,7 @@ source_commit=$("$git_bin" -C "$repo_dir" rev-parse --verify 'HEAD^{commit}') ||
   printf '%s\n' 'capture-kit builds require an immutable Git HEAD' >&2
   exit 65
 }
-source_tree=$("$git_bin" -C "$repo_dir" rev-parse --verify 'HEAD^{tree}')
+source_tree=$("$git_bin" -C "$repo_dir" rev-parse --verify "$source_commit^{tree}")
 if ! "$git_bin" -C "$repo_dir" diff --quiet --ignore-submodules -- || \
    ! "$git_bin" -C "$repo_dir" diff --cached --quiet --ignore-submodules -- || \
    [ -n "$("$git_bin" -C "$repo_dir" ls-files --others --exclude-standard)" ]; then

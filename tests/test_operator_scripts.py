@@ -213,6 +213,8 @@ def test_reviewed_wheel_builder_is_executable_and_toolchain_tamper_fails(
     assert "$repo_dir/.venv/bin/python" not in builder
     assert "git_bin=/usr/bin/git" in builder
     assert "archive --format=tar" in builder
+    assert 'rev-parse --verify "$source_commit^{tree}"' in builder
+    assert "rev-parse --verify 'HEAD^{tree}'" not in builder
     assert 'SOURCE_DATE_EPOCH="$source_date_epoch"' in builder
     assert '"source": {' in builder
 
@@ -749,6 +751,7 @@ def _write_test_bundle(
     extra_wheel_members: Mapping[str, bytes] | None = None,
     wheel_member_modes: Mapping[str, int] | None = None,
     portable_bootstrap: bool = False,
+    stock_validation_python: bool = False,
 ) -> tuple[Path, str, str]:
     bundle.mkdir(mode=0o700)
     bootstrap = bundle / "macbook-bootstrap"
@@ -758,6 +761,11 @@ def _write_test_bundle(
             "python_bin=/opt/homebrew/bin/python3.12",
             f"python_bin={shlex.quote(sys.executable)}",
         ).replace("ffmpeg_bin=/opt/homebrew/bin/ffmpeg", "ffmpeg_bin=/usr/bin/true")
+    elif stock_validation_python:
+        bootstrap_payload = bootstrap_payload.replace(
+            "python_bin=/opt/homebrew/bin/python3.12",
+            "python_bin=/nonexistent/cole-voice-lab-python3.12",
+        )
     bootstrap.write_text(bootstrap_payload)
     bootstrap.chmod(0o700)
     (bundle / "site.example.toml").write_text("# documentation only\n")
@@ -947,7 +955,34 @@ def test_capture_bundle_trust_starts_with_system_hashes_and_isolated_python(
     bootstrap_source = (REPOSITORY / "scripts/macbook-bootstrap").read_text()
     assert 'isolated_python "$validation_python" -' in bootstrap_source
     assert "/usr/bin/env -i" in bootstrap_source
+    assert '"$isolated_python_executable" -I -B "$@"' in bootstrap_source
     assert "command -v python3" not in bootstrap_source
+
+
+def test_verify_only_stock_macos_python_fallback_is_isolated(tmp_path: Path) -> None:
+    wheel, wheel_digest, manifest_digest = _write_test_bundle(
+        tmp_path / "capture-kit", stock_validation_python=True
+    )
+    hostile = tmp_path / "hostile-import-root"
+    hostile.mkdir()
+    marker = tmp_path / "untrusted-import-executed"
+    (hostile / "hashlib.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
+    )
+
+    verified = _run(
+        str(wheel.parent / "macbook-bootstrap"),
+        "--verify-bundle",
+        str(wheel),
+        wheel_digest,
+        manifest_digest,
+        cwd=hostile,
+        env={**os.environ, "PYTHONPATH": str(hostile)},
+    )
+
+    assert verified.returncode == 0, verified.stderr
+    assert "verified capture-kit bundle" in verified.stdout
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize(

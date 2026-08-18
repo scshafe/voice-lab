@@ -126,6 +126,12 @@ SHA-256, size, and archive member must agree. The application wheel's
 wheel set. This inspection also runs inside the builder immediately before
 atomic publication.
 
+The verify-only path may use stock macOS Python when the pinned Homebrew Python
+is not yet available. That control interpreter runs with an empty environment
+and Python's isolated mode (`-I -B`), which excludes the current directory,
+`PYTHONPATH`, and user site packages. Installation still requires the exact
+reviewed Homebrew Python 3.12 runtime closure recorded in `BUNDLE.json`.
+
 ## Install and recover
 
 First create the dedicated real parent. It must already exist when bootstrap

@@ -80,7 +80,7 @@ isolated_python() {
     PATH=/usr/bin:/bin \
     PYTHONDONTWRITEBYTECODE=1 \
     TMPDIR="${TMPDIR:-/tmp}" \
-    "$isolated_python_executable" -I -P -B "$@"
+    "$isolated_python_executable" -I -B "$@"
 }
 
 bundle_directory=$(
@@ -349,9 +349,6 @@ def verify_python_runtime_closure(
     ):
         raise SystemExit("Python runtime closure has an invalid executable path")
     executable = prefix.joinpath(*executable_parts).resolve(strict=True)
-    running_python = Path(sys.executable).resolve(strict=True)
-    if running_python != executable:
-        raise SystemExit("host Python does not resolve to the reviewed BUNDLE interpreter")
     executable_sha256 = digest(executable)
     if (
         closure.get("executable_sha256") != executable_sha256
