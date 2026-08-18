@@ -3,6 +3,7 @@ set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 python_bin=/opt/homebrew/bin/python3.12
+git_bin=/usr/bin/git
 build_artifact_lock="$repo_dir/requirements/capture-kit-build.artifacts.txt"
 runtime_artifact_lock="$repo_dir/requirements/capture-kit-runtime.artifacts.txt"
 
@@ -81,6 +82,10 @@ fi
   printf 'missing pinned build Python: %s\n' "$python_bin" >&2
   exit 69
 }
+[ -x "$git_bin" ] || {
+  printf 'missing trusted Git executable: %s\n' "$git_bin" >&2
+  exit 69
+}
 for artifact_lock in "$build_artifact_lock" "$runtime_artifact_lock"; do
   [ -f "$artifact_lock" ] && [ ! -L "$artifact_lock" ] || {
     printf 'missing regular capture-kit artifact lock: %s\n' "$artifact_lock" >&2
@@ -88,8 +93,27 @@ for artifact_lock in "$build_artifact_lock" "$runtime_artifact_lock"; do
   }
 done
 
+source_commit=$("$git_bin" -C "$repo_dir" rev-parse --verify 'HEAD^{commit}') || {
+  printf '%s\n' 'capture-kit builds require an immutable Git HEAD' >&2
+  exit 65
+}
+source_tree=$("$git_bin" -C "$repo_dir" rev-parse --verify 'HEAD^{tree}')
+if ! "$git_bin" -C "$repo_dir" diff --quiet --ignore-submodules -- || \
+   ! "$git_bin" -C "$repo_dir" diff --cached --quiet --ignore-submodules -- || \
+   [ -n "$("$git_bin" -C "$repo_dir" ls-files --others --exclude-standard)" ]; then
+  printf '%s\n' 'capture-kit builds require a clean tracked and untracked source tree' >&2
+  exit 65
+fi
+source_date_epoch=$("$git_bin" -C "$repo_dir" show -s --format=%ct "$source_commit")
+case "$source_date_epoch" in
+  ''|*[!0-9]*)
+    printf '%s\n' 'Git commit has an invalid source-date epoch' >&2
+    exit 65
+    ;;
+esac
+
 output_dir=$(
-  "$python_bin" - "$output_dir" "$replace_output" <<'PY'
+  "$python_bin" -I -P -B - "$output_dir" "$replace_output" <<'PY'
 import os
 import stat
 import sys
@@ -143,7 +167,7 @@ fi
 work_dir=$(mktemp -d "$output_parent/.capture-kit.work.XXXXXX")
 cleanup() {
   if [ -n "${work_dir:-}" ] && [ -d "$work_dir" ]; then
-    "$python_bin" - "$work_dir" <<'PY'
+    "$python_bin" -I -P -B - "$work_dir" <<'PY'
 import shutil
 import sys
 from pathlib import Path
@@ -156,12 +180,37 @@ PY
 }
 trap cleanup EXIT HUP INT TERM
 
+source_dir="$work_dir/source"
+source_tar="$work_dir/source.tar"
+mkdir -m 700 "$source_dir"
+"$git_bin" -C "$repo_dir" archive --format=tar --output="$source_tar" "$source_commit"
+/usr/bin/tar -xf "$source_tar" -C "$source_dir"
+"$python_bin" -I -P -B - "$source_dir" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+for path in root.rglob("*"):
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        raise SystemExit(f"archived source contains a symlink: {path.relative_to(root)}")
+    if stat.S_ISREG(metadata.st_mode):
+        if metadata.st_nlink != 1:
+            raise SystemExit(f"archived source contains a hardlink: {path.relative_to(root)}")
+    elif not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit(f"archived source contains an unsafe entry: {path.relative_to(root)}")
+PY
+build_artifact_lock="$source_dir/requirements/capture-kit-build.artifacts.txt"
+runtime_artifact_lock="$source_dir/requirements/capture-kit-runtime.artifacts.txt"
+
 toolchain_dir="$work_dir/build-tools"
-"$python_bin" -m venv "$toolchain_dir"
+"$python_bin" -I -P -B -m venv "$toolchain_dir"
 toolchain_python="$toolchain_dir/bin/python"
 
 check_build_toolchain() {
-  "$toolchain_python" - \
+  "$toolchain_python" -I -P -B - \
     "$build_version" \
     "$setuptools_version" \
     "$wheel_version" \
@@ -195,14 +244,14 @@ PY
 }
 
 if [ "$allow_network" -eq 1 ]; then
-  "$toolchain_python" -m pip install \
+  "$toolchain_python" -I -P -B -m pip install \
     --disable-pip-version-check \
     --only-binary=:all: \
     --no-deps \
     --require-hashes \
     -r "$build_artifact_lock"
 else
-  "$toolchain_python" -m pip install \
+  "$toolchain_python" -I -P -B -m pip install \
     --disable-pip-version-check \
     --no-index \
     --find-links "$wheelhouse" \
@@ -217,11 +266,11 @@ build_dir="$work_dir/build"
 bundle_dir="$work_dir/bundle"
 mkdir -m 700 "$build_dir" "$bundle_dir"
 
-"$toolchain_python" -m build \
+PYTHONHASHSEED=0 SOURCE_DATE_EPOCH="$source_date_epoch" "$toolchain_python" -I -P -B -m build \
   --no-isolation \
   --wheel \
   --outdir "$build_dir" \
-  "$repo_dir"
+  "$source_dir"
 
 set -- "$build_dir"/cole_voice_lab-*.whl
 [ "$#" -eq 1 ] && [ -f "$1" ] || {
@@ -233,7 +282,7 @@ cp "$application_wheel" "$bundle_dir/"
 
 if [ "$allow_network" -eq 1 ]; then
   download_mode=network
-  "$toolchain_python" -m pip download \
+  "$toolchain_python" -I -P -B -m pip download \
     --disable-pip-version-check \
     --only-binary=:all: \
     --no-deps \
@@ -242,7 +291,7 @@ if [ "$allow_network" -eq 1 ]; then
     -r "$runtime_artifact_lock"
 else
   download_mode=offline-wheelhouse
-  "$toolchain_python" -m pip download \
+  "$toolchain_python" -I -P -B -m pip download \
     --disable-pip-version-check \
     --no-index \
     --find-links "$wheelhouse" \
@@ -253,11 +302,11 @@ else
     -r "$runtime_artifact_lock"
 fi
 
-cp "$repo_dir/scripts/macbook-bootstrap" "$bundle_dir/macbook-bootstrap"
-cp "$repo_dir/config/site.example.toml" "$bundle_dir/site.example.toml"
+cp "$source_dir/scripts/macbook-bootstrap" "$bundle_dir/macbook-bootstrap"
+cp "$source_dir/config/site.example.toml" "$bundle_dir/site.example.toml"
 chmod 700 "$bundle_dir/macbook-bootstrap"
 
-"$python_bin" - \
+"$python_bin" -I -P -B - \
   "$bundle_dir" \
   "$download_mode" \
   "$build_version" \
@@ -266,7 +315,10 @@ chmod 700 "$bundle_dir/macbook-bootstrap"
   "$packaging_version" \
   "$pyproject_hooks_version" \
   "$build_artifact_lock" \
-  "$runtime_artifact_lock" <<'PY'
+  "$runtime_artifact_lock" \
+  "$source_commit" \
+  "$source_tree" \
+  "$source_date_epoch" <<'PY'
 import hashlib
 import json
 import os
@@ -292,6 +344,9 @@ build_pins = {
 }
 build_artifact_lock = Path(sys.argv[8])
 runtime_artifact_lock = Path(sys.argv[9])
+source_commit = sys.argv[10]
+source_tree = sys.argv[11]
+source_date_epoch = int(sys.argv[12])
 expected_dependencies = {
     "annotated-types": "0.8.0",
     "pydantic": "2.13.4",
@@ -635,6 +690,11 @@ metadata = {
         "must_be_supplied_out_of_band": True,
     },
     "network_mode": download_mode,
+    "source": {
+        "commit": source_commit,
+        "source_date_epoch": source_date_epoch,
+        "tree": source_tree,
+    },
     "schema_version": "cole-voice-lab.capture-kit/v1",
 }
 (bundle / "BUNDLE.json").write_text(
@@ -659,7 +719,7 @@ os.chmod(bundle / "SHA256SUMS", 0o600)
 PY
 
 prepublish_evidence=$(
-  "$python_bin" - "$bundle_dir" <<'PY'
+  "$python_bin" -I -P -B - "$bundle_dir" <<'PY'
 import hashlib
 import json
 import sys
@@ -683,7 +743,7 @@ prepublish_application_sha256=$(printf '%s\n' "$prepublish_evidence" | sed -n '3
   "$prepublish_manifest_sha256" >/dev/null
 
 publish_result=$(
-  "$python_bin" - "$bundle_dir" "$output_dir" "$replace_output" <<'PY'
+  "$python_bin" -I -P -B - "$bundle_dir" "$output_dir" "$replace_output" <<'PY'
 import ctypes
 import hashlib
 import os
@@ -761,7 +821,7 @@ printf 'BUNDLE_MANIFEST_SHA256=%s\n' "$bundle_manifest_sha256"
 printf 'APPLICATION_WHEEL=%s\n' "$application_wheel_name"
 printf 'APPLICATION_WHEEL_SHA256=%s\n' "$application_wheel_sha256"
 printf '%s\n' 'Transfer the entire directory. Before executing any transferred file, use trusted macOS tools:'
-printf "  /usr/bin/printf '%%s  %%s\\n' '%s' '<TRANSFERRED_CAPTURE_KIT>/SHA256SUMS' | /usr/bin/shasum -a 256 -c -\n" \
+printf "  /usr/bin/printf '%%s  %%s\\\\n' '%s' '<TRANSFERRED_CAPTURE_KIT>/SHA256SUMS' | /usr/bin/shasum -a 256 -c -\n" \
   "$bundle_manifest_sha256"
 printf "%s\n" "  (cd '<TRANSFERRED_CAPTURE_KIT>' && /usr/bin/shasum -a 256 -c SHA256SUMS)"
 printf '%s\n' 'Only after both checks pass, run the bundle verifier/installer:'

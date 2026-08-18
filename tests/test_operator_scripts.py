@@ -143,6 +143,7 @@ def test_shell_scripts_parse_and_capture_builder_is_offline_by_default(tmp_path:
     assert builder.index("/usr/bin/shasum -a 256 -c -") < builder.index(
         "Only after both checks pass"
     )
+    assert r"%%s  %%s\\\\n" in builder
 
 
 def test_reviewed_wheel_builder_is_executable_and_toolchain_tamper_fails(
@@ -210,6 +211,10 @@ def test_reviewed_wheel_builder_is_executable_and_toolchain_tamper_fails(
     assert builder.count("--require-hashes") >= 3
     assert 'toolchain_dir="$work_dir/build-tools"' in builder
     assert "$repo_dir/.venv/bin/python" not in builder
+    assert "git_bin=/usr/bin/git" in builder
+    assert "archive --format=tar" in builder
+    assert 'SOURCE_DATE_EPOCH="$source_date_epoch"' in builder
+    assert '"source": {' in builder
 
 
 def test_launch_agent_renderer_enforces_types_modes_and_plutil(tmp_path: Path) -> None:
@@ -838,6 +843,11 @@ def _write_test_bundle(
                 },
                 "dependency_wheels": [],
                 "manifest": {"must_be_supplied_out_of_band": True},
+                "source": {
+                    "commit": "1" * 40,
+                    "source_date_epoch": 1_700_000_000,
+                    "tree": "2" * 40,
+                },
                 "schema_version": "cole-voice-lab.capture-kit/v1",
             },
             sort_keys=True,

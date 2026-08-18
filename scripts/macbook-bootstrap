@@ -846,6 +846,23 @@ if not isinstance(bundle_metadata, dict):
     raise SystemExit("BUNDLE.json must contain an object")
 if bundle_metadata.get("schema_version") != "cole-voice-lab.capture-kit/v1":
     raise SystemExit("unsupported BUNDLE.json schema")
+source_metadata = bundle_metadata.get("source")
+if not isinstance(source_metadata, dict) or set(source_metadata) != {
+    "commit",
+    "source_date_epoch",
+    "tree",
+}:
+    raise SystemExit("BUNDLE.json source evidence is missing or malformed")
+for field in ("commit", "tree"):
+    value = source_metadata[field]
+    if not isinstance(value, str) or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is None:
+        raise SystemExit(f"BUNDLE.json source {field} is not an immutable Git object ID")
+if (
+    not isinstance(source_metadata["source_date_epoch"], int)
+    or isinstance(source_metadata["source_date_epoch"], bool)
+    or source_metadata["source_date_epoch"] <= 0
+):
+    raise SystemExit("BUNDLE.json source-date epoch is invalid")
 build_metadata = bundle_metadata.get("build")
 if not isinstance(build_metadata, dict):
     raise SystemExit("BUNDLE.json build evidence is missing")

@@ -50,7 +50,13 @@ scripts/build-capture-kit --wheelhouse /absolute/reviewed/wheelhouse
 The builder passes `--no-index` and `--require-hashes` to both the temporary
 toolchain install and runtime-wheel download. It does not silently fall back to
 a package index, and no package from the repository development environment
-participates in the wheel build.
+participates in the wheel build. It also requires an immutable, completely
+clean Git `HEAD`, exports that commit into a fresh staging source tree, and
+builds with `SOURCE_DATE_EPOCH` set to the commit timestamp. `BUNDLE.json`
+records the exact commit, tree, and epoch. Ignored build directories,
+untracked files, and stale backend outputs therefore cannot enter the wheel,
+and two builds of the same commit on the same reviewed host closure produce
+the same application-wheel and bundle-manifest digests.
 
 Network access is opt-in for a deliberate first build:
 

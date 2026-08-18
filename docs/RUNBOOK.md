@@ -65,6 +65,10 @@ build/runtime wheels:
 scripts/build-capture-kit --allow-network
 ```
 
+The builder requires a clean committed tree and builds from a fresh archive of
+that exact `HEAD`; commit or remove any intended source changes before running
+it. Record the Git commit alongside the printed bundle digests.
+
 Later rebuilds can remain offline by supplying a reviewed wheelhouse instead.
 Preserve the printed `BUNDLE_MANIFEST_SHA256`, `APPLICATION_WHEEL`, and
 `APPLICATION_WHEEL_SHA256` outside the bundle. On the receiving MacBook Air,
