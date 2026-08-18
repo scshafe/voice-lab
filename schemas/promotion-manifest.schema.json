@@ -1,0 +1,1648 @@
+{
+  "$defs": {
+    "AssetFileBinding": {
+      "additionalProperties": false,
+      "description": "An asset-root-relative, byte-for-byte file binding.",
+      "properties": {
+        "media_type": {
+          "maxLength": 200,
+          "minLength": 3,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 8589934592,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "media_type"
+      ],
+      "title": "AssetFileBinding",
+      "type": "object"
+    },
+    "BlindId": {
+      "pattern": "^sample-[0-9a-f]{16}$",
+      "type": "string"
+    },
+    "BoundBlindPackageEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceFile"
+        },
+        "record": {
+          "$ref": "#/$defs/ReviewPackageManifest"
+        }
+      },
+      "required": [
+        "file",
+        "record"
+      ],
+      "title": "BoundBlindPackageEvidence",
+      "type": "object"
+    },
+    "BoundConsentEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceFile"
+        },
+        "record": {
+          "$ref": "#/$defs/ConsentRecord"
+        }
+      },
+      "required": [
+        "file",
+        "record"
+      ],
+      "title": "BoundConsentEvidence",
+      "type": "object"
+    },
+    "BoundListeningSummaryEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceFile"
+        },
+        "record": {
+          "$ref": "#/$defs/PromotionListeningSummaryRecord"
+        }
+      },
+      "required": [
+        "file",
+        "record"
+      ],
+      "title": "BoundListeningSummaryEvidence",
+      "type": "object"
+    },
+    "BoundModelLockEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "auxiliary_sources": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/BoundSourceManifestEvidence"
+          },
+          "title": "Auxiliary Sources",
+          "type": "array"
+        },
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceFile"
+        },
+        "model_source": {
+          "$ref": "#/$defs/BoundSourceManifestEvidence"
+        },
+        "record": {
+          "$ref": "#/$defs/ModelLockEntry"
+        },
+        "worker_model_evidence": {
+          "$ref": "#/$defs/JsonEvidenceFile"
+        },
+        "worker_model_record": {
+          "$ref": "#/$defs/WorkerModelEvidence"
+        }
+      },
+      "required": [
+        "file",
+        "record",
+        "model_source",
+        "worker_model_evidence",
+        "worker_model_record"
+      ],
+      "title": "BoundModelLockEvidence",
+      "type": "object"
+    },
+    "BoundProvenanceEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceFile"
+        },
+        "record": {
+          "$ref": "#/$defs/HumanReferenceProvenanceRecord"
+        }
+      },
+      "required": [
+        "file",
+        "record"
+      ],
+      "title": "BoundProvenanceEvidence",
+      "type": "object"
+    },
+    "BoundScoreSheetEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceFile"
+        },
+        "record": {
+          "$ref": "#/$defs/ScoreSheet"
+        }
+      },
+      "required": [
+        "file",
+        "record"
+      ],
+      "title": "BoundScoreSheetEvidence",
+      "type": "object"
+    },
+    "BoundSourceManifestEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceFile"
+        },
+        "record": {
+          "$ref": "#/$defs/LocalSourceManifest"
+        }
+      },
+      "required": [
+        "file",
+        "record"
+      ],
+      "title": "BoundSourceManifestEvidence",
+      "type": "object"
+    },
+    "BoundVerdictEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceFile"
+        },
+        "record": {
+          "$ref": "#/$defs/LabVerdictRecord"
+        }
+      },
+      "required": [
+        "file",
+        "record"
+      ],
+      "title": "BoundVerdictEvidence",
+      "type": "object"
+    },
+    "BoundWinningRunEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceFile"
+        },
+        "record": {
+          "$ref": "#/$defs/WinningRunRecord"
+        }
+      },
+      "required": [
+        "file",
+        "record"
+      ],
+      "title": "BoundWinningRunEvidence",
+      "type": "object"
+    },
+    "CandidateId": {
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "ConsentRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_execution_boundaries": {
+          "items": {
+            "enum": [
+              "capture-host",
+              "tailnet-local-host"
+            ],
+            "type": "string"
+          },
+          "title": "Allowed Execution Boundaries",
+          "type": "array"
+        },
+        "allowed_purposes": {
+          "items": {
+            "enum": [
+              "private-zero-shot-evaluation",
+              "private-fine-tuning",
+              "private-chloe-speech-rendering"
+            ],
+            "type": "string"
+          },
+          "title": "Allowed Purposes",
+          "type": "array"
+        },
+        "approved": {
+          "title": "Approved",
+          "type": "boolean"
+        },
+        "attestation": {
+          "enum": [
+            "self-recorded-and-self-authorized",
+            "pending-subject-attestation"
+          ],
+          "title": "Attestation",
+          "type": "string"
+        },
+        "consent_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "disclosure_required": {
+          "const": true,
+          "default": true,
+          "title": "Disclosure Required",
+          "type": "boolean"
+        },
+        "effective_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effective At"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        },
+        "hosted_transfer_allowed": {
+          "const": false,
+          "default": false,
+          "title": "Hosted Transfer Allowed",
+          "type": "boolean"
+        },
+        "revoked_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revoked At"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.consent/v1",
+          "default": "cole-voice-lab.consent/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "consent_id",
+        "subject_id",
+        "approved",
+        "attestation",
+        "allowed_purposes",
+        "allowed_execution_boundaries"
+      ],
+      "title": "ConsentRecord",
+      "type": "object"
+    },
+    "HumanReferenceBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "human_subject": {
+          "const": true,
+          "default": true,
+          "title": "Human Subject",
+          "type": "boolean"
+        },
+        "media_type": {
+          "const": "audio/wav",
+          "default": "audio/wav",
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 8589934592,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "subject_id"
+      ],
+      "title": "HumanReferenceBinding",
+      "type": "object"
+    },
+    "HumanReferenceProvenanceRecord": {
+      "additionalProperties": false,
+      "description": "Strict contents expected in the separately stored provenance document.",
+      "properties": {
+        "consent_evidence_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "consent_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "created_by": {
+          "$ref": "#/$defs/cole_voice_lab__promotion__NonBlank__2"
+        },
+        "human_subject": {
+          "const": true,
+          "default": true,
+          "title": "Human Subject",
+          "type": "boolean"
+        },
+        "provenance_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "purpose": {
+          "const": "private-chloe-speech-rendering",
+          "default": "private-chloe-speech-rendering",
+          "title": "Purpose",
+          "type": "string"
+        },
+        "recognizable_human": {
+          "const": true,
+          "default": true,
+          "title": "Recognizable Human",
+          "type": "boolean"
+        },
+        "reference_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Reference Path",
+          "type": "string"
+        },
+        "reference_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.human-reference-provenance/v1",
+          "default": "cole-voice-lab.human-reference-provenance/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "statement": {
+          "$ref": "#/$defs/cole_voice_lab__promotion__NonBlank__1"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "provenance_id",
+        "subject_id",
+        "reference_path",
+        "reference_sha256",
+        "consent_id",
+        "consent_evidence_sha256",
+        "created_at",
+        "created_by",
+        "statement"
+      ],
+      "title": "HumanReferenceProvenanceRecord",
+      "type": "object"
+    },
+    "JsonEvidenceFile": {
+      "additionalProperties": false,
+      "properties": {
+        "media_type": {
+          "const": "application/json",
+          "default": "application/json",
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 16777216,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "JsonEvidenceFile",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "LabVerdictRecord": {
+      "additionalProperties": false,
+      "description": "The blind-review decision that names the sole promotable run.",
+      "properties": {
+        "approved": {
+          "const": true,
+          "default": true,
+          "title": "Approved",
+          "type": "boolean"
+        },
+        "auxiliary_source_manifest_sha256": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Sha256"
+          },
+          "title": "Auxiliary Source Manifest Sha256",
+          "type": "object"
+        },
+        "blind_package_manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "decided_at": {
+          "format": "date-time",
+          "title": "Decided At",
+          "type": "string"
+        },
+        "decision": {
+          "const": "promote",
+          "default": "promote",
+          "title": "Decision",
+          "type": "string"
+        },
+        "experiment_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "listening_summary_evidence_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "model_lock_evidence_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "model_source_manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "reference_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "review_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.promotion-verdict/v2",
+          "default": "cole-voice-lab.promotion-verdict/v2",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "score_sheet_evidence_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "selection_policy": {
+          "const": "highest-direct-tts-overall-mean-no-ties",
+          "default": "highest-direct-tts-overall-mean-no-ties",
+          "title": "Selection Policy",
+          "type": "string"
+        },
+        "trial_policy": {
+          "const": "explicit-reviewed-winning-candidate-cell",
+          "default": "explicit-reviewed-winning-candidate-cell",
+          "title": "Trial Policy",
+          "type": "string"
+        },
+        "verdict_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "winning_candidate_id": {
+          "$ref": "#/$defs/CandidateId"
+        },
+        "winning_reveal_entry": {
+          "$ref": "#/$defs/RevealEntry"
+        },
+        "winning_run_evidence_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "winning_trial_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "worker_model_evidence_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "verdict_id",
+        "experiment_id",
+        "review_id",
+        "winning_candidate_id",
+        "winning_trial_id",
+        "reference_sha256",
+        "winning_run_evidence_sha256",
+        "model_lock_evidence_sha256",
+        "model_source_manifest_sha256",
+        "auxiliary_source_manifest_sha256",
+        "worker_model_evidence_sha256",
+        "blind_package_manifest_sha256",
+        "score_sheet_evidence_sha256",
+        "listening_summary_evidence_sha256",
+        "winning_reveal_entry",
+        "decided_at"
+      ],
+      "title": "LabVerdictRecord",
+      "type": "object"
+    },
+    "LanguageTag": {
+      "maxLength": 64,
+      "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$",
+      "type": "string"
+    },
+    "ListeningCandidateSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/CandidateId"
+        },
+        "means": {
+          "$ref": "#/$defs/ListeningDimensionMeans"
+        },
+        "overall_mean": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Overall Mean",
+          "type": "number"
+        },
+        "sample_count": {
+          "exclusiveMinimum": 0,
+          "title": "Sample Count",
+          "type": "integer"
+        },
+        "track": {
+          "enum": [
+            "direct-tts",
+            "voice-conversion"
+          ],
+          "title": "Track",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "track",
+        "sample_count",
+        "means",
+        "overall_mean"
+      ],
+      "title": "ListeningCandidateSummary",
+      "type": "object"
+    },
+    "ListeningDimensionMeans": {
+      "additionalProperties": false,
+      "description": "The complete fixed listening rubric for one candidate.",
+      "properties": {
+        "artifact_freedom": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Artifact Freedom",
+          "type": "number"
+        },
+        "intelligibility": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Intelligibility",
+          "type": "number"
+        },
+        "likeness": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Likeness",
+          "type": "number"
+        },
+        "naturalness": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Naturalness",
+          "type": "number"
+        },
+        "prosody": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Prosody",
+          "type": "number"
+        }
+      },
+      "required": [
+        "likeness",
+        "naturalness",
+        "prosody",
+        "intelligibility",
+        "artifact_freedom"
+      ],
+      "title": "ListeningDimensionMeans",
+      "type": "object"
+    },
+    "ListeningScore": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_freedom": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Artifact Freedom",
+          "type": "integer"
+        },
+        "blind_id": {
+          "$ref": "#/$defs/BlindId"
+        },
+        "intelligibility": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Intelligibility",
+          "type": "integer"
+        },
+        "likeness": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Likeness",
+          "type": "integer"
+        },
+        "naturalness": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Naturalness",
+          "type": "integer"
+        },
+        "notes": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Notes",
+          "type": "string"
+        },
+        "prosody": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Prosody",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "blind_id",
+        "likeness",
+        "naturalness",
+        "prosody",
+        "intelligibility",
+        "artifact_freedom"
+      ],
+      "title": "ListeningScore",
+      "type": "object"
+    },
+    "ListeningSummaryAggregate": {
+      "additionalProperties": false,
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.listening-summary/v1",
+          "default": "cole-voice-lab.listening-summary/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tracks": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ListeningTrackSummary"
+          },
+          "minProperties": 1,
+          "propertyNames": {
+            "enum": [
+              "direct-tts",
+              "voice-conversion"
+            ]
+          },
+          "title": "Tracks",
+          "type": "object"
+        }
+      },
+      "required": [
+        "review_id",
+        "tracks"
+      ],
+      "title": "ListeningSummaryAggregate",
+      "type": "object"
+    },
+    "ListeningTrackSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/ListeningCandidateSummary"
+          },
+          "minItems": 1,
+          "title": "Candidates",
+          "type": "array"
+        }
+      },
+      "required": [
+        "candidates"
+      ],
+      "title": "ListeningTrackSummary",
+      "type": "object"
+    },
+    "LocalSourceManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Files",
+          "type": "object"
+        },
+        "kind": {
+          "pattern": "^(git|huggingface)$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "repository": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Repository",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "cole-voice-lab.local-source/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "kind",
+        "repository",
+        "revision"
+      ],
+      "title": "LocalSourceManifest",
+      "type": "object"
+    },
+    "ModelLockEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/CandidateId"
+        },
+        "code_revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            }
+          ],
+          "title": "Code Revision"
+        },
+        "files": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Sha256"
+          },
+          "title": "Files",
+          "type": "object"
+        },
+        "model_id": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Model Id",
+          "type": "string"
+        },
+        "model_revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            }
+          ],
+          "title": "Model Revision"
+        },
+        "resolved_at": {
+          "format": "date-time",
+          "title": "Resolved At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "model_id",
+        "model_revision",
+        "code_revision",
+        "resolved_at"
+      ],
+      "title": "ModelLockEntry",
+      "type": "object"
+    },
+    "PackageFile": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "PackageFile",
+      "type": "object"
+    },
+    "PromotionDisclosure": {
+      "additionalProperties": false,
+      "properties": {
+        "cue_id": {
+          "$ref": "#/$defs/StableId",
+          "default": "synthetic-voice-disclosure"
+        },
+        "pause_after_ms": {
+          "default": 500,
+          "maximum": 60000,
+          "minimum": 0,
+          "title": "Pause After Ms",
+          "type": "integer"
+        },
+        "persistent": {
+          "$ref": "#/$defs/cole_voice_lab__promotion__NonBlank__1"
+        },
+        "speaker_id": {
+          "$ref": "#/$defs/StableId",
+          "default": "narrator"
+        },
+        "spoken": {
+          "$ref": "#/$defs/cole_voice_lab__promotion__NonBlank__1"
+        }
+      },
+      "required": [
+        "spoken",
+        "persistent"
+      ],
+      "title": "PromotionDisclosure",
+      "type": "object"
+    },
+    "PromotionLicense": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/cole_voice_lab__promotion__NonBlank__2"
+        },
+        "spdx_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spdx Id"
+        },
+        "uri": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Uri"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "PromotionLicense",
+      "type": "object"
+    },
+    "PromotionListeningSummaryRecord": {
+      "additionalProperties": false,
+      "description": "Digest-bound aggregate whose inputs are named explicitly.",
+      "properties": {
+        "aggregate": {
+          "$ref": "#/$defs/ListeningSummaryAggregate"
+        },
+        "blind_package_manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "review_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.promotion-listening-summary/v1",
+          "default": "cole-voice-lab.promotion-listening-summary/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "score_sheet_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "review_id",
+        "blind_package_manifest_sha256",
+        "score_sheet_sha256",
+        "aggregate"
+      ],
+      "title": "PromotionListeningSummaryRecord",
+      "type": "object"
+    },
+    "ProviderId": {
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "RevealEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "blind_id": {
+          "$ref": "#/$defs/BlindId"
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/CandidateId"
+        },
+        "experiment_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "output_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "plan_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "request_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "result_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "run_manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "seed": {
+          "title": "Seed",
+          "type": "integer"
+        },
+        "source_audio_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timing_mode": {
+          "enum": [
+            "cold",
+            "warm"
+          ],
+          "title": "Timing Mode",
+          "type": "string"
+        },
+        "track": {
+          "enum": [
+            "direct-tts",
+            "voice-conversion"
+          ],
+          "title": "Track",
+          "type": "string"
+        },
+        "trial_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "blind_id",
+        "experiment_id",
+        "trial_id",
+        "candidate_id",
+        "track",
+        "prompt_id",
+        "output_sha256",
+        "seed",
+        "timing_mode",
+        "reference_sha256",
+        "request_sha256",
+        "plan_sha256",
+        "run_manifest_sha256",
+        "result_sha256"
+      ],
+      "title": "RevealEntry",
+      "type": "object"
+    },
+    "ReviewPackageManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/PackageFile"
+          },
+          "minItems": 1,
+          "title": "Files",
+          "type": "array"
+        },
+        "public_manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "reveal_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "review_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "review_index_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.blind-package/v1",
+          "default": "cole-voice-lab.blind-package/v1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "review_id",
+        "created_at",
+        "review_index_sha256",
+        "public_manifest_sha256",
+        "reveal_sha256",
+        "files"
+      ],
+      "title": "ReviewPackageManifest",
+      "type": "object"
+    },
+    "ScoreSheet": {
+      "additionalProperties": false,
+      "properties": {
+        "headphones_used": {
+          "const": true,
+          "title": "Headphones Used",
+          "type": "boolean"
+        },
+        "public_manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "review_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "review_index_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "reviewer_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.listening-scores/v2",
+          "default": "cole-voice-lab.listening-scores/v2",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "scored_at": {
+          "format": "date-time",
+          "title": "Scored At",
+          "type": "string"
+        },
+        "scores": {
+          "items": {
+            "$ref": "#/$defs/ListeningScore"
+          },
+          "minItems": 1,
+          "title": "Scores",
+          "type": "array"
+        }
+      },
+      "required": [
+        "review_id",
+        "review_index_sha256",
+        "public_manifest_sha256",
+        "reviewer_id",
+        "scored_at",
+        "headphones_used",
+        "scores"
+      ],
+      "title": "ScoreSheet",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "WinningRunRecord": {
+      "additionalProperties": false,
+      "description": "Identity and output evidence for the exact run selected for promotion.",
+      "properties": {
+        "audition_settings_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/CandidateId"
+        },
+        "code_revision": {
+          "pattern": "^[0-9a-f]{40,64}$",
+          "title": "Code Revision",
+          "type": "string"
+        },
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "consent_evidence_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "environment_fingerprint_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "experiment_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "language": {
+          "$ref": "#/$defs/LanguageTag"
+        },
+        "model_id": {
+          "$ref": "#/$defs/cole_voice_lab__promotion__NonBlank__4"
+        },
+        "model_revision": {
+          "pattern": "^[0-9a-f]{40,64}$",
+          "title": "Model Revision",
+          "type": "string"
+        },
+        "output": {
+          "$ref": "#/$defs/AssetFileBinding"
+        },
+        "plan_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "provider_id": {
+          "$ref": "#/$defs/ProviderId"
+        },
+        "provider_projection_id": {
+          "const": "cole-voice-lab.worker-provider-projection/v1",
+          "default": "cole-voice-lab.worker-provider-projection/v1",
+          "title": "Provider Projection Id",
+          "type": "string"
+        },
+        "provider_settings_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "provider_voice": {
+          "$ref": "#/$defs/cole_voice_lab__promotion__NonBlank__3"
+        },
+        "reference_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "request_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "result_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "run_manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.promotion-run/v2",
+          "default": "cole-voice-lab.promotion-run/v2",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "const": "complete",
+          "default": "complete",
+          "title": "Status",
+          "type": "string"
+        },
+        "track": {
+          "const": "direct-tts",
+          "default": "direct-tts",
+          "title": "Track",
+          "type": "string"
+        },
+        "trial_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "watermarked": {
+          "title": "Watermarked",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "experiment_id",
+        "trial_id",
+        "candidate_id",
+        "plan_sha256",
+        "run_manifest_sha256",
+        "result_sha256",
+        "request_sha256",
+        "provider_id",
+        "provider_voice",
+        "model_id",
+        "model_revision",
+        "code_revision",
+        "reference_sha256",
+        "consent_evidence_sha256",
+        "language",
+        "audition_settings_sha256",
+        "provider_settings_sha256",
+        "environment_fingerprint_sha256",
+        "output",
+        "watermarked",
+        "completed_at"
+      ],
+      "title": "WinningRunRecord",
+      "type": "object"
+    },
+    "WorkerModelEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "auxiliary_manifest_sha256": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Sha256"
+          },
+          "title": "Auxiliary Manifest Sha256",
+          "type": "object"
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/CandidateId"
+        },
+        "code_checkout_integrity_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code_revision": {
+          "pattern": "^[0-9a-f]{40,64}$",
+          "title": "Code Revision",
+          "type": "string"
+        },
+        "consent_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "executed_code_evidence_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Executed Code Evidence Path",
+          "type": "string"
+        },
+        "executed_code_evidence_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "model_id": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Model Id",
+          "type": "string"
+        },
+        "model_manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "model_revision": {
+          "pattern": "^[0-9a-f]{40,64}$",
+          "title": "Model Revision",
+          "type": "string"
+        },
+        "reference_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "runtime_package": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Runtime Package",
+          "type": "string"
+        },
+        "runtime_package_version": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Runtime Package Version",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.worker-model-evidence/v1",
+          "default": "cole-voice-lab.worker-model-evidence/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "settings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Settings",
+          "type": "object"
+        },
+        "source_audio_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_audio_size_bytes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source Audio Size Bytes"
+        },
+        "watermarked": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Watermarked"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "model_id",
+        "model_revision",
+        "code_revision",
+        "model_manifest_sha256",
+        "auxiliary_manifest_sha256",
+        "code_checkout_integrity_sha256",
+        "executed_code_evidence_path",
+        "executed_code_evidence_sha256",
+        "reference_sha256",
+        "consent_sha256",
+        "source_audio_sha256",
+        "source_audio_size_bytes",
+        "settings",
+        "runtime_package",
+        "runtime_package_version"
+      ],
+      "title": "WorkerModelEvidence",
+      "type": "object"
+    },
+    "cole_voice_lab__promotion__NonBlank__1": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "cole_voice_lab__promotion__NonBlank__2": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "cole_voice_lab__promotion__NonBlank__3": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": "string"
+    },
+    "cole_voice_lab__promotion__NonBlank__4": {
+      "maxLength": 500,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Lab authority for promoting exactly one winning human-reference voice.",
+  "properties": {
+    "blind_package": {
+      "$ref": "#/$defs/BoundBlindPackageEvidence"
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/CandidateId"
+    },
+    "clearance_scope": {
+      "$ref": "#/$defs/cole_voice_lab__promotion__NonBlank__1"
+    },
+    "consent": {
+      "$ref": "#/$defs/BoundConsentEvidence"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "disclosure": {
+      "$ref": "#/$defs/PromotionDisclosure"
+    },
+    "experiment_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "identity_kind": {
+      "const": "human_authorized",
+      "default": "human_authorized",
+      "title": "Identity Kind",
+      "type": "string"
+    },
+    "language": {
+      "$ref": "#/$defs/LanguageTag"
+    },
+    "license": {
+      "$ref": "#/$defs/PromotionLicense"
+    },
+    "listening_summary": {
+      "$ref": "#/$defs/BoundListeningSummaryEvidence"
+    },
+    "model_lock": {
+      "$ref": "#/$defs/BoundModelLockEvidence"
+    },
+    "promotion_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "provenance": {
+      "$ref": "#/$defs/BoundProvenanceEvidence"
+    },
+    "provider_id": {
+      "$ref": "#/$defs/ProviderId"
+    },
+    "provider_settings": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Provider Settings",
+      "type": "object"
+    },
+    "provider_voice": {
+      "$ref": "#/$defs/cole_voice_lab__promotion__NonBlank__3"
+    },
+    "purpose": {
+      "const": "private-chloe-speech-rendering",
+      "default": "private-chloe-speech-rendering",
+      "title": "Purpose",
+      "type": "string"
+    },
+    "recognizable_human": {
+      "const": true,
+      "default": true,
+      "title": "Recognizable Human",
+      "type": "boolean"
+    },
+    "reference": {
+      "$ref": "#/$defs/HumanReferenceBinding"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.promotion/v2",
+      "default": "cole-voice-lab.promotion/v2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "score_sheet": {
+      "$ref": "#/$defs/BoundScoreSheetEvidence"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "verdict": {
+      "$ref": "#/$defs/BoundVerdictEvidence"
+    },
+    "voice_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "voice_name": {
+      "$ref": "#/$defs/cole_voice_lab__promotion__NonBlank__2"
+    },
+    "watermarked": {
+      "title": "Watermarked",
+      "type": "boolean"
+    },
+    "winning_run": {
+      "$ref": "#/$defs/BoundWinningRunEvidence"
+    },
+    "winning_trial_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "promotion_id",
+    "created_at",
+    "subject_id",
+    "experiment_id",
+    "winning_trial_id",
+    "candidate_id",
+    "voice_id",
+    "voice_name",
+    "provider_id",
+    "provider_voice",
+    "language",
+    "reference",
+    "consent",
+    "provenance",
+    "model_lock",
+    "winning_run",
+    "blind_package",
+    "score_sheet",
+    "listening_summary",
+    "verdict",
+    "license",
+    "disclosure",
+    "clearance_scope",
+    "watermarked"
+  ],
+  "title": "PromotionManifest",
+  "type": "object"
+}

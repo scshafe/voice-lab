@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "BlindId": {
+      "pattern": "^sample-[0-9a-f]{16}$",
+      "type": "string"
+    },
+    "ListeningScore": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_freedom": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Artifact Freedom",
+          "type": "integer"
+        },
+        "blind_id": {
+          "$ref": "#/$defs/BlindId"
+        },
+        "intelligibility": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Intelligibility",
+          "type": "integer"
+        },
+        "likeness": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Likeness",
+          "type": "integer"
+        },
+        "naturalness": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Naturalness",
+          "type": "integer"
+        },
+        "notes": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Notes",
+          "type": "string"
+        },
+        "prosody": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Prosody",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "blind_id",
+        "likeness",
+        "naturalness",
+        "prosody",
+        "intelligibility",
+        "artifact_freedom"
+      ],
+      "title": "ListeningScore",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "headphones_used": {
+      "const": true,
+      "title": "Headphones Used",
+      "type": "boolean"
+    },
+    "public_manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "review_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "review_index_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "reviewer_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.listening-scores/v2",
+      "default": "cole-voice-lab.listening-scores/v2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scored_at": {
+      "format": "date-time",
+      "title": "Scored At",
+      "type": "string"
+    },
+    "scores": {
+      "items": {
+        "$ref": "#/$defs/ListeningScore"
+      },
+      "minItems": 1,
+      "title": "Scores",
+      "type": "array"
+    }
+  },
+  "required": [
+    "review_id",
+    "review_index_sha256",
+    "public_manifest_sha256",
+    "reviewer_id",
+    "scored_at",
+    "headphones_used",
+    "scores"
+  ],
+  "title": "ScoreSheet",
+  "type": "object"
+}

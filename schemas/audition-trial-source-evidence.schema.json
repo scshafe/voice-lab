@@ -1,0 +1,187 @@
+{
+  "$defs": {
+    "LocalSourceManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Files",
+          "type": "object"
+        },
+        "kind": {
+          "pattern": "^(git|huggingface)$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "repository": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Repository",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "cole-voice-lab.local-source/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "kind",
+        "repository",
+        "revision"
+      ],
+      "title": "LocalSourceManifest",
+      "type": "object"
+    },
+    "PersistedSourceEvidence": {
+      "additionalProperties": false,
+      "description": "Portable integrity preimage for one source after its resident bytes are evicted.",
+      "properties": {
+        "files": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "minProperties": 1,
+          "title": "Files",
+          "type": "object"
+        },
+        "integrity_record": {
+          "additionalProperties": true,
+          "title": "Integrity Record",
+          "type": "object"
+        },
+        "integrity_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Integrity Sha256",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "git",
+            "huggingface"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocalSourceManifest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "manifest_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Manifest Sha256"
+        },
+        "repository": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Repository",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "kind",
+        "repository",
+        "revision",
+        "files",
+        "integrity_record",
+        "integrity_sha256"
+      ],
+      "title": "PersistedSourceEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "auxiliary": {
+      "additionalProperties": {
+        "$ref": "#/$defs/PersistedSourceEvidence"
+      },
+      "title": "Auxiliary",
+      "type": "object"
+    },
+    "candidate_id": {
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "code": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersistedSourceEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "primary": {
+      "$ref": "#/$defs/PersistedSourceEvidence"
+    },
+    "request_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Request Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.audition-source-evidence/v1",
+      "default": "cole-voice-lab.audition-source-evidence/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "trial_id": {
+      "title": "Trial Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "trial_id",
+    "candidate_id",
+    "request_sha256",
+    "primary",
+    "auxiliary"
+  ],
+  "title": "PersistedTrialSourceEvidence",
+  "type": "object"
+}

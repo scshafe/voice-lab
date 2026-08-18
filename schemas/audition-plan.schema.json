@@ -1,0 +1,429 @@
+{
+  "$defs": {
+    "AuditionTrial": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "title": "Candidate Id",
+          "type": "string"
+        },
+        "normalized_output_path": {
+          "title": "Normalized Output Path",
+          "type": "string"
+        },
+        "profile": {
+          "enum": [
+            "smoke",
+            "quality"
+          ],
+          "title": "Profile",
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/ExperimentRequest"
+        },
+        "request_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Request Sha256",
+          "type": "string"
+        },
+        "runtime_id": {
+          "title": "Runtime Id",
+          "type": "string"
+        },
+        "runtime_lock_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Runtime Lock Sha256",
+          "type": "string"
+        },
+        "timing_mode": {
+          "enum": [
+            "cold",
+            "warm"
+          ],
+          "title": "Timing Mode",
+          "type": "string"
+        },
+        "track": {
+          "enum": [
+            "direct-tts",
+            "voice-conversion"
+          ],
+          "title": "Track",
+          "type": "string"
+        },
+        "trial_id": {
+          "title": "Trial Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trial_id",
+        "candidate_id",
+        "track",
+        "profile",
+        "timing_mode",
+        "runtime_id",
+        "runtime_lock_sha256",
+        "request_sha256",
+        "request",
+        "normalized_output_path"
+      ],
+      "title": "AuditionTrial",
+      "type": "object"
+    },
+    "CandidateId": {
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "ExperimentRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/CandidateId"
+        },
+        "code_revision": {
+          "pattern": "^[0-9a-f]{40,64}$",
+          "title": "Code Revision",
+          "type": "string"
+        },
+        "experiment_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "language": {
+          "default": "en",
+          "maxLength": 64,
+          "minLength": 2,
+          "title": "Language",
+          "type": "string"
+        },
+        "model_id": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Model Id",
+          "type": "string"
+        },
+        "model_revision": {
+          "pattern": "^[0-9a-f]{40,64}$",
+          "title": "Model Revision",
+          "type": "string"
+        },
+        "output_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Output Path",
+          "type": "string"
+        },
+        "reference": {
+          "$ref": "#/$defs/ReferenceEvidence"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.worker-request/v1",
+          "default": "cole-voice-lab.worker-request/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "seed": {
+          "default": 0,
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "settings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Settings",
+          "type": "object"
+        },
+        "source_audio_path": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Audio Path"
+        },
+        "source_audio_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source_audio_size_bytes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Audio Size Bytes"
+        },
+        "text": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "track": {
+          "enum": [
+            "direct-tts",
+            "voice-conversion"
+          ],
+          "title": "Track",
+          "type": "string"
+        },
+        "trial_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "experiment_id",
+        "trial_id",
+        "candidate_id",
+        "track",
+        "text",
+        "output_path",
+        "reference",
+        "model_id",
+        "model_revision",
+        "code_revision"
+      ],
+      "title": "ExperimentRequest",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "Prompt": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "text",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptSuite": {
+      "additionalProperties": false,
+      "properties": {
+        "prompts": {
+          "items": {
+            "$ref": "#/$defs/Prompt"
+          },
+          "minItems": 1,
+          "title": "Prompts",
+          "type": "array"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.prompt-suite/v1",
+          "default": "cole-voice-lab.prompt-suite/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "suite_id",
+        "purpose",
+        "prompts"
+      ],
+      "title": "PromptSuite",
+      "type": "object"
+    },
+    "ReferenceEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "consent_path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Consent Path",
+          "type": "string"
+        },
+        "consent_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "transcript": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Transcript",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "transcript",
+        "subject_id",
+        "consent_path",
+        "consent_sha256"
+      ],
+      "title": "ReferenceEvidence",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "experiment_id": {
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "held_out_assertion": {
+      "const": "suite-purpose-and-prompt-flags-validated",
+      "default": "suite-purpose-and-prompt-flags-validated",
+      "title": "Held Out Assertion",
+      "type": "string"
+    },
+    "profile": {
+      "enum": [
+        "smoke",
+        "quality"
+      ],
+      "title": "Profile",
+      "type": "string"
+    },
+    "prompt_suite": {
+      "$ref": "#/$defs/PromptSuite"
+    },
+    "prompt_suite_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Prompt Suite Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.audition-plan/v1",
+      "default": "cole-voice-lab.audition-plan/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selected_prompt_ids": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Selected Prompt Ids",
+      "type": "array"
+    },
+    "trials": {
+      "items": {
+        "$ref": "#/$defs/AuditionTrial"
+      },
+      "minItems": 1,
+      "title": "Trials",
+      "type": "array"
+    }
+  },
+  "required": [
+    "experiment_id",
+    "profile",
+    "created_at",
+    "prompt_suite",
+    "prompt_suite_sha256",
+    "selected_prompt_ids",
+    "trials"
+  ],
+  "title": "AuditionPlan",
+  "type": "object"
+}

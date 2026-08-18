@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "Prompt": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "text",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "prompts": {
+      "items": {
+        "$ref": "#/$defs/Prompt"
+      },
+      "minItems": 1,
+      "title": "Prompts",
+      "type": "array"
+    },
+    "purpose": {
+      "enum": [
+        "capture-pilot",
+        "capture-corpus",
+        "held-out-evaluation"
+      ],
+      "title": "Purpose",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.prompt-suite/v1",
+      "default": "cole-voice-lab.prompt-suite/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "suite_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "suite_id",
+    "purpose",
+    "prompts"
+  ],
+  "title": "PromptSuite",
+  "type": "object"
+}

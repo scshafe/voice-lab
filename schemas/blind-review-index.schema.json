@@ -1,0 +1,123 @@
+{
+  "$defs": {
+    "BlindId": {
+      "pattern": "^sample-[0-9a-f]{16}$",
+      "type": "string"
+    },
+    "Dimension": {
+      "enum": [
+        "likeness",
+        "naturalness",
+        "prosody",
+        "intelligibility",
+        "artifact_freedom"
+      ],
+      "type": "string"
+    },
+    "ReviewSample": {
+      "additionalProperties": false,
+      "properties": {
+        "audio_path": {
+          "title": "Audio Path",
+          "type": "string"
+        },
+        "audio_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "blind_id": {
+          "$ref": "#/$defs/BlindId"
+        },
+        "order": {
+          "minimum": 0,
+          "title": "Order",
+          "type": "integer"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "prompt_text": {
+          "title": "Prompt Text",
+          "type": "string"
+        },
+        "track": {
+          "enum": [
+            "direct-tts",
+            "voice-conversion"
+          ],
+          "title": "Track",
+          "type": "string"
+        }
+      },
+      "required": [
+        "blind_id",
+        "track",
+        "prompt_id",
+        "prompt_text",
+        "audio_path",
+        "audio_sha256",
+        "order"
+      ],
+      "title": "ReviewSample",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "dimensions": {
+      "default": [
+        "likeness",
+        "naturalness",
+        "prosody",
+        "intelligibility",
+        "artifact_freedom"
+      ],
+      "items": {
+        "$ref": "#/$defs/Dimension"
+      },
+      "title": "Dimensions",
+      "type": "array"
+    },
+    "key_commitment_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "review_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "samples": {
+      "items": {
+        "$ref": "#/$defs/ReviewSample"
+      },
+      "minItems": 1,
+      "title": "Samples",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.blind-review/v1",
+      "default": "cole-voice-lab.blind-review/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "review_id",
+    "created_at",
+    "key_commitment_sha256",
+    "samples"
+  ],
+  "title": "ReviewIndex",
+  "type": "object"
+}

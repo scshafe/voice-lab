@@ -1,0 +1,83 @@
+{
+  "$defs": {
+    "PackageFile": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "PackageFile",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/PackageFile"
+      },
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "public_manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "reveal_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "review_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "review_index_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.blind-package/v1",
+      "default": "cole-voice-lab.blind-package/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "review_id",
+    "created_at",
+    "review_index_sha256",
+    "public_manifest_sha256",
+    "reveal_sha256",
+    "files"
+  ],
+  "title": "ReviewPackageManifest",
+  "type": "object"
+}

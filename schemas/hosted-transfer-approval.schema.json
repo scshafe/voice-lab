@@ -1,0 +1,90 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "cole_voice_lab__datasets__NonBlank__1": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "type": "string"
+    },
+    "cole_voice_lab__datasets__NonBlank__2": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "cole_voice_lab__datasets__NonBlank__3": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A separate human authorization; this module never creates one implicitly.",
+  "properties": {
+    "approval_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "approved": {
+      "const": true,
+      "title": "Approved",
+      "type": "boolean"
+    },
+    "approved_at": {
+      "format": "date-time",
+      "title": "Approved At",
+      "type": "string"
+    },
+    "approved_by": {
+      "$ref": "#/$defs/cole_voice_lab__datasets__NonBlank__2"
+    },
+    "dataset_manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "destination": {
+      "$ref": "#/$defs/cole_voice_lab__datasets__NonBlank__1"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "payload_set_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "purpose": {
+      "const": "private-fine-tuning",
+      "default": "private-fine-tuning",
+      "title": "Purpose",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.hosted-transfer-approval/v1",
+      "default": "cole-voice-lab.hosted-transfer-approval/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "statement": {
+      "$ref": "#/$defs/cole_voice_lab__datasets__NonBlank__3"
+    }
+  },
+  "required": [
+    "approval_id",
+    "approved",
+    "destination",
+    "dataset_manifest_sha256",
+    "payload_set_sha256",
+    "approved_at",
+    "expires_at",
+    "approved_by",
+    "statement"
+  ],
+  "title": "HostedTransferApproval",
+  "type": "object"
+}

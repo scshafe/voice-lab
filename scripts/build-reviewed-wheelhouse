@@ -1,0 +1,542 @@
+#!/bin/sh
+""":"
+SCRIPT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "$SCRIPT_ROOT/.venv/bin/python" -I -P "$0" "$@"
+":"""
+# Reproduce or verify the exact local wheels required by one runtime lock.
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+import zipfile
+from pathlib import Path, PurePosixPath
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = REPOSITORY_ROOT / "src"
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+
+from cole_voice_lab.canonical import (  # noqa: E402
+    canonical_json_bytes,
+    sha256_file,
+    write_canonical_json,
+)
+from cole_voice_lab.errors import VoiceLabError  # noqa: E402
+from cole_voice_lab.registry import (  # noqa: E402
+    ReviewedBuildToolchainLock,
+    ReviewedBuiltWheelLock,
+    RuntimeLock,
+    load_registry,
+)
+from cole_voice_lab.runtime import assert_disk_floor, verify_reviewed_wheelhouse  # noqa: E402
+
+MAX_SOURCE_BYTES = 32 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 100_000
+MAX_UNPACKED_BYTES = 256 * 1024 * 1024
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Reproduce or verify exact reviewed local runtime wheels."
+    )
+    parser.add_argument("runtime_id")
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--sdist-dir", type=Path, required=True)
+    parser.add_argument("--build-python", type=Path, required=True)
+    parser.add_argument("--toolchain-wheelhouse", type=Path, required=True)
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--allow-network", action="store_true")
+    parser.add_argument("--verify-existing", action="store_true")
+    return parser
+
+
+def _python_identity(build_python: Path) -> str:
+    program = "import platform;print('CPython '+platform.python_version())"
+    completed = subprocess.run(
+        (str(build_python), "-I", "-P", "-c", program),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "PYTHONNOUSERSITE": "1"},
+    )
+    if completed.returncode != 0:
+        raise VoiceLabError(f"cannot inspect reviewed build Python: {completed.stderr.strip()}")
+    return completed.stdout.strip()
+
+
+def _verify_regular_artifact(
+    path: Path,
+    *,
+    expected_size: int,
+    expected_sha256: str,
+    label: str,
+) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise VoiceLabError(f"{label} is missing: {path}") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise VoiceLabError(f"{label} is not a regular file: {path}")
+    if metadata.st_nlink != 1:
+        raise VoiceLabError(f"{label} must have exactly one hard link: {path}")
+    digest, size = sha256_file(path)
+    if size != expected_size or digest != expected_sha256:
+        raise VoiceLabError(f"{label} bytes do not match the registry: {path}")
+
+
+def _verify_build_python(path: Path, expected: ReviewedBuildToolchainLock) -> Path:
+    resolved = path.expanduser().resolve(strict=True)
+    metadata = resolved.stat()
+    if not stat.S_ISREG(metadata.st_mode):
+        raise VoiceLabError(f"reviewed build Python is not a regular file: {resolved}")
+    digest, _ = sha256_file(resolved)
+    identity = _python_identity(resolved)
+    if digest != expected.build_python_sha256 or identity != expected.build_python:
+        raise VoiceLabError(
+            "reviewed build Python does not match its exact version and executable digest"
+        )
+    return resolved
+
+
+def _verify_toolchain_wheelhouse(
+    directory: Path,
+    expected: ReviewedBuildToolchainLock,
+) -> Path:
+    resolved = directory.expanduser().resolve(strict=True)
+    if not resolved.is_dir() or resolved.is_symlink():
+        raise VoiceLabError(f"reviewed build-tool wheelhouse is not a real directory: {resolved}")
+    expected_by_name = {item.filename: item for item in expected.tool_wheels}
+    with os.scandir(resolved) as entries:
+        actual = {entry.name for entry in entries}
+    if actual != set(expected_by_name):
+        raise VoiceLabError(
+            "reviewed build-tool wheelhouse membership mismatch; "
+            f"missing={sorted(set(expected_by_name) - actual)}, "
+            f"extra={sorted(actual - set(expected_by_name))}"
+        )
+    for filename, evidence in expected_by_name.items():
+        _verify_regular_artifact(
+            resolved / filename,
+            expected_size=evidence.size_bytes,
+            expected_sha256=evidence.sha256,
+            label="reviewed build-tool wheel",
+        )
+    return resolved
+
+
+def _verify_source(path: Path, expected: ReviewedBuiltWheelLock) -> None:
+    _verify_regular_artifact(
+        path,
+        expected_size=expected.source_size_bytes,
+        expected_sha256=expected.source_sha256,
+        label="reviewed source",
+    )
+
+
+def _obtain_source(
+    expected: ReviewedBuiltWheelLock,
+    sdist_directory: Path,
+    staging: Path,
+    *,
+    allow_network: bool,
+) -> Path:
+    local = sdist_directory / expected.source_filename
+    if local.exists():
+        _verify_source(local, expected)
+        return local
+    if not allow_network:
+        raise VoiceLabError(
+            f"reviewed source is absent in offline mode: {local}; use --allow-network explicitly"
+        )
+    destination = staging / expected.source_filename
+    request = urllib.request.Request(
+        expected.source_url,
+        headers={"User-Agent": "cole-voice-lab-reviewed-wheel-builder/1"},
+    )
+    with urllib.request.urlopen(request, timeout=60) as response, destination.open("xb") as stream:
+        remaining = MAX_SOURCE_BYTES + 1
+        while chunk := response.read(min(1024 * 1024, remaining)):
+            stream.write(chunk)
+            remaining -= len(chunk)
+            if remaining <= 0:
+                raise VoiceLabError("reviewed source download exceeded its hard size bound")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(destination, 0o600)
+    _verify_source(destination, expected)
+    return destination
+
+
+def _safe_unpack(source: Path, destination: Path) -> Path:
+    destination.mkdir(mode=0o700)
+    members_seen = 0
+    bytes_seen = 0
+    top_levels: set[str] = set()
+    with tarfile.open(source, mode="r:gz") as archive:
+        for member in archive:
+            members_seen += 1
+            if members_seen > MAX_ARCHIVE_MEMBERS:
+                raise VoiceLabError("reviewed source archive has too many members")
+            relative = PurePosixPath(member.name)
+            if (
+                relative.is_absolute()
+                or not relative.parts
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise VoiceLabError(f"unsafe reviewed source member: {member.name!r}")
+            top_levels.add(relative.parts[0])
+            target = destination.joinpath(*relative.parts)
+            if member.isdir():
+                target.mkdir(mode=0o700, parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                raise VoiceLabError(f"reviewed source contains a non-file member: {member.name}")
+            bytes_seen += member.size
+            if bytes_seen > MAX_UNPACKED_BYTES:
+                raise VoiceLabError("reviewed source archive exceeds its unpacked size bound")
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            source_stream = archive.extractfile(member)
+            if source_stream is None:
+                raise VoiceLabError(f"cannot read reviewed source member: {member.name}")
+            with source_stream, target.open("xb") as output:
+                shutil.copyfileobj(source_stream, output, length=1024 * 1024)
+            os.chmod(target, 0o600)
+    if len(top_levels) != 1:
+        raise VoiceLabError("reviewed source archive must have exactly one top-level directory")
+    root = destination / next(iter(top_levels))
+    if not root.is_dir():
+        raise VoiceLabError("reviewed source top-level entry is not a directory")
+    return root
+
+
+def _safe_unpack_tool_wheel(
+    source: Path,
+    destination: Path,
+    extracted_files: set[str],
+) -> None:
+    bytes_seen = 0
+    members_seen = 0
+    with zipfile.ZipFile(source) as archive:
+        for member in archive.infolist():
+            members_seen += 1
+            if members_seen > MAX_ARCHIVE_MEMBERS:
+                raise VoiceLabError("reviewed build-tool wheel has too many members")
+            relative = PurePosixPath(member.filename)
+            if (
+                relative.is_absolute()
+                or not relative.parts
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise VoiceLabError(f"unsafe reviewed build-tool member: {member.filename!r}")
+            unix_mode = (member.external_attr >> 16) & 0o177777
+            if stat.S_ISLNK(unix_mode):
+                raise VoiceLabError("reviewed build-tool wheel contains a symlink")
+            target = destination.joinpath(*relative.parts)
+            if member.is_dir():
+                target.mkdir(mode=0o700, parents=True, exist_ok=True)
+                continue
+            if member.filename in extracted_files:
+                raise VoiceLabError(f"reviewed build-tool wheels overlap at {member.filename!r}")
+            extracted_files.add(member.filename)
+            bytes_seen += member.file_size
+            if bytes_seen > MAX_UNPACKED_BYTES:
+                raise VoiceLabError("reviewed build-tool wheel exceeds its unpacked size bound")
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with archive.open(member) as input_stream, target.open("xb") as output_stream:
+                shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+            os.chmod(target, 0o600)
+
+
+def _bootstrap_build_toolchain(
+    base_python: Path,
+    wheelhouse: Path,
+    expected: ReviewedBuildToolchainLock,
+    staging: Path,
+) -> Path:
+    environment = {
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    destination = staging / "build-toolchain"
+    completed = subprocess.run(
+        (
+            str(base_python),
+            "-I",
+            "-P",
+            "-m",
+            "venv",
+            "--without-pip",
+            str(destination),
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=environment,
+    )
+    if completed.returncode != 0:
+        raise VoiceLabError(
+            f"cannot create reviewed build-tool environment: {completed.stderr.strip()}"
+        )
+    tool_python = destination / "bin/python"
+    purelib_result = subprocess.run(
+        (
+            str(tool_python),
+            "-I",
+            "-P",
+            "-c",
+            "import sysconfig;print(sysconfig.get_path('purelib'))",
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=environment,
+    )
+    if purelib_result.returncode != 0:
+        raise VoiceLabError("cannot locate reviewed build-tool site-packages")
+    purelib = Path(purelib_result.stdout.strip()).resolve(strict=True)
+    if destination.resolve() not in purelib.parents:
+        raise VoiceLabError("reviewed build-tool site-packages escaped its private environment")
+    extracted_files: set[str] = set()
+    for tool in expected.tool_wheels:
+        _safe_unpack_tool_wheel(wheelhouse / tool.filename, purelib, extracted_files)
+    expected_versions = {tool.package: tool.version for tool in expected.tool_wheels}
+    program = (
+        "import importlib.metadata as m,json;"
+        f"names={json.dumps(sorted(expected_versions))};"
+        "print(json.dumps({name:m.version(name) for name in names},sort_keys=True))"
+    )
+    inspection = subprocess.run(
+        (str(tool_python), "-I", "-P", "-c", program),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=environment,
+    )
+    try:
+        versions = json.loads(inspection.stdout)
+    except json.JSONDecodeError as error:
+        raise VoiceLabError("reviewed build-tool inspection returned malformed evidence") from error
+    if inspection.returncode != 0 or versions != expected_versions:
+        raise VoiceLabError(
+            "reviewed build-tool environment does not match its hash-locked wheel graph"
+        )
+    return tool_python
+
+
+def _verify_native_toolchain(expected: tuple[ReviewedBuiltWheelLock, ...]) -> None:
+    native = [item for item in expected if item.compiler is not None]
+    if not native:
+        return
+    compiler = subprocess.run(
+        ("/usr/bin/clang", "--version"),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+    )
+    sdk = subprocess.run(
+        ("/usr/bin/xcrun", "--show-sdk-version"),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+    )
+    lines = compiler.stdout.splitlines()
+    if compiler.returncode != 0 or sdk.returncode != 0 or len(lines) < 2:
+        raise VoiceLabError("cannot inspect the reviewed native build toolchain")
+    target = next(
+        (line.removeprefix("Target: ") for line in lines if line.startswith("Target: ")),
+        "",
+    )
+    observed_compiler = f"{lines[0].replace(' version ', ' ')}, {target}"
+    observed_sdk = sdk.stdout.strip()
+    expected_pairs = {(item.compiler, item.sdk_version) for item in native}
+    if expected_pairs != {(observed_compiler, observed_sdk)}:
+        raise VoiceLabError("native compiler or SDK does not match reviewed build evidence")
+
+
+def _build_one(
+    expected: ReviewedBuiltWheelLock,
+    source_archive: Path,
+    build_python: Path,
+    staging: Path,
+) -> Path:
+    source_root = _safe_unpack(source_archive, staging / f"source-{expected.package}")
+    environment = {
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "PIP_NO_INDEX": "1",
+        "PYTHONNOUSERSITE": "1",
+        "TMPDIR": str(staging / "tmp"),
+    }
+    environment.update(expected.build_environment)
+    environment = {
+        key: value.replace("${SOURCE_ROOT}", str(source_root)) for key, value in environment.items()
+    }
+    (staging / "tmp").mkdir(mode=0o700, exist_ok=True)
+    command = (str(build_python), *expected.build_command[1:])
+    completed = subprocess.run(
+        command,
+        cwd=source_root,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=900,
+        env=environment,
+    )
+    if completed.returncode != 0:
+        raise VoiceLabError(
+            f"reviewed wheel build failed for {expected.package}: {completed.stderr.strip()}"
+        )
+    wheel = source_root / "dist" / expected.wheel_filename
+    if not wheel.is_file():
+        raise VoiceLabError(f"reviewed build did not produce {expected.wheel_filename}")
+    digest, size = sha256_file(wheel)
+    if digest != expected.wheel_sha256 or size != expected.wheel_size_bytes:
+        raise VoiceLabError(
+            f"reviewed wheel output mismatch for {expected.package}; got {digest}/{size}"
+        )
+    return wheel
+
+
+def _manifest(runtime: RuntimeLock, registry_sha256: str) -> dict[str, object]:
+    toolchain = runtime.reviewed_build_toolchain
+    if toolchain is None:
+        raise VoiceLabError("reviewed local wheels have no build-toolchain evidence")
+    return {
+        "schema_version": "cole-voice-lab.reviewed-wheelhouse/v1",
+        "runtime_id": runtime.runtime_id,
+        "target_platform": runtime.target_platform,
+        "registry_sha256": registry_sha256,
+        "requirements_sha256": runtime.requirements_sha256,
+        "artifact_lock_sha256": runtime.artifact_lock_sha256,
+        "toolchain": toolchain.model_dump(mode="json"),
+        "wheels": [item.model_dump(mode="json") for item in runtime.reviewed_built_wheels],
+    }
+
+
+def _verify_publication(
+    output: Path,
+    runtime: RuntimeLock,
+    expected_manifest: dict[str, object],
+) -> str:
+    manifest_path = output / "WHEELHOUSE.json"
+    expected_bytes = canonical_json_bytes(expected_manifest) + b"\n"
+    if manifest_path.read_bytes() != expected_bytes:
+        raise VoiceLabError("reviewed wheelhouse manifest is missing, noncanonical, or rebound")
+    verify_reviewed_wheelhouse(runtime, output / "artifacts")
+    digest, _ = sha256_file(manifest_path)
+    return digest
+
+
+def main() -> int:
+    options = _parser().parse_args()
+    registry_path = REPOSITORY_ROOT / "config/model-sources.lock.json"
+    registry = load_registry(
+        REPOSITORY_ROOT / "config/candidates.toml",
+        registry_path,
+    )
+    registry.verify_requirements(REPOSITORY_ROOT)
+    runtime = registry.runtime(options.runtime_id)
+    if not runtime.reviewed_built_wheels:
+        raise VoiceLabError(f"runtime {runtime.runtime_id} has no reviewed local wheels")
+    toolchain = runtime.reviewed_build_toolchain
+    if toolchain is None:
+        raise VoiceLabError(f"runtime {runtime.runtime_id} has no reviewed build toolchain")
+    build_python = _verify_build_python(options.build_python, toolchain)
+    toolchain_wheelhouse = _verify_toolchain_wheelhouse(
+        options.toolchain_wheelhouse,
+        toolchain,
+    )
+    _verify_native_toolchain(runtime.reviewed_built_wheels)
+    registry_sha256, _ = sha256_file(registry_path)
+    manifest = _manifest(runtime, registry_sha256)
+    output = options.output.expanduser().resolve(strict=False)
+    if options.verify_existing:
+        digest = _verify_publication(output, runtime, manifest)
+        print(json.dumps({"status": "pass", "manifest_sha256": digest}, sort_keys=True))
+        return 0
+    preview = {
+        "runtime_id": runtime.runtime_id,
+        "output": str(output),
+        "network_allowed": options.allow_network,
+        "execution_requested": options.execute,
+        "build_python_sha256": toolchain.build_python_sha256,
+        "toolchain_wheelhouse": str(toolchain_wheelhouse),
+        "toolchain_wheels": [item.filename for item in toolchain.tool_wheels],
+        "sources": [item.source_filename for item in runtime.reviewed_built_wheels],
+        "wheels": [item.wheel_filename for item in runtime.reviewed_built_wheels],
+    }
+    if not options.execute:
+        print(json.dumps(preview, sort_keys=True))
+        return 0
+    if output.exists():
+        raise VoiceLabError(f"refusing to replace an existing wheelhouse publication: {output}")
+    assert_disk_floor(output)
+    output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staging_root = Path(tempfile.mkdtemp(prefix=".reviewed-wheelhouse-", dir=output.parent))
+    try:
+        publication = staging_root / "publication"
+        artifacts = publication / "artifacts"
+        artifacts.mkdir(mode=0o700, parents=True)
+        tool_python = _bootstrap_build_toolchain(
+            build_python,
+            toolchain_wheelhouse,
+            toolchain,
+            staging_root,
+        )
+        for expected in runtime.reviewed_built_wheels:
+            source = _obtain_source(
+                expected,
+                options.sdist_dir.expanduser(),
+                staging_root,
+                allow_network=options.allow_network,
+            )
+            wheel = _build_one(expected, source, tool_python, staging_root)
+            destination = artifacts / expected.wheel_filename
+            with wheel.open("rb") as source_stream, destination.open("xb") as output_stream:
+                shutil.copyfileobj(source_stream, output_stream, length=1024 * 1024)
+                output_stream.flush()
+                os.fsync(output_stream.fileno())
+            os.chmod(destination, 0o600)
+        manifest_sha256 = write_canonical_json(publication / "WHEELHOUSE.json", manifest)
+        _verify_publication(publication, runtime, manifest)
+        os.replace(publication, output)
+        print(
+            json.dumps(
+                {
+                    **preview,
+                    "status": "built",
+                    "wheelhouse": str(output / "artifacts"),
+                    "manifest_path": str(output / "WHEELHOUSE.json"),
+                    "manifest_sha256": manifest_sha256,
+                },
+                sort_keys=True,
+            )
+        )
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, subprocess.SubprocessError, VoiceLabError, ValueError) as error:
+        print(f"build-reviewed-wheelhouse: {error}", file=sys.stderr)
+        raise SystemExit(2) from error

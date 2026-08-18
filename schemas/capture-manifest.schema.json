@@ -1,0 +1,265 @@
+{
+  "$defs": {
+    "AudioFileEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "audio": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "enum": [
+            "utterance",
+            "room-tone",
+            "calibration"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "prompt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "transcript": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transcript"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "AudioFileEvidence",
+      "type": "object"
+    },
+    "AudioSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "encoding": {
+          "enum": [
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "maximum": 384000,
+          "minimum": 8000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sample_width_bytes": {
+          "enum": [
+            2,
+            3,
+            4
+          ],
+          "title": "Sample Width Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_rate_hz",
+        "channels",
+        "sample_width_bytes",
+        "encoding",
+        "frames",
+        "duration_seconds"
+      ],
+      "title": "AudioSpec",
+      "type": "object"
+    },
+    "CaptureDevice": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "const": "avfoundation",
+          "default": "avfoundation",
+          "title": "Backend",
+          "type": "string"
+        },
+        "calibration_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "device_id": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Device Id",
+          "type": "string"
+        },
+        "display_name": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "microphone_serial": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Microphone Serial"
+        }
+      },
+      "required": [
+        "device_id",
+        "display_name"
+      ],
+      "title": "CaptureDevice",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "capture_device": {
+      "$ref": "#/$defs/CaptureDevice"
+    },
+    "capture_host": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Capture Host",
+      "type": "string"
+    },
+    "captured_at": {
+      "format": "date-time",
+      "title": "Captured At",
+      "type": "string"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/AudioFileEvidence"
+      },
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "finalized_at": {
+      "format": "date-time",
+      "title": "Finalized At",
+      "type": "string"
+    },
+    "intended_format": {
+      "const": "mono-48000-pcm-s24le",
+      "default": "mono-48000-pcm-s24le",
+      "title": "Intended Format",
+      "type": "string"
+    },
+    "processing_applied": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Processing Applied",
+      "type": "array"
+    },
+    "prompt_suite_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.capture-manifest/v1",
+      "default": "cole-voice-lab.capture-manifest/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "session_id",
+    "subject_id",
+    "prompt_suite_id",
+    "capture_host",
+    "captured_at",
+    "finalized_at",
+    "capture_device",
+    "files"
+  ],
+  "title": "CaptureManifest",
+  "type": "object"
+}

@@ -1,0 +1,78 @@
+{
+  "$defs": {
+    "DatasetSelection": {
+      "additionalProperties": false,
+      "description": "A human-selected accepted utterance and its split/review evidence.",
+      "properties": {
+        "headphone_review_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Headphone Review Path",
+          "type": "string"
+        },
+        "headphone_review_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "raw_manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "split": {
+          "$ref": "#/$defs/DatasetSplit"
+        }
+      },
+      "required": [
+        "raw_manifest_sha256",
+        "prompt_id",
+        "split",
+        "headphone_review_path",
+        "headphone_review_sha256"
+      ],
+      "title": "DatasetSelection",
+      "type": "object"
+    },
+    "DatasetSplit": {
+      "enum": [
+        "train",
+        "validation",
+        "permanent-holdout"
+      ],
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Bounded, versioned operator input for explicit dataset membership.",
+  "properties": {
+    "schema_version": {
+      "const": "cole-voice-lab.dataset-selection/v1",
+      "default": "cole-voice-lab.dataset-selection/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selections": {
+      "items": {
+        "$ref": "#/$defs/DatasetSelection"
+      },
+      "maxItems": 100000,
+      "minItems": 1,
+      "title": "Selections",
+      "type": "array"
+    }
+  },
+  "required": [
+    "selections"
+  ],
+  "title": "DatasetSelectionDocument",
+  "type": "object"
+}

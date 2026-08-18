@@ -1,0 +1,3 @@
+# Replace both placeholders only after checking the receiver and key fingerprint.
+# The source address is Cole's MacBook Air Tailnet address, not the OpenClaw gateway node.
+from="<MACBOOK_AIR_TAILNET_IP>",restrict,command="/opt/homebrew/Cellar/rsync/3.5.0/bin/rrsync -wo -no-del /Users/cole/.local/share/cole-voice-lab/incoming" ssh-ed25519 <DEDICATED_PUBLIC_KEY> cole-voice-lab-intake@coles-macbook-air

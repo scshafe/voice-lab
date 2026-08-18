@@ -1,0 +1,698 @@
+{
+  "$defs": {
+    "CandidateProfileLock": {
+      "additionalProperties": false,
+      "properties": {
+        "auxiliary_source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Auxiliary Source Ids",
+          "type": "array"
+        },
+        "candidate_id": {
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+          "title": "Candidate Id",
+          "type": "string"
+        },
+        "model_source_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "profile": {
+          "enum": [
+            "smoke",
+            "quality"
+          ],
+          "title": "Profile",
+          "type": "string"
+        },
+        "provenance_source_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Provenance Source Ids",
+          "type": "array"
+        },
+        "settings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Settings",
+          "type": "object"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "profile",
+        "model_source_id"
+      ],
+      "title": "CandidateProfileLock",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "PythonRuntimeLock": {
+      "additionalProperties": false,
+      "description": "Host-local byte closure for the base interpreter behind every venv.",
+      "properties": {
+        "build": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Build",
+          "type": "array"
+        },
+        "dependency_prefixes": {
+          "items": {
+            "$ref": "#/$defs/RuntimeDependencyPrefixLock"
+          },
+          "minItems": 5,
+          "title": "Dependency Prefixes",
+          "type": "array"
+        },
+        "executable_relative_path": {
+          "const": "bin/python3.12",
+          "default": "bin/python3.12",
+          "title": "Executable Relative Path",
+          "type": "string"
+        },
+        "executable_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Executable Sha256",
+          "type": "string"
+        },
+        "implementation": {
+          "const": "CPython",
+          "default": "CPython",
+          "title": "Implementation",
+          "type": "string"
+        },
+        "machine": {
+          "const": "arm64",
+          "default": "arm64",
+          "title": "Machine",
+          "type": "string"
+        },
+        "macos_build_version": {
+          "pattern": "^[0-9A-Za-z]+$",
+          "title": "Macos Build Version",
+          "type": "string"
+        },
+        "macos_product_version": {
+          "pattern": "^[0-9]+(?:\\.[0-9]+)+$",
+          "title": "Macos Product Version",
+          "type": "string"
+        },
+        "opt_alias_path": {
+          "const": "/opt/homebrew/opt/python@3.12",
+          "default": "/opt/homebrew/opt/python@3.12",
+          "title": "Opt Alias Path",
+          "type": "string"
+        },
+        "opt_alias_target": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Opt Alias Target",
+          "type": "string"
+        },
+        "prefix_path": {
+          "pattern": "^/opt/homebrew/Cellar/python@3\\.12/.+$",
+          "title": "Prefix Path",
+          "type": "string"
+        },
+        "prefix_tree_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Prefix Tree Sha256",
+          "type": "string"
+        },
+        "system_library_references": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "System Library References",
+          "type": "array"
+        },
+        "version": {
+          "pattern": "^3\\.12\\.[0-9]+$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "build",
+        "macos_product_version",
+        "macos_build_version",
+        "prefix_path",
+        "opt_alias_target",
+        "executable_sha256",
+        "prefix_tree_sha256",
+        "dependency_prefixes",
+        "system_library_references"
+      ],
+      "title": "PythonRuntimeLock",
+      "type": "object"
+    },
+    "ReviewedBuildToolWheelLock": {
+      "additionalProperties": false,
+      "description": "One exact executable wheel used only to build reviewed local wheels.",
+      "properties": {
+        "filename": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Filename",
+          "type": "string"
+        },
+        "package": {
+          "pattern": "^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$",
+          "title": "Package",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "source_url": {
+          "pattern": "^https://files\\.pythonhosted\\.org/.+$",
+          "title": "Source Url",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.+!-]*$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package",
+        "version",
+        "source_url",
+        "filename",
+        "size_bytes",
+        "sha256"
+      ],
+      "title": "ReviewedBuildToolWheelLock",
+      "type": "object"
+    },
+    "ReviewedBuildToolchainLock": {
+      "additionalProperties": false,
+      "description": "Byte identity for the Python and wheels that produce local artifacts.",
+      "properties": {
+        "build_python": {
+          "pattern": "^CPython 3\\.12\\.[0-9]+$",
+          "title": "Build Python",
+          "type": "string"
+        },
+        "build_python_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Build Python Sha256",
+          "type": "string"
+        },
+        "tool_wheels": {
+          "items": {
+            "$ref": "#/$defs/ReviewedBuildToolWheelLock"
+          },
+          "minItems": 1,
+          "title": "Tool Wheels",
+          "type": "array"
+        }
+      },
+      "required": [
+        "build_python",
+        "build_python_sha256",
+        "tool_wheels"
+      ],
+      "title": "ReviewedBuildToolchainLock",
+      "type": "object"
+    },
+    "ReviewedBuiltWheelLock": {
+      "additionalProperties": false,
+      "description": "Exact, separately reviewed wheel built because upstream ships no wheel.",
+      "properties": {
+        "build_command": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 3,
+          "title": "Build Command",
+          "type": "array"
+        },
+        "build_environment": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "minProperties": 4,
+          "title": "Build Environment",
+          "type": "object"
+        },
+        "build_python": {
+          "pattern": "^CPython 3\\.12\\.[0-9]+$",
+          "title": "Build Python",
+          "type": "string"
+        },
+        "compiler": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Compiler"
+        },
+        "package": {
+          "pattern": "^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$",
+          "title": "Package",
+          "type": "string"
+        },
+        "sdk_version": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9]+(?:\\.[0-9]+)+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sdk Version"
+        },
+        "setuptools_version": {
+          "pattern": "^[0-9]+(?:\\.[0-9]+)+$",
+          "title": "Setuptools Version",
+          "type": "string"
+        },
+        "source_date_epoch": {
+          "minimum": 315532800,
+          "title": "Source Date Epoch",
+          "type": "integer"
+        },
+        "source_filename": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Source Filename",
+          "type": "string"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "source_size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Source Size Bytes",
+          "type": "integer"
+        },
+        "source_url": {
+          "pattern": "^https://files\\.pythonhosted\\.org/.+$",
+          "title": "Source Url",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.+!-]*$",
+          "title": "Version",
+          "type": "string"
+        },
+        "wheel_filename": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Wheel Filename",
+          "type": "string"
+        },
+        "wheel_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Wheel Sha256",
+          "type": "string"
+        },
+        "wheel_size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Wheel Size Bytes",
+          "type": "integer"
+        },
+        "wheel_version": {
+          "pattern": "^[0-9]+(?:\\.[0-9]+)+$",
+          "title": "Wheel Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package",
+        "version",
+        "source_url",
+        "source_filename",
+        "source_size_bytes",
+        "source_sha256",
+        "wheel_filename",
+        "wheel_size_bytes",
+        "wheel_sha256",
+        "build_python",
+        "setuptools_version",
+        "wheel_version",
+        "source_date_epoch",
+        "build_command",
+        "build_environment"
+      ],
+      "title": "ReviewedBuiltWheelLock",
+      "type": "object"
+    },
+    "RuntimeDependencyPrefixLock": {
+      "additionalProperties": false,
+      "description": "One exact non-system formula tree in the CPython runtime closure.",
+      "properties": {
+        "formula": {
+          "pattern": "^[A-Za-z0-9@+._-]+$",
+          "title": "Formula",
+          "type": "string"
+        },
+        "opt_alias_path": {
+          "pattern": "^/opt/homebrew/opt/.+$",
+          "title": "Opt Alias Path",
+          "type": "string"
+        },
+        "opt_alias_target": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Opt Alias Target",
+          "type": "string"
+        },
+        "prefix_path": {
+          "pattern": "^/opt/homebrew/Cellar/.+$",
+          "title": "Prefix Path",
+          "type": "string"
+        },
+        "tree_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Tree Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "formula",
+        "prefix_path",
+        "opt_alias_path",
+        "opt_alias_target",
+        "tree_sha256"
+      ],
+      "title": "RuntimeDependencyPrefixLock",
+      "type": "object"
+    },
+    "RuntimeLock": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_lock_path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Artifact Lock Path",
+          "type": "string"
+        },
+        "artifact_lock_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Artifact Lock Sha256",
+          "type": "string"
+        },
+        "code_source_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "estimated_install_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Estimated Install Bytes",
+          "type": "integer"
+        },
+        "packages": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "minProperties": 1,
+          "title": "Packages",
+          "type": "object"
+        },
+        "python_runtime": {
+          "$ref": "#/$defs/PythonRuntimeLock"
+        },
+        "python_version": {
+          "pattern": "^[0-9]+\\.[0-9]+$",
+          "title": "Python Version",
+          "type": "string"
+        },
+        "requirements_path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Requirements Path",
+          "type": "string"
+        },
+        "requirements_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Requirements Sha256",
+          "type": "string"
+        },
+        "reviewed_build_toolchain": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewedBuildToolchainLock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reviewed_built_wheels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewedBuiltWheelLock"
+          },
+          "title": "Reviewed Built Wheels",
+          "type": "array"
+        },
+        "runtime_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "sanitized_files": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RuntimeSanitizedFileLock"
+          },
+          "title": "Sanitized Files",
+          "type": "array"
+        },
+        "target_platform": {
+          "const": "cpython-3.12-macos-arm64",
+          "title": "Target Platform",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime_id",
+        "python_version",
+        "target_platform",
+        "requirements_path",
+        "requirements_sha256",
+        "artifact_lock_path",
+        "artifact_lock_sha256",
+        "estimated_install_bytes",
+        "packages",
+        "python_runtime",
+        "code_source_id"
+      ],
+      "title": "RuntimeLock",
+      "type": "object"
+    },
+    "RuntimeSanitizedFileLock": {
+      "additionalProperties": false,
+      "description": "One reviewed executable startup file removed before runtime imports.",
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "reason": {
+          "const": "executable-pth",
+          "default": "executable-pth",
+          "title": "Reason",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "RuntimeSanitizedFileLock",
+      "type": "object"
+    },
+    "SourceFileLock": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "size_bytes"
+      ],
+      "title": "SourceFileLock",
+      "type": "object"
+    },
+    "SourceLock": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_patterns": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allow Patterns",
+          "type": "array"
+        },
+        "files": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SourceFileLock"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "git",
+            "huggingface"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "license": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "License",
+          "type": "string"
+        },
+        "repository": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Repository",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "source_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "source_id",
+        "kind",
+        "repository",
+        "revision",
+        "license"
+      ],
+      "title": "SourceLock",
+      "type": "object"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "profiles": {
+      "items": {
+        "$ref": "#/$defs/CandidateProfileLock"
+      },
+      "minItems": 1,
+      "title": "Profiles",
+      "type": "array"
+    },
+    "resolved_at": {
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "title": "Resolved At",
+      "type": "string"
+    },
+    "runtimes": {
+      "items": {
+        "$ref": "#/$defs/RuntimeLock"
+      },
+      "minItems": 1,
+      "title": "Runtimes",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.model-sources-lock/v1",
+      "default": "cole-voice-lab.model-sources-lock/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/SourceLock"
+      },
+      "minItems": 1,
+      "title": "Sources",
+      "type": "array"
+    }
+  },
+  "required": [
+    "resolved_at",
+    "sources",
+    "runtimes",
+    "profiles"
+  ],
+  "title": "ModelSourcesLock",
+  "type": "object"
+}

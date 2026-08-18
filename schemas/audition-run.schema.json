@@ -1,0 +1,114 @@
+{
+  "$defs": {
+    "RunResultPointer": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "title": "Candidate Id",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "worker-failed",
+            "normalization-failed"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "request_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Request Sha256",
+          "type": "string"
+        },
+        "result_path": {
+          "title": "Result Path",
+          "type": "string"
+        },
+        "result_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Result Sha256",
+          "type": "string"
+        },
+        "trial_id": {
+          "title": "Trial Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trial_id",
+        "candidate_id",
+        "request_sha256",
+        "outcome",
+        "result_path",
+        "result_sha256"
+      ],
+      "title": "RunResultPointer",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "direct_candidate_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Direct Candidate Ids",
+      "type": "array"
+    },
+    "experiment_id": {
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "plan_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Plan Sha256",
+      "type": "string"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/RunResultPointer"
+      },
+      "title": "Results",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.audition-run/v1",
+      "default": "cole-voice-lab.audition-run/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "in-progress",
+        "complete",
+        "complete-with-failures"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    },
+    "voice_conversion_candidate_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Voice Conversion Candidate Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "experiment_id",
+    "plan_sha256",
+    "updated_at",
+    "status",
+    "direct_candidate_ids",
+    "voice_conversion_candidate_ids",
+    "results"
+  ],
+  "title": "AuditionRunManifest",
+  "type": "object"
+}

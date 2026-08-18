@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""Seal a non-editable, content-addressed mini install for launchd use."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import secrets
+import stat
+import zipfile
+from pathlib import Path, PurePosixPath
+
+SCHEMA_VERSION = "cole-voice-lab.mini-install-receipt/v2"
+TREE_SCHEMA_VERSION = "cole-voice-lab.mini-install-tree/v1"
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+RECEIPT_NAME = "INSTALL_RECEIPT.json"
+MAX_ENTRYPOINT_BYTES = 64 * 1024
+PYTHON_LAUNCHER_NAME = re.compile(r"^python(?:3(?:\.\d+)?)?$")
+
+
+def _canonical_sha256(value: object) -> str:
+    payload = json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _absolute_without_symlinks(path: Path, label: str) -> Path:
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be absolute")
+    absolute = Path(os.path.abspath(path))
+    cursor = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        cursor /= component
+        metadata = os.lstat(cursor)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"{label} contains a symlink component: {cursor}")
+    return absolute
+
+
+def _owned_directory(path: Path, label: str) -> Path:
+    absolute = _absolute_without_symlinks(path, label)
+    metadata = os.lstat(absolute)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"{label} must be a real directory")
+    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise ValueError(f"{label} must be user-owned and not group/world writable")
+    return absolute
+
+
+def _file_digest(path: Path, label: str, *, executable: bool = False) -> tuple[str, int]:
+    absolute = _absolute_without_symlinks(path, label)
+    metadata = os.lstat(absolute)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise ValueError(f"{label} must be one regular non-hardlinked file")
+    mode = stat.S_IMODE(metadata.st_mode)
+    if metadata.st_uid != os.getuid() or mode & 0o022:
+        raise ValueError(f"{label} must be user-owned and not group/world writable")
+    if executable and (not mode & 0o100 or not os.access(absolute, os.X_OK)):
+        raise ValueError(f"{label} must be owner-executable")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(absolute, flags)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        before = os.fstat(descriptor)
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    if identity_before != identity_after or size != after.st_size or after.st_nlink != 1:
+        raise ValueError(f"{label} changed while it was being hashed")
+    return digest.hexdigest(), size
+
+
+def _external_runtime_digest(path: Path) -> tuple[Path, str, int]:
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"cannot resolve installed Python runtime: {error}") from error
+    metadata = os.lstat(resolved)
+    if not stat.S_ISREG(metadata.st_mode) or not os.access(resolved, os.X_OK):
+        raise ValueError("installed Python runtime must resolve to a regular executable")
+    if stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise ValueError("installed Python runtime must not be group/world writable")
+    descriptor = os.open(resolved, os.O_RDONLY)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        before = os.fstat(descriptor)
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    if identity_before != identity_after or size != after.st_size:
+        raise ValueError("installed Python runtime changed while it was being hashed")
+    return resolved, digest.hexdigest(), size
+
+
+def _runtime_symlink_entry(
+    path: Path,
+    relative: str,
+    *,
+    release: Path,
+    runtime_resolved: Path,
+) -> dict[str, object]:
+    metadata = os.lstat(path)
+    if metadata.st_uid != os.getuid():
+        raise ValueError(f"release symlink must be user-owned: {relative}")
+    if path.parent != release / "bin" or PYTHON_LAUNCHER_NAME.fullmatch(path.name) is None:
+        raise ValueError(
+            f"release symlink is forbidden outside the Python launcher set: {relative}"
+        )
+    try:
+        actual_resolved = path.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"cannot resolve Python launcher symlink {relative}: {error}") from error
+    if actual_resolved != runtime_resolved:
+        raise ValueError(
+            f"Python launcher symlink does not resolve to the sealed runtime: {relative}"
+        )
+    return {"kind": "symlink", "path": relative, "target": os.readlink(path)}
+
+
+def _tree_evidence(release: Path, *, runtime_resolved: Path) -> dict[str, object]:
+    entries: list[dict[str, object]] = []
+    for directory, names, files in os.walk(release, topdown=True, followlinks=False):
+        base = Path(directory)
+        kept_directories: list[str] = []
+        for name in sorted(names):
+            path = base / name
+            relative = path.relative_to(release).as_posix()
+            metadata = os.lstat(path)
+            if stat.S_ISLNK(metadata.st_mode):
+                entries.append(
+                    _runtime_symlink_entry(
+                        path,
+                        relative,
+                        release=release,
+                        runtime_resolved=runtime_resolved,
+                    )
+                )
+                continue
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError(f"unsupported release entry type: {relative}")
+            mode = stat.S_IMODE(metadata.st_mode)
+            if metadata.st_uid != os.getuid() or mode & 0o022:
+                raise ValueError(
+                    f"release directory must be user-owned and not group/world writable: {relative}"
+                )
+            entries.append({"kind": "directory", "mode": mode, "path": relative})
+            kept_directories.append(name)
+        names[:] = kept_directories
+
+        for name in sorted(files):
+            path = base / name
+            relative = path.relative_to(release).as_posix()
+            if relative == RECEIPT_NAME:
+                continue
+            if relative.startswith(f".{RECEIPT_NAME}.tmp-"):
+                raise ValueError("stale install-receipt temporary file is forbidden")
+            metadata = os.lstat(path)
+            if stat.S_ISLNK(metadata.st_mode):
+                entries.append(
+                    _runtime_symlink_entry(
+                        path,
+                        relative,
+                        release=release,
+                        runtime_resolved=runtime_resolved,
+                    )
+                )
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError(f"unsupported release entry type: {relative}")
+            digest, size = _file_digest(path, f"release file {relative}")
+            entries.append(
+                {
+                    "kind": "file",
+                    "mode": stat.S_IMODE(metadata.st_mode),
+                    "path": relative,
+                    "sha256": digest,
+                    "size_bytes": size,
+                }
+            )
+
+    entries.sort(key=lambda item: str(item["path"]))
+    return {
+        "schema_version": TREE_SCHEMA_VERSION,
+        "entry_count": len(entries),
+        "sha256": _canonical_sha256(entries),
+    }
+
+
+def _reject_editable_install(release: Path) -> None:
+    for direct_url in release.rglob("direct_url.json"):
+        try:
+            value = json.loads(direct_url.read_bytes())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"cannot validate install metadata {direct_url}: {error}") from error
+        if (
+            isinstance(value, dict)
+            and isinstance(value.get("dir_info"), dict)
+            and value["dir_info"].get("editable") is True
+        ):
+            raise ValueError(f"editable Python installation is forbidden: {direct_url}")
+    for path_file in release.rglob("*.pth"):
+        try:
+            payload = path_file.read_text(encoding="utf-8", errors="strict").lower()
+        except (OSError, UnicodeDecodeError) as error:
+            raise ValueError(f"cannot validate Python path file {path_file}: {error}") from error
+        if "__editable__" in payload or "/projects/cole-voice-lab" in payload:
+            raise ValueError(f"editable or checkout-backed Python path is forbidden: {path_file}")
+
+
+def _safe_wheel_members(wheel: Path) -> dict[str, tuple[str, int]]:
+    try:
+        archive = zipfile.ZipFile(wheel)
+    except zipfile.BadZipFile as error:
+        raise ValueError("application wheel is not a valid ZIP archive") from error
+    members: dict[str, tuple[str, int]] = {}
+    seen: set[str] = set()
+    with archive:
+        for member in archive.infolist():
+            name = member.filename
+            path = PurePosixPath(name)
+            if (
+                not name
+                or path.is_absolute()
+                or "\\" in name
+                or any(part in {"", ".", ".."} for part in path.parts)
+                or path.as_posix() != name.rstrip("/")
+            ):
+                raise ValueError(f"application wheel contains an unsafe member: {name!r}")
+            if name in seen:
+                raise ValueError(f"application wheel contains a duplicate member: {name!r}")
+            seen.add(name)
+            member_mode = member.external_attr >> 16
+            if stat.S_ISLNK(member_mode):
+                raise ValueError(f"application wheel contains a symlink: {name}")
+            if member.is_dir():
+                continue
+            if path.parts[0] != "cole_voice_lab":
+                continue
+            payload = archive.read(member)
+            members[path.as_posix()] = (hashlib.sha256(payload).hexdigest(), len(payload))
+    if "cole_voice_lab/__init__.py" not in members:
+        raise ValueError("application wheel does not contain the cole_voice_lab package")
+    return members
+
+
+def _validate_installed_application(wheel: Path, release: Path) -> None:
+    expected = _safe_wheel_members(wheel)
+    candidates = sorted(release.glob("lib/python*/site-packages/cole_voice_lab"))
+    if len(candidates) != 1:
+        raise ValueError("release must contain exactly one installed cole_voice_lab package")
+    package_root = _absolute_without_symlinks(candidates[0], "installed application package")
+    actual: dict[str, tuple[str, int]] = {}
+    for directory, names, files in os.walk(package_root, topdown=True, followlinks=False):
+        base = Path(directory)
+        if base.name == "__pycache__":
+            if any(not name.endswith(".pyc") for name in files) or names:
+                raise ValueError("installed application __pycache__ contains unexpected entries")
+            names[:] = []
+            continue
+        for name in names:
+            metadata = os.lstat(base / name)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError("installed application contains an unsafe directory entry")
+        for name in files:
+            path = base / name
+            metadata = os.lstat(path)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("installed application contains an unsafe file entry")
+            relative = f"cole_voice_lab/{path.relative_to(package_root).as_posix()}"
+            actual[relative] = _file_digest(path, f"installed application file {relative}")
+    if actual != expected:
+        raise ValueError(
+            "installed cole_voice_lab package bytes do not match the application wheel"
+        )
+
+
+def _runtime_evidence(executable: Path, release: Path) -> dict[str, object]:
+    if executable.stat().st_size > MAX_ENTRYPOINT_BYTES:
+        raise ValueError("voice-lab executable exceeds 64 KiB")
+    payload = executable.read_bytes()
+    try:
+        lines = payload.decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
+        raise ValueError("voice-lab executable must be UTF-8 text") from error
+    if not lines or not lines[0].startswith("#!"):
+        raise ValueError("voice-lab executable must contain an absolute Python shebang")
+    interpreter_text = lines[0][2:]
+    if not interpreter_text or any(character.isspace() for character in interpreter_text):
+        raise ValueError("voice-lab executable shebang must name one interpreter without arguments")
+    interpreter = Path(interpreter_text)
+    if not interpreter.is_absolute() or interpreter.parent != release / "bin":
+        raise ValueError("voice-lab executable must use the sealed release Python interpreter")
+    if "from cole_voice_lab.cli import main" not in lines:
+        raise ValueError("voice-lab executable does not import the sealed application entry point")
+    resolved, digest, size = _external_runtime_digest(interpreter)
+    return {
+        "launcher_path": str(interpreter),
+        "resolved_path": str(resolved),
+        "sha256": digest,
+        "size_bytes": size,
+    }
+
+
+def _write_receipt(path: Path, record: dict[str, object]) -> str:
+    payload = (
+        json.dumps(
+            record,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()
+    if path.exists():
+        existing_digest, _ = _file_digest(path, "existing install receipt")
+        if existing_digest != digest or path.read_bytes() != payload:
+            raise ValueError("an incompatible install receipt already exists")
+        return digest
+    temporary = path.parent / f".{path.name}.tmp-{secrets.token_hex(8)}"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+        parent = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return digest
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--release", type=Path, required=True)
+    parser.add_argument("--wheel", type=Path, required=True)
+    parser.add_argument("--expected-wheel-sha256", required=True)
+    options = parser.parse_args(argv)
+    try:
+        if SHA256.fullmatch(options.expected_wheel_sha256) is None:
+            raise ValueError("expected wheel SHA-256 must be 64 lowercase hexadecimal characters")
+        release = _owned_directory(options.release, "release directory")
+        if release.name != options.expected_wheel_sha256 or release.parent.name != "releases":
+            raise ValueError("release must be the content-addressed releases/<wheel-sha256> path")
+        wheel = _absolute_without_symlinks(options.wheel, "application wheel")
+        wheel_sha256, _ = _file_digest(wheel, "application wheel")
+        if wheel_sha256 != options.expected_wheel_sha256:
+            raise ValueError("application wheel SHA-256 mismatch")
+        executable = release / "bin" / "voice-lab"
+        executable_sha256, executable_size = _file_digest(
+            executable,
+            "voice-lab executable",
+            executable=True,
+        )
+        _reject_editable_install(release)
+        _validate_installed_application(wheel, release)
+        python_runtime = _runtime_evidence(executable, release)
+        install_tree = _tree_evidence(
+            release,
+            runtime_resolved=Path(str(python_runtime["resolved_path"])),
+        )
+        receipt = release / RECEIPT_NAME
+        receipt_sha256 = _write_receipt(
+            receipt,
+            {
+                "distribution": "cole-voice-lab",
+                "editable": False,
+                "executable": {
+                    "path": str(executable),
+                    "sha256": executable_sha256,
+                    "size_bytes": executable_size,
+                },
+                "install_tree": install_tree,
+                "python_runtime": python_runtime,
+                "release_root": str(release),
+                "schema_version": SCHEMA_VERSION,
+                "wheel_sha256": wheel_sha256,
+            },
+        )
+    except (FileNotFoundError, OSError, ValueError) as error:
+        parser.error(str(error))
+    print(receipt)
+    print(receipt_sha256)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

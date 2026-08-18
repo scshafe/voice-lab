@@ -1,0 +1,82 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "cole_voice_lab__datasets__NonBlank__1": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "cole_voice_lab__datasets__NonBlank__2": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Separate human evidence authorizing work beyond the capture pilot.",
+  "properties": {
+    "approved": {
+      "const": true,
+      "title": "Approved",
+      "type": "boolean"
+    },
+    "approved_at": {
+      "format": "date-time",
+      "title": "Approved At",
+      "type": "string"
+    },
+    "approved_by": {
+      "$ref": "#/$defs/cole_voice_lab__datasets__NonBlank__1"
+    },
+    "full_corpus_capture_allowed": {
+      "const": true,
+      "title": "Full Corpus Capture Allowed",
+      "type": "boolean"
+    },
+    "gate_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "headphone_review_completed": {
+      "const": true,
+      "title": "Headphone Review Completed",
+      "type": "boolean"
+    },
+    "pilot_manifest_sha256s": {
+      "items": {
+        "$ref": "#/$defs/Sha256"
+      },
+      "minItems": 1,
+      "title": "Pilot Manifest Sha256S",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.pilot-gate/v1",
+      "default": "cole-voice-lab.pilot-gate/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "statement": {
+      "$ref": "#/$defs/cole_voice_lab__datasets__NonBlank__2"
+    }
+  },
+  "required": [
+    "gate_id",
+    "pilot_manifest_sha256s",
+    "approved",
+    "headphone_review_completed",
+    "full_corpus_capture_allowed",
+    "approved_at",
+    "approved_by",
+    "statement"
+  ],
+  "title": "PilotGateApproval",
+  "type": "object"
+}

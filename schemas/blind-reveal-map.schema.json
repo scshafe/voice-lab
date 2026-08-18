@@ -1,0 +1,141 @@
+{
+  "$defs": {
+    "BlindId": {
+      "pattern": "^sample-[0-9a-f]{16}$",
+      "type": "string"
+    },
+    "CandidateId": {
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "RevealEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "blind_id": {
+          "$ref": "#/$defs/BlindId"
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/CandidateId"
+        },
+        "experiment_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "output_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "plan_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "request_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "result_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "run_manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "seed": {
+          "title": "Seed",
+          "type": "integer"
+        },
+        "source_audio_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timing_mode": {
+          "enum": [
+            "cold",
+            "warm"
+          ],
+          "title": "Timing Mode",
+          "type": "string"
+        },
+        "track": {
+          "enum": [
+            "direct-tts",
+            "voice-conversion"
+          ],
+          "title": "Track",
+          "type": "string"
+        },
+        "trial_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "blind_id",
+        "experiment_id",
+        "trial_id",
+        "candidate_id",
+        "track",
+        "prompt_id",
+        "output_sha256",
+        "seed",
+        "timing_mode",
+        "reference_sha256",
+        "request_sha256",
+        "plan_sha256",
+        "run_manifest_sha256",
+        "result_sha256"
+      ],
+      "title": "RevealEntry",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/RevealEntry"
+      },
+      "minItems": 1,
+      "title": "Entries",
+      "type": "array"
+    },
+    "key_hex": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Key Hex",
+      "type": "string"
+    },
+    "review_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.blind-reveal/v1",
+      "default": "cole-voice-lab.blind-reveal/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "review_id",
+    "key_hex",
+    "entries"
+  ],
+  "title": "RevealMap",
+  "type": "object"
+}

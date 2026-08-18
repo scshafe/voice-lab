@@ -1,0 +1,184 @@
+{
+  "$defs": {
+    "CandidateId": {
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "ListeningCandidateSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/CandidateId"
+        },
+        "means": {
+          "$ref": "#/$defs/ListeningDimensionMeans"
+        },
+        "overall_mean": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Overall Mean",
+          "type": "number"
+        },
+        "sample_count": {
+          "exclusiveMinimum": 0,
+          "title": "Sample Count",
+          "type": "integer"
+        },
+        "track": {
+          "enum": [
+            "direct-tts",
+            "voice-conversion"
+          ],
+          "title": "Track",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "track",
+        "sample_count",
+        "means",
+        "overall_mean"
+      ],
+      "title": "ListeningCandidateSummary",
+      "type": "object"
+    },
+    "ListeningDimensionMeans": {
+      "additionalProperties": false,
+      "description": "The complete fixed listening rubric for one candidate.",
+      "properties": {
+        "artifact_freedom": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Artifact Freedom",
+          "type": "number"
+        },
+        "intelligibility": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Intelligibility",
+          "type": "number"
+        },
+        "likeness": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Likeness",
+          "type": "number"
+        },
+        "naturalness": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Naturalness",
+          "type": "number"
+        },
+        "prosody": {
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Prosody",
+          "type": "number"
+        }
+      },
+      "required": [
+        "likeness",
+        "naturalness",
+        "prosody",
+        "intelligibility",
+        "artifact_freedom"
+      ],
+      "title": "ListeningDimensionMeans",
+      "type": "object"
+    },
+    "ListeningSummaryAggregate": {
+      "additionalProperties": false,
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.listening-summary/v1",
+          "default": "cole-voice-lab.listening-summary/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tracks": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ListeningTrackSummary"
+          },
+          "minProperties": 1,
+          "propertyNames": {
+            "enum": [
+              "direct-tts",
+              "voice-conversion"
+            ]
+          },
+          "title": "Tracks",
+          "type": "object"
+        }
+      },
+      "required": [
+        "review_id",
+        "tracks"
+      ],
+      "title": "ListeningSummaryAggregate",
+      "type": "object"
+    },
+    "ListeningTrackSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/ListeningCandidateSummary"
+          },
+          "minItems": 1,
+          "title": "Candidates",
+          "type": "array"
+        }
+      },
+      "required": [
+        "candidates"
+      ],
+      "title": "ListeningTrackSummary",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Digest-bound aggregate whose inputs are named explicitly.",
+  "properties": {
+    "aggregate": {
+      "$ref": "#/$defs/ListeningSummaryAggregate"
+    },
+    "blind_package_manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "review_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.promotion-listening-summary/v1",
+      "default": "cole-voice-lab.promotion-listening-summary/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "score_sheet_sha256": {
+      "$ref": "#/$defs/Sha256"
+    }
+  },
+  "required": [
+    "review_id",
+    "blind_package_manifest_sha256",
+    "score_sheet_sha256",
+    "aggregate"
+  ],
+  "title": "PromotionListeningSummaryRecord",
+  "type": "object"
+}

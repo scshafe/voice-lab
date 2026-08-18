@@ -1,0 +1,773 @@
+#!/bin/sh
+set -eu
+
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+python_bin=/opt/homebrew/bin/python3.12
+build_artifact_lock="$repo_dir/requirements/capture-kit-build.artifacts.txt"
+runtime_artifact_lock="$repo_dir/requirements/capture-kit-runtime.artifacts.txt"
+
+build_version=1.5.0
+setuptools_version=80.9.0
+wheel_version=0.46.3
+packaging_version=26.3
+pyproject_hooks_version=1.2.0
+
+output_dir="$repo_dir/dist/capture-kit"
+wheelhouse=
+allow_network=0
+replace_output=0
+legacy_output_seen=0
+
+usage() {
+  cat <<EOF
+usage: $0 [--output DIR] [--wheelhouse DIR | --allow-network] [--replace]
+
+By default this command is offline and requires a pre-populated wheelhouse.
+--allow-network explicitly permits installing the pinned build toolchain and
+downloading the pinned runtime wheels. --replace only replaces an existing
+directory that already looks like a generated capture kit.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output)
+      [ "$#" -ge 2 ] || { usage >&2; exit 64; }
+      output_dir=$2
+      shift 2
+      ;;
+    --wheelhouse)
+      [ "$#" -ge 2 ] || { usage >&2; exit 64; }
+      wheelhouse=$2
+      shift 2
+      ;;
+    --allow-network)
+      allow_network=1
+      shift
+      ;;
+    --replace)
+      replace_output=1
+      shift
+      ;;
+    -h|--help)
+      [ "$#" -eq 1 ] || { usage >&2; exit 64; }
+      usage
+      exit 0
+      ;;
+    --*)
+      printf 'unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 64
+      ;;
+    *)
+      # Preserve the original one-positional-output interface.
+      [ "$legacy_output_seen" -eq 0 ] || { usage >&2; exit 64; }
+      output_dir=$1
+      legacy_output_seen=1
+      shift
+      ;;
+  esac
+done
+
+if [ -n "$wheelhouse" ] && [ "$allow_network" -eq 1 ]; then
+  printf '%s\n' '--wheelhouse and --allow-network are mutually exclusive' >&2
+  exit 64
+fi
+if [ -z "$wheelhouse" ] && [ "$allow_network" -ne 1 ]; then
+  printf '%s\n' 'offline mode requires --wheelhouse DIR; network access requires --allow-network' >&2
+  exit 64
+fi
+[ -x "$python_bin" ] || {
+  printf 'missing pinned build Python: %s\n' "$python_bin" >&2
+  exit 69
+}
+for artifact_lock in "$build_artifact_lock" "$runtime_artifact_lock"; do
+  [ -f "$artifact_lock" ] && [ ! -L "$artifact_lock" ] || {
+    printf 'missing regular capture-kit artifact lock: %s\n' "$artifact_lock" >&2
+    exit 69
+  }
+done
+
+output_dir=$(
+  "$python_bin" - "$output_dir" "$replace_output" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+raw = sys.argv[1]
+replace = sys.argv[2] == "1"
+if not raw or any(ord(character) < 32 for character in raw):
+    raise SystemExit("output path must be non-empty and contain no control characters")
+output = Path(os.path.abspath(os.path.expanduser(raw)))
+home = Path.home().resolve(strict=True)
+if output in {Path("/"), home}:
+    raise SystemExit("refusing dangerously broad capture-kit output path")
+
+parent = output.parent
+parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+cursor = Path(parent.anchor)
+for component in parent.parts[1:]:
+    cursor /= component
+    metadata = os.lstat(cursor)
+    if stat.S_ISLNK(metadata.st_mode):
+        raise SystemExit(f"output parent contains a symlink: {cursor}")
+if not stat.S_ISDIR(os.lstat(parent).st_mode):
+    raise SystemExit("output parent must be a real directory")
+
+if output.exists() or output.is_symlink():
+    metadata = os.lstat(output)
+    if not replace:
+        raise SystemExit("output already exists; pass --replace for a generated capture kit")
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit("refusing to replace a non-directory or symlink output")
+    for required in ("BUNDLE.json", "SHA256SUMS", "macbook-bootstrap"):
+        candidate = output / required
+        candidate_metadata = os.lstat(candidate)
+        if not stat.S_ISREG(candidate_metadata.st_mode) or stat.S_ISLNK(
+            candidate_metadata.st_mode
+        ):
+            raise SystemExit("refusing to replace a directory that is not a capture kit")
+print(output)
+PY
+)
+output_parent=$(dirname -- "$output_dir")
+
+if [ -n "$wheelhouse" ]; then
+  wheelhouse=$(CDPATH= cd -- "$wheelhouse" && pwd) || {
+    printf 'wheelhouse must be an existing directory: %s\n' "$wheelhouse" >&2
+    exit 66
+  }
+fi
+
+work_dir=$(mktemp -d "$output_parent/.capture-kit.work.XXXXXX")
+cleanup() {
+  if [ -n "${work_dir:-}" ] && [ -d "$work_dir" ]; then
+    "$python_bin" - "$work_dir" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+work = Path(sys.argv[1])
+if work.name.startswith(".capture-kit.work.") and work.parent.is_dir():
+    shutil.rmtree(work)
+PY
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+toolchain_dir="$work_dir/build-tools"
+"$python_bin" -m venv "$toolchain_dir"
+toolchain_python="$toolchain_dir/bin/python"
+
+check_build_toolchain() {
+  "$toolchain_python" - \
+    "$build_version" \
+    "$setuptools_version" \
+    "$wheel_version" \
+    "$packaging_version" \
+    "$pyproject_hooks_version" <<'PY'
+from importlib.metadata import PackageNotFoundError, version
+import sys
+
+if sys.version_info[:2] != (3, 12):
+    raise SystemExit(f"capture-kit builds require Python 3.12, found {sys.version.split()[0]}")
+
+expected = {
+    "build": sys.argv[1],
+    "setuptools": sys.argv[2],
+    "wheel": sys.argv[3],
+    "packaging": sys.argv[4],
+    "pyproject-hooks": sys.argv[5],
+}
+problems = []
+for distribution, pinned in expected.items():
+    try:
+        installed = version(distribution)
+    except PackageNotFoundError:
+        problems.append(f"{distribution} is missing (expected {pinned})")
+    else:
+        if installed != pinned:
+            problems.append(f"{distribution}=={installed} (expected {pinned})")
+if problems:
+    raise SystemExit("pinned build toolchain mismatch: " + "; ".join(problems))
+PY
+}
+
+if [ "$allow_network" -eq 1 ]; then
+  "$toolchain_python" -m pip install \
+    --disable-pip-version-check \
+    --only-binary=:all: \
+    --no-deps \
+    --require-hashes \
+    -r "$build_artifact_lock"
+else
+  "$toolchain_python" -m pip install \
+    --disable-pip-version-check \
+    --no-index \
+    --find-links "$wheelhouse" \
+    --only-binary=:all: \
+    --no-deps \
+    --require-hashes \
+    -r "$build_artifact_lock"
+fi
+check_build_toolchain
+
+build_dir="$work_dir/build"
+bundle_dir="$work_dir/bundle"
+mkdir -m 700 "$build_dir" "$bundle_dir"
+
+"$toolchain_python" -m build \
+  --no-isolation \
+  --wheel \
+  --outdir "$build_dir" \
+  "$repo_dir"
+
+set -- "$build_dir"/cole_voice_lab-*.whl
+[ "$#" -eq 1 ] && [ -f "$1" ] || {
+  printf '%s\n' 'build did not produce exactly one cole_voice_lab wheel' >&2
+  exit 65
+}
+application_wheel=$1
+cp "$application_wheel" "$bundle_dir/"
+
+if [ "$allow_network" -eq 1 ]; then
+  download_mode=network
+  "$toolchain_python" -m pip download \
+    --disable-pip-version-check \
+    --only-binary=:all: \
+    --no-deps \
+    --require-hashes \
+    --dest "$bundle_dir" \
+    -r "$runtime_artifact_lock"
+else
+  download_mode=offline-wheelhouse
+  "$toolchain_python" -m pip download \
+    --disable-pip-version-check \
+    --no-index \
+    --find-links "$wheelhouse" \
+    --only-binary=:all: \
+    --no-deps \
+    --require-hashes \
+    --dest "$bundle_dir" \
+    -r "$runtime_artifact_lock"
+fi
+
+cp "$repo_dir/scripts/macbook-bootstrap" "$bundle_dir/macbook-bootstrap"
+cp "$repo_dir/config/site.example.toml" "$bundle_dir/site.example.toml"
+chmod 700 "$bundle_dir/macbook-bootstrap"
+
+"$python_bin" - \
+  "$bundle_dir" \
+  "$download_mode" \
+  "$build_version" \
+  "$setuptools_version" \
+  "$wheel_version" \
+  "$packaging_version" \
+  "$pyproject_hooks_version" \
+  "$build_artifact_lock" \
+  "$runtime_artifact_lock" <<'PY'
+import hashlib
+import json
+import os
+import platform
+import re
+import stat
+import subprocess
+import sys
+import sysconfig
+import zipfile
+from email.parser import BytesParser
+from email.policy import default
+from pathlib import Path
+
+bundle = Path(sys.argv[1])
+download_mode = sys.argv[2]
+build_pins = {
+    "build": sys.argv[3],
+    "setuptools": sys.argv[4],
+    "wheel": sys.argv[5],
+    "packaging": sys.argv[6],
+    "pyproject-hooks": sys.argv[7],
+}
+build_artifact_lock = Path(sys.argv[8])
+runtime_artifact_lock = Path(sys.argv[9])
+expected_dependencies = {
+    "annotated-types": "0.8.0",
+    "pydantic": "2.13.4",
+    "pydantic-core": "2.46.4",
+    "typing-extensions": "4.16.0",
+    "typing-inspection": "0.4.4",
+}
+
+
+def normalize(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def canonical_sha256(value: object) -> str:
+    payload = json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def confined_symlink_resolution(
+    candidate: Path,
+    root: Path,
+    label: str,
+    relative: str,
+) -> Path:
+    resolved_root = root.resolve(strict=True)
+    try:
+        pending = list(candidate.relative_to(resolved_root).parts)
+    except ValueError as error:
+        raise SystemExit(
+            f"{label} symlink starts outside its reviewed keg root: {relative}"
+        ) from error
+    resolved_parts: list[str] = []
+    symlink_hops = 0
+    while pending:
+        component = pending.pop(0)
+        if component in {"", ".", ".."}:
+            raise SystemExit(f"{label} has an unsafe path component: {relative}")
+        current = resolved_root.joinpath(*resolved_parts, component)
+        try:
+            metadata = os.lstat(current)
+        except OSError as error:
+            raise SystemExit(f"{label} has a dangling symlink path: {relative}") from error
+        if stat.S_ISLNK(metadata.st_mode):
+            symlink_hops += 1
+            if symlink_hops > 64:
+                raise SystemExit(f"{label} symlink exceeds its hop bound: {relative}")
+            target = Path(os.readlink(current))
+            if target.is_absolute():
+                if target.parts[: len(resolved_root.parts)] != resolved_root.parts:
+                    raise SystemExit(
+                        f"{label} symlink escapes its reviewed keg root: {relative}"
+                    )
+                target_parts = target.parts[len(resolved_root.parts) :]
+                target_base: list[str] = []
+            else:
+                target_parts = target.parts
+                target_base = list(resolved_parts)
+            for target_component in target_parts:
+                if target_component in {"", "."}:
+                    continue
+                if target_component == "..":
+                    if not target_base:
+                        raise SystemExit(
+                            f"{label} symlink escapes its reviewed keg root: {relative}"
+                        )
+                    target_base.pop()
+                else:
+                    target_base.append(target_component)
+            pending = target_base + pending
+            resolved_parts = []
+            continue
+        if pending and not stat.S_ISDIR(metadata.st_mode):
+            raise SystemExit(f"{label} symlink traverses a non-directory: {relative}")
+        resolved_parts.append(component)
+    return resolved_root.joinpath(*resolved_parts)
+
+
+def immutable_tree_sha256(
+    root: Path,
+    label: str,
+    allowed_symlink_roots: tuple[Path, ...],
+) -> str:
+    metadata = os.lstat(root)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit(f"{label} must be a real directory: {root}")
+    allowed_roots = tuple(path.resolve(strict=True) for path in allowed_symlink_roots)
+    entries: list[dict[str, object]] = []
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        directory_names.sort()
+        file_names.sort()
+        parent = Path(directory)
+        for name in (*directory_names, *file_names):
+            candidate = parent / name
+            item_metadata = os.lstat(candidate)
+            relative = candidate.relative_to(root).as_posix()
+            evidence: dict[str, object] = {
+                "path": relative,
+                "mode": stat.S_IMODE(item_metadata.st_mode),
+                "size_bytes": item_metadata.st_size,
+            }
+            if stat.S_ISDIR(item_metadata.st_mode):
+                evidence["kind"] = "directory"
+            elif stat.S_ISREG(item_metadata.st_mode):
+                if item_metadata.st_nlink != 1:
+                    raise SystemExit(f"{label} contains a hardlinked file: {relative}")
+                evidence.update({"kind": "file", "sha256": sha256(candidate)})
+            elif stat.S_ISLNK(item_metadata.st_mode):
+                resolved = confined_symlink_resolution(candidate, root, label, relative)
+                if not any(
+                    resolved == allowed_root or resolved.is_relative_to(allowed_root)
+                    for allowed_root in allowed_roots
+                ):
+                    raise SystemExit(
+                        f"{label} symlink escapes its reviewed keg root: {relative}"
+                    )
+                evidence.update({"kind": "symlink", "link_target": os.readlink(candidate)})
+            else:
+                raise SystemExit(f"{label} contains an unsafe entry: {relative}")
+            entries.append(evidence)
+            if len(entries) > 100_000:
+                raise SystemExit(f"{label} exceeds its closure entry bound")
+    return canonical_sha256(entries)
+
+
+def verify_alias(alias: Path, prefix: Path, label: str) -> str:
+    metadata = os.lstat(alias)
+    if not stat.S_ISLNK(metadata.st_mode):
+        raise SystemExit(f"{label} must be a symlink: {alias}")
+    target = os.readlink(alias)
+    if alias.resolve(strict=True) != prefix:
+        raise SystemExit(f"{label} does not resolve to its recorded Cellar prefix")
+    return target
+
+
+def macho_system_references(roots: tuple[Path, ...]) -> tuple[str, ...]:
+    macho_magics = {b"\xca\xfe\xba\xbe", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"}
+    allowed = tuple(root.resolve(strict=True) for root in roots)
+    system: set[str] = set()
+    for root in allowed:
+        for directory, _directory_names, file_names in os.walk(root, followlinks=False):
+            parent = Path(directory)
+            for name in file_names:
+                candidate = parent / name
+                candidate_metadata = os.lstat(candidate)
+                if not stat.S_ISREG(candidate_metadata.st_mode):
+                    continue
+                with candidate.open("rb") as stream:
+                    if stream.read(4) not in macho_magics:
+                        continue
+                completed = subprocess.run(
+                    ("/usr/bin/otool", "-L", str(candidate)),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env={"PATH": "/usr/bin:/bin"},
+                )
+                if completed.returncode != 0:
+                    raise SystemExit(f"cannot inspect Mach-O runtime closure: {candidate}")
+                for raw in completed.stdout.splitlines()[1:]:
+                    dependency = raw.strip().split(" ", 1)[0]
+                    if not dependency:
+                        continue
+                    if dependency.startswith("@") or not Path(dependency).is_absolute():
+                        raise SystemExit(f"runtime closure has unresolved dependency: {dependency}")
+                    if dependency.startswith(("/usr/lib/", "/System/Library/")):
+                        system.add(dependency)
+                        continue
+                    resolved = Path(dependency).resolve(strict=True)
+                    if not any(
+                        resolved == allowed_root or resolved.is_relative_to(allowed_root)
+                        for allowed_root in allowed
+                    ):
+                        raise SystemExit(
+                            f"Mach-O dependency escapes the Python runtime closure: {dependency}"
+                        )
+    return tuple(sorted(system))
+
+
+def python_runtime_closure() -> dict[str, object]:
+    python_alias = Path("/opt/homebrew/opt/python@3.12")
+    python_prefix = python_alias.resolve(strict=True)
+    if not python_prefix.is_relative_to(Path("/opt/homebrew/Cellar/python@3.12")):
+        raise SystemExit("build Python does not use the required Homebrew Cellar prefix")
+    resolved_python = Path(sys.executable).resolve(strict=True)
+    if not resolved_python.is_relative_to(python_prefix):
+        raise SystemExit("build Python executable escapes its Homebrew Cellar prefix")
+    dependency_prefixes: list[dict[str, str]] = []
+    dependency_roots: list[Path] = []
+    for formula in ("mpdecimal", "openssl@3", "readline", "sqlite", "xz"):
+        alias = Path("/opt/homebrew/opt") / formula
+        prefix = alias.resolve(strict=True)
+        if not prefix.is_relative_to(Path("/opt/homebrew/Cellar") / formula):
+            raise SystemExit(f"Python dependency {formula} escapes its Homebrew Cellar prefix")
+        dependency_roots.append(prefix)
+        dependency_prefixes.append(
+            {
+                "formula": formula,
+                "prefix_path": str(prefix),
+                "opt_alias_path": str(alias),
+                "opt_alias_target": verify_alias(alias, prefix, f"Python dependency alias {formula}"),
+                "tree_sha256": immutable_tree_sha256(
+                    prefix,
+                    f"Python dependency {formula}",
+                    (prefix,),
+                ),
+            }
+        )
+    product_version = subprocess.run(
+        ("/usr/bin/sw_vers", "-productVersion"),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin"},
+    ).stdout.strip()
+    build_version = subprocess.run(
+        ("/usr/bin/sw_vers", "-buildVersion"),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin"},
+    ).stdout.strip()
+    base_prefix = Path(sys.base_prefix).resolve(strict=True)
+    stdlib = Path(sysconfig.get_path("stdlib")).resolve(strict=True)
+    if not base_prefix.is_relative_to(python_prefix) or not stdlib.is_relative_to(python_prefix):
+        raise SystemExit("build Python standard library escapes its Homebrew Cellar prefix")
+    ensurepip_wheels = sorted((stdlib / "ensurepip/_bundled").glob("pip-*.whl"))
+    if len(ensurepip_wheels) != 1:
+        raise SystemExit("Homebrew Python must contain exactly one bundled pip wheel")
+    ensurepip_wheel = ensurepip_wheels[0]
+    ensurepip_metadata = os.lstat(ensurepip_wheel)
+    if (
+        stat.S_ISLNK(ensurepip_metadata.st_mode)
+        or not stat.S_ISREG(ensurepip_metadata.st_mode)
+        or ensurepip_metadata.st_nlink != 1
+    ):
+        raise SystemExit("Homebrew ensurepip wheel must be a single-link regular file")
+    return {
+        "schema_version": "cole-voice-lab.python-runtime-closure/v1",
+        "implementation": platform.python_implementation(),
+        "version": platform.python_version(),
+        "build": list(platform.python_build()),
+        "machine": platform.machine(),
+        "macos_product_version": product_version,
+        "macos_build_version": build_version,
+        "prefix_path": str(python_prefix),
+        "prefix_tree_sha256": immutable_tree_sha256(
+            python_prefix,
+            "Python runtime prefix",
+            (python_prefix,),
+        ),
+        "opt_alias_path": str(python_alias),
+        "opt_alias_target": verify_alias(python_alias, python_prefix, "Python runtime alias"),
+        "executable_relative_path": resolved_python.relative_to(python_prefix).as_posix(),
+        "executable_sha256": sha256(resolved_python),
+        "ensurepip_wheel_relative_path": ensurepip_wheel.relative_to(python_prefix).as_posix(),
+        "ensurepip_wheel_sha256": sha256(ensurepip_wheel),
+        "dependency_prefixes": dependency_prefixes,
+        "system_library_references": list(
+            macho_system_references((python_prefix, *dependency_roots))
+        ),
+    }
+
+
+wheels: dict[str, dict[str, str]] = {}
+requires_dist_by_name: dict[str, list[str]] = {}
+for path in sorted(bundle.glob("*.whl")):
+    metadata = os.lstat(path)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"wheel is not a regular file: {path.name}")
+    with zipfile.ZipFile(path) as archive:
+        members = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+        if len(members) != 1:
+            raise SystemExit(f"wheel has invalid metadata cardinality: {path.name}")
+        parsed = BytesParser(policy=default).parsebytes(archive.read(members[0]))
+    name = str(parsed["Name"])
+    version = str(parsed["Version"])
+    normalized = normalize(name)
+    if normalized in wheels:
+        raise SystemExit(f"duplicate wheel distribution: {normalized}")
+    wheels[normalized] = {
+        "name": name,
+        "version": version,
+        "filename": path.name,
+        "sha256": sha256(path),
+    }
+    requires_dist_by_name[normalized] = [str(item) for item in parsed.get_all("Requires-Dist", [])]
+
+if "cole-voice-lab" not in wheels:
+    raise SystemExit("application wheel is missing")
+actual_dependencies = {name: data["version"] for name, data in wheels.items() if name != "cole-voice-lab"}
+if actual_dependencies != expected_dependencies:
+    raise SystemExit(
+        f"runtime wheel set does not match exact pins: {actual_dependencies!r}"
+    )
+
+requirement_lines = []
+for normalized, data in sorted(wheels.items()):
+    requirement_lines.append(
+        f'{data["name"]}=={data["version"]} --hash=sha256:{data["sha256"]}'
+    )
+(bundle / "capture-kit-requirements.txt").write_text("\n".join(requirement_lines) + "\n")
+
+metadata = {
+    "application": wheels["cole-voice-lab"],
+    "application_requires_dist": requires_dist_by_name["cole-voice-lab"],
+    "build": {
+        "artifact_lock_sha256": sha256(build_artifact_lock),
+        "backend_pins": build_pins,
+        "isolation": False,
+        "python": {
+            "resolved_path": str(Path(sys.executable).resolve(strict=True)),
+            "sha256": sha256(Path(sys.executable).resolve(strict=True)),
+            "version": sys.version.split()[0],
+            "runtime_closure": python_runtime_closure(),
+        },
+    },
+    "runtime_dependency_lock_sha256": sha256(runtime_artifact_lock),
+    "dependency_wheels": [
+        data for name, data in sorted(wheels.items()) if name != "cole-voice-lab"
+    ],
+    "manifest": {
+        "algorithm": "sha256",
+        "filename": "SHA256SUMS",
+        "must_be_supplied_out_of_band": True,
+    },
+    "network_mode": download_mode,
+    "schema_version": "cole-voice-lab.capture-kit/v1",
+}
+(bundle / "BUNDLE.json").write_text(
+    json.dumps(metadata, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+)
+
+for path in bundle.iterdir():
+    if path.name == "macbook-bootstrap":
+        continue
+    os.chmod(path, 0o600)
+
+manifest_lines = []
+for path in sorted(bundle.iterdir(), key=lambda item: item.name):
+    metadata = os.lstat(path)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"bundle member is not a regular file: {path.name}")
+    if path.name == "SHA256SUMS" or any(ord(character) < 32 for character in path.name):
+        raise SystemExit(f"invalid bundle member name: {path.name!r}")
+    manifest_lines.append(f"{sha256(path)}  {path.name}")
+(bundle / "SHA256SUMS").write_text("\n".join(manifest_lines) + "\n")
+os.chmod(bundle / "SHA256SUMS", 0o600)
+PY
+
+prepublish_evidence=$(
+  "$python_bin" - "$bundle_dir" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+bundle = Path(sys.argv[1])
+manifest = bundle / "SHA256SUMS"
+application = json.loads((bundle / "BUNDLE.json").read_bytes())["application"]
+print(hashlib.sha256(manifest.read_bytes()).hexdigest())
+print(application["filename"])
+print(application["sha256"])
+PY
+)
+prepublish_manifest_sha256=$(printf '%s\n' "$prepublish_evidence" | sed -n '1p')
+prepublish_application_name=$(printf '%s\n' "$prepublish_evidence" | sed -n '2p')
+prepublish_application_sha256=$(printf '%s\n' "$prepublish_evidence" | sed -n '3p')
+"$bundle_dir/macbook-bootstrap" \
+  --verify-bundle \
+  "$bundle_dir/$prepublish_application_name" \
+  "$prepublish_application_sha256" \
+  "$prepublish_manifest_sha256" >/dev/null
+
+publish_result=$(
+  "$python_bin" - "$bundle_dir" "$output_dir" "$replace_output" <<'PY'
+import ctypes
+import hashlib
+import os
+import shutil
+import stat
+import sys
+import uuid
+from pathlib import Path
+
+source = Path(sys.argv[1])
+output = Path(sys.argv[2])
+replace = sys.argv[3] == "1"
+
+if output.exists() or output.is_symlink():
+    if not replace:
+        raise SystemExit("output appeared during build; refusing to overwrite it")
+    metadata = os.lstat(output)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit("replacement target is no longer a real directory")
+    for required in ("BUNDLE.json", "SHA256SUMS", "macbook-bootstrap"):
+        if not (output / required).is_file() or (output / required).is_symlink():
+            raise SystemExit("replacement target is no longer a generated capture kit")
+    rename_swap = getattr(ctypes.CDLL(None, use_errno=True), "renameatx_np", None)
+    if rename_swap is not None:
+        rename_swap.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename_swap.restype = ctypes.c_int
+        result = rename_swap(-2, os.fsencode(source), -2, os.fsencode(output), 0x00000002)
+        if result != 0:
+            errno = ctypes.get_errno()
+            raise OSError(errno, os.strerror(errno), output)
+        shutil.rmtree(source)
+    else:
+        backup = output.parent / f".{output.name}.previous.{uuid.uuid4().hex}"
+        os.rename(output, backup)
+        try:
+            os.rename(source, output)
+        except BaseException:
+            os.rename(backup, output)
+            raise
+        shutil.rmtree(backup)
+else:
+    os.rename(source, output)
+
+descriptor = os.open(output.parent, os.O_RDONLY)
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+
+manifest = output / "SHA256SUMS"
+manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+application_wheels = sorted(output.glob("cole_voice_lab-*.whl"))
+if len(application_wheels) != 1:
+    raise SystemExit("published bundle has invalid application-wheel cardinality")
+application = application_wheels[0]
+application_digest = hashlib.sha256(application.read_bytes()).hexdigest()
+print(manifest_digest)
+print(application.name)
+print(application_digest)
+PY
+)
+
+bundle_manifest_sha256=$(printf '%s\n' "$publish_result" | sed -n '1p')
+application_wheel_name=$(printf '%s\n' "$publish_result" | sed -n '2p')
+application_wheel_sha256=$(printf '%s\n' "$publish_result" | sed -n '3p')
+
+printf 'capture kit: %s\n' "$output_dir"
+printf 'BUNDLE_MANIFEST_SHA256=%s\n' "$bundle_manifest_sha256"
+printf 'APPLICATION_WHEEL=%s\n' "$application_wheel_name"
+printf 'APPLICATION_WHEEL_SHA256=%s\n' "$application_wheel_sha256"
+printf '%s\n' 'Transfer the entire directory. Before executing any transferred file, use trusted macOS tools:'
+printf "  /usr/bin/printf '%%s  %%s\\n' '%s' '<TRANSFERRED_CAPTURE_KIT>/SHA256SUMS' | /usr/bin/shasum -a 256 -c -\n" \
+  "$bundle_manifest_sha256"
+printf "%s\n" "  (cd '<TRANSFERRED_CAPTURE_KIT>' && /usr/bin/shasum -a 256 -c SHA256SUMS)"
+printf '%s\n' 'Only after both checks pass, run the bundle verifier/installer:'
+printf '  %s/macbook-bootstrap /absolute/fresh/capture-root %s/%s %s %s\n' \
+  "$output_dir" \
+  "$output_dir" \
+  "$application_wheel_name" \
+  "$application_wheel_sha256" \
+  "$bundle_manifest_sha256"

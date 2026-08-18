@@ -1,0 +1,79 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A human-authored pass for one exact accepted utterance.",
+  "properties": {
+    "audio_quality_passed": {
+      "const": true,
+      "title": "Audio Quality Passed",
+      "type": "boolean"
+    },
+    "findings": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "headphones_used": {
+      "const": true,
+      "title": "Headphones Used",
+      "type": "boolean"
+    },
+    "prompt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "review_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "reviewed_at": {
+      "format": "date-time",
+      "title": "Reviewed At",
+      "type": "string"
+    },
+    "reviewer_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.headphone-review/v1",
+      "default": "cole-voice-lab.headphone-review/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "transcript_matches": {
+      "const": true,
+      "title": "Transcript Matches",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "review_id",
+    "reviewer_id",
+    "session_id",
+    "prompt_id",
+    "source_sha256",
+    "reviewed_at",
+    "headphones_used",
+    "transcript_matches",
+    "audio_quality_passed"
+  ],
+  "title": "HeadphoneReviewEvidence",
+  "type": "object"
+}

@@ -1,0 +1,227 @@
+{
+  "$defs": {
+    "RuntimeSanitizedFileLock": {
+      "additionalProperties": false,
+      "description": "One reviewed executable startup file removed before runtime imports.",
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "reason": {
+          "const": "executable-pth",
+          "default": "executable-pth",
+          "title": "Reason",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "RuntimeSanitizedFileLock",
+      "type": "object"
+    },
+    "RuntimeTreeEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "directory",
+            "file",
+            "symlink"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "link_target": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Link Target"
+        },
+        "mode": {
+          "maximum": 4095,
+          "minimum": 0,
+          "title": "Mode",
+          "type": "integer"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "resolved_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolved Sha256"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "mode",
+        "size_bytes"
+      ],
+      "title": "RuntimeTreeEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact_lock_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Artifact Lock Sha256",
+      "type": "string"
+    },
+    "installed_distributions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "minProperties": 1,
+      "title": "Installed Distributions",
+      "type": "object"
+    },
+    "lab_distribution_version": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Lab Distribution Version",
+      "type": "string"
+    },
+    "lab_wheel_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Lab Wheel Sha256",
+      "type": "string"
+    },
+    "python_runtime_lock_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Python Runtime Lock Sha256",
+      "type": "string"
+    },
+    "requirements_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Requirements Sha256",
+      "type": "string"
+    },
+    "reviewed_build_toolchain_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reviewed Build Toolchain Sha256"
+    },
+    "reviewed_wheel_sha256": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Reviewed Wheel Sha256",
+      "type": "object"
+    },
+    "runtime_id": {
+      "title": "Runtime Id",
+      "type": "string"
+    },
+    "runtime_lock_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Runtime Lock Sha256",
+      "type": "string"
+    },
+    "runtime_python_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Runtime Python Sha256",
+      "type": "string"
+    },
+    "sanitized_files": {
+      "items": {
+        "$ref": "#/$defs/RuntimeSanitizedFileLock"
+      },
+      "title": "Sanitized Files",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.runtime-install-receipt/v1",
+      "default": "cole-voice-lab.runtime-install-receipt/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "tree": {
+      "items": {
+        "$ref": "#/$defs/RuntimeTreeEntry"
+      },
+      "minItems": 1,
+      "title": "Tree",
+      "type": "array"
+    },
+    "tree_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Tree Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "runtime_id",
+    "runtime_lock_sha256",
+    "requirements_sha256",
+    "artifact_lock_sha256",
+    "reviewed_wheel_sha256",
+    "lab_wheel_sha256",
+    "lab_distribution_version",
+    "runtime_python_sha256",
+    "python_runtime_lock_sha256",
+    "sanitized_files",
+    "installed_distributions",
+    "tree",
+    "tree_sha256"
+  ],
+  "title": "RuntimeInstallReceipt",
+  "type": "object"
+}

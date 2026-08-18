@@ -1,0 +1,2038 @@
+#!/bin/sh
+set -eu
+umask 077
+
+python_bin=/opt/homebrew/bin/python3.12
+ffmpeg_bin=/opt/homebrew/bin/ffmpeg
+verify_only=0
+
+usage() {
+  cat <<EOF
+usage: $0 CAPTURE_ROOT APPLICATION_WHEEL EXPECTED_WHEEL_SHA256 EXPECTED_BUNDLE_MANIFEST_SHA256
+       $0 --verify-bundle APPLICATION_WHEEL EXPECTED_WHEEL_SHA256 EXPECTED_BUNDLE_MANIFEST_SHA256
+       $0 --help
+
+CAPTURE_ROOT must be an absolute fresh path beneath the current user's home,
+and its dedicated parent directory must already exist without symlinks.
+The SHA-256 of SHA256SUMS must come from the build operator over a channel
+independent of the transferred capture-kit directory.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    [ "$#" -eq 1 ] || { usage >&2; exit 64; }
+    usage
+    exit 0
+    ;;
+  --verify-bundle)
+    verify_only=1
+    shift
+    [ "$#" -eq 3 ] || { usage >&2; exit 64; }
+    capture_root=
+    wheel_path=$1
+    expected_wheel_sha256=$2
+    expected_manifest_sha256=$3
+    ;;
+  *)
+    [ "$#" -eq 4 ] || { usage >&2; exit 64; }
+    capture_root=$1
+    wheel_path=$2
+    expected_wheel_sha256=$3
+    expected_manifest_sha256=$4
+    ;;
+esac
+
+validate_digest() {
+  digest_value=$1
+  digest_label=$2
+  [ "${#digest_value}" -eq 64 ] || {
+    printf '%s must be 64 lowercase hexadecimal characters\n' "$digest_label" >&2
+    exit 64
+  }
+  case "$digest_value" in
+    *[!0-9a-f]*)
+      printf '%s must be lowercase hexadecimal\n' "$digest_label" >&2
+      exit 64
+      ;;
+  esac
+}
+
+validate_digest "$expected_wheel_sha256" 'expected wheel digest'
+validate_digest "$expected_manifest_sha256" 'expected bundle-manifest digest'
+
+validation_python=$python_bin
+if [ ! -x "$validation_python" ]; then
+  if [ "$verify_only" -eq 1 ] && [ -x /usr/bin/python3 ]; then
+    validation_python=/usr/bin/python3
+  else
+    printf 'missing %s\n' "$python_bin" >&2
+    exit 69
+  fi
+fi
+
+isolated_python() {
+  isolated_python_executable=$1
+  shift
+  /usr/bin/env -i \
+    HOME="$HOME" \
+    LC_ALL=C \
+    PATH=/usr/bin:/bin \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TMPDIR="${TMPDIR:-/tmp}" \
+    "$isolated_python_executable" -I -P -B "$@"
+}
+
+bundle_directory=$(
+  isolated_python "$validation_python" - \
+    "$0" \
+    "$wheel_path" \
+    "$expected_wheel_sha256" \
+    "$expected_manifest_sha256" <<'PY'
+import base64
+import csv
+import hashlib
+import io
+import json
+import os
+import platform
+import re
+import stat
+import subprocess
+import sys
+import zipfile
+from email.parser import BytesParser
+from email.policy import default
+from pathlib import Path, PurePosixPath
+
+script = Path(os.path.abspath(sys.argv[1]))
+wheel = Path(sys.argv[2])
+expected_wheel = sys.argv[3]
+expected_manifest = sys.argv[4]
+
+
+def digest(path: Path) -> str:
+    result = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            result.update(chunk)
+    return result.hexdigest()
+
+
+def canonical_sha256(value: object) -> str:
+    payload = json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def confined_symlink_resolution(
+    candidate: Path,
+    root: Path,
+    label: str,
+    relative: str,
+) -> Path:
+    resolved_root = root.resolve(strict=True)
+    try:
+        pending = list(candidate.relative_to(resolved_root).parts)
+    except ValueError as error:
+        raise SystemExit(
+            f"{label} symlink starts outside its reviewed keg root: {relative}"
+        ) from error
+    resolved_parts: list[str] = []
+    symlink_hops = 0
+    while pending:
+        component = pending.pop(0)
+        if component in {"", ".", ".."}:
+            raise SystemExit(f"{label} has an unsafe path component: {relative}")
+        current = resolved_root.joinpath(*resolved_parts, component)
+        try:
+            metadata = os.lstat(current)
+        except OSError as error:
+            raise SystemExit(f"{label} has a dangling symlink path: {relative}") from error
+        if stat.S_ISLNK(metadata.st_mode):
+            symlink_hops += 1
+            if symlink_hops > 64:
+                raise SystemExit(f"{label} symlink exceeds its hop bound: {relative}")
+            target = Path(os.readlink(current))
+            if target.is_absolute():
+                if target.parts[: len(resolved_root.parts)] != resolved_root.parts:
+                    raise SystemExit(
+                        f"{label} symlink escapes its reviewed keg root: {relative}"
+                    )
+                target_parts = target.parts[len(resolved_root.parts) :]
+                target_base: list[str] = []
+            else:
+                target_parts = target.parts
+                target_base = list(resolved_parts)
+            for target_component in target_parts:
+                if target_component in {"", "."}:
+                    continue
+                if target_component == "..":
+                    if not target_base:
+                        raise SystemExit(
+                            f"{label} symlink escapes its reviewed keg root: {relative}"
+                        )
+                    target_base.pop()
+                else:
+                    target_base.append(target_component)
+            pending = target_base + pending
+            resolved_parts = []
+            continue
+        if pending and not stat.S_ISDIR(metadata.st_mode):
+            raise SystemExit(f"{label} symlink traverses a non-directory: {relative}")
+        resolved_parts.append(component)
+    return resolved_root.joinpath(*resolved_parts)
+
+
+def immutable_tree_sha256(
+    root: Path,
+    label: str,
+    allowed_symlink_roots: tuple[Path, ...],
+) -> str:
+    try:
+        root_metadata = os.lstat(root)
+    except OSError as error:
+        raise SystemExit(f"missing {label}: {root}") from error
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        raise SystemExit(f"{label} must be a real directory: {root}")
+    allowed_roots = tuple(path.resolve(strict=True) for path in allowed_symlink_roots)
+    entries: list[dict[str, object]] = []
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        directory_names.sort()
+        file_names.sort()
+        parent = Path(directory)
+        for name in (*directory_names, *file_names):
+            candidate = parent / name
+            metadata = os.lstat(candidate)
+            relative = candidate.relative_to(root).as_posix()
+            evidence: dict[str, object] = {
+                "path": relative,
+                "mode": stat.S_IMODE(metadata.st_mode),
+                "size_bytes": metadata.st_size,
+            }
+            if stat.S_ISDIR(metadata.st_mode):
+                evidence["kind"] = "directory"
+            elif stat.S_ISREG(metadata.st_mode):
+                if metadata.st_nlink != 1:
+                    raise SystemExit(f"{label} contains a hardlinked file: {relative}")
+                evidence.update({"kind": "file", "sha256": digest(candidate)})
+            elif stat.S_ISLNK(metadata.st_mode):
+                resolved = confined_symlink_resolution(candidate, root, label, relative)
+                if not any(
+                    resolved == allowed_root or resolved.is_relative_to(allowed_root)
+                    for allowed_root in allowed_roots
+                ):
+                    raise SystemExit(
+                        f"{label} symlink escapes its reviewed keg root: {relative}"
+                    )
+                evidence.update({"kind": "symlink", "link_target": os.readlink(candidate)})
+            else:
+                raise SystemExit(f"{label} contains an unsafe entry: {relative}")
+            entries.append(evidence)
+            if len(entries) > 100_000:
+                raise SystemExit(f"{label} exceeds its closure entry bound")
+    return canonical_sha256(entries)
+
+
+def verify_opt_alias(alias: Path, expected_target: object, expected_prefix: Path) -> None:
+    try:
+        metadata = os.lstat(alias)
+    except OSError as error:
+        raise SystemExit(f"locked Homebrew alias is missing: {alias}") from error
+    if (
+        not stat.S_ISLNK(metadata.st_mode)
+        or not isinstance(expected_target, str)
+        or os.readlink(alias) != expected_target
+        or alias.resolve(strict=True) != expected_prefix
+    ):
+        raise SystemExit(f"locked Homebrew alias changed: {alias}")
+
+
+def macho_system_references(roots: tuple[Path, ...]) -> tuple[str, ...]:
+    macho_magics = {b"\xca\xfe\xba\xbe", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"}
+    allowed = tuple(root.resolve(strict=True) for root in roots)
+    system: set[str] = set()
+    for root in allowed:
+        for directory, _directory_names, file_names in os.walk(root, followlinks=False):
+            parent = Path(directory)
+            for name in file_names:
+                candidate = parent / name
+                candidate_metadata = os.lstat(candidate)
+                if not stat.S_ISREG(candidate_metadata.st_mode):
+                    continue
+                with candidate.open("rb") as stream:
+                    if stream.read(4) not in macho_magics:
+                        continue
+                completed = subprocess.run(
+                    ("/usr/bin/otool", "-L", str(candidate)),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env={"PATH": "/usr/bin:/bin"},
+                )
+                if completed.returncode != 0:
+                    raise SystemExit(f"cannot inspect Mach-O runtime closure: {candidate}")
+                for raw in completed.stdout.splitlines()[1:]:
+                    dependency = raw.strip().split(" ", 1)[0]
+                    if not dependency:
+                        continue
+                    if dependency.startswith("@") or not Path(dependency).is_absolute():
+                        raise SystemExit(f"runtime closure has unresolved dependency: {dependency}")
+                    if dependency.startswith(("/usr/lib/", "/System/Library/")):
+                        system.add(dependency)
+                        continue
+                    resolved = Path(dependency).resolve(strict=True)
+                    if not any(
+                        resolved == allowed_root or resolved.is_relative_to(allowed_root)
+                        for allowed_root in allowed
+                    ):
+                        raise SystemExit(
+                            f"Mach-O dependency escapes the Python runtime closure: {dependency}"
+                        )
+    return tuple(sorted(system))
+
+
+def verify_python_runtime_closure(
+    closure: object,
+    python_metadata: dict[str, object],
+) -> str:
+    if not isinstance(closure, dict):
+        raise SystemExit("BUNDLE.json Python runtime closure is missing")
+    required_keys = {
+        "schema_version",
+        "implementation",
+        "version",
+        "build",
+        "machine",
+        "macos_product_version",
+        "macos_build_version",
+        "prefix_path",
+        "prefix_tree_sha256",
+        "opt_alias_path",
+        "opt_alias_target",
+        "executable_relative_path",
+        "executable_sha256",
+        "ensurepip_wheel_relative_path",
+        "ensurepip_wheel_sha256",
+        "dependency_prefixes",
+        "system_library_references",
+    }
+    if set(closure) != required_keys:
+        raise SystemExit("BUNDLE.json Python runtime closure has invalid fields")
+    if closure.get("schema_version") != "cole-voice-lab.python-runtime-closure/v1":
+        raise SystemExit("unsupported Python runtime closure schema")
+    prefix = Path(str(closure.get("prefix_path", "")))
+    cellar_root = Path("/opt/homebrew/Cellar/python@3.12")
+    if (
+        not prefix.is_absolute()
+        or not prefix.is_relative_to(cellar_root)
+        or prefix.parent != cellar_root
+    ):
+        raise SystemExit("Python runtime closure has an invalid Cellar prefix")
+    prefix = prefix.resolve(strict=True)
+    alias = Path(str(closure.get("opt_alias_path", "")))
+    if alias != Path("/opt/homebrew/opt/python@3.12"):
+        raise SystemExit("Python runtime closure has an invalid opt alias")
+    verify_opt_alias(alias, closure.get("opt_alias_target"), prefix)
+    executable_relative = str(closure.get("executable_relative_path", ""))
+    executable_parts = PurePosixPath(executable_relative).parts
+    if (
+        not executable_parts
+        or PurePosixPath(executable_relative).is_absolute()
+        or any(part in {"", ".", ".."} for part in executable_parts)
+    ):
+        raise SystemExit("Python runtime closure has an invalid executable path")
+    executable = prefix.joinpath(*executable_parts).resolve(strict=True)
+    running_python = Path(sys.executable).resolve(strict=True)
+    if running_python != executable:
+        raise SystemExit("host Python does not resolve to the reviewed BUNDLE interpreter")
+    executable_sha256 = digest(executable)
+    if (
+        closure.get("executable_sha256") != executable_sha256
+        or python_metadata.get("sha256") != executable_sha256
+        or python_metadata.get("resolved_path") != str(executable)
+    ):
+        raise SystemExit("host Python executable bytes differ from reviewed BUNDLE evidence")
+    ensurepip_relative = str(closure.get("ensurepip_wheel_relative_path", ""))
+    ensurepip_parts = PurePosixPath(ensurepip_relative).parts
+    if (
+        not ensurepip_parts
+        or PurePosixPath(ensurepip_relative).is_absolute()
+        or any(part in {"", ".", ".."} for part in ensurepip_parts)
+    ):
+        raise SystemExit("Python runtime closure has an invalid ensurepip wheel path")
+    ensurepip_wheel = prefix.joinpath(*ensurepip_parts)
+    require_real_file(ensurepip_wheel, "reviewed ensurepip wheel")
+    if digest(ensurepip_wheel) != closure.get("ensurepip_wheel_sha256"):
+        raise SystemExit("Homebrew ensurepip wheel differs from reviewed BUNDLE evidence")
+    if immutable_tree_sha256(prefix, "Python runtime prefix", (prefix,)) != closure.get(
+        "prefix_tree_sha256"
+    ):
+        raise SystemExit("host Python Cellar prefix differs from reviewed BUNDLE evidence")
+
+    dependency_evidence = closure.get("dependency_prefixes")
+    if not isinstance(dependency_evidence, list):
+        raise SystemExit("Python runtime dependency closure is missing")
+    expected_formulas = ("mpdecimal", "openssl@3", "readline", "sqlite", "xz")
+    dependency_roots: list[Path] = []
+    observed_formulas: list[str] = []
+    for item in dependency_evidence:
+        if not isinstance(item, dict) or set(item) != {
+            "formula",
+            "prefix_path",
+            "opt_alias_path",
+            "opt_alias_target",
+            "tree_sha256",
+        }:
+            raise SystemExit("Python runtime dependency closure entry is invalid")
+        formula = str(item["formula"])
+        observed_formulas.append(formula)
+        if formula not in expected_formulas:
+            raise SystemExit(f"unexpected Python runtime dependency formula: {formula}")
+        dependency_cellar = Path("/opt/homebrew/Cellar") / formula
+        dependency_prefix = Path(str(item["prefix_path"]))
+        if (
+            not dependency_prefix.is_absolute()
+            or not dependency_prefix.is_relative_to(dependency_cellar)
+            or dependency_prefix.parent != dependency_cellar
+        ):
+            raise SystemExit(f"invalid Python dependency Cellar prefix: {formula}")
+        dependency_prefix = dependency_prefix.resolve(strict=True)
+        dependency_alias = Path(str(item["opt_alias_path"]))
+        if dependency_alias != Path("/opt/homebrew/opt") / formula:
+            raise SystemExit(f"invalid Python dependency opt alias: {formula}")
+        verify_opt_alias(dependency_alias, item["opt_alias_target"], dependency_prefix)
+        if immutable_tree_sha256(
+            dependency_prefix,
+            f"Python dependency prefix {formula}",
+            (dependency_prefix,),
+        ) != item["tree_sha256"]:
+            raise SystemExit(f"Python dependency Cellar prefix changed: {formula}")
+        dependency_roots.append(dependency_prefix)
+    if tuple(observed_formulas) != expected_formulas:
+        raise SystemExit("Python runtime dependency closure is incomplete or unsorted")
+    system_references = macho_system_references((prefix, *dependency_roots))
+    if closure.get("system_library_references") != list(system_references):
+        raise SystemExit("Python runtime system-library closure changed")
+
+    product_version = subprocess.run(
+        ("/usr/bin/sw_vers", "-productVersion"),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin"},
+    ).stdout.strip()
+    build_version = subprocess.run(
+        ("/usr/bin/sw_vers", "-buildVersion"),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin"},
+    ).stdout.strip()
+    if (
+        closure.get("macos_product_version") != product_version
+        or closure.get("macos_build_version") != build_version
+    ):
+        raise SystemExit("macOS runtime TCB differs from reviewed BUNDLE evidence")
+    probe = (
+        "import json,platform,sys,sysconfig;"
+        "print(json.dumps({'implementation':platform.python_implementation(),"
+        "'version':platform.python_version(),'build':platform.python_build(),"
+        "'machine':platform.machine(),'base_prefix':sys.base_prefix,"
+        "'stdlib':sysconfig.get_path('stdlib'),'path':sys.path}))"
+    )
+    completed = subprocess.run(
+        (str(executable), "-I", "-P", "-S", "-c", probe),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+        },
+    )
+    if completed.returncode != 0:
+        raise SystemExit("cannot probe reviewed host Python")
+    try:
+        observed = json.loads(completed.stdout)
+    except (TypeError, ValueError) as error:
+        raise SystemExit("reviewed host Python emitted invalid identity evidence") from error
+    if (
+        observed.get("implementation") != closure.get("implementation")
+        or observed.get("version") != closure.get("version")
+        or observed.get("build") != closure.get("build")
+        or observed.get("machine") != closure.get("machine")
+        or python_metadata.get("version") != observed.get("version")
+    ):
+        raise SystemExit("host Python identity differs from reviewed BUNDLE evidence")
+    base_prefix = Path(str(observed.get("base_prefix", ""))).resolve(strict=True)
+    stdlib = Path(str(observed.get("stdlib", ""))).resolve(strict=True)
+    if not base_prefix.is_relative_to(prefix) or not stdlib.is_relative_to(prefix):
+        raise SystemExit("host Python base prefix or standard library escapes its Cellar closure")
+    for item in observed.get("path", ()):
+        candidate = Path(str(item))
+        if candidate.exists() and not candidate.resolve(strict=True).is_relative_to(prefix):
+            raise SystemExit(f"host Python import root escapes its Cellar closure: {candidate}")
+    return canonical_sha256(closure)
+
+
+def require_real_file(path: Path, label: str) -> None:
+    try:
+        metadata = os.lstat(path)
+    except OSError as error:
+        raise SystemExit(f"missing {label}: {path}") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular non-symlink file")
+    if metadata.st_nlink != 1:
+        raise SystemExit(f"{label} must have exactly one hard link")
+
+
+def reject_symlink_components(path: Path) -> None:
+    absolute = Path(os.path.abspath(path))
+    cursor = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        cursor /= component
+        metadata = os.lstat(cursor)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise SystemExit(f"bundle path contains a symlink: {cursor}")
+
+
+def normalized(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def safe_archive_name(name: str, wheel_name: str) -> tuple[str, ...]:
+    if (
+        not name
+        or name.startswith("/")
+        or "\\" in name
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
+        or re.match(r"^[A-Za-z]:", name)
+    ):
+        raise SystemExit(f"wheel has unsafe absolute or control member name: {wheel_name}: {name!r}")
+    pure = PurePosixPath(name)
+    parts = pure.parts
+    if pure.is_absolute() or not parts or any(part in {"", ".", ".."} for part in parts):
+        raise SystemExit(f"wheel has unsafe parent-traversal member name: {wheel_name}: {name!r}")
+    return parts
+
+
+def regular_member(info: zipfile.ZipInfo, wheel_name: str) -> tuple[str, ...]:
+    parts = safe_archive_name(info.filename, wheel_name)
+    unix_mode = info.external_attr >> 16
+    file_type = stat.S_IFMT(unix_mode)
+    dos_directory = bool(info.external_attr & 0x10)
+    if info.is_dir() or info.filename.endswith("/") or dos_directory:
+        raise SystemExit(f"wheel contains a non-regular directory member: {wheel_name}: {info.filename}")
+    if file_type not in (0, stat.S_IFREG):
+        if stat.S_ISLNK(unix_mode):
+            kind = "symlink"
+        elif stat.S_ISCHR(unix_mode) or stat.S_ISBLK(unix_mode):
+            kind = "device"
+        else:
+            kind = "non-regular"
+        raise SystemExit(f"wheel contains a {kind} member: {wheel_name}: {info.filename}")
+    if info.flag_bits & 0x1:
+        raise SystemExit(f"wheel contains an encrypted member: {wheel_name}: {info.filename}")
+    if parts[0].endswith(".data"):
+        raise SystemExit(f"wheel uses an unsupported .data install scheme: {wheel_name}")
+    return parts
+
+
+def decode_record_hash(value: str, label: str) -> bytes:
+    algorithm, separator, encoded = value.partition("=")
+    if separator != "=" or algorithm != "sha256" or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded):
+        raise SystemExit(f"wheel RECORD has an invalid SHA-256 field: {label}")
+    try:
+        decoded = base64.b64decode(
+            encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
+        )
+    except (ValueError, base64.binascii.Error) as error:
+        raise SystemExit(f"wheel RECORD has invalid base64: {label}") from error
+    if len(decoded) != hashlib.sha256().digest_size:
+        raise SystemExit(f"wheel RECORD SHA-256 has the wrong length: {label}")
+    return decoded
+
+
+def one_metadata_value(message: object, key: str, wheel_name: str) -> str:
+    values = message.get_all(key, [])  # type: ignore[attr-defined]
+    if len(values) != 1:
+        raise SystemExit(f"wheel METADATA must contain exactly one {key}: {wheel_name}")
+    value = str(values[0]).strip()
+    if not value or "\n" in value or "\r" in value:
+        raise SystemExit(f"wheel METADATA has an invalid {key}: {wheel_name}")
+    return value
+
+
+def requirement_name(value: str, wheel_name: str) -> tuple[str, bool]:
+    if "@" in value or "\n" in value or "\r" in value or "\\" in value:
+        raise SystemExit(f"application wheel has an unsafe Requires-Dist entry: {value!r}")
+    match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", value)
+    if match is None:
+        raise SystemExit(f"application wheel has malformed Requires-Dist: {wheel_name}: {value!r}")
+    remainder = value[match.end() :].strip()
+    if remainder and remainder[0] not in "[(<>=!~;":
+        raise SystemExit(f"application wheel has malformed Requires-Dist: {wheel_name}: {value!r}")
+    if any(ord(character) < 32 or ord(character) == 127 for character in remainder):
+        raise SystemExit(f"application wheel has malformed Requires-Dist: {wheel_name}: {value!r}")
+    requirement_part, marker_separator, marker = remainder.partition(";")
+    if requirement_part.strip() and requirement_part.strip()[0] not in "[(<>=!~":
+        raise SystemExit(f"application wheel has malformed Requires-Dist: {wheel_name}: {value!r}")
+    active = True
+    if marker_separator:
+        marker = marker.strip()
+        if re.fullmatch(r"extra\s*==\s*(['\"])[A-Za-z0-9._-]+\1", marker):
+            active = False
+        else:
+            raise SystemExit(
+                f"application wheel has an unsupported Requires-Dist marker: {wheel_name}: {value!r}"
+            )
+    return normalized(match.group(1)), active
+
+
+def inspect_wheel(path: Path) -> dict[str, object]:
+    require_real_file(path, f"wheel {path.name}")
+    try:
+        archive = zipfile.ZipFile(path)
+    except (OSError, zipfile.BadZipFile) as error:
+        raise SystemExit(f"wheel is not a valid ZIP archive: {path.name}") from error
+    with archive:
+        infos = archive.infolist()
+        if not infos:
+            raise SystemExit(f"wheel archive is empty: {path.name}")
+        by_name: dict[str, zipfile.ZipInfo] = {}
+        for info in infos:
+            regular_member(info, path.name)
+            if info.filename in by_name:
+                raise SystemExit(f"wheel contains a duplicate member: {path.name}: {info.filename}")
+            by_name[info.filename] = info
+        metadata_names = [name for name in by_name if name.endswith(".dist-info/METADATA")]
+        record_names = [name for name in by_name if name.endswith(".dist-info/RECORD")]
+        if (
+            len(metadata_names) != 1
+            or len(record_names) != 1
+            or len(PurePosixPath(metadata_names[0]).parts) != 2
+            or len(PurePosixPath(record_names[0]).parts) != 2
+        ):
+            raise SystemExit(f"wheel must contain one top-level dist-info METADATA and RECORD: {path.name}")
+        metadata_name = metadata_names[0]
+        record_name = record_names[0]
+        if metadata_name.rsplit("/", 1)[0] != record_name.rsplit("/", 1)[0]:
+            raise SystemExit(f"wheel METADATA and RECORD use different dist-info directories: {path.name}")
+        try:
+            metadata_payload = archive.read(by_name[metadata_name])
+            record_payload = archive.read(by_name[record_name])
+        except (OSError, RuntimeError, zipfile.BadZipFile) as error:
+            raise SystemExit(f"wheel member content cannot be read: {path.name}") from error
+        message = BytesParser(policy=default).parsebytes(metadata_payload)
+        if message.defects:
+            raise SystemExit(f"wheel METADATA is malformed: {path.name}")
+        distribution = one_metadata_value(message, "Name", path.name)
+        version = one_metadata_value(message, "Version", path.name)
+        metadata_version = one_metadata_value(message, "Metadata-Version", path.name)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", distribution):
+            raise SystemExit(f"wheel METADATA Name is invalid: {path.name}")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.!+_-]*", version):
+            raise SystemExit(f"wheel METADATA Version is invalid: {path.name}")
+        if not re.fullmatch(r"[0-9]+\.[0-9]+", metadata_version):
+            raise SystemExit(f"wheel Metadata-Version is invalid: {path.name}")
+        filename_parts = path.name[:-4].split("-")
+        if len(filename_parts) < 5:
+            raise SystemExit(f"invalid wheel filename: {path.name}")
+        if normalized(filename_parts[0]) != normalized(distribution) or filename_parts[1] != version:
+            raise SystemExit(f"wheel filename disagrees with METADATA: {path.name}")
+        dist_info = PurePosixPath(metadata_name).parts[0][:-10]
+        dist_name, separator, dist_version = dist_info.rpartition("-")
+        if not separator or normalized(dist_name) != normalized(distribution) or dist_version != version:
+            raise SystemExit(f"dist-info directory disagrees with METADATA: {path.name}")
+
+        try:
+            record_text = record_payload.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise SystemExit(f"wheel RECORD must be UTF-8: {path.name}") from error
+        record_rows: dict[str, tuple[str, str]] = {}
+        try:
+            rows = csv.reader(io.StringIO(record_text, newline=""), strict=True)
+            for row in rows:
+                if len(row) != 3:
+                    raise SystemExit(f"wheel RECORD row must have three fields: {path.name}")
+                member_name, hash_value, size_value = row
+                safe_archive_name(member_name, path.name)
+                if member_name in record_rows:
+                    raise SystemExit(f"wheel RECORD contains a duplicate path: {path.name}: {member_name}")
+                record_rows[member_name] = (hash_value, size_value)
+        except csv.Error as error:
+            raise SystemExit(f"wheel RECORD is malformed CSV: {path.name}") from error
+        if set(record_rows) != set(by_name):
+            missing = sorted(set(by_name) - set(record_rows))
+            extra = sorted(set(record_rows) - set(by_name))
+            raise SystemExit(
+                f"wheel RECORD membership mismatch: {path.name}; missing={missing!r}, extra={extra!r}"
+            )
+        for member_name, (hash_value, size_value) in record_rows.items():
+            if member_name == record_name:
+                if hash_value or size_value:
+                    raise SystemExit(f"wheel RECORD must leave its own hash and size empty: {path.name}")
+                continue
+            if not size_value.isascii() or not size_value.isdecimal():
+                raise SystemExit(f"wheel RECORD size is invalid: {path.name}: {member_name}")
+            payload = archive.read(by_name[member_name])
+            if int(size_value) != len(payload):
+                raise SystemExit(f"wheel RECORD size mismatch: {path.name}: {member_name}")
+            if decode_record_hash(hash_value, f"{path.name}: {member_name}") != hashlib.sha256(
+                payload
+            ).digest():
+                raise SystemExit(f"wheel RECORD hash mismatch: {path.name}: {member_name}")
+        requires_dist = [str(value) for value in message.get_all("Requires-Dist", [])]
+        return {
+            "name": distribution,
+            "normalized_name": normalized(distribution),
+            "version": version,
+            "filename": path.name,
+            "sha256": digest(path),
+            "requires_dist": requires_dist,
+        }
+
+
+if not wheel.is_absolute():
+    raise SystemExit("application wheel path must be absolute")
+if any(ord(character) < 32 or ord(character) == 127 for character in str(wheel)):
+    raise SystemExit("application wheel path cannot contain control characters")
+reject_symlink_components(wheel)
+require_real_file(wheel, "application wheel")
+bundle = wheel.parent
+if script.parent != bundle or script.name != "macbook-bootstrap":
+    raise SystemExit("run the macbook-bootstrap file from the verified bundle directory")
+require_real_file(script, "bootstrap script")
+
+manifest = bundle / "SHA256SUMS"
+require_real_file(manifest, "bundle manifest")
+manifest_payload = manifest.read_bytes()
+if hashlib.sha256(manifest_payload).hexdigest() != expected_manifest:
+    raise SystemExit("bundle-manifest SHA-256 mismatch")
+try:
+    manifest_text = manifest_payload.decode("ascii")
+except UnicodeDecodeError as error:
+    raise SystemExit("bundle manifest must be ASCII") from error
+if not manifest_text.endswith("\n"):
+    raise SystemExit("bundle manifest must end with one newline")
+
+entries: dict[str, str] = {}
+manifest_pattern = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._+-]*)")
+lines = manifest_text.splitlines()
+if lines != sorted(lines, key=lambda line: line.split("  ", 1)[-1]):
+    raise SystemExit("bundle manifest entries must be sorted by filename")
+for line in lines:
+    match = manifest_pattern.fullmatch(line)
+    if match is None:
+        raise SystemExit(f"invalid bundle manifest line: {line!r}")
+    item_digest, name = match.groups()
+    if name == "SHA256SUMS" or name in entries:
+        raise SystemExit(f"invalid or duplicate bundle manifest member: {name}")
+    entries[name] = item_digest
+
+actual_names: set[str] = set()
+for item in bundle.iterdir():
+    item_metadata = os.lstat(item)
+    if (
+        stat.S_ISLNK(item_metadata.st_mode)
+        or not stat.S_ISREG(item_metadata.st_mode)
+        or item_metadata.st_nlink != 1
+    ):
+        raise SystemExit(f"bundle member must be a single-link regular file: {item.name}")
+    actual_names.add(item.name)
+if actual_names != set(entries) | {"SHA256SUMS"}:
+    missing = sorted((set(entries) | {"SHA256SUMS"}) - actual_names)
+    extra = sorted(actual_names - (set(entries) | {"SHA256SUMS"}))
+    raise SystemExit(f"bundle membership mismatch; missing={missing!r}, extra={extra!r}")
+
+for required in (
+    "BUNDLE.json",
+    "capture-kit-requirements.txt",
+    "macbook-bootstrap",
+    "site.example.toml",
+):
+    if required not in entries:
+        raise SystemExit(f"bundle manifest is missing required member: {required}")
+for name, expected in entries.items():
+    if digest(bundle / name) != expected:
+        raise SystemExit(f"bundle member SHA-256 mismatch: {name}")
+
+if wheel.name not in entries or digest(wheel) != expected_wheel:
+    raise SystemExit("application-wheel SHA-256 mismatch")
+application_wheels = sorted(
+    name for name in entries if name.startswith("cole_voice_lab-") and name.endswith(".whl")
+)
+if application_wheels != [wheel.name]:
+    raise SystemExit("bundle must contain exactly the named cole_voice_lab application wheel")
+
+wheel_records: dict[tuple[str, str], dict[str, object]] = {}
+wheel_names = sorted(name for name in entries if name.endswith(".whl"))
+if not wheel_names:
+    raise SystemExit("bundle contains no wheels")
+for name in wheel_names:
+    inspected = inspect_wheel(bundle / name)
+    key = (str(inspected["normalized_name"]), str(inspected["version"]))
+    if key in wheel_records:
+        raise SystemExit(f"duplicate wheel name/version: {key!r}")
+    wheel_records[key] = inspected
+
+application_record = next(
+    (record for record in wheel_records.values() if record["filename"] == wheel.name), None
+)
+if application_record is None or application_record["normalized_name"] != "cole-voice-lab":
+    raise SystemExit("selected application wheel METADATA is not cole-voice-lab")
+dependency_names = {
+    str(record["normalized_name"])
+    for record in wheel_records.values()
+    if record is not application_record
+}
+required_names: list[str] = []
+for requirement in application_record["requires_dist"]:
+    name, active = requirement_name(str(requirement), wheel.name)
+    if not active:
+        continue
+    if name in required_names:
+        raise SystemExit(f"application wheel repeats Requires-Dist for {name}")
+    required_names.append(name)
+unexpected_dependencies = sorted(set(required_names) - dependency_names)
+if unexpected_dependencies:
+    raise SystemExit(
+        "application Requires-Dist names are not in the reviewed bundled dependency set: "
+        f"{unexpected_dependencies!r}"
+    )
+
+requirements = bundle / "capture-kit-requirements.txt"
+requirement_pattern = re.compile(
+    r"([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9][A-Za-z0-9.!+_-]*) "
+    r"--hash=sha256:([0-9a-f]{64})"
+)
+requirement_hashes: dict[tuple[str, str], str] = {}
+try:
+    requirement_text = requirements.read_text(encoding="ascii")
+except UnicodeDecodeError as error:
+    raise SystemExit("capture-kit requirements must be ASCII") from error
+if not requirement_text.endswith("\n"):
+    raise SystemExit("capture-kit requirements must end with one newline")
+for line in requirement_text.splitlines():
+    match = requirement_pattern.fullmatch(line)
+    if match is None:
+        raise SystemExit(f"invalid hash-locked requirement: {line!r}")
+    name, version, requirement_digest = match.groups()
+    key = (normalized(name), version)
+    if key in requirement_hashes:
+        raise SystemExit(f"duplicate hash-locked requirement: {key!r}")
+    requirement_hashes[key] = requirement_digest
+wheel_hashes = {key: str(record["sha256"]) for key, record in wheel_records.items()}
+if requirement_hashes != wheel_hashes:
+    raise SystemExit("hash-locked requirements do not exactly bind every bundled wheel")
+
+try:
+    bundle_metadata = json.loads((bundle / "BUNDLE.json").read_bytes())
+except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    raise SystemExit("BUNDLE.json is not valid UTF-8 JSON") from error
+if not isinstance(bundle_metadata, dict):
+    raise SystemExit("BUNDLE.json must contain an object")
+if bundle_metadata.get("schema_version") != "cole-voice-lab.capture-kit/v1":
+    raise SystemExit("unsupported BUNDLE.json schema")
+build_metadata = bundle_metadata.get("build")
+if not isinstance(build_metadata, dict):
+    raise SystemExit("BUNDLE.json build evidence is missing")
+python_metadata = build_metadata.get("python")
+if not isinstance(python_metadata, dict):
+    raise SystemExit("BUNDLE.json build-Python evidence is missing")
+python_runtime_closure_sha256 = verify_python_runtime_closure(
+    python_metadata.get("runtime_closure"), python_metadata
+)
+python_runtime_closure = python_metadata["runtime_closure"]
+ensurepip_wheel = Path(str(python_runtime_closure["prefix_path"])) / str(
+    python_runtime_closure["ensurepip_wheel_relative_path"]
+)
+application = bundle_metadata.get("application")
+if not isinstance(application, dict):
+    raise SystemExit("BUNDLE.json application evidence is missing")
+for field in ("filename", "name", "version", "sha256"):
+    if application.get(field) != application_record[field]:
+        raise SystemExit(f"BUNDLE.json application {field} does not match the selected wheel")
+dependency_evidence = bundle_metadata.get("dependency_wheels")
+if not isinstance(dependency_evidence, list):
+    raise SystemExit("BUNDLE.json dependency-wheel evidence is missing")
+expected_dependency_evidence = {
+    (
+        str(record["normalized_name"]),
+        str(record["version"]),
+        str(record["filename"]),
+        str(record["sha256"]),
+    )
+    for record in wheel_records.values()
+    if record is not application_record
+}
+actual_dependency_evidence: set[tuple[str, str, str, str]] = set()
+for item in dependency_evidence:
+    if not isinstance(item, dict):
+        raise SystemExit("BUNDLE.json dependency-wheel entry is invalid")
+    try:
+        evidence = (
+            normalized(str(item["name"])),
+            str(item["version"]),
+            str(item["filename"]),
+            str(item["sha256"]),
+        )
+    except KeyError as error:
+        raise SystemExit("BUNDLE.json dependency-wheel entry is incomplete") from error
+    if evidence in actual_dependency_evidence:
+        raise SystemExit("BUNDLE.json contains duplicate dependency-wheel evidence")
+    actual_dependency_evidence.add(evidence)
+if actual_dependency_evidence != expected_dependency_evidence:
+    raise SystemExit("BUNDLE.json dependency-wheel evidence does not match bundled wheels")
+declared_requires = bundle_metadata.get("application_requires_dist")
+if declared_requires is not None and declared_requires != application_record["requires_dist"]:
+    raise SystemExit("BUNDLE.json application Requires-Dist evidence does not match METADATA")
+manifest_metadata = bundle_metadata.get("manifest")
+if not isinstance(manifest_metadata, dict) or manifest_metadata.get(
+    "must_be_supplied_out_of_band"
+) is not True:
+    raise SystemExit("BUNDLE.json does not require an out-of-band manifest digest")
+
+print(bundle)
+print(python_runtime_closure_sha256)
+print(ensurepip_wheel)
+PY
+)
+
+bundle_verification=$bundle_directory
+bundle_directory=$(printf '%s\n' "$bundle_verification" | sed -n '1p')
+python_runtime_closure_sha256=$(printf '%s\n' "$bundle_verification" | sed -n '2p')
+ensurepip_wheel=$(printf '%s\n' "$bundle_verification" | sed -n '3p')
+validate_digest "$python_runtime_closure_sha256" 'Python runtime closure digest'
+[ -f "$ensurepip_wheel" ] && [ ! -L "$ensurepip_wheel" ] || {
+  printf 'reviewed ensurepip wheel is unavailable: %s\n' "$ensurepip_wheel" >&2
+  exit 69
+}
+
+printf 'verified capture-kit bundle: %s\n' "$bundle_directory"
+if [ "$verify_only" -eq 1 ]; then
+  exit 0
+fi
+
+[ -x "$python_bin" ] || { printf 'missing %s\n' "$python_bin" >&2; exit 69; }
+[ -x "$ffmpeg_bin" ] || { printf 'missing %s\n' "$ffmpeg_bin" >&2; exit 69; }
+
+prepare_stage() {
+  prepare_action=$1
+  isolated_python "$python_bin" - \
+    "$capture_root" \
+    "$wheel_path" \
+    "$expected_wheel_sha256" \
+    "$expected_manifest_sha256" \
+    "$python_runtime_closure_sha256" \
+    "$prepare_action" <<'PY'
+import json
+import os
+import platform
+import re
+import stat
+import sys
+import tempfile
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+
+target = Path(os.path.abspath(sys.argv[1]))
+wheel = Path(sys.argv[2])
+wheel_digest = sys.argv[3]
+manifest_digest = sys.argv[4]
+python_runtime_closure_sha256 = sys.argv[5]
+action = sys.argv[6]
+home = Path.home().resolve(strict=True)
+
+if action not in {"initial", "replace"}:
+    raise SystemExit("invalid staging action")
+if not target.is_absolute() or target == Path("/"):
+    raise SystemExit("capture root must be an absolute non-root path")
+if any(ord(character) < 32 or ord(character) == 127 for character in str(target)):
+    raise SystemExit("capture root cannot contain control characters")
+if not target.parent.is_dir() or target.parent.is_symlink():
+    raise SystemExit("capture root parent must be an existing real directory")
+
+parent = target.parent.resolve(strict=True)
+if target.parent != parent:
+    raise SystemExit("capture root parent must use its canonical absolute path")
+try:
+    relative_parent = parent.relative_to(home)
+except ValueError as error:
+    raise SystemExit("capture root must be beneath the current user's home") from error
+if len(relative_parent.parts) < 2:
+    raise SystemExit("capture root is too broad; use a dedicated nested private path")
+cursor = home
+for component in relative_parent.parts:
+    cursor /= component
+    metadata = os.lstat(cursor)
+    if stat.S_ISLNK(metadata.st_mode):
+        raise SystemExit(f"capture root parent contains a symlink: {cursor}")
+if target.exists() or target.is_symlink():
+    if action == "replace":
+        raise SystemExit("capture root appeared during staging recovery; refusing to overwrite it")
+    metadata = os.lstat(target)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit("existing capture root is not a real directory; refusing to overwrite it")
+    print("target")
+    print(target)
+    print(target)
+    raise SystemExit(0)
+
+staging = parent / f".{target.name}.INSTALLING"
+
+
+def preserve_staging() -> Path:
+    recovery = parent / f".{target.name}.RECOVERY.{uuid.uuid4().hex}"
+    recovery.mkdir(mode=0o700)
+    try:
+        os.rename(staging, recovery / "partial")
+    except BaseException:
+        recovery.rmdir()
+        raise
+    recovery_descriptor = os.open(recovery, os.O_RDONLY)
+    try:
+        os.fsync(recovery_descriptor)
+    finally:
+        os.close(recovery_descriptor)
+    print(f"preserved stale staging root at {recovery}", file=sys.stderr)
+    return recovery
+
+
+if staging.exists() or staging.is_symlink():
+    if action == "initial":
+        staging_metadata = None
+        try:
+            staging_metadata = os.lstat(staging)
+            names = {item.name for item in staging.iterdir()} if stat.S_ISDIR(staging_metadata.st_mode) else set()
+        except OSError:
+            names = set()
+        if (
+            staging_metadata is not None
+            and stat.S_ISDIR(staging_metadata.st_mode)
+            and not stat.S_ISLNK(staging_metadata.st_mode)
+            and stat.S_IMODE(staging_metadata.st_mode) == 0o700
+            and staging_metadata.st_uid == os.getuid()
+            and "READY" in names
+            and ".INSTALLING" not in names
+        ):
+            print("ready")
+            print(staging)
+            print(target)
+            raise SystemExit(0)
+    preserve_staging()
+
+staging.mkdir(mode=0o700)
+staging_metadata = os.lstat(staging)
+if (
+    stat.S_ISLNK(staging_metadata.st_mode)
+    or not stat.S_ISDIR(staging_metadata.st_mode)
+    or stat.S_IMODE(staging_metadata.st_mode) != 0o700
+    or staging_metadata.st_uid != os.getuid()
+):
+    raise SystemExit("new staging root is not a user-owned mode-0700 real directory")
+receipt = {
+    "application_wheel": wheel.name,
+    "application_wheel_sha256": wheel_digest,
+    "bundle_manifest_sha256": manifest_digest,
+    "capture_root": str(target),
+    "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    "schema_version": "cole-voice-lab.install-receipt/v2",
+    "python_runtime_closure_sha256": python_runtime_closure_sha256,
+}
+descriptor, temporary_name = tempfile.mkstemp(prefix=".receipt.", dir=staging)
+temporary = Path(temporary_name)
+try:
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write((json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode())
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, staging / ".INSTALLING")
+except BaseException:
+    temporary.unlink(missing_ok=True)
+    raise
+parent_descriptor = os.open(parent, os.O_RDONLY)
+try:
+    os.fsync(parent_descriptor)
+finally:
+    os.close(parent_descriptor)
+
+print("fresh")
+print(staging)
+print(target)
+PY
+}
+
+canonicalize_runtime() {
+  canonical_root=$1
+  isolated_python "$python_bin" - "$canonical_root" "$python_bin" <<'PY'
+import base64
+import csv
+import hashlib
+import io
+import os
+import platform
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path(sys.argv[1])
+expected_python = Path(sys.argv[2]).resolve(strict=True)
+runtime = root / "runtime"
+runtime_bin = runtime / "bin"
+site_packages = (
+    runtime
+    / "lib"
+    / f"python{sys.version_info.major}.{sys.version_info.minor}"
+    / "site-packages"
+)
+voice_lab = runtime_bin / "voice-lab"
+wrapper = (
+    b"#!/bin/sh\n"
+    b"set -eu\n"
+    b"launcher_directory=${0%/*}\n"
+    b"if [ \"$launcher_directory\" = \"$0\" ]; then launcher_directory=.; fi\n"
+    b"launcher_directory=$(CDPATH= cd -- \"$launcher_directory\" && pwd -P)\n"
+    b"exec \"$launcher_directory/python\" -I -P -B -m cole_voice_lab.cli \"$@\"\n"
+)
+allowed_launchers = {
+    "python",
+    "python3",
+    f"python{sys.version_info.major}.{sys.version_info.minor}",
+}
+for item in runtime_bin.iterdir():
+    if item.name in allowed_launchers:
+        metadata = os.lstat(item)
+        if not stat.S_ISLNK(metadata.st_mode):
+            raise SystemExit(f"venv Python launcher must be a symlink: {item}")
+        continue
+    metadata = os.lstat(item)
+    if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+        raise SystemExit(f"unexpected generated runtime-bin directory: {item}")
+    item.unlink()
+
+descriptor, temporary_name = tempfile.mkstemp(prefix=".voice-lab.", dir=runtime_bin)
+temporary = Path(temporary_name)
+try:
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(wrapper)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(temporary, 0o700)
+    os.replace(temporary, voice_lab)
+except BaseException:
+    temporary.unlink(missing_ok=True)
+    raise
+
+pyvenv_payload = (
+    f"home = {expected_python.parent}\n"
+    "include-system-site-packages = false\n"
+    f"version = {platform.python_version()}\n"
+    f"executable = {expected_python}\n"
+).encode()
+pyvenv = runtime / "pyvenv.cfg"
+pyvenv_metadata = os.lstat(pyvenv)
+if stat.S_ISLNK(pyvenv_metadata.st_mode) or not stat.S_ISREG(pyvenv_metadata.st_mode):
+    raise SystemExit("generated pyvenv.cfg must be a regular file")
+descriptor, temporary_name = tempfile.mkstemp(prefix=".pyvenv.", dir=runtime)
+temporary = Path(temporary_name)
+try:
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(pyvenv_payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, pyvenv)
+except BaseException:
+    temporary.unlink(missing_ok=True)
+    raise
+
+for path in site_packages.rglob("*"):
+    metadata = os.lstat(path)
+    if path.suffix in {".pyc", ".pth"}:
+        raise SystemExit(f"unbound Python path/bytecode file is forbidden: {path}")
+    if stat.S_ISLNK(metadata.st_mode):
+        raise SystemExit(f"site-packages symlink is forbidden: {path}")
+for cache in sorted(site_packages.rglob("__pycache__"), reverse=True):
+    if cache.is_dir() and not any(cache.iterdir()):
+        cache.rmdir()
+
+application_records = sorted(site_packages.glob("cole_voice_lab-*.dist-info/RECORD"))
+if len(application_records) != 1:
+    raise SystemExit("installed application must have exactly one RECORD")
+application_record = application_records[0]
+records = sorted(site_packages.glob("*.dist-info/RECORD"))
+if not records:
+    raise SystemExit("installed wheels must contain RECORD evidence")
+relative_wrapper = os.path.relpath(voice_lab, site_packages)
+encoded_hash = base64.urlsafe_b64encode(hashlib.sha256(wrapper).digest()).rstrip(b"=").decode()
+for record_path in records:
+    try:
+        rows = list(
+            csv.reader(
+                io.StringIO(record_path.read_text(encoding="utf-8"), newline=""),
+                strict=True,
+            )
+        )
+    except (UnicodeDecodeError, csv.Error) as error:
+        raise SystemExit(f"installed RECORD is malformed: {record_path}") from error
+    if any(len(row) != 3 for row in rows) or len({row[0] for row in rows}) != len(rows):
+        raise SystemExit(f"installed RECORD has invalid or duplicate rows: {record_path}")
+    matches = [index for index, row in enumerate(rows) if row[0] == relative_wrapper]
+    if record_path == application_record:
+        if len(matches) != 1:
+            raise SystemExit("installed application RECORD has invalid console-script evidence")
+        rows[matches[0]] = [relative_wrapper, f"sha256={encoded_hash}", str(len(wrapper))]
+    elif matches:
+        raise SystemExit(f"dependency RECORD unexpectedly owns voice-lab: {record_path}")
+    rows.sort(key=lambda row: row[0])
+    output = io.StringIO(newline="")
+    csv.writer(output, lineterminator="\n").writerows(rows)
+    record_payload = output.getvalue().encode()
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".record.", dir=record_path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(record_payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, record_path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+for directory in (runtime_bin, *(record.parent for record in records), runtime):
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+PY
+}
+
+validate_installed_root() {
+  install_root=$1
+  receipt_state=$2
+  isolated_python "$python_bin" - \
+    "$install_root" \
+    "$capture_root" \
+    "$bundle_directory" \
+    "$wheel_path" \
+    "$expected_wheel_sha256" \
+    "$expected_manifest_sha256" \
+    "$python_runtime_closure_sha256" \
+    "$python_bin" \
+    "$receipt_state" <<'PY'
+import base64
+import csv
+import hashlib
+import io
+import json
+import os
+import platform
+import re
+import stat
+import sys
+import zipfile
+from datetime import datetime
+from pathlib import Path, PurePosixPath
+
+root = Path(sys.argv[1])
+target = Path(os.path.abspath(sys.argv[2]))
+bundle = Path(sys.argv[3])
+application_wheel = Path(sys.argv[4])
+wheel_digest = sys.argv[5]
+manifest_digest = sys.argv[6]
+python_runtime_closure_sha256 = sys.argv[7]
+expected_python = Path(sys.argv[8]).resolve(strict=True)
+receipt_state = sys.argv[9]
+receipt_name = ".INSTALLING" if receipt_state == "fresh" else "READY"
+if receipt_state not in {"fresh", "sealed"}:
+    raise SystemExit("invalid installed-root receipt state")
+wrapper_payload = (
+    b"#!/bin/sh\n"
+    b"set -eu\n"
+    b"launcher_directory=${0%/*}\n"
+    b"if [ \"$launcher_directory\" = \"$0\" ]; then launcher_directory=.; fi\n"
+    b"launcher_directory=$(CDPATH= cd -- \"$launcher_directory\" && pwd -P)\n"
+    b"exec \"$launcher_directory/python\" -I -P -B -m cole_voice_lab.cli \"$@\"\n"
+)
+
+
+def sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def normalized(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def safe_member(name: str, label: str) -> None:
+    pure = PurePosixPath(name)
+    if (
+        not name
+        or name.startswith("/")
+        or "\\" in name
+        or pure.is_absolute()
+        or any(part in {"", ".", ".."} for part in pure.parts)
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
+    ):
+        raise SystemExit(f"unsafe wheel member during install verification: {label}: {name!r}")
+
+
+def decode_hash(value: str, label: str) -> bytes:
+    algorithm, separator, encoded = value.partition("=")
+    if separator != "=" or algorithm != "sha256" or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded):
+        raise SystemExit(f"invalid RECORD hash during install verification: {label}")
+    try:
+        result = base64.b64decode(
+            encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
+        )
+    except (ValueError, base64.binascii.Error) as error:
+        raise SystemExit(f"invalid RECORD base64 during install verification: {label}") from error
+    if len(result) != 32:
+        raise SystemExit(f"invalid RECORD SHA-256 length during install verification: {label}")
+    return result
+
+
+def parse_record(payload: bytes, label: str, allow_parent: bool = False) -> dict[str, tuple[str, str]]:
+    try:
+        text = payload.decode("utf-8")
+        reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+        records: dict[str, tuple[str, str]] = {}
+        for row in reader:
+            if len(row) != 3:
+                raise SystemExit(f"RECORD row must have three fields: {label}")
+            name, hash_value, size_value = row
+            if allow_parent:
+                if not name or name.startswith("/") or "\\" in name or any(
+                    ord(character) < 32 or ord(character) == 127 for character in name
+                ):
+                    raise SystemExit(f"installed RECORD has an unsafe path: {label}: {name!r}")
+            else:
+                safe_member(name, label)
+            if name in records:
+                raise SystemExit(f"RECORD has a duplicate path: {label}: {name}")
+            records[name] = (hash_value, size_value)
+    except (UnicodeDecodeError, csv.Error) as error:
+        raise SystemExit(f"RECORD is malformed: {label}") from error
+    return records
+
+
+def canonical_record_payload(records: dict[str, tuple[str, str]]) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerows([name, *records[name]] for name in sorted(records))
+    return output.getvalue().encode()
+
+
+def require_regular(path: Path, label: str, executable: bool = False) -> os.stat_result:
+    try:
+        metadata = os.lstat(path)
+    except OSError as error:
+        raise SystemExit(f"missing installed file: {label}: {path}") from error
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+    ):
+        raise SystemExit(f"installed file must be a single-link regular file: {label}: {path}")
+    if executable and not os.access(path, os.X_OK):
+        raise SystemExit(f"installed console script is not executable: {path}")
+    return metadata
+
+
+root_metadata = os.lstat(root)
+if (
+    stat.S_ISLNK(root_metadata.st_mode)
+    or not stat.S_ISDIR(root_metadata.st_mode)
+    or stat.S_IMODE(root_metadata.st_mode) != 0o700
+    or root_metadata.st_uid != os.getuid()
+):
+    raise SystemExit("installed root must be a user-owned mode-0700 real directory")
+top_names = {item.name for item in root.iterdir()}
+if top_names != {receipt_name, "runtime", "assets"}:
+    raise SystemExit(f"installed root has unexpected top-level membership: {sorted(top_names)!r}")
+receipt_path = root / receipt_name
+receipt_metadata = require_regular(receipt_path, "installation receipt")
+if stat.S_IMODE(receipt_metadata.st_mode) != 0o600 or receipt_metadata.st_uid != os.getuid():
+    raise SystemExit("installation receipt must be owned by the user with mode 0600")
+try:
+    receipt = json.loads(receipt_path.read_bytes())
+except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    raise SystemExit("installation receipt is invalid") from error
+if not isinstance(receipt, dict):
+    raise SystemExit("installation receipt must be an object")
+expected_receipt = {
+    "application_wheel": application_wheel.name,
+    "application_wheel_sha256": wheel_digest,
+    "bundle_manifest_sha256": manifest_digest,
+    "capture_root": str(target),
+    "python_runtime_closure_sha256": python_runtime_closure_sha256,
+    "schema_version": "cole-voice-lab.install-receipt/v2",
+}
+for key, value in expected_receipt.items():
+    if receipt.get(key) != value:
+        raise SystemExit("installation receipt belongs to a different target or bundle")
+created_at = receipt.get("created_at")
+if not isinstance(created_at, str):
+    raise SystemExit("installation receipt is missing created_at")
+try:
+    parsed_created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+except ValueError as error:
+    raise SystemExit("installation receipt created_at is invalid") from error
+if parsed_created_at.utcoffset() is None:
+    raise SystemExit("installation receipt created_at must include an offset")
+expected_keys = set(expected_receipt) | {"created_at"}
+if receipt_state == "sealed":
+    expected_keys |= {"install_evidence_sha256", "install_tree"}
+if set(receipt) != expected_keys:
+    raise SystemExit("installation receipt has unexpected or missing fields")
+
+runtime = root / "runtime"
+assets = root / "assets"
+for directory, label in ((runtime, "runtime"), (assets, "asset")):
+    metadata = os.lstat(directory)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit(f"staged {label} root must be a real directory")
+    if stat.S_IMODE(metadata.st_mode) != 0o700:
+        raise SystemExit(f"staged {label} root must have mode 0700")
+version_directory = f"python{sys.version_info.major}.{sys.version_info.minor}"
+expected_runtime_names = {"bin", "include", "lib", "pyvenv.cfg"}
+if {item.name for item in runtime.iterdir()} != expected_runtime_names:
+    raise SystemExit("staged runtime has unexpected generated top-level members")
+for directory, expected_names in (
+    (runtime / "include", {version_directory}),
+    (runtime / "include" / version_directory, set()),
+    (runtime / "lib", {version_directory}),
+    (runtime / "lib" / version_directory, {"site-packages"}),
+):
+    metadata = os.lstat(directory)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit(f"generated runtime path must be a real directory: {directory}")
+    if {item.name for item in directory.iterdir()} != expected_names:
+        raise SystemExit(f"generated runtime directory has unexpected members: {directory}")
+runtime_bin = runtime / "bin"
+runtime_bin_metadata = os.lstat(runtime_bin)
+if stat.S_ISLNK(runtime_bin_metadata.st_mode) or not stat.S_ISDIR(runtime_bin_metadata.st_mode):
+    raise SystemExit("runtime bin must be a real directory")
+allowed_python_launchers = {"python", "python3", version_directory}
+if {item.name for item in runtime_bin.iterdir()} != allowed_python_launchers | {"voice-lab"}:
+    raise SystemExit("runtime bin contains an unreviewed generated executable")
+runtime_python = runtime_bin / "python"
+if runtime_python.resolve(strict=True) != expected_python:
+    raise SystemExit("staged runtime Python does not resolve to the pinned host Python")
+expected_python_sha256 = sha256_file(expected_python)
+for launcher_name in allowed_python_launchers:
+    launcher = runtime_bin / launcher_name
+    launcher_metadata = os.lstat(launcher)
+    if not stat.S_ISLNK(launcher_metadata.st_mode):
+        raise SystemExit(f"runtime Python launcher must be a symlink: {launcher}")
+    if launcher.resolve(strict=True) != expected_python:
+        raise SystemExit(f"runtime Python launcher was retargeted: {launcher}")
+    if sha256_file(launcher.resolve(strict=True)) != expected_python_sha256:
+        raise SystemExit(f"runtime Python launcher target bytes changed: {launcher}")
+voice_lab = runtime / "bin" / "voice-lab"
+voice_metadata = require_regular(voice_lab, "voice-lab console script", executable=True)
+if (
+    voice_lab.read_bytes() != wrapper_payload
+    or stat.S_IMODE(voice_metadata.st_mode) != 0o700
+    or voice_metadata.st_uid != os.getuid()
+):
+    raise SystemExit("installed voice-lab wrapper differs from manifest-bound canonical bytes")
+
+pyvenv = runtime / "pyvenv.cfg"
+pyvenv_metadata = require_regular(pyvenv, "canonical pyvenv.cfg")
+expected_pyvenv = (
+    f"home = {expected_python.parent}\n"
+    "include-system-site-packages = false\n"
+    f"version = {platform.python_version()}\n"
+    f"executable = {expected_python}\n"
+).encode()
+if (
+    pyvenv.read_bytes() != expected_pyvenv
+    or stat.S_IMODE(pyvenv_metadata.st_mode) != 0o600
+):
+    raise SystemExit("pyvenv.cfg differs from canonical reviewed runtime evidence")
+
+site_packages = runtime / "lib" / version_directory / "site-packages"
+site_metadata = os.lstat(site_packages)
+if stat.S_ISLNK(site_metadata.st_mode) or not stat.S_ISDIR(site_metadata.st_mode):
+    raise SystemExit("staged site-packages must be a real directory")
+
+wheel_evidence: list[dict[str, object]] = []
+expected_site_files: set[str] = set()
+for wheel_path in sorted(bundle.glob("*.whl"), key=lambda path: path.name):
+    if sha256_file(wheel_path) == "":
+        raise AssertionError("unreachable")
+    try:
+        archive = zipfile.ZipFile(wheel_path)
+    except (OSError, zipfile.BadZipFile) as error:
+        raise SystemExit(f"bundled wheel changed before install verification: {wheel_path.name}") from error
+    with archive:
+        infos = archive.infolist()
+        by_name = {info.filename: info for info in infos}
+        if len(by_name) != len(infos):
+            raise SystemExit(f"bundled wheel now has duplicate members: {wheel_path.name}")
+        for info in infos:
+            safe_member(info.filename, wheel_path.name)
+        records = [name for name in by_name if name.endswith(".dist-info/RECORD")]
+        metadata_names = [name for name in by_name if name.endswith(".dist-info/METADATA")]
+        if len(records) != 1 or len(metadata_names) != 1:
+            raise SystemExit(f"bundled wheel metadata cardinality changed: {wheel_path.name}")
+        record_name = records[0]
+        dist_info = record_name.rsplit("/", 1)[0]
+        is_application = wheel_path.name == application_wheel.name
+        wheel_record = parse_record(archive.read(by_name[record_name]), wheel_path.name)
+        if set(wheel_record) != set(by_name):
+            raise SystemExit(f"bundled wheel RECORD membership changed: {wheel_path.name}")
+        installed_record_path = site_packages / record_name
+        installed_record_metadata = require_regular(
+            installed_record_path, f"installed RECORD for {wheel_path.name}"
+        )
+        if stat.S_IMODE(installed_record_metadata.st_mode) & 0o022:
+            raise SystemExit(f"installed RECORD is group/world writable: {wheel_path.name}")
+        installed_record_payload = installed_record_path.read_bytes()
+        installed_record = parse_record(
+            installed_record_payload, f"installed {wheel_path.name}", allow_parent=True
+        )
+        if installed_record_payload != canonical_record_payload(installed_record):
+            raise SystemExit(
+                f"installed RECORD bytes are not canonical and wheel-derived: {wheel_path.name}"
+            )
+        expected_installed_names = set(by_name) | {
+            f"{dist_info}/INSTALLER",
+            f"{dist_info}/REQUESTED",
+        }
+        relative_wrapper = os.path.relpath(voice_lab, site_packages)
+        if is_application:
+            expected_installed_names.add(relative_wrapper)
+        if set(installed_record) != expected_installed_names:
+            missing = sorted(expected_installed_names - set(installed_record))
+            extra = sorted(set(installed_record) - expected_installed_names)
+            raise SystemExit(
+                f"installed RECORD membership is not wheel-derived: {wheel_path.name}; "
+                f"missing={missing!r}, extra={extra!r}"
+            )
+        installed_files: list[dict[str, object]] = []
+        for member_name, (record_hash, record_size) in wheel_record.items():
+            expected_site_files.add(member_name)
+            if member_name == record_name:
+                if record_hash or record_size:
+                    raise SystemExit(f"wheel RECORD self-row is not empty: {wheel_path.name}")
+                continue
+            installed = site_packages / member_name
+            metadata = require_regular(installed, f"{wheel_path.name}: {member_name}")
+            if member_name not in installed_record:
+                raise SystemExit(f"installed RECORD omits wheel member: {wheel_path.name}: {member_name}")
+            if not record_size.isdecimal() or metadata.st_size != int(record_size):
+                raise SystemExit(f"installed wheel member size mismatch: {wheel_path.name}: {member_name}")
+            content_digest = hashlib.sha256(installed.read_bytes()).digest()
+            if decode_hash(record_hash, f"{wheel_path.name}: {member_name}") != content_digest:
+                raise SystemExit(f"installed wheel member hash mismatch: {wheel_path.name}: {member_name}")
+            installed_hash, installed_size = installed_record[member_name]
+            if (
+                decode_hash(installed_hash, f"installed {wheel_path.name}: {member_name}")
+                != content_digest
+                or installed_size != record_size
+            ):
+                raise SystemExit(
+                    f"installed RECORD evidence disagrees with wheel content: {wheel_path.name}: {member_name}"
+                )
+            installed_files.append(
+                {"path": member_name, "sha256": content_digest.hex(), "size_bytes": metadata.st_size}
+            )
+        if installed_record.get(record_name) != ("", ""):
+            raise SystemExit(f"installed RECORD self-row is invalid: {wheel_path.name}")
+        for generated_name, generated_payload in (
+            (f"{dist_info}/INSTALLER", b"pip\n"),
+            (f"{dist_info}/REQUESTED", b""),
+        ):
+            generated_path = site_packages / generated_name
+            generated_metadata = require_regular(
+                generated_path, f"deterministic generated metadata {generated_name}"
+            )
+            if generated_path.read_bytes() != generated_payload:
+                raise SystemExit(f"generated install metadata is not canonical: {generated_name}")
+            generated_hash, generated_size = installed_record[generated_name]
+            if (
+                decode_hash(generated_hash, f"installed {wheel_path.name}: {generated_name}")
+                != hashlib.sha256(generated_payload).digest()
+                or generated_size != str(generated_metadata.st_size)
+            ):
+                raise SystemExit(f"installed RECORD does not bind generated metadata: {generated_name}")
+            expected_site_files.add(generated_name)
+        if is_application:
+            wrapper_hash, wrapper_size = installed_record[relative_wrapper]
+            if (
+                decode_hash(wrapper_hash, "installed canonical voice-lab wrapper")
+                != hashlib.sha256(wrapper_payload).digest()
+                or wrapper_size != str(len(wrapper_payload))
+            ):
+                raise SystemExit("installed RECORD does not bind the canonical voice-lab wrapper")
+        for installed_name, (hash_value, size_value) in installed_record.items():
+            normalized_path = Path(os.path.normpath(str(site_packages / installed_name)))
+            try:
+                normalized_path.relative_to(runtime)
+            except ValueError as error:
+                raise SystemExit(
+                    f"installed RECORD path escapes the staged runtime: {wheel_path.name}: {installed_name}"
+                ) from error
+            metadata = require_regular(normalized_path, f"installed RECORD path {installed_name}")
+            if hash_value:
+                payload_digest = hashlib.sha256(normalized_path.read_bytes()).digest()
+                if decode_hash(hash_value, f"installed {wheel_path.name}: {installed_name}") != payload_digest:
+                    raise SystemExit(
+                        f"installed RECORD hash does not match installed file: {wheel_path.name}: {installed_name}"
+                    )
+                if not size_value.isdecimal() or int(size_value) != metadata.st_size:
+                    raise SystemExit(
+                        f"installed RECORD size does not match installed file: {wheel_path.name}: {installed_name}"
+                    )
+            elif installed_name != record_name:
+                raise SystemExit(
+                    f"installed RECORD has unsealed generated content: {wheel_path.name}: {installed_name}"
+                )
+        wheel_evidence.append(
+            {
+                "filename": wheel_path.name,
+                "sha256": sha256_file(wheel_path),
+                "record_sha256": sha256_bytes(archive.read(by_name[record_name])),
+                "installed_record_sha256": sha256_bytes(installed_record_payload),
+                "installed_files": sorted(installed_files, key=lambda item: str(item["path"])),
+                "dist_info": dist_info,
+            }
+        )
+
+actual_site_files: set[str] = set()
+actual_site_directories: set[str] = set()
+for directory, directory_names, file_names in os.walk(site_packages, followlinks=False):
+    directory_names.sort()
+    file_names.sort()
+    parent = Path(directory)
+    for name in tuple(directory_names):
+        candidate = parent / name
+        relative = candidate.relative_to(site_packages).as_posix()
+        metadata = os.lstat(candidate)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise SystemExit(f"site-packages contains an unsafe directory entry: {relative}")
+        actual_site_directories.add(relative)
+    for name in file_names:
+        candidate = parent / name
+        relative = candidate.relative_to(site_packages).as_posix()
+        metadata = require_regular(candidate, f"site-packages member {relative}")
+        if candidate.suffix in {".pyc", ".pth"}:
+            raise SystemExit(f"unbound Python path/bytecode file is forbidden: {relative}")
+        if stat.S_IMODE(metadata.st_mode) & 0o022:
+            raise SystemExit(f"site-packages member is group/world writable: {relative}")
+        actual_site_files.add(relative)
+expected_site_directories: set[str] = set()
+for filename in expected_site_files:
+    parent = PurePosixPath(filename).parent
+    while parent.parts:
+        expected_site_directories.add(parent.as_posix())
+        parent = parent.parent
+if actual_site_files != expected_site_files or actual_site_directories != expected_site_directories:
+    raise SystemExit(
+        "site-packages membership is not exactly derived from reviewed wheels; "
+        f"missing_files={sorted(expected_site_files - actual_site_files)!r}, "
+        f"extra_files={sorted(actual_site_files - expected_site_files)!r}, "
+        f"missing_directories={sorted(expected_site_directories - actual_site_directories)!r}, "
+        f"extra_directories={sorted(actual_site_directories - expected_site_directories)!r}"
+    )
+
+evidence_payload = json.dumps(
+    {
+        "wheels": wheel_evidence,
+        "console_script": {
+            "path": "runtime/bin/voice-lab",
+            "sha256": sha256_bytes(wrapper_payload),
+        },
+        "python_runtime_closure_sha256": python_runtime_closure_sha256,
+    },
+    sort_keys=True,
+    separators=(",", ":"),
+).encode()
+evidence_digest = sha256_bytes(evidence_payload)
+
+
+def tree_digest() -> tuple[int, str]:
+    entries: list[dict[str, object]] = []
+
+    def visit(directory: Path) -> None:
+        for item in sorted(directory.iterdir(), key=lambda path: path.name):
+            relative = item.relative_to(root).as_posix()
+            if relative in {"READY", ".INSTALLING"}:
+                continue
+            metadata = os.lstat(item)
+            common: dict[str, object] = {
+                "path": relative,
+                "mode": stat.S_IMODE(metadata.st_mode),
+            }
+            if stat.S_ISDIR(metadata.st_mode):
+                common["type"] = "directory"
+                entries.append(common)
+                visit(item)
+            elif stat.S_ISREG(metadata.st_mode):
+                if metadata.st_nlink != 1:
+                    raise SystemExit(f"installed tree contains a hard-linked file: {relative}")
+                common.update(
+                    {
+                        "type": "file",
+                        "size_bytes": metadata.st_size,
+                        "sha256": sha256_file(item),
+                    }
+                )
+                entries.append(common)
+            elif stat.S_ISLNK(metadata.st_mode):
+                allowed_symlinks = {
+                    "runtime/bin/python",
+                    "runtime/bin/python3",
+                    f"runtime/bin/python{sys.version_info.major}.{sys.version_info.minor}",
+                }
+                if relative not in allowed_symlinks:
+                    raise SystemExit(f"installed tree contains a forbidden symlink: {relative}")
+                resolved = item.resolve(strict=True)
+                resolved_metadata = os.lstat(resolved)
+                if (
+                    resolved != expected_python
+                    or not stat.S_ISREG(resolved_metadata.st_mode)
+                    or not os.access(resolved, os.X_OK)
+                ):
+                    raise SystemExit(f"runtime Python symlink was retargeted: {relative}")
+                common.update(
+                    {
+                        "type": "symlink",
+                        "target": os.readlink(item),
+                        "resolved_path": str(resolved),
+                        "resolved_sha256": sha256_file(resolved),
+                        "resolved_size_bytes": resolved_metadata.st_size,
+                    }
+                )
+                entries.append(common)
+            else:
+                raise SystemExit(f"installed tree contains a non-regular entry: {relative}")
+
+    visit(root)
+    payload = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+    return len(entries), sha256_bytes(payload)
+
+
+if receipt_state == "sealed":
+    install_tree = receipt.get("install_tree")
+    if not isinstance(install_tree, dict) or set(install_tree) != {"entry_count", "sha256"}:
+        raise SystemExit("sealed installation receipt has invalid tree evidence")
+    count, sealed_tree_digest = tree_digest()
+    if install_tree != {"entry_count": count, "sha256": sealed_tree_digest}:
+        raise SystemExit("installed tree does not match its sealed READY receipt")
+    if receipt.get("install_evidence_sha256") != evidence_digest:
+        raise SystemExit("installed wheel evidence does not match its sealed READY receipt")
+
+print(evidence_digest)
+PY
+}
+
+seal_fresh_stage() {
+  seal_root=$1
+  install_evidence=$2
+  isolated_python "$python_bin" - "$seal_root" "$install_evidence" "$python_bin" <<'PY'
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path(sys.argv[1])
+install_evidence = sys.argv[2]
+expected_python = Path(sys.argv[3]).resolve(strict=True)
+if re.fullmatch(r"[0-9a-f]{64}", install_evidence) is None:
+    raise SystemExit("invalid install-evidence digest")
+installing = root / ".INSTALLING"
+ready = root / "READY"
+if ready.exists() or ready.is_symlink():
+    raise SystemExit("READY appeared before installation sealing")
+metadata = os.lstat(installing)
+if (
+    stat.S_ISLNK(metadata.st_mode)
+    or not stat.S_ISREG(metadata.st_mode)
+    or metadata.st_nlink != 1
+    or stat.S_IMODE(metadata.st_mode) != 0o600
+):
+    raise SystemExit(".INSTALLING receipt is unsafe")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+entries: list[dict[str, object]] = []
+
+
+def visit(directory: Path) -> None:
+    for item in sorted(directory.iterdir(), key=lambda path: path.name):
+        relative = item.relative_to(root).as_posix()
+        if relative in {"READY", ".INSTALLING"}:
+            continue
+        item_metadata = os.lstat(item)
+        common: dict[str, object] = {
+            "path": relative,
+            "mode": stat.S_IMODE(item_metadata.st_mode),
+        }
+        if stat.S_ISDIR(item_metadata.st_mode):
+            common["type"] = "directory"
+            entries.append(common)
+            visit(item)
+        elif stat.S_ISREG(item_metadata.st_mode):
+            if item_metadata.st_nlink != 1:
+                raise SystemExit(f"installed tree contains a hard-linked file: {relative}")
+            common.update(
+                {
+                    "type": "file",
+                    "size_bytes": item_metadata.st_size,
+                    "sha256": sha256_file(item),
+                }
+            )
+            entries.append(common)
+        elif stat.S_ISLNK(item_metadata.st_mode):
+            allowed_symlinks = {
+                "runtime/bin/python",
+                "runtime/bin/python3",
+                f"runtime/bin/python{sys.version_info.major}.{sys.version_info.minor}",
+            }
+            if relative not in allowed_symlinks:
+                raise SystemExit(f"installed tree contains a forbidden symlink: {relative}")
+            resolved = item.resolve(strict=True)
+            resolved_metadata = os.lstat(resolved)
+            if (
+                resolved != expected_python
+                or not stat.S_ISREG(resolved_metadata.st_mode)
+                or not os.access(resolved, os.X_OK)
+            ):
+                raise SystemExit(f"runtime Python symlink was retargeted: {relative}")
+            common.update(
+                {
+                    "type": "symlink",
+                    "target": os.readlink(item),
+                    "resolved_path": str(resolved),
+                    "resolved_sha256": sha256_file(resolved),
+                    "resolved_size_bytes": resolved_metadata.st_size,
+                }
+            )
+            entries.append(common)
+        else:
+            raise SystemExit(f"installed tree contains a non-regular entry: {relative}")
+
+
+visit(root)
+tree_payload = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+receipt = json.loads(installing.read_bytes())
+receipt["install_evidence_sha256"] = install_evidence
+receipt["install_tree"] = {
+    "entry_count": len(entries),
+    "sha256": hashlib.sha256(tree_payload).hexdigest(),
+}
+descriptor, temporary_name = tempfile.mkstemp(prefix=".sealed-receipt.", dir=root)
+temporary = Path(temporary_name)
+try:
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write((json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode())
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, installing)
+    os.replace(installing, ready)
+except BaseException:
+    temporary.unlink(missing_ok=True)
+    raise
+descriptor = os.open(root, os.O_RDONLY)
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+}
+
+publish_stage() {
+  publish_root=$1
+  isolated_python "$python_bin" - "$publish_root" "$capture_root" <<'PY'
+import ctypes
+import errno
+import os
+import stat
+import sys
+from pathlib import Path
+
+staging = Path(sys.argv[1])
+target = Path(sys.argv[2])
+if target.exists() or target.is_symlink():
+    raise SystemExit("capture root appeared during installation; refusing to overwrite it")
+staging_metadata = os.lstat(staging)
+parent_metadata = os.lstat(target.parent)
+if (
+    stat.S_ISLNK(staging_metadata.st_mode)
+    or not stat.S_ISDIR(staging_metadata.st_mode)
+    or staging_metadata.st_dev != parent_metadata.st_dev
+):
+    raise SystemExit("staging root must be a same-filesystem real sibling directory")
+ready = staging / "READY"
+ready_metadata = os.lstat(ready)
+if (
+    stat.S_ISLNK(ready_metadata.st_mode)
+    or not stat.S_ISREG(ready_metadata.st_mode)
+    or ready_metadata.st_nlink != 1
+):
+    raise SystemExit("staged READY receipt is unsafe")
+
+library = ctypes.CDLL(None, use_errno=True)
+encoded_staging = os.fsencode(staging)
+encoded_target = os.fsencode(target)
+if sys.platform == "darwin":
+    rename_exclusive = getattr(library, "renameatx_np", None)
+    if rename_exclusive is None:
+        raise SystemExit("renameatx_np is unavailable; cannot publish without no-clobber semantics")
+    rename_exclusive.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    rename_exclusive.restype = ctypes.c_int
+    result = rename_exclusive(-2, encoded_staging, -2, encoded_target, 0x00000004)
+elif sys.platform.startswith("linux"):
+    rename_exclusive = getattr(library, "renameat2", None)
+    if rename_exclusive is None:
+        raise SystemExit("renameat2 is unavailable; cannot publish without no-clobber semantics")
+    rename_exclusive.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    rename_exclusive.restype = ctypes.c_int
+    result = rename_exclusive(-100, encoded_staging, -100, encoded_target, 0x00000001)
+else:
+    raise SystemExit("platform lacks a supported atomic no-clobber directory rename")
+if result != 0:
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise SystemExit("capture root appeared during publication; refusing to overwrite it")
+    raise OSError(error_number, os.strerror(error_number), target)
+
+descriptor = os.open(target.parent, os.O_RDONLY)
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+}
+
+prepare_result=$(prepare_stage initial)
+stage_state=$(printf '%s\n' "$prepare_result" | sed -n '1p')
+staging_root=$(printf '%s\n' "$prepare_result" | sed -n '2p')
+capture_root=$(printf '%s\n' "$prepare_result" | sed -n '3p')
+
+case "$stage_state" in
+  target)
+    validate_installed_root "$capture_root" sealed >/dev/null
+    printf 'capture runtime already installed and verified at %s\n' "$capture_root"
+    ;;
+  ready)
+    if validate_installed_root "$staging_root" sealed >/dev/null; then
+      publish_stage "$staging_root"
+      printf 'recovered verified capture runtime at %s\n' "$capture_root"
+    else
+      printf '%s\n' 'existing READY stage failed validation; preserving it and rebuilding' >&2
+      prepare_result=$(prepare_stage replace)
+      stage_state=$(printf '%s\n' "$prepare_result" | sed -n '1p')
+      staging_root=$(printf '%s\n' "$prepare_result" | sed -n '2p')
+      capture_root=$(printf '%s\n' "$prepare_result" | sed -n '3p')
+    fi
+    ;;
+  fresh)
+    ;;
+  *)
+    printf 'invalid staging state: %s\n' "$stage_state" >&2
+    exit 70
+    ;;
+esac
+
+if [ "$stage_state" = "fresh" ]; then
+  isolated_python "$python_bin" -m venv --without-pip "$staging_root/runtime"
+  chmod 700 "$staging_root/runtime"
+  "$bundle_directory/macbook-bootstrap" \
+    --verify-bundle \
+    "$wheel_path" \
+    "$expected_wheel_sha256" \
+    "$expected_manifest_sha256" >/dev/null
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ensurepip_wheel" \
+    "$staging_root/runtime/bin/python" -P -m pip install \
+    --disable-pip-version-check \
+    --no-index \
+    --no-deps \
+    --no-compile \
+    --find-links "$bundle_directory" \
+    --only-binary=:all: \
+    --require-hashes \
+    --requirement "$bundle_directory/capture-kit-requirements.txt"
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ensurepip_wheel" \
+    "$staging_root/runtime/bin/python" -P -m pip check
+  canonicalize_runtime "$staging_root"
+  "$staging_root/runtime/bin/voice-lab" assets init --asset-root "$staging_root/assets"
+  "$bundle_directory/macbook-bootstrap" \
+    --verify-bundle \
+    "$wheel_path" \
+    "$expected_wheel_sha256" \
+    "$expected_manifest_sha256" >/dev/null
+  install_evidence=$(validate_installed_root "$staging_root" fresh)
+  seal_fresh_stage "$staging_root" "$install_evidence"
+  validate_installed_root "$staging_root" sealed >/dev/null
+  publish_stage "$staging_root"
+  printf 'capture runtime installed at %s\n' "$capture_root"
+fi
+
+PYTHONDONTWRITEBYTECODE=1 "$capture_root/runtime/bin/voice-lab" --help >/dev/null
+validate_installed_root "$capture_root" sealed >/dev/null
+
+voice_lab_bin=$capture_root/runtime/bin/voice-lab
+asset_root=$capture_root/assets
+printf '%s\n' 'Run the device probe in a foreground Terminal:'
+printf '  %s -hide_banner -f avfoundation -list_devices true -i ""\n' "$ffmpeg_bin"
+printf '%s\n' 'Then use the installed absolute commands documented in CAPTURE_KIT.md:'
+printf '  %s capture devices --ffmpeg %s\n' "$voice_lab_bin" "$ffmpeg_bin"
+printf '  %s capture run --asset-root %s --session-id SESSION_ID --suite pilot\n' \
+  "$voice_lab_bin" "$asset_root"
+printf '  %s sync plan %s/tmp/capture-SESSION_ID --live-plan --json\n' \
+  "$voice_lab_bin" "$asset_root"

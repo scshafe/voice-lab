@@ -1,0 +1,689 @@
+{
+  "$defs": {
+    "AcceptedUtteranceBinding": {
+      "additionalProperties": false,
+      "description": "Immutable coordinates for one utterance in the accepted raw store.",
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioSpec"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "prompt_suite_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "raw_audio_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Raw Audio Path",
+          "type": "string"
+        },
+        "raw_audio_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "raw_audio_size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Raw Audio Size Bytes",
+          "type": "integer"
+        },
+        "raw_manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "raw_session_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Raw Session Path",
+          "type": "string"
+        },
+        "session_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_qc_passed": {
+          "const": true,
+          "default": true,
+          "title": "Source Qc Passed",
+          "type": "boolean"
+        },
+        "source_qc_report_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "transcript": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Transcript",
+          "type": "string"
+        }
+      },
+      "required": [
+        "raw_session_path",
+        "raw_manifest_sha256",
+        "raw_audio_path",
+        "raw_audio_sha256",
+        "raw_audio_size_bytes",
+        "audio",
+        "session_id",
+        "subject_id",
+        "prompt_suite_id",
+        "prompt_id",
+        "transcript",
+        "source_qc_report_sha256"
+      ],
+      "title": "AcceptedUtteranceBinding",
+      "type": "object"
+    },
+    "AudioSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "encoding": {
+          "enum": [
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "maximum": 384000,
+          "minimum": 8000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sample_width_bytes": {
+          "enum": [
+            2,
+            3,
+            4
+          ],
+          "title": "Sample Width Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_rate_hz",
+        "channels",
+        "sample_width_bytes",
+        "encoding",
+        "frames",
+        "duration_seconds"
+      ],
+      "title": "AudioSpec",
+      "type": "object"
+    },
+    "BoundHeadphoneReview": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceBinding"
+        },
+        "record": {
+          "$ref": "#/$defs/HeadphoneReviewEvidence"
+        }
+      },
+      "required": [
+        "file",
+        "record"
+      ],
+      "title": "BoundHeadphoneReview",
+      "type": "object"
+    },
+    "BoundPilotGate": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceBinding"
+        },
+        "record": {
+          "$ref": "#/$defs/PilotGateApproval"
+        }
+      },
+      "required": [
+        "file",
+        "record"
+      ],
+      "title": "BoundPilotGate",
+      "type": "object"
+    },
+    "CategoryAccounting": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/DatasetCategory"
+        },
+        "permanent_holdout_count": {
+          "minimum": 0,
+          "title": "Permanent Holdout Count",
+          "type": "integer"
+        },
+        "total_count": {
+          "exclusiveMinimum": 0,
+          "title": "Total Count",
+          "type": "integer"
+        },
+        "train_count": {
+          "minimum": 0,
+          "title": "Train Count",
+          "type": "integer"
+        },
+        "validation_count": {
+          "minimum": 0,
+          "title": "Validation Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "category",
+        "train_count",
+        "validation_count",
+        "permanent_holdout_count",
+        "total_count"
+      ],
+      "title": "CategoryAccounting",
+      "type": "object"
+    },
+    "ConsentEvidenceBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "consent_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "file": {
+          "$ref": "#/$defs/JsonEvidenceBinding"
+        },
+        "purpose": {
+          "enum": [
+            "private-zero-shot-evaluation",
+            "private-fine-tuning"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "consent_id",
+        "purpose"
+      ],
+      "title": "ConsentEvidenceBinding",
+      "type": "object"
+    },
+    "DatasetCategory": {
+      "enum": [
+        "neutral",
+        "conversational",
+        "warm-narration",
+        "technical",
+        "numbers",
+        "expressive",
+        "reference"
+      ],
+      "type": "string"
+    },
+    "DatasetEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "headphone_review": {
+          "$ref": "#/$defs/BoundHeadphoneReview"
+        },
+        "prompt": {
+          "$ref": "#/$defs/Prompt"
+        },
+        "prompt_suite": {
+          "$ref": "#/$defs/PromptSuite"
+        },
+        "prompt_suite_purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation"
+          ],
+          "title": "Prompt Suite Purpose",
+          "type": "string"
+        },
+        "prompt_suite_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "source": {
+          "$ref": "#/$defs/AcceptedUtteranceBinding"
+        },
+        "split": {
+          "$ref": "#/$defs/DatasetSplit"
+        }
+      },
+      "required": [
+        "split",
+        "source",
+        "prompt_suite_sha256",
+        "prompt_suite_purpose",
+        "prompt_suite",
+        "prompt",
+        "headphone_review"
+      ],
+      "title": "DatasetEntry",
+      "type": "object"
+    },
+    "DatasetSplit": {
+      "enum": [
+        "train",
+        "validation",
+        "permanent-holdout"
+      ],
+      "type": "string"
+    },
+    "HeadphoneReviewEvidence": {
+      "additionalProperties": false,
+      "description": "A human-authored pass for one exact accepted utterance.",
+      "properties": {
+        "audio_quality_passed": {
+          "const": true,
+          "title": "Audio Quality Passed",
+          "type": "boolean"
+        },
+        "findings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "headphones_used": {
+          "const": true,
+          "title": "Headphones Used",
+          "type": "boolean"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "review_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reviewed_at": {
+          "format": "date-time",
+          "title": "Reviewed At",
+          "type": "string"
+        },
+        "reviewer_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.headphone-review/v1",
+          "default": "cole-voice-lab.headphone-review/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "session_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "transcript_matches": {
+          "const": true,
+          "title": "Transcript Matches",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "review_id",
+        "reviewer_id",
+        "session_id",
+        "prompt_id",
+        "source_sha256",
+        "reviewed_at",
+        "headphones_used",
+        "transcript_matches",
+        "audio_quality_passed"
+      ],
+      "title": "HeadphoneReviewEvidence",
+      "type": "object"
+    },
+    "HoldoutGate": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Actual Duration Seconds",
+          "type": "number"
+        },
+        "minimum_duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Minimum Duration Seconds",
+          "type": "number"
+        },
+        "passed": {
+          "const": true,
+          "default": true,
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "utterance_count": {
+          "exclusiveMinimum": 0,
+          "title": "Utterance Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "minimum_duration_seconds",
+        "actual_duration_seconds",
+        "utterance_count"
+      ],
+      "title": "HoldoutGate",
+      "type": "object"
+    },
+    "JsonEvidenceBinding": {
+      "additionalProperties": false,
+      "description": "An exact, asset-root-relative canonical JSON file.",
+      "properties": {
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 1048576,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "JsonEvidenceBinding",
+      "type": "object"
+    },
+    "PilotGateApproval": {
+      "additionalProperties": false,
+      "description": "Separate human evidence authorizing work beyond the capture pilot.",
+      "properties": {
+        "approved": {
+          "const": true,
+          "title": "Approved",
+          "type": "boolean"
+        },
+        "approved_at": {
+          "format": "date-time",
+          "title": "Approved At",
+          "type": "string"
+        },
+        "approved_by": {
+          "$ref": "#/$defs/cole_voice_lab__datasets__NonBlank__1"
+        },
+        "full_corpus_capture_allowed": {
+          "const": true,
+          "title": "Full Corpus Capture Allowed",
+          "type": "boolean"
+        },
+        "gate_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "headphone_review_completed": {
+          "const": true,
+          "title": "Headphone Review Completed",
+          "type": "boolean"
+        },
+        "pilot_manifest_sha256s": {
+          "items": {
+            "$ref": "#/$defs/Sha256"
+          },
+          "minItems": 1,
+          "title": "Pilot Manifest Sha256S",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.pilot-gate/v1",
+          "default": "cole-voice-lab.pilot-gate/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "statement": {
+          "$ref": "#/$defs/cole_voice_lab__datasets__NonBlank__2"
+        }
+      },
+      "required": [
+        "gate_id",
+        "pilot_manifest_sha256s",
+        "approved",
+        "headphone_review_completed",
+        "full_corpus_capture_allowed",
+        "approved_at",
+        "approved_by",
+        "statement"
+      ],
+      "title": "PilotGateApproval",
+      "type": "object"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "text",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptSuite": {
+      "additionalProperties": false,
+      "properties": {
+        "prompts": {
+          "items": {
+            "$ref": "#/$defs/Prompt"
+          },
+          "minItems": 1,
+          "title": "Prompts",
+          "type": "array"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.prompt-suite/v1",
+          "default": "cole-voice-lab.prompt-suite/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "suite_id",
+        "purpose",
+        "prompts"
+      ],
+      "title": "PromptSuite",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "cole_voice_lab__datasets__NonBlank__1": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "cole_voice_lab__datasets__NonBlank__2": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "category_accounting": {
+      "items": {
+        "$ref": "#/$defs/CategoryAccounting"
+      },
+      "minItems": 1,
+      "title": "Category Accounting",
+      "type": "array"
+    },
+    "consent": {
+      "$ref": "#/$defs/ConsentEvidenceBinding"
+    },
+    "corpus_stage": {
+      "enum": [
+        "pilot",
+        "full-corpus"
+      ],
+      "title": "Corpus Stage",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "created_by": {
+      "$ref": "#/$defs/cole_voice_lab__datasets__NonBlank__1"
+    },
+    "dataset_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/DatasetEntry"
+      },
+      "minItems": 3,
+      "title": "Entries",
+      "type": "array"
+    },
+    "holdout_gate": {
+      "$ref": "#/$defs/HoldoutGate"
+    },
+    "pilot_gate": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BoundPilotGate"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "purpose": {
+      "const": "private-fine-tuning",
+      "default": "private-fine-tuning",
+      "title": "Purpose",
+      "type": "string"
+    },
+    "raw_audio_copied": {
+      "const": false,
+      "default": false,
+      "title": "Raw Audio Copied",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.dataset-manifest/v1",
+      "default": "cole-voice-lab.dataset-manifest/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "dataset_id",
+    "corpus_stage",
+    "created_at",
+    "created_by",
+    "subject_id",
+    "consent",
+    "pilot_gate",
+    "entries",
+    "category_accounting",
+    "holdout_gate"
+  ],
+  "title": "DatasetManifest",
+  "type": "object"
+}

@@ -1,0 +1,115 @@
+{
+  "schema_version": "cole-voice-lab.prompt-suite/v1",
+  "suite_id": "cole-held-out-v1",
+  "purpose": "held-out-evaluation",
+  "prompts": [
+    {
+      "prompt_id": "eval-short-neutral",
+      "text": "The silver key was hidden beneath a folded map.",
+      "category": "neutral",
+      "style": "Natural neutral speech.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 5.0
+    },
+    {
+      "prompt_id": "eval-question",
+      "text": "If the cache is empty, how long does the first complete render actually take?",
+      "category": "conversational",
+      "style": "Curious technical question.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "eval-warm",
+      "text": "Take a breath, settle into a comfortable pace, and let the sentence arrive naturally.",
+      "category": "warm-narration",
+      "style": "Warm and reassuring.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "eval-technical",
+      "text": "A reproducible benchmark records model revision, environment fingerprint, reference digest, and realized seed.",
+      "category": "technical",
+      "style": "Clear technical explanation.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 10.0
+    },
+    {
+      "prompt_id": "eval-numbers",
+      "text": "The median score rose from three point seven to four point two across twenty-four blinded trials.",
+      "category": "numbers",
+      "style": "Matter-of-fact measurement report.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 9.0
+    },
+    {
+      "prompt_id": "eval-phonetic",
+      "text": "Quick zephyrs brushed the jagged cliff while six foxes watched from below.",
+      "category": "neutral",
+      "style": "Natural neutral speech.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 7.0
+    },
+    {
+      "prompt_id": "eval-emphasis",
+      "text": "That distinction matters: the file exists, but the evidence has not been verified.",
+      "category": "expressive",
+      "style": "Emphasize the contrast without sounding theatrical.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "eval-dialogue",
+      "text": "You saved the raw take, right? Good. Then we can try the new filter without losing anything.",
+      "category": "conversational",
+      "style": "Relaxed dialogue with a brief pause after right.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 9.0
+    },
+    {
+      "prompt_id": "eval-long-stability",
+      "text": "Before choosing a winner, we will compare several references, repeat the generation with multiple seeds, inspect every failure, and listen in a randomized order that hides the model name until the scores are safely recorded.",
+      "category": "technical",
+      "style": "Steady long-form explanatory speech.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 16.0
+    },
+    {
+      "prompt_id": "eval-prosody",
+      "text": "First it whispered, then it rattled, and finally the old machine sprang to life.",
+      "category": "expressive",
+      "style": "Build gently across the three clauses.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "eval-acronyms",
+      "text": "The JSON report includes ASR word error rate, real-time factor, and SHA two fifty-six evidence.",
+      "category": "technical",
+      "style": "Clear technical explanation.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 10.0
+    },
+    {
+      "prompt_id": "eval-closing",
+      "text": "The best result should sound recognizably like one person, not merely like a polished generic narrator.",
+      "category": "warm-narration",
+      "style": "Thoughtful concluding statement.",
+      "reference_candidate": false,
+      "holdout": true,
+      "expected_seconds": 9.0
+    }
+  ]
+}

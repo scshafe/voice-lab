@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.scshafe.cole-voice-lab.intake</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>@DURABLE_LAUNCHER@</string>
+    <string>--receipt</string>
+    <string>@INSTALL_RECEIPT@</string>
+    <string>--expected-receipt-sha256</string>
+    <string>@INSTALL_RECEIPT_SHA256@</string>
+    <string>--asset-root</string>
+    <string>@ASSET_ROOT@</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>30</integer>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>@STANDARD_OUT_PATH@</string>
+  <key>StandardErrorPath</key>
+  <string>@STANDARD_ERROR_PATH@</string>
+</dict>
+</plist>

@@ -1,0 +1,141 @@
+{
+  "$defs": {
+    "AudioQcMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "clipped_samples": {
+          "minimum": 0,
+          "title": "Clipped Samples",
+          "type": "integer"
+        },
+        "dc_offset": {
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Dc Offset",
+          "type": "number"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "findings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "longest_zero_run_ms": {
+          "minimum": 0.0,
+          "title": "Longest Zero Run Ms",
+          "type": "number"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "peak_dbfs": {
+          "maximum": 0.0,
+          "title": "Peak Dbfs",
+          "type": "number"
+        },
+        "rms_dbfs": {
+          "maximum": 0.0,
+          "title": "Rms Dbfs",
+          "type": "number"
+        },
+        "signal_to_noise_db": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signal To Noise Db"
+        }
+      },
+      "required": [
+        "path",
+        "duration_seconds",
+        "peak_dbfs",
+        "rms_dbfs",
+        "dc_offset",
+        "clipped_samples",
+        "longest_zero_run_ms",
+        "passed"
+      ],
+      "title": "AudioQcMetrics",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "headphone_review_required": {
+      "const": true,
+      "default": true,
+      "title": "Headphone Review Required",
+      "type": "boolean"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "metrics": {
+      "items": {
+        "$ref": "#/$defs/AudioQcMetrics"
+      },
+      "minItems": 1,
+      "title": "Metrics",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.qc-report/v1",
+      "default": "cole-voice-lab.qc-report/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "review",
+        "fail"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "manifest_sha256",
+    "generated_at",
+    "status",
+    "metrics"
+  ],
+  "title": "QcReport",
+  "type": "object"
+}

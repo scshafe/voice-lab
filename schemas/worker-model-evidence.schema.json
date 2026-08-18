@@ -1,0 +1,150 @@
+{
+  "$defs": {
+    "CandidateId": {
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "auxiliary_manifest_sha256": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Sha256"
+      },
+      "title": "Auxiliary Manifest Sha256",
+      "type": "object"
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/CandidateId"
+    },
+    "code_checkout_integrity_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "code_revision": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "title": "Code Revision",
+      "type": "string"
+    },
+    "consent_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "executed_code_evidence_path": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Executed Code Evidence Path",
+      "type": "string"
+    },
+    "executed_code_evidence_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "model_id": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Model Id",
+      "type": "string"
+    },
+    "model_manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "model_revision": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "title": "Model Revision",
+      "type": "string"
+    },
+    "reference_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "runtime_package": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Runtime Package",
+      "type": "string"
+    },
+    "runtime_package_version": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Runtime Package Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.worker-model-evidence/v1",
+      "default": "cole-voice-lab.worker-model-evidence/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "settings": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Settings",
+      "type": "object"
+    },
+    "source_audio_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_audio_size_bytes": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source Audio Size Bytes"
+    },
+    "watermarked": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Watermarked"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "model_id",
+    "model_revision",
+    "code_revision",
+    "model_manifest_sha256",
+    "auxiliary_manifest_sha256",
+    "code_checkout_integrity_sha256",
+    "executed_code_evidence_path",
+    "executed_code_evidence_sha256",
+    "reference_sha256",
+    "consent_sha256",
+    "source_audio_sha256",
+    "source_audio_size_bytes",
+    "settings",
+    "runtime_package",
+    "runtime_package_version"
+  ],
+  "title": "WorkerModelEvidence",
+  "type": "object"
+}

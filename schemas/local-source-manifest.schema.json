@@ -1,0 +1,47 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "files": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Files",
+      "type": "object"
+    },
+    "kind": {
+      "pattern": "^(git|huggingface)$",
+      "title": "Kind",
+      "type": "string"
+    },
+    "repository": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "title": "Repository",
+      "type": "string"
+    },
+    "revision": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Revision",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "cole-voice-lab.local-source/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Source Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_id",
+    "kind",
+    "repository",
+    "revision"
+  ],
+  "title": "LocalSourceManifest",
+  "type": "object"
+}

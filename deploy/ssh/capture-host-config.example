@@ -1,0 +1,16 @@
+Host cole-voice-lab-mini
+  HostName 100.123.230.91
+  User cole
+  IdentityFile /Users/cole/.ssh/cole_voice_lab_intake_ed25519
+  IdentitiesOnly yes
+  BatchMode yes
+  StrictHostKeyChecking yes
+  UserKnownHostsFile /Users/cole/.ssh/known_hosts
+  ConnectTimeout 10
+  ServerAliveInterval 30
+  ServerAliveCountMax 3
+  RequestTTY no
+  ClearAllForwardings yes
+  ForwardAgent no
+  ForwardX11 no
+  PermitLocalCommand no

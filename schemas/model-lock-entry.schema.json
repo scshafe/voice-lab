@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "CandidateId": {
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "candidate_id": {
+      "$ref": "#/$defs/CandidateId"
+    },
+    "code_revision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        }
+      ],
+      "title": "Code Revision"
+    },
+    "files": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Sha256"
+      },
+      "title": "Files",
+      "type": "object"
+    },
+    "model_id": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Model Id",
+      "type": "string"
+    },
+    "model_revision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        }
+      ],
+      "title": "Model Revision"
+    },
+    "resolved_at": {
+      "format": "date-time",
+      "title": "Resolved At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "model_id",
+    "model_revision",
+    "code_revision",
+    "resolved_at"
+  ],
+  "title": "ModelLockEntry",
+  "type": "object"
+}

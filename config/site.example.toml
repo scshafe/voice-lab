@@ -1,0 +1,27 @@
+# DOCUMENTATION-ONLY EXAMPLE.
+# No voice-lab command loads this file or .voice-lab.toml. These values have no
+# runtime effect; pass reviewed paths and policy decisions explicitly on the CLI.
+schema_version = "cole-voice-lab.site-config/v1"
+
+[assets]
+root = "/Users/cole/.local/share/cole-voice-lab"
+minimum_free_gib = 10.0
+
+[capture]
+backend = "avfoundation"
+sample_rate_hz = 48000
+channels = 1
+encoding = "pcm_s24le"
+
+[sync]
+host = "100.123.230.91"
+user = "cole"
+alias = "cole-voice-lab-mini"
+remote_incoming = "/Users/cole/.local/share/cole-voice-lab/incoming"
+execute_by_default = false
+strict_host_key_checking = true
+
+[policy]
+allow_model_downloads = false
+allow_human_audio_public_network = false
+allow_hosted_processing = false

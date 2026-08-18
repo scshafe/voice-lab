@@ -1,0 +1,428 @@
+{
+  "$defs": {
+    "AudioSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "encoding": {
+          "enum": [
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "maximum": 384000,
+          "minimum": 8000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sample_width_bytes": {
+          "enum": [
+            2,
+            3,
+            4
+          ],
+          "title": "Sample Width Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_rate_hz",
+        "channels",
+        "sample_width_bytes",
+        "encoding",
+        "frames",
+        "duration_seconds"
+      ],
+      "title": "AudioSpec",
+      "type": "object"
+    },
+    "CandidateId": {
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "EnvironmentEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "dependency_evidence_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Dependency Evidence Path",
+          "type": "string"
+        },
+        "dependency_fingerprint_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "machine": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Machine",
+          "type": "string"
+        },
+        "platform": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Platform",
+          "type": "string"
+        },
+        "python_version": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Python Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "python_version",
+        "platform",
+        "machine",
+        "dependency_fingerprint_sha256",
+        "dependency_evidence_path"
+      ],
+      "title": "EnvironmentEvidence",
+      "type": "object"
+    },
+    "ExperimentResult": {
+      "additionalProperties": false,
+      "properties": {
+        "audio": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/CandidateId"
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnvironmentEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "error_message": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Message"
+        },
+        "generation_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Generation Seconds"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metadata",
+          "type": "object"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "output_bytes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Bytes"
+        },
+        "output_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Path"
+        },
+        "output_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "realized_seed": {
+          "anyOf": [
+            {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Realized Seed"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.worker-result/v1",
+          "default": "cole-voice-lab.worker-result/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "trial_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "trial_id",
+        "candidate_id",
+        "ok"
+      ],
+      "title": "ExperimentResult",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "NormalizedOutputEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioSpec"
+        },
+        "normalization_id": {
+          "const": "cole-voice-lab-common-v1",
+          "default": "cole-voice-lab-common-v1",
+          "title": "Normalization Id",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "settings_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Settings Sha256",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "settings_sha256",
+        "audio"
+      ],
+      "title": "NormalizedOutputEvidence",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "completed_at": {
+      "format": "date-time",
+      "title": "Completed At",
+      "type": "string"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Code"
+    },
+    "error_message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Message"
+    },
+    "normalized": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NormalizedOutputEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "outcome": {
+      "enum": [
+        "success",
+        "worker-failed",
+        "normalization-failed"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "request_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Request Sha256",
+      "type": "string"
+    },
+    "runtime_receipt_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Runtime Receipt Path"
+    },
+    "runtime_receipt_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Runtime Receipt Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.audition-trial-result/v1",
+      "default": "cole-voice-lab.audition-trial-result/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_evidence_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Evidence Path"
+    },
+    "source_evidence_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Evidence Sha256"
+    },
+    "worker_result": {
+      "$ref": "#/$defs/ExperimentResult"
+    }
+  },
+  "required": [
+    "request_sha256",
+    "completed_at",
+    "outcome",
+    "worker_result"
+  ],
+  "title": "PersistedTrialResult",
+  "type": "object"
+}

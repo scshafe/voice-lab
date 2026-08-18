@@ -1,0 +1,106 @@
+{
+  "$defs": {
+    "DistributionByteEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FileByteEvidence"
+          },
+          "minProperties": 1,
+          "title": "Files",
+          "type": "object"
+        },
+        "version": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "files"
+      ],
+      "title": "DistributionByteEvidence",
+      "type": "object"
+    },
+    "FileByteEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "FileByteEvidence",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "WorkerPackageByteEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FileByteEvidence"
+          },
+          "minProperties": 1,
+          "title": "Files",
+          "type": "object"
+        },
+        "root_name": {
+          "const": "cole_voice_lab",
+          "default": "cole_voice_lab",
+          "title": "Root Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "title": "WorkerPackageByteEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "distributions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/DistributionByteEvidence"
+      },
+      "minProperties": 1,
+      "title": "Distributions",
+      "type": "object"
+    },
+    "integrity_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.executed-code-evidence/v1",
+      "default": "cole-voice-lab.executed-code-evidence/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "worker_package": {
+      "$ref": "#/$defs/WorkerPackageByteEvidence"
+    }
+  },
+  "required": [
+    "worker_package",
+    "distributions",
+    "integrity_sha256"
+  ],
+  "title": "ExecutedCodeEvidence",
+  "type": "object"
+}

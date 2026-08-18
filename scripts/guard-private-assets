@@ -1,0 +1,560 @@
+#!/usr/bin/env python3
+"""Reject likely biometric, model, and private evidence in the tree or Git index."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import stat
+import subprocess
+import sys
+import zipfile
+from pathlib import Path, PurePosixPath
+
+AUDIO_SUFFIXES = {
+    ".3gp",
+    ".aac",
+    ".ac3",
+    ".aif",
+    ".aiff",
+    ".amr",
+    ".ape",
+    ".au",
+    ".caf",
+    ".flac",
+    ".m4a",
+    ".mka",
+    ".mp3",
+    ".mp4",
+    ".oga",
+    ".ogg",
+    ".opus",
+    ".ra",
+    ".snd",
+    ".wav",
+    ".webm",
+    ".wma",
+}
+MODEL_SUFFIXES = {
+    ".bin",
+    ".ckpt",
+    ".emb",
+    ".embedding",
+    ".engine",
+    ".gguf",
+    ".h5",
+    ".hdf5",
+    ".joblib",
+    ".keras",
+    ".mlmodel",
+    ".nemo",
+    ".npy",
+    ".npz",
+    ".onnx",
+    ".pb",
+    ".pickle",
+    ".pkl",
+    ".plan",
+    ".pt",
+    ".pth",
+    ".safetensors",
+    ".t7",
+    ".tensor",
+    ".tflite",
+    ".vec",
+    ".weights",
+}
+FORBIDDEN_SUFFIXES = AUDIO_SUFFIXES | MODEL_SUFFIXES
+SKIP_DIRECTORIES = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    ".venvs",
+    "__pycache__",
+    "build",
+    "dist",
+}
+PRIVATE_DIRECTORY_COMPONENTS = {
+    "capture-sessions",
+    "datasets",
+    "derived",
+    "experiments",
+    "incoming",
+    "models",
+    "raw",
+    "references",
+}
+PRIVATE_BASENAMES = {
+    "manifest.json",
+    "model-lock.json",
+    "provenance.json",
+    "qc-report.json",
+    "ready",
+    "reference-manifest.json",
+    "reveal-map.json",
+    "score-sheet.json",
+}
+PUBLIC_INSTANCE_SCHEMA_PREFIXES = (
+    "cole-voice-lab.model-sources-lock/",
+    "cole-voice-lab.prompt-suite/",
+)
+SENSITIVE_JSON_KEYS = {
+    "accepted_audio_sha256",
+    "consent_evidence_sha256",
+    "consent_sha256",
+    "embedding",
+    "embedding_vector",
+    "output_audio_sha256",
+    "raw_audio_sha256",
+    "reference_sha256",
+    "reference_audio_sha256",
+    "speaker_embedding",
+    "speaker_embedding_sha256",
+    "voice_embedding",
+}
+MAX_TRACKABLE_BYTES = 20 * 1024 * 1024
+MAX_JSON_BYTES = 2 * 1024 * 1024
+MAX_WHEEL_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+
+
+def _display(relative: str) -> str:
+    return relative.encode("unicode_escape", errors="backslashreplace").decode("ascii")
+
+
+def _suffix(relative: str) -> str:
+    return PurePosixPath(relative).suffix.lower()
+
+
+def _path_has_private_component(relative: str) -> bool:
+    parts = {part.lower() for part in PurePosixPath(relative).parts[:-1]}
+    return (
+        bool(parts & PRIVATE_DIRECTORY_COMPONENTS)
+        or ("evaluations" in parts and "private" in parts)
+        or ("provenance" in parts and "private" in parts)
+    )
+
+
+def _looks_like_repository_json_schema(relative: str, value: object) -> bool:
+    """Recognize only generated schemas in the repository's schema catalog.
+
+    A data file cannot exempt itself from inspection merely by adding a
+    ``$schema`` field or schema-looking keys.
+    """
+
+    path = PurePosixPath(relative)
+    return (
+        len(path.parts) == 2
+        and path.parts[0] == "schemas"
+        and path.name.endswith(".schema.json")
+        and isinstance(value, dict)
+        and value.get("type") == "object"
+        and value.get("additionalProperties") is False
+        and isinstance(value.get("properties"), dict)
+        and isinstance(value.get("required"), list)
+        and "schema_version" not in value
+    )
+
+
+def _private_record_kind(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    if (
+        value.get("approved") is True
+        and isinstance(value.get("consent_id"), str)
+        and isinstance(value.get("subject_id"), str)
+        and isinstance(value.get("allowed_purposes"), list)
+    ):
+        return "approved consent"
+    if {
+        "provenance_id",
+        "subject_id",
+        "reference_sha256",
+        "consent_evidence_sha256",
+    }.issubset(value):
+        return "human-reference provenance"
+    return None
+
+
+def _walk_json(value: object) -> tuple[bool, bool]:
+    """Return whether concrete sensitive keys or private absolute paths occur."""
+
+    sensitive_key = False
+    private_path = False
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if (
+                key.lower() in SENSITIVE_JSON_KEYS
+                and child is not None
+                and child != ""
+                and child != []
+                and child != {}
+            ):
+                sensitive_key = True
+            child_sensitive, child_path = _walk_json(child)
+            sensitive_key = sensitive_key or child_sensitive
+            private_path = private_path or child_path
+    elif isinstance(value, list):
+        for child in value:
+            child_sensitive, child_path = _walk_json(child)
+            sensitive_key = sensitive_key or child_sensitive
+            private_path = private_path or child_path
+    elif isinstance(value, str):
+        lowered = value.lower()
+        private_path = lowered.startswith("/users/") and any(
+            marker in lowered
+            for marker in (
+                "/cole-voice-lab/",
+                "/voice-assets/",
+                "/capture-sessions/",
+                "/references/",
+            )
+        )
+    return sensitive_key, private_path
+
+
+def _scan_json(relative: str, payload: bytes, origin: str, findings: set[str]) -> None:
+    if len(payload) > MAX_JSON_BYTES:
+        findings.add(f"{origin}: JSON exceeds 2 MiB inspection limit: {_display(relative)}")
+        return
+    try:
+        value = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return
+    if _looks_like_repository_json_schema(relative, value):
+        return
+
+    schema_version = value.get("schema_version") if isinstance(value, dict) else None
+    pending_public_consent = (
+        relative
+        in {
+            "cole_voice_lab/resources/consent.pending.json",
+            "templates/consent.pending.json",
+            "src/cole_voice_lab/resources/consent.pending.json",
+        }
+        and isinstance(value, dict)
+        and value.get("approved") is False
+        and value.get("attestation") == "pending-subject-attestation"
+        and value.get("effective_at") is None
+        and value.get("revoked_at") is None
+    )
+    if (
+        isinstance(schema_version, str)
+        and schema_version.startswith("cole-voice-lab.")
+        and not schema_version.startswith(PUBLIC_INSTANCE_SCHEMA_PREFIXES)
+        and not pending_public_consent
+    ):
+        findings.add(f"{origin}: private evidence JSON schema: {_display(relative)}")
+
+    private_record_kind = _private_record_kind(value)
+    if private_record_kind is not None and not pending_public_consent:
+        findings.add(f"{origin}: {private_record_kind} record in JSON: {_display(relative)}")
+
+    sensitive_key, private_path = _walk_json(value)
+    if sensitive_key and not pending_public_consent:
+        findings.add(f"{origin}: private evidence fields in JSON: {_display(relative)}")
+    if private_path:
+        findings.add(f"{origin}: private asset path in JSON: {_display(relative)}")
+
+
+def _magic_kind(header: bytes) -> str | None:
+    if header.startswith(b"fLaC"):
+        return "FLAC audio"
+    if header.startswith((b"OggS", b"ID3")):
+        return "compressed audio"
+    if header.startswith(b"RIFF") and header[8:12] == b"WAVE":
+        return "WAVE audio"
+    if header.startswith(b"FORM") and header[8:12] in {b"AIFF", b"AIFC"}:
+        return "AIFF audio"
+    if header.startswith(b"caff"):
+        return "Core Audio"
+    if header.startswith(b"\x1aE\xdf\xa3"):
+        return "WebM media"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return "ISO base media"
+    if header.startswith(b"GGUF"):
+        return "GGUF model"
+    if header.startswith(b"\x93NUMPY"):
+        return "NumPy tensor"
+    return None
+
+
+def _scan_wheel(relative: str, payload: bytes, origin: str, findings: set[str]) -> None:
+    import io
+
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(payload))
+    except zipfile.BadZipFile:
+        findings.add(f"{origin}: invalid wheel archive: {_display(relative)}")
+        return
+
+    total_size = sum(member.file_size for member in archive.infolist())
+    if total_size > MAX_WHEEL_UNCOMPRESSED_BYTES:
+        findings.add(f"{origin}: wheel expands beyond 100 MiB: {_display(relative)}")
+        return
+    for member in archive.infolist():
+        if member.is_dir():
+            continue
+        member_path = PurePosixPath(member.filename)
+        if (
+            member_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in member_path.parts)
+            or "\\" in member.filename
+        ):
+            member_display = f"{_display(relative)}!{_display(member.filename)}"
+            findings.add(f"{origin}: unsafe wheel member path: {member_display}")
+            continue
+        member_relative = member_path.as_posix()
+        member_suffix = member_path.suffix.lower()
+        if member_suffix in FORBIDDEN_SUFFIXES or _path_has_private_component(member_relative):
+            findings.add(
+                f"{origin}: private/model artifact inside wheel: "
+                f"{_display(relative)}!{_display(member_relative)}"
+            )
+            continue
+        if member.file_size > MAX_TRACKABLE_BYTES:
+            findings.add(
+                f"{origin}: oversized member inside wheel: "
+                f"{_display(relative)}!{_display(member_relative)}"
+            )
+            continue
+        with archive.open(member) as stream:
+            header = stream.read(32)
+            kind = _magic_kind(header)
+            if kind is not None:
+                findings.add(
+                    f"{origin}: {kind} magic inside wheel: "
+                    f"{_display(relative)}!{_display(member_relative)}"
+                )
+            if member_suffix == ".json" or member_path.name.lower() in PRIVATE_BASENAMES:
+                remainder = stream.read(MAX_JSON_BYTES + 1 - len(header))
+                _scan_json(
+                    member_relative,
+                    header + remainder,
+                    f"{origin} wheel {_display(relative)}",
+                    findings,
+                )
+
+
+def _scan_blob(
+    relative: str,
+    payload: bytes,
+    origin: str,
+    findings: set[str],
+    *,
+    tracked: bool,
+    actual_size: int | None = None,
+) -> None:
+    size = len(payload) if actual_size is None else actual_size
+    suffix = _suffix(relative)
+    display = _display(relative)
+    if suffix in FORBIDDEN_SUFFIXES:
+        findings.add(f"{origin}: forbidden audio/model/embedding extension: {display}")
+    if _path_has_private_component(relative):
+        findings.add(f"{origin}: file under private asset directory name: {display}")
+    if PurePosixPath(relative).name.lower() in PRIVATE_BASENAMES:
+        findings.add(f"{origin}: private evidence filename: {display}")
+    if size > MAX_TRACKABLE_BYTES:
+        findings.add(f"{origin}: unexpected file larger than 20 MiB: {display}")
+
+    kind = _magic_kind(payload[:32])
+    if kind is not None:
+        findings.add(f"{origin}: {kind} file signature: {display}")
+    if suffix == ".json" or PurePosixPath(relative).name.lower() in PRIVATE_BASENAMES:
+        _scan_json(relative, payload, origin, findings)
+    if suffix == ".whl":
+        if tracked:
+            findings.add(f"{origin}: built wheel must not be tracked or staged: {display}")
+        if size == len(payload):
+            _scan_wheel(relative, payload, origin, findings)
+
+
+def _read_regular(path: Path, maximum: int | None = None) -> bytes:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OSError(f"not a regular file: {path}")
+        if maximum is not None and metadata.st_size > maximum:
+            return os.read(descriptor, 32)
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+
+
+def _scan_worktree(root: Path, findings: set[str]) -> None:
+    for directory, names, files in os.walk(root, followlinks=False):
+        kept_names = []
+        base = Path(directory)
+        for name in names:
+            path = base / name
+            if name in SKIP_DIRECTORIES or name.endswith(".egg-info"):
+                continue
+            metadata = os.lstat(path)
+            if stat.S_ISLNK(metadata.st_mode):
+                relative = path.relative_to(root).as_posix()
+                if _path_has_private_component(relative):
+                    findings.add(
+                        "worktree: symlink under private asset directory name: "
+                        f"{_display(relative)}"
+                    )
+                continue
+            kept_names.append(name)
+        names[:] = kept_names
+
+        for name in files:
+            path = base / name
+            relative = path.relative_to(root).as_posix()
+            metadata = os.lstat(path)
+            if stat.S_ISLNK(metadata.st_mode):
+                if _suffix(relative) in FORBIDDEN_SUFFIXES:
+                    findings.add(
+                        f"worktree: symlink with forbidden artifact name: {_display(relative)}"
+                    )
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                findings.add(f"worktree: non-regular repository entry: {_display(relative)}")
+                continue
+            maximum = None
+            if metadata.st_size > MAX_TRACKABLE_BYTES:
+                maximum = 32
+            payload = _read_regular(path, maximum)
+            _scan_blob(
+                relative,
+                payload,
+                "worktree",
+                findings,
+                tracked=False,
+                actual_size=metadata.st_size,
+            )
+
+
+def _scan_generated_wheels(root: Path, findings: set[str]) -> None:
+    dist = root / "dist"
+    if not dist.is_dir() or dist.is_symlink():
+        return
+    for directory, names, files in os.walk(dist, followlinks=False):
+        base = Path(directory)
+        names[:] = [name for name in names if not stat.S_ISLNK(os.lstat(base / name).st_mode)]
+        for name in files:
+            if not name.lower().endswith(".whl"):
+                continue
+            path = base / name
+            metadata = os.lstat(path)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                continue
+            relative = path.relative_to(root).as_posix()
+            if metadata.st_size > MAX_WHEEL_UNCOMPRESSED_BYTES:
+                findings.add(
+                    f"generated wheel: archive exceeds 100 MiB inspection limit: "
+                    f"{_display(relative)}"
+                )
+                continue
+            _scan_wheel(relative, _read_regular(path), "generated wheel", findings)
+
+
+def _git_output(root: Path, arguments: list[str]) -> bytes:
+    result = subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        check=True,
+        capture_output=True,
+    )
+    return result.stdout
+
+
+def _scan_index(root: Path, findings: set[str]) -> None:
+    try:
+        top_level = Path(
+            _git_output(root, ["rev-parse", "--show-toplevel"])
+            .decode("utf-8", errors="strict")
+            .strip()
+        ).resolve(strict=True)
+    except (FileNotFoundError, subprocess.CalledProcessError, UnicodeDecodeError):
+        return
+    if top_level != root:
+        findings.add("git-index: requested root is not the Git worktree root")
+        return
+
+    records = _git_output(root, ["ls-files", "--stage", "-z"]).split(b"\0")
+    for record in records:
+        if not record:
+            continue
+        try:
+            prefix, raw_path = record.split(b"\t", 1)
+            mode, object_id, stage = prefix.split(b" ", 2)
+        except ValueError:
+            findings.add("git-index: malformed index record")
+            continue
+        relative = raw_path.decode(sys.getfilesystemencoding(), errors="surrogateescape")
+        if stage != b"0":
+            findings.add(f"git-index: unmerged index entry: {_display(relative)}")
+            continue
+        if mode not in {b"100644", b"100755"}:
+            if _suffix(relative) in FORBIDDEN_SUFFIXES or mode not in {b"120000"}:
+                findings.add(
+                    f"git-index: unsupported tracked object mode {mode.decode()}: "
+                    f"{_display(relative)}"
+                )
+            continue
+        try:
+            blob_size = int(_git_output(root, ["cat-file", "-s", object_id.decode("ascii")]))
+        except (subprocess.CalledProcessError, UnicodeDecodeError, ValueError):
+            findings.add(f"git-index: cannot size staged blob: {_display(relative)}")
+            continue
+        if blob_size > MAX_TRACKABLE_BYTES:
+            _scan_blob(
+                relative,
+                b"",
+                "git-index",
+                findings,
+                tracked=True,
+                actual_size=blob_size,
+            )
+            continue
+        try:
+            payload = _git_output(root, ["cat-file", "blob", object_id.decode("ascii")])
+        except (subprocess.CalledProcessError, UnicodeDecodeError):
+            findings.add(f"git-index: cannot read staged blob: {_display(relative)}")
+            continue
+        _scan_blob(
+            relative,
+            payload,
+            "git-index",
+            findings,
+            tracked=True,
+            actual_size=blob_size,
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
+    options = parser.parse_args(argv)
+    root = options.root.absolute()
+    metadata = os.lstat(root)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        parser.error("root must be a real directory")
+    root = root.resolve(strict=True)
+
+    findings: set[str] = set()
+    _scan_worktree(root, findings)
+    _scan_generated_wheels(root, findings)
+    _scan_index(root, findings)
+    if findings:
+        print("\n".join(sorted(findings)), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

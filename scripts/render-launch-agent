@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Render and validate the mini intake LaunchAgent without installing it."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import plistlib
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+LABEL = "com.scshafe.cole-voice-lab.intake"
+PLUTIL = Path("/usr/bin/plutil")
+SYSTEM_PYTHON = Path("/usr/bin/python3")
+EXPECTED_MARKERS = {
+    "@ASSET_ROOT@",
+    "@DURABLE_LAUNCHER@",
+    "@INSTALL_RECEIPT@",
+    "@INSTALL_RECEIPT_SHA256@",
+    "@STANDARD_ERROR_PATH@",
+    "@STANDARD_OUT_PATH@",
+}
+MARKER_PATTERN = re.compile(r"@[A-Z][A-Z0-9_]*@")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _reject_symlink_components(path: Path, *, include_leaf: bool) -> Path:
+    if not path.is_absolute():
+        raise ValueError("path must be absolute")
+    absolute = Path(os.path.abspath(path))
+    components = absolute.parts[1:] if include_leaf else absolute.parent.parts[1:]
+    cursor = Path(absolute.anchor)
+    for component in components:
+        cursor /= component
+        metadata = os.lstat(cursor)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"path contains a symlink component: {cursor}")
+    return absolute
+
+
+def _private_directory(path: Path, label: str) -> Path:
+    absolute = _reject_symlink_components(path, include_leaf=True)
+    metadata = os.lstat(absolute)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"{label} must be a real directory")
+    if metadata.st_uid != os.getuid():
+        raise ValueError(f"{label} must be owned by the current user")
+    if stat.S_IMODE(metadata.st_mode) != 0o700:
+        raise ValueError(f"{label} must have mode 0700")
+    return absolute
+
+
+def _output_path(path: Path) -> Path:
+    if not path.is_absolute():
+        raise ValueError("output path must be absolute")
+    absolute = Path(os.path.abspath(path))
+    _private_directory(absolute.parent, "output parent")
+    if absolute.exists() or absolute.is_symlink():
+        metadata = os.lstat(absolute)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("existing output must be a regular non-symlink file")
+        if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise ValueError("existing output must be user-owned and private")
+    return absolute
+
+
+def _validate_plist(payload: bytes, values: dict[str, str]) -> None:
+    try:
+        document = plistlib.loads(payload)
+    except plistlib.InvalidFileException as error:
+        raise ValueError("rendered template is not a valid plist") from error
+    if not isinstance(document, dict):
+        raise ValueError("rendered plist root must be a dictionary")
+    expected_keys = {
+        "EnvironmentVariables",
+        "Label",
+        "ProcessType",
+        "ProgramArguments",
+        "RunAtLoad",
+        "StandardErrorPath",
+        "StandardOutPath",
+        "StartInterval",
+        "ThrottleInterval",
+        "Umask",
+    }
+    if set(document) != expected_keys:
+        raise ValueError("rendered plist has an unexpected key set")
+    if document["Label"] != LABEL:
+        raise ValueError("rendered plist label is invalid")
+    if document["ProgramArguments"] != [
+        str(SYSTEM_PYTHON),
+        values["@DURABLE_LAUNCHER@"],
+        "--receipt",
+        values["@INSTALL_RECEIPT@"],
+        "--expected-receipt-sha256",
+        values["@INSTALL_RECEIPT_SHA256@"],
+        "--asset-root",
+        values["@ASSET_ROOT@"],
+    ]:
+        raise ValueError("rendered plist ProgramArguments are invalid")
+    environment = document["EnvironmentVariables"]
+    if environment != {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"}:
+        raise ValueError("rendered plist environment is invalid")
+    if document["RunAtLoad"] is not True or document["ProcessType"] != "Background":
+        raise ValueError("rendered plist launch policy is invalid")
+    for key, expected in (("StartInterval", 30), ("ThrottleInterval", 10), ("Umask", 63)):
+        value = document[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value != expected:
+            raise ValueError(f"rendered plist {key} must be the integer {expected}")
+    if document["StandardOutPath"] != values["@STANDARD_OUT_PATH@"]:
+        raise ValueError("rendered plist stdout path is invalid")
+    if document["StandardErrorPath"] != values["@STANDARD_ERROR_PATH@"]:
+        raise ValueError("rendered plist stderr path is invalid")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--install-receipt", type=Path, required=True)
+    parser.add_argument("--install-receipt-sha256", required=True)
+    parser.add_argument("--asset-root", type=Path, required=True)
+    parser.add_argument("--log-directory", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    options = parser.parse_args(argv)
+
+    try:
+        receipt = _reject_symlink_components(options.install_receipt, include_leaf=True)
+        if SHA256_PATTERN.fullmatch(options.install_receipt_sha256) is None:
+            raise ValueError("install-receipt SHA-256 must be 64 lowercase hexadecimal characters")
+        asset_root = _private_directory(options.asset_root, "asset root")
+        log_directory = _private_directory(options.log_directory, "log directory")
+        output = _output_path(options.output)
+        launcher = _output_path(output.parent / f"{output.stem}.launcher.py")
+    except (FileNotFoundError, OSError, ValueError) as error:
+        parser.error(str(error))
+
+    values = {
+        "@DURABLE_LAUNCHER@": str(launcher),
+        "@INSTALL_RECEIPT@": str(receipt),
+        "@INSTALL_RECEIPT_SHA256@": options.install_receipt_sha256,
+        "@ASSET_ROOT@": str(asset_root),
+        "@STANDARD_OUT_PATH@": str(log_directory / "intake.stdout.log"),
+        "@STANDARD_ERROR_PATH@": str(log_directory / "intake.stderr.log"),
+    }
+    template_path = (
+        Path(__file__).resolve().parent.parent
+        / "deploy"
+        / "macos"
+        / "com.scshafe.cole-voice-lab.intake.plist.in"
+    )
+    template_metadata = os.lstat(template_path)
+    if stat.S_ISLNK(template_metadata.st_mode) or not stat.S_ISREG(template_metadata.st_mode):
+        parser.error("LaunchAgent template must be a regular non-symlink file")
+    template = template_path.read_text(encoding="utf-8")
+    launcher_source = template_path.parent / "run-installed-intake.py"
+    launcher_metadata = os.lstat(launcher_source)
+    if stat.S_ISLNK(launcher_metadata.st_mode) or not stat.S_ISREG(launcher_metadata.st_mode):
+        parser.error("durable launcher source must be a regular non-symlink file")
+    launcher_payload = launcher_source.read_bytes()
+    preflight = subprocess.run(
+        [
+            sys.executable,
+            str(launcher_source),
+            "--receipt",
+            str(receipt),
+            "--expected-receipt-sha256",
+            options.install_receipt_sha256,
+            "--asset-root",
+            str(asset_root),
+            "--verify-only",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if preflight.returncode != 0:
+        detail = preflight.stderr.strip() or preflight.stdout.strip() or "unknown receipt failure"
+        parser.error(f"installed release preflight failed: {detail}")
+    markers = MARKER_PATTERN.findall(template)
+    if set(markers) != EXPECTED_MARKERS or any(
+        markers.count(marker) != 1 for marker in EXPECTED_MARKERS
+    ):
+        parser.error("LaunchAgent template must contain each expected marker exactly once")
+    for marker, value in values.items():
+        template = template.replace(marker, escape(value))
+    if MARKER_PATTERN.search(template):
+        parser.error("unresolved template marker remains")
+    payload = template.encode("utf-8")
+    try:
+        _validate_plist(payload, values)
+    except ValueError as error:
+        parser.error(str(error))
+    for system_executable in (PLUTIL, SYSTEM_PYTHON):
+        system_metadata = os.lstat(system_executable)
+        if (
+            stat.S_ISLNK(system_metadata.st_mode)
+            or not stat.S_ISREG(system_metadata.st_mode)
+            or not os.access(system_executable, os.X_OK)
+        ):
+            parser.error(f"{system_executable} must be a regular executable")
+
+    launcher_descriptor, launcher_temporary_name = tempfile.mkstemp(
+        prefix=f".{launcher.name}.", dir=launcher.parent
+    )
+    launcher_temporary = Path(launcher_temporary_name)
+    temporary: Path | None = None
+    try:
+        with os.fdopen(launcher_descriptor, "wb") as stream:
+            stream.write(launcher_payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(launcher_temporary, 0o500)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent)
+        temporary = Path(temporary_name)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        lint = subprocess.run(
+            [str(PLUTIL), "-lint", "--", str(temporary)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if lint.returncode != 0:
+            detail = lint.stderr.strip() or lint.stdout.strip() or "unknown plutil failure"
+            parser.error(f"plutil rejected rendered LaunchAgent: {detail}")
+        os.replace(launcher_temporary, launcher)
+        os.replace(temporary, output)
+        parent_descriptor = os.open(output.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
+    except BaseException:
+        launcher_temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
+    print(output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

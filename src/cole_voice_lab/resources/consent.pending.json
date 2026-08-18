@@ -1,0 +1,21 @@
+{
+  "schema_version": "cole-voice-lab.consent/v1",
+  "consent_id": "cole-self-v1",
+  "subject_id": "cole-self",
+  "approved": false,
+  "attestation": "pending-subject-attestation",
+  "allowed_purposes": [
+    "private-zero-shot-evaluation",
+    "private-fine-tuning",
+    "private-chloe-speech-rendering"
+  ],
+  "allowed_execution_boundaries": [
+    "capture-host",
+    "tailnet-local-host"
+  ],
+  "hosted_transfer_allowed": false,
+  "disclosure_required": true,
+  "effective_at": null,
+  "expires_at": null,
+  "revoked_at": null
+}

@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Blind voice review</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 58rem; margin: 2rem auto; padding: 0 1rem 4rem; line-height: 1.45; }
+    article { border: 1px solid #8888; border-radius: .7rem; padding: 1rem; margin: 1rem 0; }
+    audio { width: 100%; }
+    fieldset { display: grid; grid-template-columns: repeat(auto-fit,minmax(10rem,1fr)); gap: .7rem; border: 0; padding: 0; }
+    label { display: grid; gap: .25rem; }
+    textarea { min-height: 4rem; }
+    button { padding: .65rem 1rem; margin-right: .5rem; }
+    .track, #status { opacity: .75; font-size: .9rem; }
+    .attestation { display: flex; align-items: center; gap: .5rem; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+  <h1>Blind voice review</h1>
+  <p>Use headphones. Score identity and quality before opening the private reveal file. One is poor; five is excellent. “Artifact freedom” is higher when artifacts are absent.</p>
+  <p id="status">Loading and verifying package bindings…</p>
+  <label>Reviewer ID <input id="reviewer" required pattern="[a-z0-9][a-z0-9._-]{0,126}[a-z0-9]"></label>
+  <label class="attestation"><input id="headphones" type="checkbox"> I used headphones for every sample.</label>
+  <main id="samples"></main>
+  <button id="export" disabled>Export scores</button>
+  <button id="clear" disabled>Clear local scores</button>
+  <script>
+    'use strict';
+    const dimensions = ['likeness','naturalness','prosody','intelligibility','artifact_freedom'];
+    let review, reviewIndexSha256, publicManifestSha256;
+    const encoder = new TextEncoder();
+    const hex = buffer => [...new Uint8Array(buffer)].map(value => value.toString(16).padStart(2, '0')).join('');
+    const digest = async bytes => hex(await crypto.subtle.digest('SHA-256', bytes));
+    const storageKey = () => `cole-voice-lab:${review.review_id}:${reviewIndexSha256}`;
+    const saved = () => {
+      try { return JSON.parse(localStorage.getItem(storageKey()) || '{}'); }
+      catch (_) { return {}; }
+    };
+    const element = (name, text, className) => {
+      const node = document.createElement(name);
+      if (text !== undefined) node.textContent = text;
+      if (className) node.className = className;
+      return node;
+    };
+    const currentScores = () => {
+      const scores = {};
+      document.querySelectorAll('article').forEach(article => {
+        const item = {};
+        dimensions.forEach(name => {
+          const value = article.querySelector(`[name="${name}"]`).value;
+          if (value) item[name] = Number(value);
+        });
+        item.notes = article.querySelector('[name="notes"]').value;
+        scores[article.dataset.id] = item;
+      });
+      return scores;
+    };
+    const complete = () => {
+      if (!review || !document.querySelector('#headphones').checked) return false;
+      if (!document.querySelector('#reviewer').checkValidity()) return false;
+      return [...document.querySelectorAll('article select')].every(select => select.value !== '');
+    };
+    const refresh = () => { document.querySelector('#export').disabled = !complete(); };
+    const persist = () => {
+      if (!review) return;
+      localStorage.setItem(storageKey(), JSON.stringify({
+        reviewer_id: document.querySelector('#reviewer').value,
+        headphones_used: document.querySelector('#headphones').checked,
+        scores: currentScores(),
+      }));
+      refresh();
+    };
+    const addSample = (sample, order, prior) => {
+      const article = element('article');
+      article.dataset.id = sample.blind_id;
+      article.append(element('h2', `Sample ${order + 1}`));
+      article.append(element('div', sample.track, 'track'));
+      article.append(element('p', sample.prompt_text));
+      const audio = element('audio');
+      audio.controls = true;
+      audio.preload = 'none';
+      audio.src = sample.verified_audio_url;
+      article.append(audio);
+      const fields = element('fieldset');
+      dimensions.forEach(name => {
+        const label = element('label', name.replace('_', ' '));
+        const select = element('select');
+        select.name = name;
+        select.required = true;
+        const blank = element('option', 'Choose…');
+        blank.value = '';
+        select.append(blank);
+        for (let value = 1; value <= 5; value += 1) {
+          const option = element('option', String(value));
+          option.value = String(value);
+          select.append(option);
+        }
+        const savedValue = prior && prior[name];
+        if (Number.isInteger(savedValue) && savedValue >= 1 && savedValue <= 5) {
+          select.value = String(savedValue);
+        }
+        select.addEventListener('change', persist);
+        label.append(select);
+        fields.append(label);
+      });
+      article.append(fields);
+      const notesLabel = element('label', 'Notes');
+      const notes = element('textarea');
+      notes.name = 'notes';
+      notes.maxLength = 2000;
+      notes.value = prior && typeof prior.notes === 'string' ? prior.notes : '';
+      notes.addEventListener('input', persist);
+      notesLabel.append(notes);
+      article.append(notesLabel);
+      return article;
+    };
+    const initialize = async () => {
+      const [indexResponse, manifestResponse] = await Promise.all([
+        fetch('review-index.json', {cache: 'no-store'}),
+        fetch('review-manifest.json', {cache: 'no-store'}),
+      ]);
+      if (!indexResponse.ok || !manifestResponse.ok) throw new Error('package files unavailable');
+      const indexBytes = await indexResponse.arrayBuffer();
+      const manifestBytes = await manifestResponse.arrayBuffer();
+      reviewIndexSha256 = await digest(indexBytes);
+      publicManifestSha256 = await digest(manifestBytes);
+      review = JSON.parse(new TextDecoder().decode(indexBytes));
+      const manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
+      if (manifest.review_id !== review.review_id || manifest.review_index_sha256 !== reviewIndexSha256) {
+        throw new Error('review index does not match package manifest');
+      }
+      const committed = new Map(manifest.files.map(file => [file.path, file]));
+      const indexCommitment = committed.get('review-index.json');
+      if (!indexCommitment || indexCommitment.sha256 !== reviewIndexSha256 || indexCommitment.size_bytes !== indexBytes.byteLength) {
+        throw new Error('review index is absent from the public file commitment');
+      }
+      if (JSON.stringify(review.dimensions) !== JSON.stringify(dimensions)) {
+        throw new Error('unexpected scoring dimensions');
+      }
+      await Promise.all(review.samples.map(async sample => {
+        const commitment = committed.get(sample.audio_path);
+        if (!commitment || commitment.sha256 !== sample.audio_sha256) {
+          throw new Error(`audio commitment missing for ${sample.blind_id}`);
+        }
+        const response = await fetch(sample.audio_path, {cache: 'no-store'});
+        if (!response.ok) throw new Error(`audio unavailable for ${sample.blind_id}`);
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength !== commitment.size_bytes || await digest(bytes) !== commitment.sha256) {
+          throw new Error(`audio integrity check failed for ${sample.blind_id}`);
+        }
+        sample.verified_audio_url = URL.createObjectURL(new Blob([bytes], {type:'audio/wav'}));
+      }));
+      const prior = saved();
+      document.querySelector('#reviewer').value = typeof prior.reviewer_id === 'string' ? prior.reviewer_id : '';
+      document.querySelector('#headphones').checked = prior.headphones_used === true;
+      const main = document.querySelector('#samples');
+      review.samples.forEach((sample, order) => main.append(addSample(sample, order, (prior.scores || {})[sample.blind_id])));
+      document.querySelector('#status').textContent = `Bound review ${review.review_id} · ${reviewIndexSha256.slice(0, 12)}…`;
+      document.querySelector('#clear').disabled = false;
+      refresh();
+    };
+    document.querySelector('#reviewer').addEventListener('input', persist);
+    document.querySelector('#headphones').addEventListener('change', persist);
+    document.querySelector('#export').addEventListener('click', () => {
+      if (!complete()) return;
+      persist();
+      const scores = currentScores();
+      const payload = {
+        schema_version: 'cole-voice-lab.listening-scores/v2',
+        review_id: review.review_id,
+        review_index_sha256: reviewIndexSha256,
+        public_manifest_sha256: publicManifestSha256,
+        reviewer_id: document.querySelector('#reviewer').value,
+        scored_at: new Date().toISOString(),
+        headphones_used: true,
+        scores: review.samples.map(sample => ({blind_id: sample.blind_id, ...scores[sample.blind_id]})),
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], {type:'application/json'});
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `${review.review_id}-scores.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    });
+    document.querySelector('#clear').addEventListener('click', () => {
+      if (confirm('Clear saved scores for this exact review?')) {
+        localStorage.removeItem(storageKey());
+        location.reload();
+      }
+    });
+    initialize().catch(error => {
+      document.querySelector('#status').textContent = `Review unavailable: ${error.message}`;
+      document.querySelector('#export').disabled = true;
+    });
+  </script>
+</body>
+</html>

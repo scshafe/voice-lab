@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.46.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cole-voice-lab"
+version = "0.1.0.dev0"
+description = "Private, reproducible voice capture and local model evaluation infrastructure."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Cole and Chloe" }]
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
+dependencies = [
+  "pydantic>=2.11,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2,<2",
+  "mypy>=1.15,<2",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<7",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+voice-lab = "cole_voice_lab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cole_voice_lab = ["py.typed", "resources/*"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers -ra"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["cole_voice_lab"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["cole_voice_lab"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
