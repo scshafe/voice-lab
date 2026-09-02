@@ -21,7 +21,7 @@ from .blind import (
     ReviewPackageManifest,
     ScoreSheet,
 )
-from .capture import ReadyMarker
+from .capture import ReadyMarker, RejectedTakeLog
 from .datasets import (
     DatasetManifest,
     DatasetSelectionDocument,
@@ -68,6 +68,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "candidate-spec": CandidateSpec,
     "capture-manifest": CaptureManifest,
     "capture-ready": ReadyMarker,
+    "capture-rejected-takes": RejectedTakeLog,
     "chloe-speech-handoff": ChloeSpeechHandoff,
     "consent": ConsentRecord,
     "dataset-manifest": DatasetManifest,

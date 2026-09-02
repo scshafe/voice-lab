@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "RejectedTakeEntry": {
+      "additionalProperties": false,
+      "description": "One rejected recording retained outside the transferable session.",
+      "properties": {
+        "reason": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "rejected_at": {
+          "format": "date-time",
+          "title": "Rejected At",
+          "type": "string"
+        },
+        "relative": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Relative",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "take_number": {
+          "minimum": 1,
+          "title": "Take Number",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "relative",
+        "take_number",
+        "sha256",
+        "size_bytes",
+        "reason",
+        "rejected_at"
+      ],
+      "title": "RejectedTakeEntry",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Canonical ledger for forensic recordings rejected from one session.",
+  "properties": {
+    "entries": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RejectedTakeEntry"
+      },
+      "title": "Entries",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.capture-rejected-takes/v1",
+      "default": "cole-voice-lab.capture-rejected-takes/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "RejectedTakeLog",
+  "type": "object"
+}

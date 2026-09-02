@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cole_voice_lab.capture import RejectedTakeLog
 from cole_voice_lab.schema import SCHEMA_MODELS, generate_schemas, main, schema_bytes
 
 
@@ -12,6 +13,10 @@ def test_schema_bytes_is_stable_json() -> None:
     assert payload.endswith(b"\n")
     assert b'"$defs"' in payload or b'"properties"' in payload
     assert payload == schema_bytes(first_model)
+
+
+def test_rejected_take_log_is_registered_at_the_durable_schema_name() -> None:
+    assert SCHEMA_MODELS["capture-rejected-takes"] is RejectedTakeLog
 
 
 def test_generate_and_check_exact_schema_set(tmp_path: Path) -> None:
