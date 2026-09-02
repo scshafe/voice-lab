@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+# Verification must not mutate the Homebrew Python prefix whose complete tree
+# is checked against the immutable runtime lock by the test suite.
+export PYTHONDONTWRITEBYTECODE=1
+
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_dir"
 

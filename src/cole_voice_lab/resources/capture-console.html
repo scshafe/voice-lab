@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Cole Voice Lab capture console</title>
+  <link rel="stylesheet" href="/static/console.css">
+  <script src="/static/console.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div>
+      <p class="eyebrow">Cole Voice Lab</p>
+      <p class="site-title">Capture console</p>
+    </div>
+    <div class="session-state">
+      <span id="progress">Connecting…</span>
+      <span id="state-pill" class="state-pill" data-state="connecting">Connecting</span>
+    </div>
+  </header>
+
+  <main>
+    <p id="error" class="error" role="alert" hidden></p>
+
+    <section id="capture-view" class="capture-card" aria-labelledby="prompt-text" hidden>
+      <div id="room-tone-banner" class="room-tone-banner" hidden>
+        Room tone — stay silent and still until you stop the recording.
+      </div>
+      <p id="prompt-meta" class="prompt-meta"></p>
+      <h1 id="prompt-text" class="prompt-text"></h1>
+      <p id="prompt-instruction" class="prompt-instruction"></p>
+
+      <div class="actions" aria-label="Take controls">
+        <button id="start" class="button button-primary" type="button">
+          Start <kbd>Space</kbd>
+        </button>
+        <button id="stop" class="button button-stop" type="button" hidden>
+          Stop <kbd>Space</kbd>
+        </button>
+        <button id="play" class="button button-secondary" type="button" hidden>
+          Play <kbd>P</kbd>
+        </button>
+        <button id="retake" class="button button-secondary" type="button" hidden>
+          Retake <kbd>R</kbd>
+        </button>
+        <button id="accept" class="button button-primary" type="button" hidden>
+          Accept and next <kbd>Return</kbd>
+        </button>
+      </div>
+
+      <audio id="preview" class="preview" controls preload="none" hidden></audio>
+
+      <section id="take-readout" class="take-readout" aria-labelledby="readout-title" hidden>
+        <div class="section-heading">
+          <h2 id="readout-title">Take readout</h2>
+          <span id="qc-badge" class="qc-badge"></span>
+        </div>
+        <dl class="metrics">
+          <div>
+            <dt>Duration</dt>
+            <dd id="metric-duration">—</dd>
+          </div>
+          <div>
+            <dt>Peak</dt>
+            <dd id="metric-peak">—</dd>
+          </div>
+          <div>
+            <dt>Clipped samples</dt>
+            <dd id="metric-clipped">—</dd>
+          </div>
+          <div>
+            <dt>Signal to noise</dt>
+            <dd id="metric-snr">—</dd>
+          </div>
+        </dl>
+        <ul id="findings" class="findings"></ul>
+      </section>
+    </section>
+
+    <section id="summary-view" class="summary-card" aria-labelledby="summary-title" hidden>
+      <div class="summary-heading">
+        <div>
+          <p class="eyebrow">Session summary</p>
+          <h1 id="summary-title">Review every take</h1>
+        </div>
+        <button id="finalize" class="button button-primary" type="button" disabled>
+          Finalize session
+        </button>
+      </div>
+      <p class="summary-note">
+        Automatic checks are diagnostic. A headphone review is still required.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Take</th>
+              <th scope="col">Prompt</th>
+              <th scope="col">Capture</th>
+              <th scope="col">QC</th>
+            </tr>
+          </thead>
+          <tbody id="take-summary"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="final-view" class="final-card" aria-labelledby="final-title" hidden>
+      <p class="ready-mark">READY</p>
+      <h1 id="final-title">Capture evidence published</h1>
+      <p>
+        Put on headphones and review the complete session before transfer. Automatic metrics do
+        not replace listening.
+      </p>
+      <dl class="digests">
+        <div>
+          <dt>Manifest SHA-256</dt>
+          <dd><code id="manifest-digest"></code></dd>
+        </div>
+        <div>
+          <dt>QC report SHA-256</dt>
+          <dd><code id="qc-digest"></code></dd>
+        </div>
+      </dl>
+      <div class="sync-command">
+        <p class="sync-label">Next, review the dry-run sync plan in Terminal:</p>
+        <pre><code id="sync-command"></code></pre>
+        <div class="final-actions">
+          <button id="copy-sync" class="button button-secondary" type="button">
+            Copy sync command
+          </button>
+          <button id="shutdown" class="button button-quiet" type="button">
+            Stop console
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <p id="announcer" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></p>
+</body>
+</html>

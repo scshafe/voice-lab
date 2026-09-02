@@ -39,6 +39,7 @@ from .canonical import (
     write_canonical_json,
 )
 from .capture import (
+    TakeEngine,
     capture_prompt_suite,
     list_avfoundation_audio_devices,
     select_umik1_device,
@@ -410,21 +411,12 @@ def _capture_devices(options: argparse.Namespace) -> int:
 
 
 def _capture_run(options: argparse.Namespace) -> int:
-    layout = AssetLayout.validate(_asset_root(options.asset_root))
-    suite = load_prompt_suite(options.suite)
-    selected = select_umik1_device(
-        list_avfoundation_audio_devices(ffmpeg=options.ffmpeg),
-        requested=options.device,
-    )
+    layout, suite, device = _capture_inputs(options)
     result = capture_prompt_suite(
         layout=layout,
         prompt_suite=suite,
         subject_id=options.subject_id,
-        device=CaptureDevice(
-            device_id=selected.device_id,
-            display_name=selected.display_name,
-            microphone_serial=options.microphone_serial,
-        ),
+        device=device,
         session_id=options.session_id,
         ffmpeg=options.ffmpeg,
     )
@@ -437,6 +429,45 @@ def _capture_run(options: argparse.Namespace) -> int:
             "ready": result.ready.model_dump(mode="json"),
         }
     )
+    return 0
+
+
+def _capture_inputs(
+    options: argparse.Namespace,
+) -> tuple[AssetLayout, PromptSuite, CaptureDevice]:
+    layout = AssetLayout.validate(_asset_root(options.asset_root))
+    suite = load_prompt_suite(options.suite)
+    selected = select_umik1_device(
+        list_avfoundation_audio_devices(ffmpeg=options.ffmpeg),
+        requested=options.device,
+    )
+    device = CaptureDevice(
+        device_id=selected.device_id,
+        display_name=selected.display_name,
+        microphone_serial=options.microphone_serial,
+    )
+    return layout, suite, device
+
+
+def _capture_console(options: argparse.Namespace) -> int:
+    previous_dont_write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        from .capture_console import serve_capture_console
+
+        layout, suite, device = _capture_inputs(options)
+        engine = TakeEngine(
+            layout=layout,
+            prompt_suite=suite,
+            subject_id=options.subject_id,
+            device=device,
+            session_id=options.session_id,
+            ffmpeg=options.ffmpeg,
+            resume=options.resume,
+        )
+        serve_capture_console(engine, open_browser=options.open)
+    finally:
+        sys.dont_write_bytecode = previous_dont_write_bytecode
     return 0
 
 
@@ -1326,6 +1357,18 @@ def _add_consent_scope_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--expires-at", type=_aware_datetime, required=True)
 
 
+def _add_capture_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--asset-root")
+    parser.add_argument("--session-id", required=True)
+    parser.add_argument("--subject-id", default="cole-self")
+    parser.add_argument(
+        "--suite", default="pilot", choices=("pilot", "evaluation", "pilot-v1", "evaluation-v1")
+    )
+    parser.add_argument("--device", help="exact AVFoundation device ID or display name")
+    parser.add_argument("--microphone-serial")
+    parser.add_argument("--ffmpeg", default="/opt/homebrew/bin/ffmpeg")
+
+
 def _add_registry_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--candidates", help="candidate TOML; defaults to the pinned repo config")
     parser.add_argument("--model-lock", help="source lock JSON; defaults to the pinned repo lock")
@@ -1365,16 +1408,15 @@ def build_parser() -> argparse.ArgumentParser:
     capture_devices.add_argument("--ffmpeg", default="/opt/homebrew/bin/ffmpeg")
     capture_devices.set_defaults(handler=_capture_devices)
     capture_run = capture_commands.add_parser("run", help="record and finalize an exact suite")
-    capture_run.add_argument("--asset-root")
-    capture_run.add_argument("--session-id", required=True)
-    capture_run.add_argument("--subject-id", default="cole-self")
-    capture_run.add_argument(
-        "--suite", default="pilot", choices=("pilot", "evaluation", "pilot-v1", "evaluation-v1")
-    )
-    capture_run.add_argument("--device", help="exact AVFoundation device ID or display name")
-    capture_run.add_argument("--microphone-serial")
-    capture_run.add_argument("--ffmpeg", default="/opt/homebrew/bin/ffmpeg")
+    _add_capture_arguments(capture_run)
     capture_run.set_defaults(handler=_capture_run)
+    capture_console = capture_commands.add_parser(
+        "console", help="record, review, and finalize an exact suite in a local console"
+    )
+    _add_capture_arguments(capture_console)
+    capture_console.add_argument("--resume", action="store_true")
+    capture_console.add_argument("--open", action="store_true")
+    capture_console.set_defaults(handler=_capture_console)
 
     intake = commands.add_parser("intake", help="validate and accept transferred sessions")
     intake_commands = intake.add_subparsers(dest="intake_command", required=True)

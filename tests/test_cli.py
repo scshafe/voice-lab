@@ -879,6 +879,99 @@ def test_capture_run_is_fully_wired_without_opening_audio(
     assert captured["session_id"] == "session-a"
 
 
+def test_capture_console_routes_shared_inputs_resume_and_open_without_hardware(
+    tmp_path: Path, capsys: object, monkeypatch: object
+) -> None:
+    import cole_voice_lab.capture_console as capture_console_module
+
+    root = tmp_path / "private-assets"
+    _initialize_assets(root, capsys)
+    discovered_ffmpeg: list[str] = []
+
+    def fake_devices(*, ffmpeg: str) -> tuple[AvfoundationDevice, ...]:
+        discovered_ffmpeg.append(ffmpeg)
+        return (AvfoundationDevice(3, "miniDSP UMIK-1"),)
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        cli_module,
+        "list_avfoundation_audio_devices",
+        fake_devices,
+    )
+    engine_inputs: dict[str, Any] = {}
+    engine = object()
+
+    def fake_engine(**kwargs: object) -> object:
+        engine_inputs.update(kwargs)
+        return engine
+
+    served: list[tuple[object, bool]] = []
+
+    def fake_serve(selected_engine: object, *, open_browser: bool) -> None:
+        served.append((selected_engine, open_browser))
+        print("http://127.0.0.1:49152/#test-token")
+
+    monkeypatch.setattr(cli_module, "TakeEngine", fake_engine)  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        capture_console_module,
+        "serve_capture_console",
+        fake_serve,
+    )
+
+    assert (
+        main(
+            [
+                "capture",
+                "console",
+                "--asset-root",
+                str(root),
+                "--session-id",
+                "session-console",
+                "--subject-id",
+                "cole-subject",
+                "--suite",
+                "evaluation-v1",
+                "--device",
+                "3",
+                "--microphone-serial",
+                "UMIK-SERIAL",
+                "--ffmpeg",
+                "/test/ffmpeg",
+                "--resume",
+                "--open",
+            ]
+        )
+        == 0
+    )
+
+    assert capsys.readouterr().out == "http://127.0.0.1:49152/#test-token\n"  # type: ignore[attr-defined]
+    assert discovered_ffmpeg == ["/test/ffmpeg"]
+    assert served == [(engine, True)]
+    assert engine_inputs["layout"].root == root
+    assert engine_inputs["prompt_suite"] == load_prompt_suite("evaluation-v1")
+    assert engine_inputs["subject_id"] == "cole-subject"
+    assert engine_inputs["session_id"] == "session-console"
+    assert engine_inputs["ffmpeg"] == "/test/ffmpeg"
+    assert engine_inputs["resume"] is True
+    device = engine_inputs["device"]
+    assert device.device_id == "3"
+    assert device.display_name == "miniDSP UMIK-1"
+    assert device.microphone_serial == "UMIK-SERIAL"
+
+
+def test_capture_console_has_no_bind_host_option() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "capture",
+                "console",
+                "--session-id",
+                "session-console",
+                "--bind-host",
+                "0.0.0.0",
+            ]
+        )
+
+
 def test_intake_validate_accept_and_scan_report_each_outcome(
     tmp_path: Path, capsys: object, monkeypatch: object
 ) -> None:
