@@ -13,6 +13,14 @@ mini. It does not author the human listening summary, verdict, winning-run, or
 promotion manifest. Real voice trials begin only after Cole records and
 personally approves the pilot scope.
 
+The capture-console increment is implemented and synthetic-tested end to end.
+`voice-lab capture console` wraps the resumable native-FFmpeg take engine with
+an authenticated `127.0.0.1` page, in-memory 16-bit previews, per-take QC,
+explicit retake forensics outside the session, final summary, and the existing
+`finalize_capture_session` publication boundary. The legacy terminal-only
+`capture run` remains available. No real microphone, browser, capture host, or
+private asset root was used to make this implementation claim.
+
 Integrity hardening now binds the held-out prompt suite and equal candidate
 matrices on every load, launches installed workers without inherited import
 paths, hash-locks every runtime artifact (including transitive distributions),
@@ -45,7 +53,12 @@ a real cold/warm smoke. No release claim treats lock resolution as that smoke.
 
 ## Deployment gates still human/external
 
-- Record the UMIK-1 pilot in a foreground MacBook Terminal.
+- Rebuild and independently authenticate the capture kit from the final clean
+  commit, then bootstrap it into a fresh MacBook Air sibling root; retain the
+  old root until all of its temporary sessions are synced and accepted.
+- Complete the seven unchecked capture-console acceptance items in runbook
+  section 3, including UMIK-1 selection, Safari/Chrome preview, Ctrl-C/resume,
+  full-pilot `READY`, sync planning, and idempotent mini intake.
 - Verify the mini host key and Tailnet ACL out of band.
 - Install and denial-test the pinned write-only `rrsync` receiver/key lane.
 - Install the verified application wheel non-editably under the content-addressed

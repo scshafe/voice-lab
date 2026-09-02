@@ -44,7 +44,7 @@ An offline build requires a local wheelhouse containing both the exact build
 toolchain and capture-runtime dependency wheels:
 
 ```sh
-scripts/build-capture-kit --wheelhouse /absolute/reviewed/wheelhouse
+scripts/build-capture-kit --wheelhouse /absolute/reviewed/wheelhouse --replace
 ```
 
 The builder passes `--no-index` and `--require-hashes` to both the temporary
@@ -61,7 +61,7 @@ the same application-wheel and bundle-manifest digests.
 Network access is opt-in for a deliberate first build:
 
 ```sh
-scripts/build-capture-kit --allow-network
+scripts/build-capture-kit --allow-network --replace
 ```
 
 That flag permits only the script's pinned build-tool installation and pinned
@@ -92,7 +92,9 @@ On the MacBook, first use the independently retained digest with the system
 
 ```sh
 CAPTURE_KIT=/absolute/capture-kit
-BUNDLE_MANIFEST_SHA256=INDEPENDENTLY_RETAINED_64_HEX_DIGEST
+APPLICATION_WHEEL='<printed APPLICATION_WHEEL>'
+APPLICATION_WHEEL_SHA256='<printed APPLICATION_WHEEL_SHA256>'
+BUNDLE_MANIFEST_SHA256='<independently retained BUNDLE_MANIFEST_SHA256>'
 
 /usr/bin/printf '%s  %s\n' \
   "$BUNDLE_MANIFEST_SHA256" "$CAPTURE_KIT/SHA256SUMS" \
@@ -106,11 +108,11 @@ with the wheels and metadata without trusting any bundled executable. Only
 then run the deeper semantic verifier, still without installing:
 
 ```sh
-/absolute/capture-kit/macbook-bootstrap \
+"$CAPTURE_KIT/macbook-bootstrap" \
   --verify-bundle \
-  /absolute/capture-kit/cole_voice_lab-VERSION-py3-none-any.whl \
-  APPLICATION_WHEEL_SHA256 \
-  BUNDLE_MANIFEST_SHA256
+  "$CAPTURE_KIT/$APPLICATION_WHEEL" \
+  "$APPLICATION_WHEEL_SHA256" \
+  "$BUNDLE_MANIFEST_SHA256"
 ```
 
 The bundled verifier redundantly checks the manifest digest first, then exact bundle membership,
@@ -150,6 +152,23 @@ Then install into a fresh, dedicated child below Cole's home:
   /absolute/capture-kit/cole_voice_lab-VERSION-py3-none-any.whl \
   APPLICATION_WHEEL_SHA256 \
   BUNDLE_MANIFEST_SHA256
+```
+
+For an existing capture host, treat a console-capable kit as a new install,
+not an in-place upgrade. Bootstrap into a fresh sibling root such as
+`capture-host-console-01`; it intentionally refuses to overwrite a changed
+target. Keep the old root until every session beneath its `assets/tmp` has
+been synced and accepted:
+
+```sh
+CAPTURE_ROOT=/Users/cole/.local/share/cole-voice-lab/capture-host-console-01
+test ! -e "$CAPTURE_ROOT" && test ! -L "$CAPTURE_ROOT"
+
+"$CAPTURE_KIT/macbook-bootstrap" \
+  "$CAPTURE_ROOT" \
+  "$CAPTURE_KIT/$APPLICATION_WHEEL" \
+  "$APPLICATION_WHEEL_SHA256" \
+  "$BUNDLE_MANIFEST_SHA256"
 ```
 
 Bootstrap creates the venv with `--without-pip`. It invokes the exact pip wheel
@@ -209,27 +228,51 @@ import path.
 ## Absolute post-install commands
 
 Use the installed executable by absolute path. Probe/select the UMIK-1 in a
-foreground Terminal, then run the pilot capture:
+foreground Terminal, then launch the recommended local capture console. The
+browser is only an authenticated controller and preview player; native FFmpeg
+in the foreground Terminal remains the sole audio-capture process.
 
 ```sh
-/Users/cole/.local/share/cole-voice-lab/capture-host/runtime/bin/voice-lab \
-  capture devices --ffmpeg /opt/homebrew/bin/ffmpeg
+CAPTURE_ROOT=/Users/cole/.local/share/cole-voice-lab/capture-host-console-01
+VOICE_LAB="$CAPTURE_ROOT/runtime/bin/voice-lab"
+ASSET_ROOT="$CAPTURE_ROOT/assets"
+SESSION_ID=pilot-YYYYMMDD-01
+UMIK1_DEVICE='REVIEWED UMIK-1 DEVICE ID OR DISPLAY NAME'
 
-/Users/cole/.local/share/cole-voice-lab/capture-host/runtime/bin/voice-lab \
-  capture run \
-  --asset-root /Users/cole/.local/share/cole-voice-lab/capture-host/assets \
-  --session-id pilot-YYYYMMDD-01 \
+"$VOICE_LAB" capture devices --ffmpeg /opt/homebrew/bin/ffmpeg
+
+"$VOICE_LAB" capture console \
+  --asset-root "$ASSET_ROOT" \
+  --session-id "$SESSION_ID" \
   --suite pilot \
-  --device 'REVIEWED UMIK-1 DEVICE ID OR DISPLAY NAME'
+  --device "$UMIK1_DEVICE" \
+  --open
 ```
+
+The command prints its tokenized loopback URL exactly once. If the foreground
+process is interrupted before finalization, relaunch that same declared
+session only with the explicit resume flag:
+
+```sh
+"$VOICE_LAB" capture console \
+  --asset-root "$ASSET_ROOT" \
+  --session-id "$SESSION_ID" \
+  --suite pilot \
+  --device "$UMIK1_DEVICE" \
+  --resume --open
+```
+
+Resume re-inspects every completed canonical take and moves interrupted
+partials to the private rejected-take directory outside the session. For a
+terminal-only capture with no review console, `capture run` remains available
+with the same arguments but without `--resume` or `--open`.
 
 After local QC, build the live sync plan with the finalized absolute session
 path and explicit restricted-SSH evidence:
 
 ```sh
-/Users/cole/.local/share/cole-voice-lab/capture-host/runtime/bin/voice-lab \
-  sync plan \
-  /Users/cole/.local/share/cole-voice-lab/capture-host/assets/tmp/capture-pilot-YYYYMMDD-01 \
+"$VOICE_LAB" sync plan \
+  "$ASSET_ROOT/tmp/capture-$SESSION_ID" \
   --identity-file /Users/cole/.ssh/ABSOLUTE_RESTRICTED_INTAKE_KEY \
   --known-hosts-file /Users/cole/.ssh/ABSOLUTE_REVIEWED_KNOWN_HOSTS \
   --live-plan --json

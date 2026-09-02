@@ -58,18 +58,25 @@ For the zero-shot scope shown above, the personal approval command is:
 
 ## 2. Capture-kit handoff
 
-For a deliberate first build, explicitly permit downloading only the pinned
-build/runtime wheels:
+Prefer an offline rebuild from an independently reviewed wheelhouse:
 
 ```bash
-scripts/build-capture-kit --allow-network
+scripts/build-capture-kit \
+  --wheelhouse /absolute/reviewed/wheelhouse \
+  --replace
+```
+
+If no reviewed wheelhouse is available, make the refresh deliberate; network
+access remains limited to the hash-pinned build/runtime wheels:
+
+```bash
+scripts/build-capture-kit --allow-network --replace
 ```
 
 The builder requires a clean committed tree and builds from a fresh archive of
 that exact `HEAD`; commit or remove any intended source changes before running
 it. Record the Git commit alongside the printed bundle digests.
 
-Later rebuilds can remain offline by supplying a reviewed wheelhouse instead.
 Preserve the printed `BUNDLE_MANIFEST_SHA256`, `APPLICATION_WHEEL`, and
 `APPLICATION_WHEEL_SHA256` outside the bundle. On the receiving MacBook Air,
 do not execute any transferred bundle file yet. Authenticate the manifest and
@@ -77,7 +84,9 @@ all of its entries with trusted macOS tools first:
 
 ```bash
 CAPTURE_KIT=/absolute/received/capture-kit
-BUNDLE_MANIFEST_SHA256=INDEPENDENTLY_RETAINED_64_HEX_DIGEST
+APPLICATION_WHEEL='<printed APPLICATION_WHEEL>'
+APPLICATION_WHEEL_SHA256='<printed APPLICATION_WHEEL_SHA256>'
+BUNDLE_MANIFEST_SHA256='<independently retained BUNDLE_MANIFEST_SHA256>'
 
 /usr/bin/printf '%s  %s\n' \
   "$BUNDLE_MANIFEST_SHA256" "$CAPTURE_KIT/SHA256SUMS" \
@@ -92,21 +101,35 @@ its deeper bundle checks before installation:
 
 ```bash
 "$CAPTURE_KIT/macbook-bootstrap" --verify-bundle \
-  "$CAPTURE_KIT/cole_voice_lab-VERSION-py3-none-any.whl" \
-  APPLICATION_WHEEL_SHA256 \
-  BUNDLE_MANIFEST_SHA256
+  "$CAPTURE_KIT/$APPLICATION_WHEEL" \
+  "$APPLICATION_WHEEL_SHA256" \
+  "$BUNDLE_MANIFEST_SHA256"
 ```
 
-Only with Cole's approval, transfer the whole directory to a temporary
-MacBook Air location and run the same verification there. Bootstrap into a
-fresh private capture-host root using those two independently retained
-digests. In a foreground Terminal, run the device probe so macOS can display
-microphone permission.
+Install into a fresh sibling root; do not reuse or overwrite the earlier
+capture host:
+
+```bash
+CAPTURE_ROOT=/Users/cole/.local/share/cole-voice-lab/capture-host-console-01
+
+/usr/bin/install -d -m 700 /Users/cole/.local/share/cole-voice-lab
+test ! -e "$CAPTURE_ROOT" && test ! -L "$CAPTURE_ROOT"
+
+"$CAPTURE_KIT/macbook-bootstrap" \
+  "$CAPTURE_ROOT" \
+  "$CAPTURE_KIT/$APPLICATION_WHEEL" \
+  "$APPLICATION_WHEEL_SHA256" \
+  "$BUNDLE_MANIFEST_SHA256"
+```
+
+Keep the earlier capture-host root until every session beneath its `assets/tmp`
+has been synced and accepted. In a foreground Terminal, run the device probe
+from the fresh root so macOS can display microphone permission.
 
 Do not install an always-listening LaunchAgent. The UMIK-1 session is explicitly
 started and stopped by Cole.
 
-## 3. Five-minute pilot
+## 3. Capture-console pilot
 
 - Quiet absorptive room, HVAC/fans/notifications off.
 - UMIK-1 about 15–20 cm away and 20–30 degrees off axis, with a pop filter.
@@ -116,7 +139,150 @@ started and stopped by Cole.
 - Start and end room tone; follow exact displayed transcripts.
 - Peaks should generally land from -12 to -6 dBFS with no clipping.
 
-Finalize the session locally. Review its QC and a headphone sample before sync.
+Use the freshly bootstrapped root and keep native capture in a foreground
+Terminal:
+
+```bash
+CAPTURE_ROOT=/Users/cole/.local/share/cole-voice-lab/capture-host-console-01
+VOICE_LAB="$CAPTURE_ROOT/runtime/bin/voice-lab"
+ASSET_ROOT="$CAPTURE_ROOT/assets"
+SESSION_ID=capture-console-acceptance-01
+SESSION_DIRECTORY="$ASSET_ROOT/tmp/capture-$SESSION_ID"
+UMIK1_DEVICE='<exact UMIK-1 ID or display name>'
+
+"$VOICE_LAB" capture devices --ffmpeg /opt/homebrew/bin/ffmpeg
+"$VOICE_LAB" capture console \
+  --asset-root "$ASSET_ROOT" \
+  --session-id "$SESSION_ID" \
+  --suite pilot \
+  --device "$UMIK1_DEVICE" \
+  --open
+```
+
+The server is a per-run controller bound only to `127.0.0.1` on an ephemeral
+port. Its URL contains a 256-bit secret in the fragment and is printed exactly
+once; do not share it. Every request is protected by exact Host checks, and
+every API request also requires the token plus a same-origin browser signal.
+The page has no browser recording path: it only tells native FFmpeg when to
+start or stop and plays an authenticated, in-memory 16-bit preview of the
+canonical 24-bit take.
+
+Use Space to start/stop, P to play, R to retake, and Return to accept. Rejected
+takes and interrupted partials are retained as mode-`0600` forensics in the
+private sibling rejected directory, never inside the transferable session.
+Automatic QC is diagnostic; listen to each take and use the plain-language
+findings to decide whether to retake it. Only the Finalize action invokes
+`finalize_capture_session` and writes `manifest.json`, `qc.json`, and `READY`.
+Review the finished session on headphones before sync. `capture run` remains
+the terminal-only alternative.
+
+### Physical acceptance checklist (Cole)
+
+Leave every item unchecked until it has been observed on the MacBook Air:
+
+- [ ] First Start shows the macOS microphone prompt for Terminal.
+- [ ] Only the UMIK-1 is selectable; the built-in microphone is rejected.
+- [ ] Preview plays in both Safari and Chrome.
+- [ ] Ctrl-C during a take leaves a partial and no `READY`.
+- [ ] Relaunching with `--resume` continues at the first missing prompt.
+- [ ] A full pilot reaches `READY` with per-take and summary QC status shown.
+- [ ] `sync plan --live-plan --json` validates the package and the mini intake
+      accepts it idempotently.
+
+For the negative device-selection check, copy the built-in microphone's exact
+ID or display name from `capture devices`. This command must fail before it
+creates a session:
+
+```bash
+BUILT_IN_DEVICE='<exact built-in microphone ID or display name>'
+BUILT_IN_SESSION_ID=capture-console-built-in-rejection-01
+
+if "$VOICE_LAB" capture console \
+  --asset-root "$ASSET_ROOT" \
+  --session-id "$BUILT_IN_SESSION_ID" \
+  --suite pilot \
+  --device "$BUILT_IN_DEVICE"
+then
+  echo 'ERROR: built-in microphone was accepted' >&2
+  exit 1
+fi
+test ! -e "$ASSET_ROOT/tmp/capture-$BUILT_IN_SESSION_ID"
+```
+
+For the Ctrl-C and resume checks, inspect the interrupted session before
+relaunching the same command with the explicit resume flag:
+
+```bash
+test ! -e "$SESSION_DIRECTORY/READY"
+find "$SESSION_DIRECTORY/audio" -maxdepth 1 -type f \
+  -name '*.partial.wav' -print
+
+"$VOICE_LAB" capture console \
+  --asset-root "$ASSET_ROOT" \
+  --session-id "$SESSION_ID" \
+  --suite pilot \
+  --device "$UMIK1_DEVICE" \
+  --resume --open
+```
+
+After the full pilot has been finalized, verify `READY` and preview the exact
+live sync plan. Do not add `--execute` until its digest and all transfer
+evidence have been reviewed under section 4:
+
+```bash
+test -f "$SESSION_DIRECTORY/READY"
+"$VOICE_LAB" sync plan "$SESSION_DIRECTORY" \
+  --identity-file /Users/cole/.ssh/ABSOLUTE_RESTRICTED_INTAKE_KEY \
+  --known-hosts-file /Users/cole/.ssh/ABSOLUTE_REVIEWED_KNOWN_HOSTS \
+  --live-plan --json
+```
+
+After reviewing that plan, execute it on the Air with its exact printed
+digest. On the mini, validate and accept the received session. Then repeat the
+same approved transfer and the same two mini commands; the second accept must
+return the original receipt rather than create a second raw package:
+
+```bash
+# MacBook Air
+APPROVED_PLAN_SHA256='<reviewed plan_sha256 from the preview>'
+"$VOICE_LAB" sync plan "$SESSION_DIRECTORY" \
+  --identity-file /Users/cole/.ssh/ABSOLUTE_RESTRICTED_INTAKE_KEY \
+  --known-hosts-file /Users/cole/.ssh/ABSOLUTE_REVIEWED_KNOWN_HOSTS \
+  --live-plan --execute --allow-network \
+  --approved-plan-sha256 "$APPROVED_PLAN_SHA256"
+```
+
+```bash
+# Mac mini
+MINI_VOICE_LAB='<absolute verified mini voice-lab executable>'
+MINI_ASSET_ROOT='<absolute mini private asset root>'
+SESSION_ID=capture-console-acceptance-01
+
+"$MINI_VOICE_LAB" intake validate \
+  "$MINI_ASSET_ROOT/incoming/$SESSION_ID"
+"$MINI_VOICE_LAB" intake accept \
+  --asset-root "$MINI_ASSET_ROOT" \
+  --session-id "$SESSION_ID"
+```
+
+```bash
+# MacBook Air: repeat the exact approved transfer
+"$VOICE_LAB" sync plan "$SESSION_DIRECTORY" \
+  --identity-file /Users/cole/.ssh/ABSOLUTE_RESTRICTED_INTAKE_KEY \
+  --known-hosts-file /Users/cole/.ssh/ABSOLUTE_REVIEWED_KNOWN_HOSTS \
+  --live-plan --execute --allow-network \
+  --approved-plan-sha256 "$APPROVED_PLAN_SHA256"
+```
+
+```bash
+# Mac mini: repeat and compare the printed receipt with the first receipt
+SESSION_ID=capture-console-acceptance-01
+"$MINI_VOICE_LAB" intake validate \
+  "$MINI_ASSET_ROOT/incoming/$SESSION_ID"
+"$MINI_VOICE_LAB" intake accept \
+  --asset-root "$MINI_ASSET_ROOT" \
+  --session-id "$SESSION_ID"
+```
 
 ## 4. Transfer and intake
 
