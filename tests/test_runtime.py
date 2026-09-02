@@ -746,8 +746,9 @@ def test_runtime_eviction_is_receipt_digest_confirmed_and_locked(
 ) -> None:
     locked = registry().runtime("mlx-audio-0.5.0")
     boundary = tmp_path / "runtimes"
+    boundary.mkdir(mode=0o700)
     environment = boundary / locked.runtime_id
-    environment.mkdir(parents=True)
+    environment.mkdir(mode=0o700)
     (environment / "payload").write_bytes(b"sealed runtime")
     monkeypatch.setattr(
         "cole_voice_lab.runtime.verify_runtime_install_receipt",

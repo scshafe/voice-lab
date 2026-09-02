@@ -708,14 +708,14 @@ def test_runtime_eviction_rejects_wrong_target_lock_and_changed_plan(
 ) -> None:
     runtime = registry().runtime("mlx-audio-0.5.0")
     boundary = tmp_path / "runtimes"
-    boundary.mkdir()
+    boundary.mkdir(mode=0o700)
     wrong = boundary / "wrong-name"
-    wrong.mkdir()
+    wrong.mkdir(mode=0o700)
     with pytest.raises(SecurityError, match="direct runtime-ID"):
         build_runtime_eviction_plan(runtime, wrong, boundary=boundary, repository_root=ROOT)
 
     environment = boundary / runtime.runtime_id
-    environment.mkdir()
+    environment.mkdir(mode=0o700)
     monkeypatch.setattr(
         "cole_voice_lab.runtime.verify_runtime_install_receipt",
         lambda *_a, **_k: (None, "a" * 64),

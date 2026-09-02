@@ -7,6 +7,7 @@ import wave
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -70,6 +71,11 @@ from cole_voice_lab.runtime import SOURCE_MANIFEST_NAME, LocalSourceManifest
 OUTPUT_SHA256_PLACEHOLDER = "d" * 64
 BASE_TIME = datetime(2026, 8, 17, tzinfo=UTC)
 AS_OF = datetime(2026, 8, 18, 12, tzinfo=UTC)
+# The audition fixture pins its plan/result/run-manifest timestamps to 2026-08-17
+# 00:00-02:00 UTC, but the blind package is stamped with the wall clock. Freeze it so
+# the promotion chronology stays deterministic: after the audition evidence, after
+# the 14:30/14:59 consent and as-of boundaries probed below, and before AS_OF.
+PACKAGE_TIME = datetime(2026, 8, 17, 15, tzinfo=UTC)
 
 
 def _wav_payload(*, sample: int = 1_000) -> bytes:
@@ -265,12 +271,13 @@ def promotion_fixture(
         winning_model_manifest_sha256=source_file.sha256,
     )
     inputs = blind_inputs_from_audition(layout, experiment_id="blind-audition")
-    package = build_review_package(
-        layout,
-        review_id="blind-audition-review",
-        inputs=inputs,
-        key_hex="ab" * 32,
-    )
+    with patch("cole_voice_lab.blind.utc_now", return_value=PACKAGE_TIME):
+        package = build_review_package(
+            layout,
+            review_id="blind-audition-review",
+            inputs=inputs,
+            key_hex="ab" * 32,
+        )
     package_relative = package.root.relative_to(tmp_path).as_posix()
     package_file = _existing_json_binding(
         tmp_path,
