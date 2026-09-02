@@ -49,3 +49,11 @@ The 16 GiB mini runs one candidate in one fresh subprocess at a time. Model
 process exit is the Metal-memory release boundary. Weight caches may also need
 sequential explicit lifecycle management because the 10 GiB free-space floor
 prevents all quality profiles from coexisting on the current disk.
+
+## D-009 — Loopback capture control and fail-closed resume
+
+A foreground, loopback-only capture console may drive the native FFmpeg
+recorder. The browser controls recording but never captures audio. An
+unfinalized session may be resumed only by re-inspecting every completed
+canonical take; partial recordings are retained as rejected forensic evidence
+outside the session directory and are never promoted to canonical takes.

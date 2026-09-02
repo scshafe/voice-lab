@@ -38,6 +38,12 @@ weights, and recognizable synthetic outputs are biometric assets.
 - Capture-kit creation is offline by default. Public-network dependency fetching
   requires `--allow-network`; runtime dependencies and the application wheel are
   exact-versioned and hash-locked inside the resulting bundle.
+- The capture console is a foreground-only loopback controller. It binds only
+  `127.0.0.1` on an ephemeral port and requires a fresh 256-bit per-run token,
+  an exact loopback `Host`, and an exact same-origin `Origin` or
+  `Sec-Fetch-Site` check for every API request. Its page uses a restrictive
+  Content Security Policy, never accesses browser audio-capture APIs, and serves
+  only in-memory 16-bit playback previews; preview bytes never touch disk.
 - The capture-kit `SHA256SUMS` digest is evidence that must travel separately
   from the bundle. Bootstrap verifies that digest before trusting any bundled
   manifest, wheel, requirements file, example configuration, or bootstrap copy.
@@ -61,6 +67,7 @@ weights, and recognizable synthetic outputs are biometric assets.
 - Voice-authentication phrases in the recording script.
 - Browser capture, automatic gain control, denoising, echo cancellation, or
   destructive cleanup of raw audio.
+- Network-exposed, background, or auto-started capture-console services.
 - Long-running synthesis endpoints.
 - Secrets, OAuth tokens, host credentials, or private host keys in configuration.
 

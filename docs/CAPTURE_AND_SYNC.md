@@ -57,17 +57,27 @@ the `CaptureDevice` evidence when it is available.
 
 ## 2. Foreground capture semantics
 
-`cole_voice_lab.capture.capture_prompt_suite` is the library boundary used by
-the capture command. It:
+Both capture drivers run as foreground Terminal processes and use the same
+`cole_voice_lab.capture` library boundary:
 
-- requires an initialized, mode-`0700` `AssetLayout`;
-- requires the UMIK-1;
-- prints each bundled prompt text verbatim;
-- records each prompt to its own file;
-- records every prompt whose category is `room-tone` as room tone;
-- tells Cole to press `q` in foreground FFmpeg after each take;
-- stores the exact prompt text as that utterance's transcript evidence; and
-- refuses to overwrite an existing take.
+- `voice-lab capture run` presents each prompt in the terminal and leaves
+  FFmpeg in the foreground until Cole presses `q`;
+- `voice-lab capture console` serves a token-protected page on
+  `127.0.0.1` and lets the browser start, stop, review, retake, and accept each
+  take while FFmpeg remains the only recorder; and
+- `voice-lab capture console --resume` re-opens a specifically named
+  unfinalized session after re-inspecting every completed canonical take.
+
+The browser never captures audio. Both drivers:
+
+- require an initialized, mode-`0700` `AssetLayout`;
+- require the UMIK-1;
+- present each bundled prompt text verbatim;
+- record each prompt to its own file;
+- record every prompt whose category is `room-tone` as room tone;
+- stop FFmpeg explicitly after each take;
+- store the exact prompt text as that utterance's transcript evidence; and
+- refuse to overwrite an existing take.
 
 The effective FFmpeg shape is:
 
@@ -92,8 +102,11 @@ a `CaptureInterrupted` error. The partial remains for inspection, but:
 - `manifest.json`, `qc.json`, and `READY` are not published; and
 - sync and intake reject the session.
 
-Resume by deliberately deciding whether to retain the partial as forensic
-evidence, then re-record the take into a clean session. Do not rename a partial
+Resume only with `voice-lab capture console --resume`. The resume path
+re-inspects every completed canonical take and moves each partial to the private
+rejected-takes directory beside the session with reason `interrupted`. Rejected
+takes are forensic evidence: they are never synced, never deleted
+automatically, and never promoted to canonical takes. Do not rename a partial
 by hand and do not construct `READY` manually.
 
 ## 3. Finalization and portable QC
