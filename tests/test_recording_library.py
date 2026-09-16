@@ -691,6 +691,7 @@ def test_stale_history_preview_fails_after_recording_changes(library: RecordingL
         relative_path=history.relative_path,
         sha256=history.sha256,
         session_directory=history.session_directory,
+        recorded_prompt=history.recorded_prompt,
     )
     with pytest.raises(SecurityError, match="history changed"):
         library.preview_path(changed)

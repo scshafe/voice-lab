@@ -52,6 +52,7 @@ from .models import (
 )
 from .paths import AssetLayout, confined_path, ensure_private_directory
 from .prompt_catalogs import legacy_pilot_v1, legacy_pilot_v1_suite
+from .recording_contracts import CatalogSnapshot
 from .recording_edits import (
     RecordingEdit,
     effective_recording_path,
@@ -158,7 +159,12 @@ class DesktopSessionEvidence(ContractModel):
 
 @dataclass(frozen=True, slots=True)
 class RecordingHistory:
-    """A byte-validated take, with explicitly qualified date precision."""
+    """A byte-validated take, with explicitly qualified date precision.
+
+    ``recorded_prompt`` is the exact prompt the audio was captured against: the library
+    catalog's prompt ``prompt_id`` itself, or an earlier revision of it that the catalog's
+    prompt aliases still accept (keep-recordings edits).
+    """
 
     session_id: str
     prompt_id: str
@@ -168,7 +174,12 @@ class RecordingHistory:
     relative_path: str
     sha256: str
     session_directory: Path
+    recorded_prompt: Prompt
     native_take_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.recorded_prompt.prompt_id != self.prompt_id:
+            raise ValueError("recording history must name its recorded prompt's id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,7 +229,7 @@ class RecordingLibrary:
     def __init__(
         self,
         layout: AssetLayout,
-        prompt_suite: PromptSuite,
+        prompt_suite: PromptSuite | CatalogSnapshot,
         subject_id: str = "cole-self",
         *,
         ffmpeg: str = DEFAULT_FFMPEG,
@@ -229,9 +240,25 @@ class RecordingLibrary:
         pilot_gate_sha256: str | None = None,
         device_resolver: Callable[[CaptureDevice], CaptureDevice] | None = None,
     ) -> None:
+        """Bind one asset root, exact catalog and subject.
+
+        Params: ``prompt_suite`` is the exact catalog, either a plain ``PromptSuite`` (a
+        built-in or embedded catalog; nothing but its own prompts counts) or a
+        ``CatalogSnapshot`` whose prompt aliases also admit legacy takes recorded against an
+        accepted earlier revision of a prompt (same prompt id). The attributes
+        ``prompt_suite`` and ``catalog_sha256`` always describe the suite itself, and
+        ``catalog`` is the snapshot (with no aliases for a plain suite).
+        Raises: ``SecurityError`` / ``OSError`` when the asset root is not a valid private
+        layout.
+        """
         self.layout = AssetLayout.validate(layout.root)
-        self.prompt_suite = prompt_suite
-        self.catalog_sha256 = canonical_sha256(prompt_suite)
+        self.catalog = (
+            prompt_suite
+            if isinstance(prompt_suite, CatalogSnapshot)
+            else CatalogSnapshot.embedded(prompt_suite)
+        )
+        self.prompt_suite = self.catalog.suite
+        self.catalog_sha256 = self.catalog.catalog_sha256
         self.subject_id = subject_id
         self.ffmpeg = ffmpeg
         self.process_factory = process_factory
@@ -262,6 +289,16 @@ class RecordingLibrary:
         # Discovery proves physical identity; serial/calibration evidence belongs
         # to the saved selection and must not be erased by a fresh enumeration.
         return stored
+
+    def counts(self, recorded: Prompt) -> bool:
+        """Whether a take recorded against ``recorded`` belongs to this catalog's history.
+
+        True when ``recorded`` is exactly one of the catalog's prompts, or an earlier revision
+        of one (same prompt id) that the catalog's prompt aliases accept
+        (``CatalogSnapshot.current_prompt_for``). With a plain suite only exact prompts count.
+        Raises: nothing.
+        """
+        return self.catalog.current_prompt_for(recorded) is not None
 
     def _require_capture_gate(self) -> None:
         if self.prompt_suite.purpose != "capture-corpus":
@@ -428,6 +465,7 @@ class RecordingLibrary:
         rejected_directory = confined_path(
             self.layout.root, f"tmp/capture-{evidence.session_id}.rejected"
         )
+        selected = {prompt.prompt_id: prompt for prompt in evidence.selected_suite.prompts}
         consumed: set[str] = set()
         takes = list(evidence.takes)
         history: list[RecordingHistory] = []
@@ -468,6 +506,7 @@ class RecordingLibrary:
                     relative_path=entry.relative,
                     sha256=entry.sha256,
                     session_directory=rejected_directory,
+                    recorded_prompt=selected[take.prompt_id],
                 )
             )
         return evidence.model_copy(update={"takes": tuple(takes)}), tuple(history)
@@ -525,6 +564,7 @@ class RecordingLibrary:
                     relative_path=relative,
                     sha256=inspection.sha256,
                     session_directory=directory,
+                    recorded_prompt=prompt,
                 )
             )
         return tuple(history), len(recorded_indices)
@@ -544,10 +584,9 @@ class RecordingLibrary:
 
         native_map = load_recording_package_map(self.layout, manifest.session_id, package=package)
         if native_map is not None:
-            catalog = {prompt.prompt_id: prompt for prompt in self.prompt_suite.prompts}
             native_history: list[RecordingHistory] = []
             for entry in native_map.entries:
-                if catalog.get(entry.prompt.prompt_id) != entry.prompt:
+                if not self.counts(entry.prompt):
                     continue
                 native_take = resolve_native_package_alias(
                     self.layout,
@@ -575,15 +614,20 @@ class RecordingLibrary:
                         relative_path=entry.package_relative_path,
                         sha256=entry.original_sha256,
                         session_directory=directory,
+                        recorded_prompt=entry.prompt,
                         native_take_id=entry.take_id,
                     )
                 )
             return tuple(native_history)
         if evidence is None:
-            if manifest.prompt_suite_id == "cole-pilot-v1" and legacy_pilot_v1(self.prompt_suite):
+            if manifest.prompt_suite_id == "cole-pilot-v1" and legacy_pilot_v1(
+                self.prompt_suite,
+                aliases=(alias.accepted_prompt_sha256 for alias in self.catalog.prompt_aliases),
+            ):
                 # Legacy manifests contain transcripts but no style metadata. Only the
                 # pinned pilot-v1 identifies the entire old suite; the exact filter below
-                # admits just the prompts this catalog holds, so rows never depend on it.
+                # admits just the prompts this catalog counts (its own or an accepted
+                # earlier revision), so rows never depend on it.
                 suite = legacy_pilot_v1_suite(self.prompt_suite)
             elif manifest.session_id.startswith("native-"):
                 return ()  # Foreign v1 carries no exact style/catalog or individual take dates.
@@ -615,7 +659,6 @@ class RecordingLibrary:
             raise SecurityError(
                 f"finalized recording paths disagree with prompt suite: {directory}"
             )
-        catalog = {p.prompt_id: p for p in self.prompt_suite.prompts}
         result: list[RecordingHistory] = []
         for prompt, file in zip(suite.prompts, manifest.files, strict=True):
             if prompt.category != "room-tone" and (
@@ -624,7 +667,7 @@ class RecordingLibrary:
                 raise SecurityError(
                     f"finalized transcript disagrees with exact prompt: {file.path}"
                 )
-            if catalog.get(prompt.prompt_id) != prompt:
+            if not self.counts(prompt):
                 continue
             take = (
                 None
@@ -654,6 +697,7 @@ class RecordingLibrary:
                     relative_path=file.path,
                     sha256=file.sha256,
                     session_directory=directory,
+                    recorded_prompt=prompt,
                 )
             )
         return tuple(result)
@@ -664,14 +708,11 @@ class RecordingLibrary:
             self._active.current()
         sidecars = self._sidecars()
         history: list[RecordingHistory] = []
-        catalog = {p.prompt_id: p for p in self.prompt_suite.prompts}
         for session_id, sidecar_evidence in sidecars.items():
             recovered, rejected = self._recover_rejections(sidecar_evidence)
             sidecars[session_id] = recovered
             matching = {
-                p.prompt_id
-                for p in sidecar_evidence.selected_suite.prompts
-                if catalog.get(p.prompt_id) == p
+                p.prompt_id for p in sidecar_evidence.selected_suite.prompts if self.counts(p)
             }
             if sidecar_evidence.subject_id == self.subject_id:
                 history.extend(entry for entry in rejected if entry.prompt_id in matching)
@@ -746,12 +787,7 @@ class RecordingLibrary:
                 if evidence.subject_id != self.subject_id:
                     continue
                 exact = evidence.catalog_suite == self.prompt_suite
-                catalog = {p.prompt_id: p for p in self.prompt_suite.prompts}
-                matching = {
-                    p.prompt_id
-                    for p in evidence.selected_suite.prompts
-                    if catalog.get(p.prompt_id) == p
-                }
+                matching = {p.prompt_id for p in evidence.selected_suite.prompts if self.counts(p)}
                 history.extend(entry for entry in entries if entry.prompt_id in matching)
                 sessions.append(
                     RecordingSessionInfo(

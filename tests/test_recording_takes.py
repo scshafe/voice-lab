@@ -8,24 +8,37 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from recording_fixtures import synthetic_catalog, write_synthetic_wav
+from recording_fixtures import (
+    synthetic_catalog,
+    synthetic_physical_test_catalog,
+    write_synthetic_wav,
+)
 from test_recording_contracts import synthetic_contracts
 
 from cole_voice_lab.canonical import (
+    canonical_json_bytes,
     canonical_sha256,
     sha256_file,
     write_canonical_json,
 )
+from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
 from cole_voice_lab.errors import ContractError, SecurityError
-from cole_voice_lab.models import CaptureDevice, PromptSuite
+from cole_voice_lab.models import PROMPT_SUITE_V2, CaptureDevice, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import (
+    RECORDING_GROUP_V1,
+    RECORDING_GROUP_V2,
     CaptureReservation,
     CaptureSealReceipt,
+    CatalogReference,
+    CatalogSnapshot,
+    OpenContextCommand,
     RecordingFrameRange,
+    RecordingGroup,
     RecordingNavigationResult,
     RecordingSelection,
     RecordingTake,
+    RetakeCommand,
     SaveTakeCommand,
     ServiceRequest,
 )
@@ -35,7 +48,10 @@ from cole_voice_lab.recording_service import (
     RecordingTakesBackend,
 )
 from cole_voice_lab.recording_takes import (
+    GROUP_PROVENANCE_ROOT,
+    TAKE_PROVENANCE_ROOT,
     RecordingMetadataBusyError,
+    RecordingPromptUnavailableError,
     RecordingTakeOperation,
     RecordingTakeStore,
 )
@@ -229,6 +245,312 @@ def test_corpus_gate_unprepared_disables_reserve_but_holdout_stays_bound(rig: Ri
         process_generation="helper",
     )
     assert reserved.prompt.holdout
+
+
+# -- groups that reference a published corpus-store catalog ------------------------------
+
+
+def store_suite(count: int) -> PromptSuite:
+    """A prompt-suite/v2 capture-pilot catalog of ``count`` distinct plain sentences."""
+    return PromptSuite(
+        schema_version=PROMPT_SUITE_V2,
+        suite_id="synthetic-store-seed",
+        purpose="capture-pilot",
+        prompts=tuple(
+            Prompt(
+                prompt_id=f"spoken-{number:04d}",
+                text=f"Synthetic sentence number {number}.",
+                category="neutral",
+                style="Plain reading, natural pace.",
+                expected_seconds=2.0,
+            )
+            for number in range(count)
+        ),
+    )
+
+
+def publish_catalog(
+    layout: AssetLayout,
+    suite: PromptSuite,
+    *,
+    catalog_id: str = "synthetic-corpus",
+    suite_id: str | None = None,
+) -> tuple[CatalogReference, CatalogSnapshot]:
+    """Seed ``suite`` into the root's corpus store and publish exactly it as a new catalog."""
+    with open_corpus_store(layout, create=True) as corpus:
+        corpus.import_prompt_suite(suite, source="manual")
+        corpus.create_catalog(catalog_id, suite_id=suite_id, purpose=suite.purpose)
+        reference = corpus.publish_version(
+            catalog_id, prompt_ids=tuple(prompt.prompt_id for prompt in suite.prompts)
+        )
+        return reference, corpus.materialize(reference)
+
+
+def open_referenced(
+    store: RecordingTakeStore,
+    reference: CatalogReference,
+    snapshot: CatalogSnapshot,
+    **options: Any,
+) -> RecordingGroup:
+    return store.open_group(
+        reference=reference,
+        suite=snapshot.suite,
+        subject_id="synthetic-subject",
+        capture_device=DEVICE,
+        capture_host="host",
+        **options,
+    )
+
+
+def group_files(rig: Rig) -> list[Path]:
+    return sorted((rig.layout.root / "provenance/recording-groups").glob("group-*.json"))
+
+
+def test_referenced_group_embeds_no_catalog_and_its_takes_stay_small(rig: Rig) -> None:
+    """A 2,000-prompt published catalog adds nothing to the group, reservation or head."""
+    reference, snapshot = publish_catalog(rig.layout, store_suite(2_000))
+    # Embedded, this catalog alone would be about a hundred times the bound asserted below.
+    assert len(canonical_json_bytes(snapshot.suite)) > 90 * 4096
+    group = open_referenced(rig.store, reference, snapshot)
+    assert group.schema_version == RECORDING_GROUP_V2 and group.catalog is None
+    assert group.catalog_reference == reference
+    assert group.catalog_sha256 == reference.catalog_sha256
+    assert group.reason == "configuration-change"
+    record = (rig.layout.root / GROUP_PROVENANCE_ROOT / f"{group.group_id}.json").read_bytes()
+    assert b'"catalog":' not in record and len(record) < 4096
+    rig.group_id = group.group_id
+    take = rig.seal(rig.reserve(prompt="spoken-1999"))
+    assert take.reservation.prompt == snapshot.suite.prompts[-1]
+    saved = rig.store.save(rig.command(take))
+    directory = rig.layout.root / TAKE_PROVENANCE_ROOT / take.reservation.take_id
+    for name in ("reservation.json", "head.json"):
+        payload = (directory / name).read_bytes()
+        assert b'"catalog":' not in payload and len(payload) < 4096
+    # Operation evidence carries the take plus its command; it stays catalog-size independent.
+    operations = rig.layout.root / TAKE_PROVENANCE_ROOT / ".operations"
+    assert all(path.stat().st_size < 2 * 4096 for path in operations.iterdir())
+    reopened = reopen(rig)
+    assert reopened.get_group(group.group_id) == group
+    assert reopened.group_catalog(group) == snapshot
+    assert reopened.get_take(take.reservation.take_id) == saved.take
+
+
+def test_referenced_groups_are_reused_and_replayed_only_for_the_same_reference(rig: Rig) -> None:
+    reference, snapshot = publish_catalog(rig.layout, store_suite(3))
+    group = open_referenced(rig.store, reference, snapshot)
+    assert open_referenced(rig.store, reference, snapshot) == group
+    # The same suite embedded is the other catalog form, never the referenced group.
+    embedded = rig.store.open_group(snapshot.suite, "synthetic-subject", DEVICE, "host")
+    assert embedded.schema_version == RECORDING_GROUP_V1
+    assert embedded.catalog_sha256 == group.catalog_sha256
+    assert embedded.group_id != group.group_id
+    again = open_referenced(rig.store, reference, snapshot)
+    assert again.group_id not in {group.group_id, embedded.group_id}
+    assert open_referenced(rig.store, reference, snapshot, new_setup=True).reason == "new-setup"
+    with open_corpus_store(rig.layout, create=False) as corpus:
+        corpus.edit_prompt("spoken-0000", text="Synthetic sentence zero.", keep_recordings=True)
+        newer = corpus.publish_version("synthetic-corpus")
+        newer_snapshot = corpus.materialize(newer)
+    changed = open_referenced(rig.store, newer, newer_snapshot)
+    assert changed.reason == "configuration-change" and changed.catalog_reference == newer
+    bound = open_referenced(reopen(rig), reference, snapshot, _operation_id="context-bound")
+    assert open_referenced(reopen(rig), reference, snapshot, _operation_id="context-bound") == bound
+    files = group_files(rig)
+    with pytest.raises(ContractError, match="bound to another automatic group"):
+        open_referenced(reopen(rig), newer, newer_snapshot, _operation_id="context-bound")
+    with pytest.raises(ContractError, match="bound to another automatic group"):
+        reopen(rig).open_group(
+            snapshot.suite, "synthetic-subject", DEVICE, "host", _operation_id="context-bound"
+        )
+    assert group_files(rig) == files
+
+
+def test_open_group_takes_exactly_one_catalog_form_and_a_matching_suite(rig: Rig) -> None:
+    reference, snapshot = publish_catalog(rig.layout, store_suite(2))
+    physical, physical_snapshot = publish_catalog(
+        rig.layout,
+        synthetic_physical_test_catalog(),
+        catalog_id="physical",
+        suite_id="cole-physical-test-synthetic",
+    )
+    files = group_files(rig)
+    identity = {"subject_id": "synthetic-subject", "capture_device": DEVICE, "capture_host": "host"}
+    with pytest.raises(TypeError, match="not both"):
+        rig.store.open_group(snapshot.suite, reference=reference, suite=snapshot.suite, **identity)
+    with pytest.raises(TypeError, match="not both"):
+        rig.store.open_group(snapshot.suite, reference=reference, **identity)
+    with pytest.raises(TypeError, match="together with its suite"):
+        rig.store.open_group(reference=reference, **identity)
+    with pytest.raises(TypeError, match="together with its suite"):
+        rig.store.open_group(suite=snapshot.suite, **identity)
+    with pytest.raises(TypeError, match="subject, capture device and capture host"):
+        rig.store.open_group(snapshot.suite, "synthetic-subject", DEVICE)
+    with pytest.raises(ContractError, match="differs from the catalog reference"):
+        rig.store.open_group(reference=reference, suite=synthetic_catalog(3), **identity)
+    with pytest.raises(ContractError, match="physical-test catalogs"):
+        open_referenced(rig.store, physical, physical_snapshot)
+    assert group_files(rig) == files
+
+
+def test_referenced_group_fails_closed_when_its_snapshot_is_missing_or_altered(rig: Rig) -> None:
+    reference, snapshot = publish_catalog(rig.layout, store_suite(3))
+    group = open_referenced(rig.store, reference, snapshot)
+    rig.group_id = group.group_id
+    take = rig.seal(rig.reserve(prompt="spoken-0001"))
+    path = rig.layout.root / reference.snapshot_path
+    original = path.read_bytes()
+    altered = original.replace(b"number 1.", b"number 9.")
+    assert altered != original
+
+    def assert_refused(code: str) -> None:
+        files = group_files(rig)
+        store = reopen(rig)
+        for call in (
+            lambda: store.get_group(group.group_id),
+            lambda: store.group_catalog(group),
+            lambda: store.reserve(
+                operation_id="reserve-damaged",
+                group_id=group.group_id,
+                prompt_id="spoken-0002",
+                process_generation="helper-generation",
+            ),
+            lambda: open_referenced(reopen(rig), reference, snapshot),
+        ):
+            with pytest.raises(CorpusSnapshotSecurityError) as caught:
+                call()
+            assert caught.value.code == code
+            assert isinstance(caught.value, SecurityError)
+        assert group_files(rig) == files
+        assert not store._operation_path("reserve-damaged").exists()
+        # Recorded takes stay readable: their head binds the reference, not the file.
+        assert store.get_take(take.reservation.take_id) == take
+
+    path.write_bytes(altered)
+    assert_refused("CORPUS.SNAPSHOT_MISMATCH")
+    path.unlink()
+    assert_refused("CORPUS.SNAPSHOT_MISSING")
+    # A store that already verified the snapshot keeps its verified, content-addressed copy.
+    assert rig.store.get_group(group.group_id) == group
+    path.write_bytes(original)
+    path.chmod(0o600)
+    assert reopen(rig).get_group(group.group_id) == group
+
+
+@pytest.mark.parametrize(
+    ("reference_changes", "gate"),
+    [
+        ({"purpose": "capture-pilot"}, {"state": "not-required"}),
+        ({"suite_id": "not-the-snapshot-suite"}, None),
+    ],
+    ids=["purpose", "suite-id"],
+)
+def test_a_warm_store_refuses_a_group_whose_reference_disagrees_with_its_snapshot(
+    rig: Rig, reference_changes: dict[str, str], gate: dict[str, str] | None
+) -> None:
+    """A snapshot one group verified never vouches for another group's different reference."""
+    corpus_suite = PromptSuite.model_validate(
+        store_suite(3).model_dump() | {"suite_id": "corpus-suite", "purpose": "capture-corpus"}
+    )
+    reference, snapshot = publish_catalog(rig.layout, corpus_suite, catalog_id="corpus")
+    legit = open_referenced(rig.store, reference, snapshot)
+    assert legit.gate.state == "unprepared"
+    with pytest.raises(ContractError, match="not prepared"):
+        rig.store.reserve(
+            operation_id="reserve-legit",
+            group_id=legit.group_id,
+            prompt_id="spoken-0001",
+            process_generation="helper-generation",
+        )
+    payload = legit.model_dump(mode="json") | {"group_id": "group-forged"}
+    payload["catalog_reference"] |= reference_changes
+    if gate is not None:
+        payload["gate"] = gate  # a pilot reference needs no corpus gate
+    forged = RecordingGroup.model_validate_json(canonical_json_bytes(payload))
+    path = rig.layout.root / GROUP_PROVENANCE_ROOT / "group-forged.json"
+    path.write_bytes(canonical_json_bytes(forged) + b"\n")
+    path.chmod(0o600)
+    for store in (rig.store, reopen(rig)):  # warm, then cold
+        with pytest.raises(CorpusSnapshotSecurityError, match="declares suite") as caught:
+            store.get_group("group-forged")
+        assert caught.value.code == "CORPUS.SNAPSHOT_MISMATCH"
+        with pytest.raises(CorpusSnapshotSecurityError, match="declares suite") as caught:
+            store.reserve(
+                operation_id="reserve-forged",
+                group_id="group-forged",
+                prompt_id="spoken-0001",
+                process_generation="helper-generation",
+            )
+        assert caught.value.code == "CORPUS.SNAPSHOT_MISMATCH"
+        assert not store._operation_path("reserve-forged").exists()
+    assert rig.store.get_group(legit.group_id) == legit
+
+
+def test_reserve_and_retake_name_a_prompt_the_group_catalog_lacks(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(RecordingPromptUnavailableError, match="not in the exact group catalog"):
+        rig.reserve(prompt="synthetic-9999")
+    catalog = synthetic_catalog(3)
+    rig.store.open_context(
+        OpenContextCommand(
+            operation_id="context",
+            subject_id="synthetic-subject",
+            catalog=catalog,
+            catalog_sha256=canonical_sha256(catalog),
+            capture_device=DEVICE,
+            capture_host="host",
+        )
+    )
+    cursor = rig.store.get_cursor("synthetic-subject")
+    assert cursor is not None and cursor.selection.prompt_id == "synthetic-0000"
+    # The catalog the group resolves to no longer lists the cursor's prompt.
+    remaining = CatalogSnapshot.embedded(
+        PromptSuite.model_validate(catalog.model_dump() | {"prompts": catalog.prompts[1:]})
+    )
+    monkeypatch.setattr(rig.store, "group_catalog", lambda group: remaining)
+    with pytest.raises(RecordingPromptUnavailableError, match="synthetic-0000 is not in") as caught:
+        rig.store.retake(
+            RetakeCommand(operation_id="retake", selection=cursor.selection),
+            subject_id="synthetic-subject",
+        )
+    assert isinstance(caught.value, ContractError)
+    assert not rig.store._operation_path("retake").exists()
+    assert rig.store.get_cursor("synthetic-subject") == cursor
+
+
+def test_referenced_context_binds_its_reference_into_the_request(rig: Rig) -> None:
+    reference, snapshot = publish_catalog(rig.layout, store_suite(3))
+    command = OpenContextCommand(
+        operation_id="context-referenced",
+        subject_id="synthetic-subject",
+        catalog=snapshot.suite,
+        catalog_sha256=reference.catalog_sha256,
+        capture_device=DEVICE,
+        capture_host="host",
+    )
+    assert rig.store.context_replay(command, catalog_reference=reference) is None
+    event = rig.store.open_context(command, catalog_reference=reference)
+    assert event.group.catalog_reference == reference
+    assert event.cursor.selection.prompt_id == "spoken-0000"
+    assert event.cursor.selection.catalog_sha256 == reference.catalog_sha256
+    assert rig.store.context_replay(command, catalog_reference=reference) == event
+    assert reopen(rig).open_context(command, catalog_reference=reference) == event
+    # The same operation cannot be replayed as the embedded form, nor vice versa.
+    with pytest.raises(ContractError, match="already bound"):
+        rig.store.context_replay(command)
+    with pytest.raises(ContractError, match="already bound"):
+        rig.store.open_context(command)
+    with open_corpus_store(rig.layout, create=False) as corpus:
+        corpus.create_catalog("other-corpus", purpose="capture-pilot")
+        other = corpus.publish_version("other-corpus")
+    mismatched = command.model_copy(
+        update={
+            "operation_id": "context-mismatched",
+            "expected_selection_revision": event.cursor.selection.selection_revision,
+        }
+    )
+    with pytest.raises(ContractError, match="differs from the catalog reference"):
+        rig.store.open_context(mismatched, catalog_reference=other)
 
 
 @pytest.mark.parametrize(

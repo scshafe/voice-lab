@@ -13,7 +13,11 @@ from test_recording_index import native_take
 
 from cole_voice_lab.canonical import canonical_sha256
 from cole_voice_lab.paths import AssetLayout
-from cole_voice_lab.recording_contracts import RecordingGroupSummary, RecordingHistoryEntry
+from cole_voice_lab.recording_contracts import (
+    CatalogSnapshot,
+    RecordingGroupSummary,
+    RecordingHistoryEntry,
+)
 from cole_voice_lab.recording_index import RecordingIndex, RecordingIndexError
 
 
@@ -68,7 +72,7 @@ def test_bulk_replacement_equals_serial_rows_and_first_group_metadata(
     for serial in (False, True):
         layout = AssetLayout.initialize(tmp_path / str(serial))
         with RecordingIndex(layout) as index:
-            catalog = index.register_catalog(synthetic_catalog(3))
+            catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
             index.mark_unknown(catalog, "native-preserved", error())
             index.mark_unknown(catalog, "legacy:old", error("Obsolete legacy error"))
             if serial:
@@ -108,7 +112,7 @@ def test_duplicate_take_rows_keep_serial_revision_and_alias_semantics(
         "older": (newest, base, newest),
     }[case]
     with RecordingIndex(AssetLayout.initialize(tmp_path / "assets")) as index:
-        catalog = index.register_catalog(synthetic_catalog(3))
+        catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
         index.replace_legacy_catalog(
             catalog,
             (
@@ -147,7 +151,7 @@ def test_duplicate_take_conflicts_roll_back_previous_history(
     revision = 0 if field == "decision" else 1
     second = changed(entry, **{field: updates[field], "state_revision": revision})
     with RecordingIndex(AssetLayout.initialize(tmp_path / "assets")) as index:
-        catalog = index.register_catalog(synthetic_catalog(3))
+        catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
         index.replace_legacy_catalog(catalog, ((entry, None, ()),))
         before = projection_rows(index)
         with pytest.raises(RecordingIndexError, match=message):
@@ -159,7 +163,7 @@ def test_duplicate_alias_for_same_take_preserves_first_kind(tmp_path: Path) -> N
     entry = legacy_entry()
     assert entry.source_sha256 is not None
     with RecordingIndex(AssetLayout.initialize(tmp_path / "assets")) as index:
-        catalog = index.register_catalog(synthetic_catalog(3))
+        catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
         index.replace_legacy_catalog(
             catalog,
             (
@@ -185,11 +189,11 @@ def test_alias_collision_across_events_rolls_back_scoped_replacement(
     assert entry.source_sha256 is not None
     alias = ("tmp/shared.wav", entry.source_sha256, "legacy-tmp")
     with RecordingIndex(AssetLayout.initialize(tmp_path / "assets")) as index:
-        catalog = index.register_catalog(synthetic_catalog(3))
+        catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
         other = changed(entry, take_id="legacy-other")
         if remaining:
             other_catalog = synthetic_catalog(4)
-            index.register_catalog(other_catalog)
+            index.register_catalog(CatalogSnapshot.embedded(other_catalog))
             other = changed(
                 other,
                 catalog_sha256=canonical_sha256(other_catalog),
@@ -213,18 +217,18 @@ def test_take_identity_remaining_after_scoped_delete_retains_serial_guards(
     layout = AssetLayout.initialize(tmp_path / "assets")
     entry = legacy_entry()
     with RecordingIndex(layout) as index:
-        catalog = index.register_catalog(synthetic_catalog(3))
+        catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
         if conflict == "native":
             native = native_take(synthetic_catalog(3), 0)
             index.update_take(native)
             entry = changed(entry, take_id=native.reservation.take_id)
         elif conflict == "subject":
             with RecordingIndex(layout, subject_id="another-subject") as other:
-                other.register_catalog(synthetic_catalog(3))
+                other.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
                 other.update_legacy_review(changed(entry, subject_id="another-subject"))
         else:
             other_catalog = synthetic_catalog(4)
-            index.register_catalog(other_catalog)
+            index.register_catalog(CatalogSnapshot.embedded(other_catalog))
             index.update_legacy_review(
                 changed(
                     entry,
@@ -247,7 +251,7 @@ def test_bulk_unmatched_prompt_and_invalid_alias_preserve_prior_rows(
     entry = legacy_entry()
     assert entry.source_sha256 is not None
     with RecordingIndex(AssetLayout.initialize(tmp_path / "assets")) as index:
-        catalog = index.register_catalog(synthetic_catalog(3))
+        catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
         index.replace_legacy_catalog(catalog, ((entry, None, ()),))
         before = projection_rows(index)
         unmatched = changed(entry, prompt=synthetic_catalog(4).prompts[3])

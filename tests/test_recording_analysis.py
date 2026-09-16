@@ -34,7 +34,7 @@ from cole_voice_lab.recording_analysis import (
     decode_analysis_message,
     inspect_analysis_job,
 )
-from cole_voice_lab.recording_contracts import RecordingFrameRange
+from cole_voice_lab.recording_contracts import CatalogSnapshot, RecordingFrameRange
 from cole_voice_lab.recording_index import RecordingIndex, recording_index_migration
 from cole_voice_lab.recording_takes import (
     RecordingAnalysisPublication,
@@ -52,7 +52,7 @@ def analyzer_build() -> Any:
 @pytest.fixture
 def analysis_queue(rig: Rig, analyzer_build: Any) -> Iterator[RecordingAnalysisQueue]:
     index = RecordingIndex(rig.layout, subject_id="synthetic-subject")
-    index.register_catalog(rig.store.get_group(rig.group_id).catalog)
+    index.register_catalog(CatalogSnapshot.embedded(rig.store.get_group(rig.group_id).catalog))
     rig.store.projection_hook = index.update_take
     # Durable fixture capture times remain ordered; asynchronous publication uses real UTC.
     queue = RecordingAnalysisQueue(rig.store, index, build=analyzer_build)
@@ -383,7 +383,7 @@ def test_migrations_up_down_preserve_library(
     rig: Rig, analysis_queue: RecordingAnalysisQueue
 ) -> None:
     connection = analysis_queue.index.connection
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
     count = connection.execute("SELECT COUNT(*) FROM recording_catalogs").fetchone()[0]
     connection.executescript(recording_index_migration("down", version=2))
     connection.executescript(recording_index_migration("down", version=2))
@@ -1000,7 +1000,7 @@ def test_new_analysis_sql_bytes_are_part_of_runtime_build_identity(
     after = recording_service_build_identity()
     assert before.source_sha256 != after.source_sha256
     assert before.executable_sha256 == after.executable_sha256
-    assert len(module.recording_index_migration_resources()) == 3
+    assert len(module.recording_index_migration_resources()) == 4
 
 
 def test_startup_reconciles_seal_commit_without_job_and_can_be_cancelled(

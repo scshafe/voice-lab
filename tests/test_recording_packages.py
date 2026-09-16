@@ -9,19 +9,24 @@ from typing import Any
 
 import pytest
 from recording_fixtures import synthetic_catalog
-from test_recording_takes import DEVICE, Rig
+from test_recording_takes import DEVICE, Rig, publish_catalog
 
 from cole_voice_lab.canonical import canonical_json_bytes, sha256_file
+from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError
 from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.intake import accept_capture_session, validate_capture_package
-from cole_voice_lab.models import utc_now
+from cole_voice_lab.models import PROMPT_SUITE_V2, Prompt, PromptSuite, utc_now
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_analysis import (
     RecordingAnalysisQueue,
     analysis_build_identity,
     inspect_analysis_job,
 )
-from cole_voice_lab.recording_contracts import DecisionCommand, PreparePackageCommand
+from cole_voice_lab.recording_contracts import (
+    CatalogSnapshot,
+    DecisionCommand,
+    PreparePackageCommand,
+)
 from cole_voice_lab.recording_edits import assert_recording_not_removed
 from cole_voice_lab.recording_index import RecordingIndex
 from cole_voice_lab.recording_packages import (
@@ -55,7 +60,7 @@ def package_rig(
     )
     rig.group_id = group.group_id
     index = RecordingIndex(layout, subject_id=group.subject_id)
-    index.register_catalog(group.catalog)
+    index.register_catalog(CatalogSnapshot.embedded(group.catalog))
 
     def project(take: Any) -> None:
         index.update_take(take)
@@ -805,3 +810,74 @@ def test_remove_after_package_registration_before_projection_stays_removed(
             source_sha256=take.seal.original_sha256,
             manifest_sha256=package.manifest_sha256,
         )
+
+
+def test_a_referenced_group_packages_its_resolved_subset_and_never_its_group(
+    package_rig: Any,
+) -> None:
+    from cole_voice_lab.recording_packages import validate_recording_package_map
+
+    rig, queue, packages = package_rig
+    suite = PromptSuite(
+        schema_version=PROMPT_SUITE_V2,
+        suite_id="synthetic-seed",
+        purpose="capture-pilot",
+        prompts=(
+            Prompt(
+                prompt_id="synthetic-0000",
+                category="room-tone",
+                style="Silence",
+                instructions="Stay silent.",
+                expected_seconds=10.0,
+            ),
+            *(
+                Prompt(
+                    prompt_id=f"synthetic-{number:04d}",
+                    text=f"Synthetic sentence {number}.",
+                    category="neutral",
+                    style="Plain reading, natural pace.",
+                    expected_seconds=2.0,
+                )
+                for number in (1, 2)
+            ),
+        ),
+    )
+    reference, snapshot = publish_catalog(rig.layout, suite)
+    group = rig.store.open_group(
+        reference=reference,
+        suite=snapshot.suite,
+        subject_id="synthetic-subject",
+        capture_device=DEVICE.model_copy(update={"display_name": "Synthetic UMIK-1"}),
+        capture_host="synthetic-host",
+    )
+    rig.group_id = group.group_id
+    takes = [saved_take(rig, queue, number) for number in (0, 1)]
+    command = PreparePackageCommand(
+        operation_id="prepare-referenced",
+        group_id=group.group_id,
+        take_ids=tuple(take.reservation.take_id for take in takes),
+        room_tone_take_ids=(takes[0].reservation.take_id,),
+    )
+    package = packages.prepare(command)
+    assert package.group.catalog is None and package.group.catalog_reference == reference
+    selected = package.selected_suite
+    assert selected is not None and selected.suite_id.startswith("native-subset-")
+    assert selected.schema_version == PROMPT_SUITE_V2 and selected.purpose == "capture-pilot"
+    assert selected.prompts == snapshot.suite.prompts[:2]
+    assert b'"catalog":' not in canonical_json_bytes(package)
+    validated = validate_capture_package(rig.layout.root / package.package_path)
+    validate_recording_package_map(package, validated)
+    # The map contract refuses a v2 map without its suite; the validator never falls back.
+    forged = package.model_copy(update={"selected_suite": None})
+    with pytest.raises(RecordingPackageError, match="requires its selected suite") as caught:
+        validate_recording_package_map(forged, validated)
+    assert caught.value.recording_error.code == "RECORDING.PACKAGE_INCOMPLETE"
+    # A later plan resolves the snapshot again and fails closed without it.
+    (rig.layout.root / reference.snapshot_path).unlink()
+    fresh = RecordingPackageStore(
+        rig.layout,
+        take_store=RecordingTakeStore(rig.layout),
+        analyzer_build=packages.analyzer_build,
+    )
+    with pytest.raises(CorpusSnapshotSecurityError, match="missing"):
+        fresh.plan(command.model_copy(update={"operation_id": "prepare-again"}))

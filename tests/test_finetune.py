@@ -24,12 +24,17 @@ from test_pilot_v2_coverage import (
 )
 from test_pilot_v2_coverage import analyzer_build as analyzer_build
 from test_pilot_v2_coverage import native_coverage as native_coverage
+from test_prompt_coverage import identity_changing_alias
+from test_recording_index_backfill import CATALOG_ID as BACKFILL_CATALOG_ID
+from test_recording_index_backfill import Published
+from test_recording_index_backfill import published as published
 from test_recording_library import START
 from test_recording_packages import saved_take
-from test_recording_takes import Rig
+from test_recording_takes import Rig, publish_catalog, store_suite
 
-from cole_voice_lab.canonical import canonical_sha256, sha256_file
+from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256, sha256_file
 from cole_voice_lab.cli import main
+from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
 from cole_voice_lab.finetune import (
     FineTuneCorpus,
     FineTuneCorpusEntry,
@@ -54,7 +59,12 @@ from cole_voice_lab.finetune import (
 from cole_voice_lab.models import PromptSuite, utc_now
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_analysis import RecordingAnalysisQueue
-from cole_voice_lab.recording_contracts import RecordingFrameRange
+from cole_voice_lab.recording_contracts import (
+    CatalogReference,
+    CatalogSnapshot,
+    RecordingFrameRange,
+    catalog_snapshot_path,
+)
 from cole_voice_lab.recording_index import RecordingIndex
 from cole_voice_lab.recording_takes import RecordingTakeStore
 
@@ -79,6 +89,8 @@ def test_native_kept_take_is_selected_and_room_tones_never_appear(
     assert entry.take_id == native_coverage.spoken.reservation.take_id
     assert (entry.source_path, entry.source_sha256) == (seal.original_path, seal.original_sha256)
     assert entry.recorded_at == seal.first_sample_at and entry.date_precision == "take"
+    assert entry.recorded_prompt_sha256 == entry.prompt_sha256
+    assert corpus.catalog_reference is None
     assert len(corpus.missing_prompt_ids) == SPOKEN_PROMPT_COUNT - 1
     assert "room-tone-start" not in corpus.missing_prompt_ids
     assert corpus.unknown_record_ids == () and not corpus.complete
@@ -168,6 +180,7 @@ def test_corpus_entry_contract_refuses_silent_prompts_and_foreign_prompt_digests
     tone = next(prompt for prompt in catalog.prompts if prompt.category == "room-tone")
     said = next(prompt for prompt in catalog.prompts if prompt.category != "room-tone")
     base: dict[str, Any] = dict(
+        recorded_prompt_sha256="2" * 64,
         take_id="take-x",
         source_kind="native",
         source_path="tmp/recording-takes/take-x/original.wav",
@@ -191,6 +204,169 @@ def test_corpus_entry_contract_refuses_silent_prompts_and_foreign_prompt_digests
             frame_range=RecordingFrameRange(source_frames=100, start_frame=0, end_frame=50),
             **base,
         )
+
+
+def _corpus_with_one_entry(**changes: Any) -> FineTuneCorpus:
+    catalog = released_pilot_v2()
+    said = next(prompt for prompt in catalog.prompts if prompt.category != "room-tone")
+    entry = FineTuneCorpusEntry(
+        prompt_id=said.prompt_id,
+        prompt_sha256=canonical_sha256(said),
+        recorded_prompt_sha256="2" * 64,
+        prompt=said,
+        take_id="take-x",
+        source_kind="native",
+        source_path="tmp/recording-takes/take-x/original.wav",
+        source_sha256="0" * 64,
+        source_frames=480,
+        source_sample_rate_hz=48_000,
+        recorded_at=None,
+        date_precision="unknown",
+    )
+    fields: dict[str, Any] = dict(
+        subject_id=SUBJECT,
+        catalog_suite_id=catalog.suite_id,
+        catalog_sha256=canonical_sha256(catalog),
+        entries=(entry,),
+        missing_prompt_ids=(),
+        unknown_record_ids=(),
+        selected_at=START,
+    )
+    return FineTuneCorpus(**(fields | changes))
+
+
+def test_corpus_entry_names_its_recorded_digest_and_older_corpora_keep_their_bytes() -> None:
+    corpus = _corpus_with_one_entry()
+    entry = corpus.entries[0]
+    assert entry.recorded_prompt_sha256 == "2" * 64 != entry.prompt_sha256
+    payload = json.loads(canonical_json_bytes(corpus))
+    assert payload["entries"][0]["recorded_prompt_sha256"] == "2" * 64
+    assert "catalog_reference" not in payload
+    # A corpus.json written before recorded digests existed still reads, byte for byte.
+    del payload["entries"][0]["recorded_prompt_sha256"]
+    older = canonical_json_bytes(payload)
+    restored = FineTuneCorpus.model_validate_json(older)
+    assert restored.entries[0].recorded_prompt_sha256 is None
+    assert canonical_json_bytes(restored) == older
+
+
+def test_corpus_catalog_reference_must_name_the_selected_catalog() -> None:
+    catalog = released_pilot_v2()
+    digest = canonical_sha256(catalog)
+    snapshot_bytes = canonical_json_bytes(CatalogSnapshot.embedded(catalog)) + b"\n"
+    reference = CatalogReference(
+        catalog_id="cole-corpus",
+        catalog_version=1,
+        catalog_sha256=digest,
+        snapshot_sha256=hashlib.sha256(snapshot_bytes).hexdigest(),
+        suite_id=catalog.suite_id,
+        purpose=catalog.purpose,
+        snapshot_path=catalog_snapshot_path(digest),
+    )
+    corpus = _corpus_with_one_entry(catalog_reference=reference)
+    assert FineTuneCorpus.model_validate_json(canonical_json_bytes(corpus)) == corpus
+    assert json.loads(canonical_json_bytes(corpus))["catalog_reference"]["catalog_version"] == 1
+    for changes in ({"catalog_sha256": "0" * 64}, {"catalog_suite_id": "another-suite"}):
+        with pytest.raises(ValueError, match="exact selected catalog"):
+            _corpus_with_one_entry(catalog_reference=reference, **changes)
+
+
+def test_selection_names_a_published_version_only_when_it_seals_the_selected_catalog(
+    tmp_path: Path,
+) -> None:
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    first, plain = publish_catalog(layout, store_suite(2))
+    with open_corpus_store(layout, create=False) as corpus:
+        corpus.edit_prompt("spoken-0001", text="Synthetic sentence one.", keep_recordings=True)
+        second = corpus.publish_version("synthetic-corpus")
+        aliased = corpus.materialize(second)
+    corpus_of = select_finetune_corpus(layout, aliased, SUBJECT, reference=second)
+    assert corpus_of.catalog_reference == second
+    assert corpus_of.catalog_sha256 == second.catalog_sha256
+    assert corpus_of.catalog_suite_id == second.suite_id == "synthetic-corpus"
+    assert corpus_of.missing_prompt_ids == ("spoken-0000", "spoken-0001")
+    # A version without aliases is exactly its plain suite.
+    assert (
+        select_finetune_corpus(layout, plain.suite, SUBJECT, reference=first).catalog_reference
+        == first
+    )
+    assert select_finetune_corpus(layout, aliased, SUBJECT).catalog_reference is None
+    for catalog, reference in (
+        (aliased.suite, second),  # the version's aliases would silently stop counting
+        (aliased, first),
+        (plain, second),
+        (released_pilot_v2(), first),
+    ):
+        with pytest.raises(CorpusSnapshotSecurityError) as caught:
+            select_finetune_corpus(layout, catalog, SUBJECT, reference=reference)
+        assert caught.value.code == "CORPUS.SNAPSHOT_MISMATCH"
+
+
+@pytest.mark.parametrize("change", ["holdout", "silent-to-spoken"])
+def test_held_out_or_silent_recordings_never_train_through_an_alias(
+    tmp_path: Path, change: str
+) -> None:
+    case = identity_changing_alias(tmp_path.resolve() / "assets", change)
+    corpus = select_finetune_corpus(case.layout, case.snapshot, SUBJECT)
+    assert case.prompt_id in corpus.missing_prompt_ids
+    assert case.take.reservation.take_id not in {entry.take_id for entry in corpus.entries}
+    if change == "holdout":
+        # The catalog the take was recorded against is evaluation material: never a corpus.
+        with pytest.raises(FineTuneError, match="held-out evaluation material") as caught:
+            select_finetune_corpus(case.layout, case.recorded_suite, SUBJECT)
+        assert caught.value.code == "FINETUNE.CATALOG_HELD_OUT"
+
+
+def test_cli_refuses_to_select_a_corpus_from_a_held_out_catalog(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = AssetLayout.initialize(tmp_path.resolve() / "assets").root
+    command = ["finetune", "corpus", "--asset-root", str(root), "--catalog", "evaluation-v1"]
+    assert main([*command, "--allow-missing"]) == 2
+    assert "held-out evaluation material" in capsys.readouterr().err
+
+
+def test_legacy_takes_keep_their_selection_through_keep_recordings_aliases(
+    published: Published,
+) -> None:
+    """TC2 under published versions: reworded prompts keep their takes, with the new text."""
+    layout = published.evidence.layout
+    before = select_finetune_corpus(layout, released_pilot_v2(), SUBJECT)
+    assert before.complete
+    with open_corpus_store(layout, create=False) as corpus:
+        seeded_reference, kept_reference, changed_reference = (
+            corpus.resolve_reference(BACKFILL_CATALOG_ID, version) for version in (1, 2, 3)
+        )
+    seeded = select_finetune_corpus(layout, published.seeded, SUBJECT, reference=seeded_reference)
+    assert seeded.entries == before.entries and seeded.complete
+    assert seeded.catalog_sha256 == published.seeded.catalog_sha256 != before.catalog_sha256
+    assert seeded.catalog_reference == seeded_reference
+
+    kept = select_finetune_corpus(layout, published.kept, SUBJECT, reference=kept_reference)
+    assert kept.complete and kept.catalog_reference == kept_reference
+    reworded = {spoken(1), spoken(3)}
+    for earlier, entry in zip(before.entries, kept.entries, strict=True):
+        assert (entry.prompt_id, entry.take_id, entry.source_path, entry.source_sha256) == (
+            earlier.prompt_id,
+            earlier.take_id,
+            earlier.source_path,
+            earlier.source_sha256,
+        )
+        assert entry.recorded_prompt_sha256 == earlier.prompt_sha256
+        if entry.prompt_id in reworded:
+            assert entry.prompt == published.kept.prompt(entry.prompt_id)
+            assert entry.text == f"{earlier.text} Again."
+            assert entry.prompt_sha256 == canonical_sha256(entry.prompt) != earlier.prompt_sha256
+        else:
+            assert entry == earlier
+
+    changed = select_finetune_corpus(
+        layout, published.changed, SUBJECT, reference=changed_reference
+    )
+    assert changed.missing_prompt_ids == (spoken(2),) and not changed.complete
+    assert [entry.prompt_id for entry in changed.entries] == [
+        entry.prompt_id for entry in kept.entries if entry.prompt_id != spoken(2)
+    ]
 
 
 FFMPEG = Path("/opt/homebrew/bin/ffmpeg")
@@ -286,6 +462,7 @@ def test_quiet_source_is_raised_to_the_target_level(tmp_path: Path) -> None:
             FineTuneCorpusEntry(
                 prompt_id=prompt.prompt_id,
                 prompt_sha256=canonical_sha256(prompt),
+                recorded_prompt_sha256=canonical_sha256(prompt),
                 prompt=prompt,
                 take_id="take-quiet",
                 source_kind="native",

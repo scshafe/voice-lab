@@ -30,22 +30,29 @@ from cole_voice_lab.corpus_store import (
     CorpusStore,
     CorpusStoreError,
     CorpusStoreSecurityError,
+    GroupCatalogCache,
     PromptRecord,
     PromptSourceReference,
     corpus_store_migration,
     corpus_store_migration_resources,
     open_corpus_store,
     read_catalog_snapshot,
+    require_referenced_snapshot,
+    resolve_group_catalog,
 )
 from cole_voice_lab.errors import ContractError, SecurityError
-from cole_voice_lab.models import PROMPT_SUITE_V2, Prompt, PromptSuite
+from cole_voice_lab.models import PROMPT_SUITE_V2, CaptureDevice, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.prompt_catalogs import BUILTIN_PROMPT_SUITE_SHA256, load_builtin_prompt_suite
 from cole_voice_lab.recording_contracts import (
     CATALOG_SNAPSHOT_ROOT,
+    RECORDING_GROUP_V1,
+    RECORDING_GROUP_V2,
     CatalogReference,
     CatalogSnapshot,
+    PreparedCaptureGate,
     PromptAlias,
+    RecordingGroup,
     catalog_snapshot_path,
 )
 from cole_voice_lab.sqlite_migrations import migration_bytes
@@ -837,6 +844,74 @@ def test_keep_recordings_chain_accumulates_until_a_default_edit_breaks_it(
     assert [record.revision for record in store.prompt_history("prompt-01")] == [1, 2, 3, 4, 5, 6]
 
 
+def test_keep_recordings_edit_cannot_change_held_out_or_spoken_behaviour(
+    store: CorpusStore,
+) -> None:
+    first = add(store, "prompt-01", "Sentence one.")
+    tone = add(
+        store,
+        "tone-01",
+        None,
+        category="room-tone",
+        style="Silence.",
+        instructions="Stay silent.",
+    )
+    for prompt_id, changes in (
+        ("prompt-01", {"holdout": True}),
+        ("prompt-01", {"text": None, "category": "room-tone", "instructions": "Stay silent."}),
+        ("tone-01", {"text": "Now spoken.", "category": "neutral", "instructions": None}),
+    ):
+        with pytest.raises(CorpusStoreError, match="cannot change its held-out flag") as caught:
+            store.edit_prompt(prompt_id, keep_recordings=True, **changes)
+        assert caught.value.code == "CORPUS.PROMPT_INVALID"
+    assert store.list_prompts() == (first, tone)
+    # Another spoken category or style keeps the identity; a default edit may change anything.
+    kept = store.edit_prompt(
+        "prompt-01", keep_recordings=True, category="technical", style="Careful."
+    )
+    assert kept.accepted_prompt_sha256s == (first.prompt_sha256,)
+    moved = store.edit_prompt("prompt-01", holdout=True)
+    assert moved.prompt.holdout and moved.accepted_prompt_sha256s == ()
+    back = store.edit_prompt("prompt-01", keep_recordings=True, text="Sentence one!")
+    assert back.accepted_prompt_sha256s == (moved.prompt_sha256,)
+
+
+def test_republishing_reverted_content_names_the_recordings_that_version_does_not_accept(
+    store: CorpusStore,
+) -> None:
+    first, _ = seeded(store, 2)
+    original = published(store)
+    store.edit_prompt("prompt-01", text="Sentence number one.", keep_recordings=True)
+    store.edit_prompt("prompt-01", text=first.prompt.text, keep_recordings=True)
+    # The reverted suite is version 1's content, which accepts no earlier recording.
+    with pytest.raises(CorpusStoreError, match=f"catalog {CATALOG} version 1, which") as caught:
+        store.publish_version(CATALOG)
+    assert caught.value.code == "CORPUS.VERSION_UNCHANGED"
+    assert "other earlier recordings of prompt-01 than the current revisions" in str(caught.value)
+    assert "prompt-02" not in str(caught.value)
+    assert store.materialize(original).prompt_aliases == ()
+    # Changing another prompt publishes the revert with its accepted recordings.
+    store.edit_prompt("prompt-02", text="Sentence number two!")
+    second = store.materialize(store.publish_version(CATALOG))
+    assert second.current_prompt_for(first.prompt) == first.prompt
+    assert len(second.prompt_aliases) == 1
+
+
+def test_republishing_names_at_most_ten_prompts_whose_accepted_recordings_differ(
+    store: CorpusStore,
+) -> None:
+    records = seeded(store, 12)
+    published(store)
+    for record in records:
+        store.edit_prompt(record.prompt.prompt_id, text="Edited " + str(record.prompt.text))
+        store.edit_prompt(
+            record.prompt.prompt_id, text=str(record.prompt.text), keep_recordings=True
+        )
+    with pytest.raises(CorpusStoreError, match="prompt-10 and 2 more than") as caught:
+        store.publish_version(CATALOG)
+    assert "prompt-01, prompt-02" in str(caught.value) and "prompt-11" not in str(caught.value)
+
+
 def test_retired_prompt_leaves_new_versions_and_refuses_edits(store: CorpusStore) -> None:
     seeded(store, 2)
     before = published(store)
@@ -1522,6 +1597,171 @@ def test_snapshot_files_are_content_addressed_and_never_overwritten(store: Corpu
     assert path.read_bytes() == b"{}\n"
     assert store.list_catalogs()[0].versions == ()
     assert [name for name in os.listdir(store.snapshot_directory) if name.startswith(".")] == []
+
+
+# -- the group catalog reader --------------------------------------------------------------
+
+
+def group_for(catalog: PromptSuite | CatalogReference) -> RecordingGroup:
+    """A capture group that embeds ``catalog`` (v1) or references it (v2)."""
+    embedded = isinstance(catalog, PromptSuite)
+    purpose = catalog.purpose
+    return RecordingGroup(
+        schema_version=RECORDING_GROUP_V1 if embedded else RECORDING_GROUP_V2,
+        group_id="group-synthetic",
+        context_revision=0,
+        subject_id=SUBJECT,
+        catalog=catalog if embedded else None,
+        catalog_reference=None if embedded else catalog,
+        catalog_sha256=canonical_sha256(catalog) if embedded else catalog.catalog_sha256,
+        capture_device=CaptureDevice(
+            backend="coreaudio", device_id="synthetic", display_name="Synthetic UMIK-1"
+        ),
+        capture_host="synthetic-host",
+        opened_at=EPOCH,
+        reason="app-start",
+        gate=PreparedCaptureGate(
+            state="unprepared" if purpose == "capture-corpus" else "not-required"
+        ),
+    )
+
+
+def test_group_catalog_is_the_embedded_suite_or_the_referenced_snapshot_without_sqlite(
+    store: CorpusStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, _ = seeded(store, 2)
+    store.edit_prompt("prompt-01", text="Sentence number 1!", keep_recordings=True)
+    reference = published(store)
+    published_snapshot = store.materialize(reference)
+    builtin = load_builtin_prompt_suite("pilot-v2.json")
+
+    def no_database(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("the group catalog reader opened a database")
+
+    monkeypatch.setattr(sqlite3, "connect", no_database)
+    embedded = resolve_group_catalog(store.layout, group_for(builtin))
+    assert embedded == CatalogSnapshot.embedded(builtin)
+    assert embedded.prompt_aliases == () and embedded.suite == builtin
+    assert embedded.catalog_sha256 == BUILTIN_PROMPT_SUITE_SHA256["pilot-v2.json"]
+    referenced = resolve_group_catalog(store.layout, group_for(reference))
+    assert referenced == published_snapshot and referenced.prompt_aliases
+    current = referenced.prompt("prompt-01")
+    assert current is not None and current.text == "Sentence number 1!"
+    # The recorded first revision counts for the current prompt under the same id only.
+    assert referenced.current_prompt_for(first.prompt) == current
+    assert referenced.current_prompt_for(current) == current
+    assert referenced.current_prompt_for(first.prompt.model_copy(update={"prompt_id": "x"})) is None
+    assert referenced.prompt("prompt-99") is None
+    assert embedded.current_prompt_for(first.prompt) is None
+
+
+def test_group_catalog_reference_fails_closed_when_its_snapshot_is_missing_or_altered(
+    store: CorpusStore,
+) -> None:
+    seeded(store, 2)
+    reference = published(store)
+    group = group_for(reference)
+    path = snapshot_file(store, reference)
+    original = path.read_bytes()
+    path.write_bytes(original.replace(b"Sentence number 1.", b"Sentence number 7."))
+    with pytest.raises(CorpusSnapshotSecurityError, match="published bytes") as caught:
+        resolve_group_catalog(store.layout, group)
+    assert caught.value.code == "CORPUS.SNAPSHOT_MISMATCH"
+    assert isinstance(caught.value, SecurityError)
+    path.unlink()
+    with pytest.raises(CorpusSnapshotSecurityError, match="missing") as caught:
+        resolve_group_catalog(store.layout, group)
+    assert caught.value.code == "CORPUS.SNAPSHOT_MISSING"
+    assert isinstance(caught.value, SecurityError)
+    path.write_bytes(original)
+    path.chmod(0o600)
+    assert resolve_group_catalog(store.layout, group) == store.materialize(reference)
+
+
+def test_an_in_memory_snapshot_must_be_exactly_the_file_its_reference_seals(
+    store: CorpusStore,
+) -> None:
+    seeded(store, 2)
+    first = published(store)
+    store.edit_prompt("prompt-01", text="Sentence number 1!", keep_recordings=True)
+    second = store.publish_version(CATALOG)
+    one, two = store.materialize(first), store.materialize(second)
+    assert one.prompt_aliases == () and two.prompt_aliases
+    require_referenced_snapshot(one, first)
+    require_referenced_snapshot(two, second)
+    # A plain suite stands for a published version only when that version accepts no alias.
+    require_referenced_snapshot(CatalogSnapshot.embedded(one.suite), first)
+    renamed = first.model_copy(update={"suite_id": "another-suite"})
+    repurposed = first.model_copy(update={"purpose": "capture-pilot"})
+    for snapshot, reference in (
+        (CatalogSnapshot.embedded(two.suite), second),  # its aliases would be dropped
+        (two, first),
+        (one, second),
+        (one, renamed),
+        (one, repurposed),
+    ):
+        with pytest.raises(CorpusSnapshotSecurityError) as caught:
+            require_referenced_snapshot(snapshot, reference)
+        assert caught.value.code == "CORPUS.SNAPSHOT_MISMATCH"
+        assert isinstance(caught.value, SecurityError)
+
+
+def test_group_catalog_cache_verifies_each_catalog_once_and_evicts_the_oldest(
+    store: CorpusStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        GroupCatalogCache(store.layout, capacity=0)
+    seeded(store, 2)
+    reference = published(store)
+    referenced, embedded = (
+        group_for(reference),
+        group_for(load_builtin_prompt_suite("pilot-v2.json")),
+    )
+    # An embedded suite and a snapshot of it never share an entry; the sealed reference counts.
+    assert GroupCatalogCache.key(embedded) == (embedded.catalog_sha256, None)
+    assert GroupCatalogCache.key(referenced) == (reference.catalog_sha256, reference)
+    reads: list[str] = []
+    real = corpus_store.resolve_group_catalog
+
+    def counted(layout: Any, group: RecordingGroup) -> CatalogSnapshot:
+        reads.append(group.catalog_sha256)
+        return real(layout, group)
+
+    monkeypatch.setattr(corpus_store, "resolve_group_catalog", counted)
+    cache = GroupCatalogCache(store.layout, capacity=1)
+    assert cache.resolve(referenced) == store.materialize(reference)
+    snapshot_file(store, reference).unlink()
+    # Verified bytes are served from the cache; a new owner detects the missing file.
+    assert cache.resolve(referenced).catalog_sha256 == reference.catalog_sha256
+    assert reads == [reference.catalog_sha256]
+    with pytest.raises(CorpusSnapshotSecurityError, match="missing"):
+        GroupCatalogCache(store.layout).resolve(referenced)
+    assert cache.resolve(embedded).prompt_aliases == ()
+    with pytest.raises(CorpusSnapshotSecurityError, match="missing"):
+        cache.resolve(referenced)  # evicted by the embedded catalog, so read again
+    assert cache.resolve(embedded).catalog_sha256 == embedded.catalog_sha256
+    assert reads.count(embedded.catalog_sha256) == 1
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"suite_id": "another-suite"}, {"purpose": "capture-pilot"}],
+    ids=["suite-id", "purpose"],
+)
+def test_warm_cache_still_refuses_a_reference_that_disagrees_with_a_verified_snapshot(
+    store: CorpusStore, changes: dict[str, str]
+) -> None:
+    seeded(store, 2)
+    reference = published(store)
+    cache = GroupCatalogCache(store.layout)
+    assert cache.resolve(group_for(reference)) == store.materialize(reference)
+    # Same suite digest and snapshot bytes, but a reference the file does not repeat.
+    forged = group_for(reference.model_copy(update=changes))
+    assert GroupCatalogCache.key(forged) != GroupCatalogCache.key(group_for(reference))
+    with pytest.raises(CorpusSnapshotSecurityError, match="declares suite") as caught:
+        cache.resolve(forged)
+    assert caught.value.code == "CORPUS.SNAPSHOT_MISMATCH"
+    assert cache.resolve(group_for(reference)) == store.materialize(reference)
 
 
 # -- hash stability against the released built-in -------------------------------------

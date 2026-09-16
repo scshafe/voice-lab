@@ -61,6 +61,7 @@ from cole_voice_lab.native_recording_application import (
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_analysis import RecordingAnalysisQueue, analysis_build_identity
 from cole_voice_lab.recording_contracts import (
+    CatalogSnapshot,
     ContextEvent,
     ContinueLegacyRecordingCommand,
     OpenContextCommand,
@@ -152,7 +153,7 @@ def package_root(
     rig.store = RecordingTakeStore(layout, clock=lambda: rig.now)
     rig.group_id = rig.store.open_group(catalog, subject, UMIK, "synthetic-host").group_id
     index = RecordingIndex(layout, subject_id=subject)
-    index.register_catalog(catalog)
+    index.register_catalog(CatalogSnapshot.embedded(catalog))
     rig.store.projection_hook = index.update_take
     queue = RecordingAnalysisQueue(rig.store, index, build=build)
     packages = RecordingPackageStore(

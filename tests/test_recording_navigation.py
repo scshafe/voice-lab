@@ -12,6 +12,8 @@ import pytest
 from pydantic import ValidationError
 from recording_fixtures import synthetic_catalog
 from test_recording_contracts import synthetic_contracts
+from test_recording_review import Versions, edit_and_publish
+from test_recording_review import versions as versions
 from test_recording_service import ServiceProcessEvidence
 from test_recording_takes import DEVICE, Rig
 
@@ -21,6 +23,7 @@ from cole_voice_lab.models import PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import (
     MAX_CONTROL_FRAME_BYTES,
+    CatalogSnapshot,
     ContextEvent,
     DecisionCommand,
     NavigateCommand,
@@ -114,7 +117,7 @@ def nav(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> NavigationRig:
         }
     )
     index = RecordingIndex(layout, subject_id="synthetic-subject")
-    index.register_catalog(catalog)
+    index.register_catalog(CatalogSnapshot.embedded(catalog))
     index.set_completeness(canonical_sha256(catalog), "complete")
     library = RecordingLibrary(layout, catalog, "synthetic-subject")
     library.bind_native_store(rig.store, index)
@@ -246,7 +249,7 @@ def test_cross_group_exact_prompt_coverage_without_acoustic_reuse(nav: Navigatio
             )
         }
     )
-    digest = nav.index.register_catalog(changed_catalog)
+    digest = nav.index.register_catalog(CatalogSnapshot.embedded(changed_catalog))
     nav.index.set_completeness(digest, "complete")
     assert nav.index.next_missing(digest).next_prompt == changed_catalog.prompts[0]
 
@@ -1126,3 +1129,53 @@ def test_workspace_backend_preserves_named_failures(
     with pytest.raises(RecordingServiceError) as caught:
         backend.execute(request, RecordingCancellation())
     assert caught.value.recording_error.code == code
+
+
+def test_save_and_next_skips_a_prompt_covered_only_through_an_alias(versions: Versions) -> None:
+    """spoken-0000's earlier take keeps counting after a keep-recordings rewording."""
+    rig, index = versions.rig, versions.index
+    take_id = versions.take.reservation.take_id
+    second, snapshot = edit_and_publish(
+        rig.layout, "Synthetic sentence zero.", keep_recordings=True
+    )
+    library = RecordingLibrary(rig.layout, snapshot, "synthetic-subject")
+    library.bind_native_store(rig.store, index)
+    index.update_take(versions.take)
+    assert index.register_catalog(snapshot) == second.catalog_sha256
+    index.set_completeness(second.catalog_sha256, "complete")
+    context = versions.open(second, "context-second")
+    assert context.cursor.selection.prompt_id == "spoken-0000"
+    # The real index nominates the alias-covered take when its prompt is selected.
+    selected = versions.select("spoken-0000", "select-covered")
+    assert selected.result.next_prompt == snapshot.prompt("spoken-0000")
+    assert selected.result.selected_take_id == take_id
+    continued = rig.store.navigate(
+        NavigateCommand(
+            operation_id="continue-missing",
+            selection=versions.cursor.selection,
+            mode="continue-missing",
+        ),
+        subject_id="synthetic-subject",
+    )
+    assert continued.cursor.selection.prompt_id == "spoken-0001"
+    versions.select("spoken-0002", "select-last")
+    cursor = versions.cursor
+    reservation = rig.store.reserve(
+        operation_id="reserve-last",
+        group_id=cursor.group_id,
+        prompt_id="spoken-0002",
+        process_generation="helper-generation",
+        selection=cursor.selection,
+    )
+    draft = rig.seal(reservation, "seal-last")
+    saved = library.save_native_take(
+        rig.store,
+        rig.command(draft, "save-last", selection=versions.cursor.selection, advance=True),
+    )
+    # Save & Next wraps past spoken-0000, which only its alias covers.
+    navigation = saved.operation.navigation
+    assert navigation is not None
+    assert navigation.next_prompt == snapshot.prompt("spoken-0001")
+    assert saved.cursor.selection.prompt_id == "spoken-0001"
+    page = library.indexed_history(index)
+    assert (page.covered_prompt_count, page.missing_prompt_count) == (2, 1)

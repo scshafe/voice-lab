@@ -65,13 +65,18 @@ def legacy_projection_records(
     *,
     take_store: RecordingTakeStore | None = None,
 ) -> Iterator[LegacyProjectionRecord]:
-    """Produce validated legacy metadata; source inspection never requires an index handle."""
-    catalog = canonical_sha256(library.prompt_suite)
-    yield LegacyProjectionHeader(catalog_sha256=catalog)
+    """Produce validated legacy metadata; source inspection never requires an index handle.
+
+    Each row keeps the exact prompt its audio was recorded against: the library catalog's
+    prompt, or an earlier revision the library's catalog snapshot accepts through a prompt
+    alias (the index then counts the row for the current prompt).
+    Raises: ``RecordingIndexError`` wrapping any evidence, contract, security or I/O failure
+    ("legacy backfill failed; preserved history is Unknown: ...").
+    """
+    yield LegacyProjectionHeader(catalog_sha256=library.catalog_sha256)
     try:
         history, sessions, evidence = library.verified_history_snapshot()
         sidecars = {item.session_id: item for item in evidence}
-        prompts = {item.prompt_id: item for item in library.prompt_suite.prompts}
         session_dates = {item.session_id: item.session_started_at for item in sessions}
         native_sessions = {item.session_id for item in history if item.native_take_id is not None}
         groups = tuple(
@@ -171,7 +176,7 @@ def legacy_projection_records(
                     else "draft"
                 )
                 metrics = inspection.qc_metrics(
-                    old.relative_path, allow_quiet=prompts[old.prompt_id].allows_quiet
+                    old.relative_path, allow_quiet=old.recorded_prompt.allows_quiet
                 )
                 analysis: AnalysisState = "verified" if metrics.passed else "needs-review"
                 source_relative = source.relative_to(library.layout.root).as_posix()
@@ -190,7 +195,7 @@ def legacy_projection_records(
                     # The source catalog, never the library's: sidecar-less captures map
                     # only through pinned pilot-v1, so every catalog emits identical rows.
                     catalog_sha256=PILOT_V1_SHA256 if sidecar is None else sidecar.catalog_sha256,
-                    prompt=prompts[old.prompt_id],
+                    prompt=old.recorded_prompt,
                     recorded_at=old.recorded_at,
                     date_precision=old.date_precision,
                     source_sha256=old.sha256,
@@ -293,10 +298,18 @@ def publish_legacy_spool(
 
 
 def backfill_recording_library(library: RecordingLibrary, index: RecordingIndex) -> int:
-    """Standalone compatibility boundary; share worker preparation and parent publication."""
+    """Standalone compatibility boundary; share worker preparation and parent publication.
+
+    Registers the library's catalog snapshot (with its prompt aliases) before publishing.
+    Returns: the index revision after publication.
+    Raises: ``RecordingIndexError`` when the library and index disagree on root or subject,
+    when the catalog conflicts with its indexed identity, or when backfill fails (the
+    catalog is then marked Unknown with record ``legacy-backfill``);
+    ``RecordingMetadataBusyError`` when legacy evidence changed during inspection.
+    """
     if index.layout != library.layout or index.subject_id != library.subject_id:
         raise RecordingIndexError("legacy backfill context does not match the indexed library")
-    catalog = index.register_catalog(library.prompt_suite)
+    catalog = index.register_catalog(library.catalog)
     index.set_completeness(catalog, "building")
     token = index.legacy_publication_token()
 
@@ -337,7 +350,6 @@ def _interrupted_entries(
 ) -> Iterator[
     tuple[RecordingHistoryEntry, datetime | None, tuple[tuple[str, str, _AliasKind], ...]]
 ]:
-    catalog_prompts = {item.prompt_id: item for item in library.prompt_suite.prompts}
     paths = dict(
         zip(
             (p.prompt_id for p in sidecar.selected_suite.prompts),
@@ -347,9 +359,11 @@ def _interrupted_entries(
     )
     selected = {item.prompt_id: item for item in sidecar.selected_suite.prompts}
     for take in sidecar.takes:
-        if (sidecar.session_id, take.prompt_id, take.take_started_at) in observed or selected[
-            take.prompt_id
-        ] != catalog_prompts.get(take.prompt_id):
+        if (
+            sidecar.session_id,
+            take.prompt_id,
+            take.take_started_at,
+        ) in observed or not library.counts(selected[take.prompt_id]):
             continue
         if take.audio_sha256 is not None or take.accepted or take.rejected:
             raise SecurityError(

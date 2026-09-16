@@ -16,6 +16,7 @@ from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.models import CaptureDevice, utc_now
 from cole_voice_lab.recording_analysis import RecordingAnalysisQueue, RecordingAnalysisWorker
 from cole_voice_lab.recording_contracts import (
+    CatalogSnapshot,
     NativeRecoveryReceipt,
     OpenContextCommand,
     RecordingError,
@@ -334,7 +335,7 @@ def test_recovered_seal_is_not_independent_verification_after_preserved_mtime_ta
     assert rig.store.get_take(take_id).analysis == "pending"
     rig.store.clock = utc_now
     with RecordingIndex(rig.layout, subject_id="synthetic-subject") as index:
-        index.register_catalog(rig.store.get_group(rig.group_id).catalog)
+        index.register_catalog(CatalogSnapshot.embedded(rig.store.get_group(rig.group_id).catalog))
         queue = RecordingAnalysisQueue(rig.store, index)
         worker = RecordingAnalysisWorker(rig.layout, queue.build)
         try:

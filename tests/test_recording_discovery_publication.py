@@ -19,7 +19,11 @@ from test_recording_takes import Rig
 from cole_voice_lab.canonical import canonical_sha256
 from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.paths import AssetLayout
-from cole_voice_lab.recording_contracts import RecordingError, RecordingHistoryEntry
+from cole_voice_lab.recording_contracts import (
+    CatalogSnapshot,
+    RecordingError,
+    RecordingHistoryEntry,
+)
 from cole_voice_lab.recording_discovery import (
     DiscoveryPublisher,
     RecordingDiscoveryCoordinator,
@@ -65,7 +69,7 @@ def request(index: RecordingIndex) -> DiscoveryRequest:
         generation="synthetic-generation",
         group_id="synthetic-group",
         subject_id=index.subject_id,
-        catalog_sha256=index.register_catalog(synthetic_catalog(3)),
+        catalog_sha256=index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3))),
         index_instance=index.instance_id,
         legacy_token=index.legacy_publication_token(),
     )
@@ -125,7 +129,7 @@ def test_prepared_legacy_iteration_and_serialization_happen_before_index_lock(
     layout = AssetLayout.initialize(tmp_path / "assets")
     entry = legacy_entry()
     with RecordingIndex(layout) as index:
-        catalog = index.register_catalog(synthetic_catalog(3))
+        catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
         original = module.canonical_json_bytes
 
         def encoded(value: object) -> bytes:
@@ -148,7 +152,7 @@ def test_stale_legacy_publication_preserves_newer_decisions(tmp_path: Path, chan
     layout = AssetLayout.initialize(tmp_path / "assets")
     entry = legacy_entry()
     with RecordingIndex(layout) as index:
-        catalog = index.register_catalog(synthetic_catalog(3))
+        catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
         index.replace_legacy_catalog(catalog, ((entry, None, ()),))
         token = index.legacy_publication_token()
         newer = entry.model_copy(update={"decision": "removed", "state_revision": 1})
@@ -171,7 +175,7 @@ def test_legacy_publication_preserves_unrelated_unknown_and_native_updates(
 ) -> None:
     layout = AssetLayout.initialize(tmp_path / "assets")
     with RecordingIndex(layout) as index:
-        catalog = index.register_catalog(synthetic_catalog(3))
+        catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
         token = index.legacy_publication_token()
         index.update_take(native_take(synthetic_catalog(3), 1))
         index.mark_unknown(catalog, "native-source", error("Native source remains unknown"))
@@ -191,7 +195,7 @@ def test_preparation_capacity_failure_preserves_previous_rows(
     layout = AssetLayout.initialize(tmp_path / "assets")
     entry = legacy_entry()
     with RecordingIndex(layout) as index:
-        catalog = index.register_catalog(synthetic_catalog(3))
+        catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
         index.replace_legacy_catalog(catalog, ((entry, None, ()),))
         before = index.history(catalog)
         monkeypatch.setattr(f"cole_voice_lab.recording_index.{bound}", 0)
@@ -247,7 +251,7 @@ def test_legacy_spool_requires_one_exact_header(tmp_path: Path, header: str) -> 
         RecordingIndex(layout) as index,
         tempfile.TemporaryFile(dir=layout.directory("tmp")) as spool,
     ):
-        catalog = index.register_catalog(synthetic_catalog(3))
+        catalog = index.register_catalog(CatalogSnapshot.embedded(synthetic_catalog(3)))
         row = LegacyProjectionRow(entry=legacy_entry(), opened_at=None, aliases=())
         correct = LegacyProjectionHeader(catalog_sha256=catalog)
         values = (

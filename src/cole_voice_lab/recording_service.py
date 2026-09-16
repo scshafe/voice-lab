@@ -30,6 +30,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from .canonical import canonical_sha256, open_regular_no_follow, sha256_file
+from .corpus_store import CorpusSnapshotSecurityError
 from .diagnostic_roots import require_catalog_root
 from .errors import ContractError, SecurityError, VoiceLabError
 from .paths import AssetLayout, _reject_existing_symlink_components
@@ -41,6 +42,7 @@ from .recording_contracts import (
     AcknowledgedEvent,
     AnalysisEvent,
     CancelCommand,
+    CatalogSnapshot,
     ContextEvent,
     ContinueLegacyRecordingCommand,
     DecisionCommand,
@@ -63,6 +65,7 @@ from .recording_contracts import (
     RecordingError,
     RecordingHistoryPage,
     RecordingMessageMeta,
+    RecordingPromptNotCountedError,
     RecordingRecoveryPage,
     RecordingResponse,
     RecordingTake,
@@ -125,6 +128,19 @@ class RecordingServiceError(VoiceLabError):
     def __init__(self, code: ErrorCode, message: str, *, retryable: bool = False) -> None:
         super().__init__(message)
         self.recording_error = RecordingError(code=code, message=message, retryable=retryable)
+
+
+def _snapshot_failure(error: CorpusSnapshotSecurityError) -> RecordingServiceError:
+    """The wire error for a group whose referenced catalog snapshot is missing or altered.
+
+    Both store codes surface as ``CORPUS.SNAPSHOT_MISMATCH``; the fixed message says which,
+    and carries no snapshot content.
+    """
+    state = "missing" if error.code == "CORPUS.SNAPSHOT_MISSING" else "altered or unsafe"
+    return RecordingServiceError(
+        "CORPUS.SNAPSHOT_MISMATCH",
+        f"the catalog snapshot this recording context references is {state}",
+    )
 
 
 class RecordingFrameDecoder:
@@ -424,6 +440,8 @@ class RecordingTakesBackend:
                     completeness="unknown",
                     has_more=False,
                 )
+        except CorpusSnapshotSecurityError as error:
+            raise _snapshot_failure(error) from error
         except SecurityError as error:
             raise RecordingServiceError(
                 "RECORDING.SOURCE_CHANGED", "capture evidence changed"
@@ -576,8 +594,10 @@ class RecordingWorkspaceBackend:
                         approval_sha256=context.pilot_approval_sha256,
                     )
                 cancellation.check()
-                self.index.register_catalog(context.catalog)
-                library = RecordingLibrary(self.layout, context.catalog, self.subject_id)
+                # OpenContextCommand still embeds its catalog (corpus-store Step 4).
+                embedded = CatalogSnapshot.embedded(context.catalog)
+                self.index.register_catalog(embedded)
+                library = RecordingLibrary(self.layout, embedded, self.subject_id)
                 library.bind_native_store(self.store, self.index)
                 if isinstance(command, ContinueLegacyRecordingCommand):
                     event = RecordingRecovery(
@@ -610,8 +630,9 @@ class RecordingWorkspaceBackend:
             ):
                 self.discovery.schedule(group.group_id)
             if self.library is None or self.library.catalog_sha256 != group.catalog_sha256:
-                self.index.register_catalog(group.catalog)
-                self.library = RecordingLibrary(self.layout, group.catalog, self.subject_id)
+                catalog = self.store.group_catalog(group)
+                self.index.register_catalog(catalog)
+                self.library = RecordingLibrary(self.layout, catalog, self.subject_id)
                 self.library.bind_native_store(self.store, self.index)
             library = self.library
             if isinstance(command, ReviewTakeCommand):
@@ -700,8 +721,12 @@ class RecordingWorkspaceBackend:
             raise RecordingServiceError(
                 error.recording_error.code, error.recording_error.message
             ) from error
-        except RecordingSelectionError as error:
+        except (RecordingSelectionError, RecordingPromptNotCountedError) as error:
+            # A take whose prompt changed without keeping recordings is stale history, not
+            # changed evidence: the same code for native and legacy takes.
             raise RecordingServiceError("RECORDING.STALE_REVISION", str(error)) from error
+        except CorpusSnapshotSecurityError as error:
+            raise _snapshot_failure(error) from error
         except SecurityError as error:
             raise RecordingServiceError(
                 "RECORDING.SOURCE_CHANGED", "workspace evidence changed"
@@ -1380,7 +1405,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             store = RecordingTakeStore(layout)
             group = store.get_group(options.recording_group_id)
             index = RecordingIndex(layout, subject_id=group.subject_id)
-            index.register_catalog(group.catalog)
+            index.register_catalog(store.group_catalog(group))
 
             def project_take(take: RecordingTake) -> None:
                 assert index is not None

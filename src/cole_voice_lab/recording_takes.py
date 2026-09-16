@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, overload
 from uuid import uuid4
 
 from pydantic import Field, TypeAdapter, ValidationError, model_validator
@@ -30,6 +30,7 @@ from .canonical import (
     sha256_file,
     write_canonical_json,
 )
+from .corpus_store import GroupCatalogCache
 from .datasets import load_pilot_gate
 from .diagnostic_roots import require_catalog_root
 from .errors import ContractError, SecurityError
@@ -47,8 +48,12 @@ from .paths import AssetLayout, confined_path
 from .recording_contracts import (
     MAX_CONTROL_FRAME_BYTES,
     MAX_HISTORY_PAGE_SIZE,
+    RECORDING_GROUP_V1,
+    RECORDING_GROUP_V2,
     CaptureReservation,
     CaptureSealReceipt,
+    CatalogReference,
+    CatalogSnapshot,
     ContextEvent,
     DecisionCommand,
     DecisionEvent,
@@ -432,6 +437,13 @@ class RecordingSelectionError(ContractError):
     """Displayed workspace identity changed; retry from its authoritative cursor."""
 
 
+class RecordingPromptUnavailableError(ContractError):
+    """A requested prompt id is not in the exact catalog its group binds.
+
+    Raised by reserve and retake; the operator must select a prompt of the current catalog.
+    """
+
+
 class RecordingTakeStore:
     """Private take authority with short serialized commits and no audio-analysis executor."""
 
@@ -465,6 +477,7 @@ class RecordingTakeStore:
             raise ContractError("a read-only recording store cannot own a projection hook")
         self._thread_lock = threading.RLock()
         self._current_group: RecordingGroup | None = None
+        self._group_catalogs = GroupCatalogCache(self.layout)
         self._directory(TAKE_PROVENANCE_ROOT)
         self._directory(f"{TAKE_PROVENANCE_ROOT}/.operations")
         self._directory(f"{TAKE_PROVENANCE_ROOT}/.cursors")
@@ -721,11 +734,37 @@ class RecordingTakeStore:
         self._fault("before-ack")
 
     def get_group(self, group_id: str) -> RecordingGroup:
+        """Read one immutable group record and verify the catalog it binds.
+
+        Params: ``group_id`` is the group's stable id, which is also its file name.
+        Returns: the validated group; ``group_catalog(group)`` then answers from the cache.
+        Raises: ``SecurityError`` when the record is not private canonical evidence or names
+        another group; ``ContractError`` when it is not a valid recording group;
+        ``CorpusSnapshotSecurityError`` (a ``SecurityError``; ``CORPUS.SNAPSHOT_MISSING`` or
+        ``CORPUS.SNAPSHOT_MISMATCH``) when a recording-group/v2's snapshot is missing or
+        altered; ``OSError`` when the record cannot be read.
+        """
         identifier = _STABLE_ID.validate_python(group_id)
         group = self._read(self._path(f"{GROUP_PROVENANCE_ROOT}/{identifier}.json"), RecordingGroup)
         if group.group_id != identifier:
             raise SecurityError("recording group filename does not match its identity")
+        self.group_catalog(group)
         return group
+
+    def group_catalog(self, group: RecordingGroup) -> CatalogSnapshot:
+        """The exact catalog a group binds, through ``corpus_store.resolve_group_catalog``.
+
+        Resolved snapshots are cached per store in a ``corpus_store.GroupCatalogCache``
+        (suite digest plus, for a recording-group/v2, the sealed snapshot digest), so a
+        cached entry is exactly what a fresh verified read returns; each snapshot file is
+        verified once per store instance.
+        Params: ``group`` is a validated group of either version.
+        Returns: the embedded suite without aliases (v1) or the verified snapshot (v2).
+        Raises: ``CorpusSnapshotSecurityError`` (a ``SecurityError``) with
+        ``CORPUS.SNAPSHOT_MISSING`` or ``CORPUS.SNAPSHOT_MISMATCH`` when a v2 group's
+        snapshot file is missing, altered or disagrees with its reference.
+        """
+        return self._group_catalogs.resolve(group)
 
     def _source_identity(self, relative: str) -> RecordingFileIdentity:
         metadata = self._path(relative).lstat()
@@ -793,7 +832,7 @@ class RecordingTakeStore:
         return self._path(f"{GROUP_PROVENANCE_ROOT}/.prepared-gates/{key}.json")
 
     def _validate_gate(self, group: RecordingGroup) -> None:
-        if group.catalog.purpose != "capture-corpus":
+        if group.catalog_purpose != "capture-corpus":
             return
         gate = group.gate
         if (
@@ -822,6 +861,7 @@ class RecordingTakeStore:
                 "prepared capture authorization changed; revalidate before recording"
             )
 
+    @overload
     def open_group(
         self,
         catalog: PromptSuite,
@@ -834,16 +874,84 @@ class RecordingTakeStore:
         setup_description: str = "",
         _locked: bool = False,
         _operation_id: str | None = None,
+    ) -> RecordingGroup: ...
+
+    @overload
+    def open_group(
+        self,
+        *,
+        reference: CatalogReference,
+        suite: PromptSuite,
+        subject_id: str,
+        capture_device: CaptureDevice,
+        capture_host: str,
+        prepared_gate: PreparedCaptureGate | None = None,
+        new_setup: bool = False,
+        setup_description: str = "",
+        _locked: bool = False,
+        _operation_id: str | None = None,
+    ) -> RecordingGroup: ...
+
+    def open_group(
+        self,
+        catalog: PromptSuite | None = None,
+        subject_id: str | None = None,
+        capture_device: CaptureDevice | None = None,
+        capture_host: str | None = None,
+        *,
+        reference: CatalogReference | None = None,
+        suite: PromptSuite | None = None,
+        prepared_gate: PreparedCaptureGate | None = None,
+        new_setup: bool = False,
+        setup_description: str = "",
+        _locked: bool = False,
+        _operation_id: str | None = None,
     ) -> RecordingGroup:
-        """Automatically reuse this process's compatible context, or durably open a new group."""
+        """Automatically reuse this process's compatible context, or durably open a new group.
+
+        Every group is minted here. ``reference`` plus ``suite`` (the suite that reference
+        materializes) mints a recording-group/v2 that references the published snapshot and
+        embeds no catalog. ``catalog`` alone mints the embedded recording-group/v1 exactly as
+        before the corpus store (transitional: removed in corpus-store Step 4). A group is
+        reused only for the same catalog form: equal embedded catalog (v1) or equal reference
+        (v2), plus equal subject, device, host, gate and setup.
+        Returns: the reused or newly written group.
+        Raises: ``TypeError`` for a call that names neither or both catalog forms, or omits the
+        subject, device or host; ``ContractError`` when ``suite`` does not hash to
+        ``reference.catalog_sha256``, when the suite is refused for this root
+        (``require_catalog_root``: physical-test catalogs outside a marked root) or when an
+        operation-bound group already exists with other content;
+        ``CorpusSnapshotSecurityError`` (``CORPUS.SNAPSHOT_MISSING`` /
+        ``CORPUS.SNAPSHOT_MISMATCH``) when the referenced snapshot is missing or altered;
+        ``SecurityError`` for unsafe gate or group evidence; ``OSError`` when the group record
+        cannot be written.
+        """
+        if subject_id is None or capture_device is None or capture_host is None:
+            raise TypeError("open_group requires the subject, capture device and capture host")
+        if catalog is not None:
+            if reference is not None or suite is not None:
+                raise TypeError("open_group takes an embedded catalog or a reference, not both")
+            # transitional: removed in corpus-store Step 4
+            materialized = catalog
+            purpose = catalog.purpose
+            catalog_sha256 = canonical_sha256(catalog)
+        elif reference is None or suite is None:
+            raise TypeError("open_group requires a catalog reference together with its suite")
+        else:
+            if canonical_sha256(suite) != reference.catalog_sha256:
+                raise ContractError("group suite differs from the catalog reference it names")
+            materialized = suite
+            purpose = reference.purpose
+            catalog_sha256 = reference.catalog_sha256
         # Every group is minted here, so no caller can bypass the service refusal.
-        require_catalog_root(self.layout, catalog, subject_id)
+        require_catalog_root(self.layout, materialized, subject_id)
         gate = prepared_gate or PreparedCaptureGate(
-            state="unprepared" if catalog.purpose == "capture-corpus" else "not-required"
+            state="unprepared" if purpose == "capture-corpus" else "not-required"
         )
         current = self._current_group
         compatible = current is not None and (
             current.catalog == catalog
+            and current.catalog_reference == reference
             and current.subject_id == subject_id
             and current.capture_device == capture_device
             and current.capture_host == capture_host
@@ -868,11 +976,13 @@ class RecordingTakeStore:
             )
         group_token = uuid4().hex if _operation_id is None else canonical_sha256(_operation_id)
         group = RecordingGroup(
+            schema_version=RECORDING_GROUP_V1 if reference is None else RECORDING_GROUP_V2,
             group_id=f"group-{group_token}",
             context_revision=0,
             subject_id=subject_id,
             catalog=catalog,
-            catalog_sha256=canonical_sha256(catalog),
+            catalog_reference=reference,
+            catalog_sha256=catalog_sha256,
             capture_device=capture_device,
             capture_host=capture_host,
             opened_at=self.clock(),
@@ -880,6 +990,8 @@ class RecordingTakeStore:
             setup_description=setup_description,
             gate=gate,
         )
+        # A reference is minted only onto a snapshot that exists with its sealed bytes.
+        self.group_catalog(group)
         group_path = self._path(f"{GROUP_PROVENANCE_ROOT}/{group.group_id}.json")
         if group_path.exists():
             existing = self.get_group(group.group_id)
@@ -887,8 +999,10 @@ class RecordingTakeStore:
                 any(
                     getattr(existing, key) != getattr(group, key)
                     for key in (
+                        "schema_version",
                         "subject_id",
                         "catalog",
+                        "catalog_reference",
                         "capture_device",
                         "capture_host",
                         "setup_description",
@@ -918,7 +1032,16 @@ class RecordingTakeStore:
         commit_barrier: Callable[[], None] | None = None,
         current_session_reservation: bool = False,
     ) -> CaptureReservation:
-        """Sync exact prompt/context/intent and destinations before any microphone command."""
+        """Sync exact prompt/context/intent and destinations before any microphone command.
+
+        The prompt is looked up by id in the exact catalog the group binds (its embedded
+        suite, or its referenced snapshot) and bound into the reservation as recorded.
+        Raises: ``RecordingPromptUnavailableError`` (a ``ContractError``) when that catalog
+        has no such prompt; ``CorpusSnapshotSecurityError`` when a referenced snapshot is
+        missing or altered; ``RecordingSelectionError`` for a stale displayed selection;
+        ``ContractError`` for an unprepared corpus gate or a conflicting operation;
+        ``SecurityError`` for unsafe evidence.
+        """
         if current_session_reservation and self.reservation_projection_hook is None:
             raise ContractError("current-session reservation requires its owned projection hook")
         request_sha = canonical_sha256(
@@ -950,11 +1073,11 @@ class RecordingTakeStore:
             if cursor is not None and cursor.group_id != group_id:
                 raise RecordingSelectionError("recording group changed")
             self._validate_gate(group)
-            prompt = next(
-                (item for item in group.catalog.prompts if item.prompt_id == prompt_id), None
-            )
+            prompt = self.group_catalog(group).prompt(prompt_id)
             if prompt is None:
-                raise ContractError("capture prompt is not in the exact group catalog")
+                raise RecordingPromptUnavailableError(
+                    "capture prompt is not in the exact group catalog"
+                )
             take_id = f"take-{canonical_sha256(operation_id)}"
             self._directory(f"tmp/recording-takes/{take_id}")
             self._directory(f"{TAKE_PROVENANCE_ROOT}/{take_id}")
@@ -1328,10 +1451,33 @@ class RecordingTakeStore:
             complete=navigation.complete if navigation is not None else False,
         )
 
-    def context_replay(self, command: OpenContextCommand) -> ContextEvent | None:
+    @staticmethod
+    def _context_request_sha256(
+        command: OpenContextCommand, catalog_reference: CatalogReference | None
+    ) -> str:
+        # An embedded context keeps its original request digest; a referenced one binds both.
+        if catalog_reference is None:
+            return canonical_sha256(command)
+        return canonical_sha256(
+            [command.model_dump(mode="json"), catalog_reference.model_dump(mode="json")]
+        )
+
+    def context_replay(
+        self, command: OpenContextCommand, *, catalog_reference: CatalogReference | None = None
+    ) -> ContextEvent | None:
+        """The recorded result of an already committed open-context operation, if any.
+
+        Params: ``catalog_reference`` as for ``open_context``; it is part of the request.
+        Returns: the original context event, or ``None`` when the operation is new.
+        Raises: ``ContractError`` when the operation id names another request or kind;
+        ``CorpusSnapshotSecurityError`` when the replayed group's snapshot is missing or
+        altered; ``SecurityError`` for unsafe evidence.
+        """
         with self._metadata_lock():
             self._repair_pending()
-            replay = self._replay(command.operation_id, canonical_sha256(command))
+            replay = self._replay(
+                command.operation_id, self._context_request_sha256(command, catalog_reference)
+            )
             if replay is None:
                 return None
             if replay.kind != "open-context" or replay.cursor is None:
@@ -1342,12 +1488,27 @@ class RecordingTakeStore:
         self,
         command: OpenContextCommand,
         *,
+        catalog_reference: CatalogReference | None = None,
         prepared_gate: PreparedCaptureGate | None = None,
         commit_barrier: Callable[[], None] | None = None,
     ) -> ContextEvent:
+        """Open (or reuse) the capture group for a context and commit the workspace cursor.
+
+        Params: ``catalog_reference`` names the published catalog version that
+        ``command.catalog`` materializes (transitional: moves into OpenContextCommand in
+        corpus-store Step 4); when given, the context binds a recording-group/v2 referencing
+        it. Without it the embedded recording-group/v1 is minted exactly as before. A new
+        catalog starts the cursor on its first prompt.
+        Returns: the context event (the recorded one on replay).
+        Raises: ``RecordingSelectionError`` when the workspace moved since the command was
+        prepared; ``ContractError`` when the reference does not name ``command.catalog`` or
+        the catalog is refused for this root; ``CorpusSnapshotSecurityError`` when the
+        referenced snapshot is missing or altered; ``SecurityError`` for unsafe evidence.
+        """
+        request_sha256 = self._context_request_sha256(command, catalog_reference)
         with self._metadata_lock():
             self._repair_pending()
-            replay = self._replay(command.operation_id, canonical_sha256(command))
+            replay = self._replay(command.operation_id, request_sha256)
             if replay is not None:
                 assert replay.cursor is not None
                 return ContextEvent(
@@ -1358,17 +1519,31 @@ class RecordingTakeStore:
                 previous.selection.selection_revision if previous is not None else None
             ) != command.expected_selection_revision:
                 raise RecordingSelectionError("workspace changed while context was being prepared")
-            group = self.open_group(
-                command.catalog,
-                command.subject_id,
-                command.capture_device,
-                command.capture_host,
-                prepared_gate=prepared_gate,
-                new_setup=command.new_setup,
-                setup_description=command.setup_description,
-                _locked=True,
-                _operation_id=command.operation_id,
-            )
+            if catalog_reference is None:
+                group = self.open_group(
+                    command.catalog,
+                    command.subject_id,
+                    command.capture_device,
+                    command.capture_host,
+                    prepared_gate=prepared_gate,
+                    new_setup=command.new_setup,
+                    setup_description=command.setup_description,
+                    _locked=True,
+                    _operation_id=command.operation_id,
+                )
+            else:
+                group = self.open_group(
+                    reference=catalog_reference,
+                    suite=command.catalog,
+                    subject_id=command.subject_id,
+                    capture_device=command.capture_device,
+                    capture_host=command.capture_host,
+                    prepared_gate=prepared_gate,
+                    new_setup=command.new_setup,
+                    setup_description=command.setup_description,
+                    _locked=True,
+                    _operation_id=command.operation_id,
+                )
             keep_selection = (
                 previous is not None and previous.selection.catalog_sha256 == group.catalog_sha256
             )
@@ -1379,7 +1554,7 @@ class RecordingTakeStore:
                     catalog_sha256=group.catalog_sha256,
                     prompt_id=previous.selection.prompt_id
                     if keep_selection and previous is not None
-                    else group.catalog.prompts[0].prompt_id,
+                    else self.group_catalog(group).suite.prompts[0].prompt_id,
                     take_id=previous.selection.take_id
                     if keep_selection and previous is not None
                     else None,
@@ -1399,7 +1574,7 @@ class RecordingTakeStore:
             self._commit(
                 RecordingTakeOperation(
                     operation_id=command.operation_id,
-                    request_sha256=canonical_sha256(command),
+                    request_sha256=request_sha256,
                     kind="open-context",
                     store_revision=self._store_head().revision + 1,
                     cursor=cursor,
@@ -1409,12 +1584,16 @@ class RecordingTakeStore:
             )
             return ContextEvent(group=group, cursor=cursor)
 
-    def _latest_retained_take(self, group: RecordingGroup, prompt: Prompt) -> str | None:
+    def _latest_retained_take(
+        self, group: RecordingGroup, catalog: CatalogSnapshot, prompt: Prompt
+    ) -> str | None:
         """Show an explicitly selected prompt's latest retained take; never read its audio.
 
         Runs under the metadata lock. A native index row must still match its take head, so
         a stale projection selects nothing rather than a removed, rejected or invalid take.
-        Legacy rows have no store head and rely on the complete index alone.
+        The head's recorded prompt must count for ``prompt`` in ``catalog``: the prompt
+        itself or a revision its keep-recordings aliases accept. Legacy rows have no store
+        head and rely on the complete index alone.
         """
         if self.retained_take_resolver is None:
             return None
@@ -1428,7 +1607,7 @@ class RecordingTakeStore:
             take.decision != "kept"
             or take.analysis == "invalid"
             or take.reservation.group.subject_id != group.subject_id
-            or take.reservation.prompt != prompt
+            or catalog.current_prompt_for(take.reservation.prompt) != prompt
         ):
             return None
         return take_id
@@ -1451,17 +1630,16 @@ class RecordingTakeStore:
                 raise RecordingSelectionError("open the recording context before navigating")
             group = self.get_group(cursor.group_id)
             if command.mode == "selected-prompt":
-                prompt = next(
-                    (p for p in group.catalog.prompts if p.prompt_id == command.target_prompt_id),
-                    None,
-                )
+                assert command.target_prompt_id is not None  # NavigateCommand validation
+                catalog = self.group_catalog(group)
+                prompt = catalog.prompt(command.target_prompt_id)
                 if prompt is None:
                     raise RecordingSelectionError(
                         "selected prompt is absent from the exact catalog"
                     )
                 # Resolve before reading the revision, so the cursor never claims an older
                 # index than the evidence behind its selected take.
-                selected_take_id = self._latest_retained_take(group, prompt)
+                selected_take_id = self._latest_retained_take(group, catalog, prompt)
                 result = RecordingNavigationResult(
                     catalog_sha256=group.catalog_sha256,
                     index_revision=self.index_revision_resolver()
@@ -1652,6 +1830,17 @@ class RecordingTakeStore:
         *,
         commit_barrier: Callable[[], None] | None = None,
     ) -> ReviewEvent:
+        """Select an authorized source for review and move the cursor onto its prompt.
+
+        ``source.prompt`` is the prompt the audio was recorded against; it must count for a
+        prompt of the current group's catalog (itself, or an earlier revision that prompt's
+        keep-recordings aliases accept, under the same prompt id).
+        Raises: ``RecordingSelectionError`` when the workspace or source changed or names
+        another catalog; ``RecordingPromptNotCountedError`` (a ``ContractError``) when the
+        source's recorded prompt does not count for the current catalog;
+        ``CorpusSnapshotSecurityError`` when the group's referenced snapshot is missing or
+        altered; ``SecurityError`` for unsafe evidence.
+        """
         with self._metadata_lock():
             self._repair_pending()
             replay = self._replay(command.operation_id, canonical_sha256(command))
@@ -1662,13 +1851,13 @@ class RecordingTakeStore:
             if cursor is None or command.take_id != source.take_id:
                 raise RecordingSelectionError("review target or workspace changed")
             group = self.get_group(cursor.group_id)
-            if (
-                source.catalog_sha256 != group.catalog_sha256
-                or source.prompt not in group.catalog.prompts
-            ):
+            if source.catalog_sha256 != group.catalog_sha256:
                 raise RecordingSelectionError(
                     "review source does not belong to the exact current catalog"
                 )
+            self.group_catalog(group).require_current_prompt_for(
+                source.prompt, take_id=source.take_id
+            )
             if source.original_kind == "native-original":
                 current = self._get_take(source.take_id)
                 if (
@@ -1724,7 +1913,14 @@ class RecordingTakeStore:
         subject_id: str,
         commit_barrier: Callable[[], None] | None = None,
     ) -> NavigationEvent:
-        """Clear the selected slot; the previous independent take and decision stay recoverable."""
+        """Clear the selected slot; the previous independent take and decision stay recoverable.
+
+        Raises: ``RecordingPromptUnavailableError`` (a ``ContractError``) when the cursor's
+        prompt is not in the exact catalog its group binds; ``RecordingSelectionError`` when
+        the displayed selection is stale or no context is open;
+        ``CorpusSnapshotSecurityError`` when the group's referenced snapshot is missing or
+        altered; ``SecurityError`` for unsafe evidence.
+        """
         with self._metadata_lock():
             self._repair_pending()
             replay = self._replay(command.operation_id, canonical_sha256(command))
@@ -1735,11 +1931,12 @@ class RecordingTakeStore:
             if cursor is None:
                 raise RecordingSelectionError("retake requires its displayed context")
             group = self.get_group(cursor.group_id)
-            prompt = next(
-                item
-                for item in group.catalog.prompts
-                if item.prompt_id == cursor.selection.prompt_id
-            )
+            prompt = self.group_catalog(group).prompt(cursor.selection.prompt_id)
+            if prompt is None:
+                raise RecordingPromptUnavailableError(
+                    f"prompt {cursor.selection.prompt_id} is not in the exact catalog of group "
+                    f"{group.group_id}; select a current prompt before retaking"
+                )
             navigation = RecordingNavigationResult(
                 catalog_sha256=group.catalog_sha256,
                 index_revision=self.index_revision_resolver()

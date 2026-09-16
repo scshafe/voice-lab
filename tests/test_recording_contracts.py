@@ -4,6 +4,7 @@ import argparse
 import copy
 import hashlib
 import json
+import pickle
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from cole_voice_lab.canonical import (
     write_canonical_json,
 )
 from cole_voice_lab.capture import CaptureContinuityEvidence
+from cole_voice_lab.errors import ContractError
 from cole_voice_lab.models import (
     RESERVED_PROMPT_LABELS,
     AudioQcMetrics,
@@ -58,6 +60,7 @@ from cole_voice_lab.recording_contracts import (
     RecordingNavigationResult,
     RecordingPackageEntry,
     RecordingPackageMap,
+    RecordingPromptNotCountedError,
     RecordingRecoveryFinding,
     RecordingRecoveryInventoryPage,
     RecordingRecoveryPage,
@@ -74,9 +77,26 @@ from cole_voice_lab.recording_contracts import (
     WaveformBucket,
     WaveformSnapshot,
     catalog_snapshot_path,
+    keep_recordings_identity,
     native_recovery_bytes,
     recording_frame_bytes,
 )
+
+
+def _catalog_reference(suite: PromptSuite, **changes: Any) -> CatalogReference:
+    digest = canonical_sha256(suite)
+    snapshot = CatalogSnapshot(suite=suite, catalog_sha256=digest, prompt_aliases=())
+    payload: dict[str, Any] = {
+        "catalog_id": "cole-corpus",
+        "catalog_version": 1,
+        "catalog_sha256": digest,
+        "snapshot_sha256": hashlib.sha256(canonical_json_bytes(snapshot) + b"\n").hexdigest(),
+        "suite_id": suite.suite_id,
+        "purpose": suite.purpose,
+        "snapshot_path": catalog_snapshot_path(digest),
+    }
+    payload.update(changes)
+    return CatalogReference.model_validate(payload)
 
 
 def synthetic_contracts() -> dict[str, Any]:
@@ -358,6 +378,7 @@ def synthetic_contracts() -> dict[str, Any]:
             ),
         ),
         "recording-group": group,
+        "catalog-reference": _catalog_reference(catalog),
         "capture-reservation": reservation,
         "capture-seal": seal,
         "native-recovery": recovery,
@@ -1203,6 +1224,8 @@ def generate_recording_conformance_fixtures(directory: Path) -> None:
         + review_event_cases()
         + recovery_command_cases()
         + prompt_suite_v2_cases()
+        + recording_group_v2_cases()
+        + prompt_equality_cases()
     ):
         filename = f"{'valid' if valid else 'invalid'}-{case}.json"
         write_canonical_json(directory / filename, payload)
@@ -1745,6 +1768,17 @@ def package_event_cases() -> list[tuple[str, bool, str, dict[str, Any]]]:
     broken = copy.deepcopy(selected)
     broken["data"]["package"]["selected_suite"]["prompts"][0]["text"] = "Changed exact prompt"
     cases.append(("package-selected-content", False, "shared", broken))
+    # The two cases above also fail other rules (the entry shares the edited prompt object;
+    # "benchmark" is no purpose at all). These fail only the v1 selected-suite rule.
+    broken = copy.deepcopy(selected)
+    suite = broken["data"]["package"]["selected_suite"]
+    suite["prompts"] = copy.deepcopy(suite["prompts"])
+    suite["prompts"][0]["text"] = "Changed exact prompt"
+    assert broken["data"]["package"]["entries"][0]["prompt"]["text"] != "Changed exact prompt"
+    cases.append(("package-selected-content-only", False, "shared", broken))
+    broken = copy.deepcopy(selected)
+    broken["data"]["package"]["selected_suite"]["purpose"] = "capture-corpus"
+    cases.append(("package-selected-other-purpose", False, "shared", broken))
     return cases
 
 
@@ -2054,20 +2088,378 @@ def test_prompt_suite_v2_conformance_cases(case: Any) -> None:
             RECORDING_SCHEMA_MODELS[name].model_validate_json(json.dumps(payload))
 
 
-def _catalog_reference(suite: PromptSuite, **changes: Any) -> CatalogReference:
-    digest = canonical_sha256(suite)
-    snapshot = CatalogSnapshot(suite=suite, catalog_sha256=digest, prompt_aliases=())
-    payload: dict[str, Any] = {
-        "catalog_id": "cole-corpus",
-        "catalog_version": 1,
-        "catalog_sha256": digest,
-        "snapshot_sha256": hashlib.sha256(canonical_json_bytes(snapshot) + b"\n").hexdigest(),
-        "suite_id": suite.suite_id,
-        "purpose": suite.purpose,
-        "snapshot_path": catalog_snapshot_path(digest),
-    }
-    payload.update(changes)
-    return CatalogReference.model_validate(payload)
+RECORDING_GROUP_V2 = "cole-voice-lab.recording-group/v2"
+CORPUS_WIRE_CODES = (
+    "CORPUS.NO_ACTIVE_CATALOG",
+    "CORPUS.CATALOG_UNKNOWN",
+    "CORPUS.SNAPSHOT_MISMATCH",
+    "CORPUS.STORE_MISSING",
+)
+_ABSENT = object()
+
+
+def _rebuild(model: Any, **changes: Any) -> Any:
+    """Re-validate a synthetic contract with replaced fields (never an unchecked copy)."""
+    return type(model).model_validate(model.model_dump() | changes)
+
+
+def synthetic_v2_group(
+    *, purpose: str = "capture-pilot", gate: PreparedCaptureGate | None = None
+) -> RecordingGroup:
+    """The synthetic group as recording-group/v2: its catalog referenced, never embedded."""
+    group = synthetic_contracts()["recording-group"]
+    suite = PromptSuite.model_validate(group.catalog.model_dump() | {"purpose": purpose})
+    return _rebuild(
+        group,
+        schema_version=RECORDING_GROUP_V2,
+        catalog=None,
+        catalog_reference=_catalog_reference(suite),
+        catalog_sha256=canonical_sha256(suite),
+        gate=gate or PreparedCaptureGate(state="not-required"),
+    )
+
+
+def recording_group_v2_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
+    """recording-group/v2 alone and nested in the unchanged v1 containers.
+
+    Python and Swift apply the same version-dependent rules: v1 embeds exactly its catalog,
+    v2 carries exactly a content-addressed reference whose purpose drives the gate rule, and
+    prompt-membership checks that need embedded prompts run only for v1.
+    """
+    values = synthetic_contracts()
+    v1 = values["recording-group"]
+    group = synthetic_v2_group()
+    ready = PreparedCaptureGate(
+        state="ready",
+        approval_path="provenance/pilot-gate.json",
+        approval_sha256="a" * 64,
+        evidence_sha256="b" * 64,
+        verified_at=v1.opened_at,
+    )
+    corpus = synthetic_v2_group(purpose="capture-corpus", gate=ready)
+    reservation = _rebuild(values["capture-reservation"], group=group)
+    corpus_reservation = _rebuild(values["capture-reservation"], group=corpus)
+    seal = _rebuild(values["capture-seal"], reservation_sha256=canonical_sha256(reservation))
+    take = _rebuild(values["recording-take"], reservation=reservation, seal=seal)
+    meta = values["recording-response"].meta.model_copy(update={"take_id": None})
+    # The service opens the cursor on a snapshot prompt the group itself does not list.
+    cursor = RecordingCursor(
+        subject_id=group.subject_id,
+        group_id=group.group_id,
+        selection=RecordingSelection(
+            catalog_sha256=group.catalog_sha256,
+            prompt_id="snapshot-only-prompt",
+            take_id=None,
+            selection_revision=1,
+            index_revision=1,
+        ),
+        mode="selected-prompt",
+        complete=False,
+        operation_id="context-open",
+    )
+    context = RecordingResponse(
+        data=ContextEvent(group=group, cursor=cursor), error=None, meta=meta
+    )
+    package = values["recording-package-map"]
+    selected = PromptSuite(
+        suite_id="synthetic-export-subset",
+        purpose="capture-pilot",
+        prompts=tuple(entry.prompt for entry in package.entries),
+    )
+    package_map = _rebuild(package, group=group, selected_suite=selected)
+
+    def dump(model: Any) -> dict[str, Any]:
+        return copy.deepcopy(model.model_dump(mode="json"))
+
+    def changed(model: Any, path: tuple[str | int, ...], value: Any) -> dict[str, Any]:
+        payload = dump(model)
+        target: Any = payload
+        for key in path[:-1]:
+            target = target[key]
+        if value is _ABSENT:
+            del target[path[-1]]
+        else:
+            target[path[-1]] = value
+        return payload
+
+    embedded = v1.catalog.model_dump(mode="json")
+    reference = group.catalog_reference.model_dump(mode="json")
+    both = dump(group) | {"catalog": embedded}
+    unbound_digest = changed(group, ("catalog_reference", "catalog_sha256"), "0" * 64)
+    unbound_digest["catalog_reference"]["snapshot_path"] = catalog_snapshot_path("0" * 64)
+    valid: list[tuple[str, str, dict[str, Any]]] = [
+        ("group", "recording-group", dump(group)),
+        ("corpus-group", "recording-group", dump(corpus)),
+        ("explicit-null-catalog", "recording-group", dump(group) | {"catalog": None}),
+        ("v1-explicit-null-reference", "recording-group", dump(v1) | {"catalog_reference": None}),
+        ("reference", "catalog-reference", reference),
+        ("reservation", "capture-reservation", dump(reservation)),
+        ("corpus-reservation", "capture-reservation", dump(corpus_reservation)),
+        ("take", "recording-take", dump(take)),
+        ("context-event", "recording-response", dump(context)),
+        ("package-map", "recording-package-map", dump(package_map)),
+    ]
+    valid += [
+        (
+            f"error-{code.lower().replace('.', '-').replace('_', '-')}",
+            "recording-response",
+            dump(
+                RecordingResponse(
+                    data=None,
+                    error=RecordingError(
+                        code=code, message="Synthetic corpus-store failure", retryable=False
+                    ),
+                    meta=meta,
+                )
+            ),
+        )
+        for code in CORPUS_WIRE_CODES
+    ]
+    unready = dump(corpus_reservation)
+    unready["group"]["gate"] = {"state": "unprepared"}
+    invalid: list[tuple[str, str, dict[str, Any]]] = [
+        ("v2-embeds-both", "recording-group", both),
+        ("v1-carries-both", "recording-group", both | {"schema_version": v1.schema_version}),
+        (
+            "v2-catalog-instead-of-reference",
+            "recording-group",
+            {key: value for key, value in both.items() if key != "catalog_reference"},
+        ),
+        (
+            "v1-reference-instead-of-catalog",
+            "recording-group",
+            changed(v1, ("catalog",), _ABSENT) | {"catalog_reference": reference},
+        ),
+        ("v2-neither", "recording-group", changed(group, ("catalog_reference",), _ABSENT)),
+        ("v1-neither", "recording-group", changed(v1, ("catalog",), _ABSENT)),
+        # An omitted version reads as v1, which requires the embedded catalog.
+        ("v2-missing-version", "recording-group", changed(group, ("schema_version",), _ABSENT)),
+        (
+            "unknown-version",
+            "recording-group",
+            changed(group, ("schema_version",), "cole-voice-lab.recording-group/v3"),
+        ),
+        ("reference-digest", "recording-group", unbound_digest),
+        (
+            "reference-purpose-corpus-without-gate",
+            "recording-group",
+            changed(group, ("catalog_reference", "purpose"), "capture-corpus"),
+        ),
+        (
+            "reference-purpose-pilot-with-gate",
+            "recording-group",
+            changed(corpus, ("catalog_reference", "purpose"), "capture-pilot"),
+        ),
+        (
+            "reference-snapshot-path",
+            "recording-group",
+            changed(
+                group,
+                ("catalog_reference", "snapshot_path"),
+                "provenance/corpus/snapshots/other.json",
+            ),
+        ),
+        (
+            "reference-unknown-key",
+            "recording-group",
+            changed(group, ("catalog_reference", "native_extra"), True),
+        ),
+        (
+            "reference-version-zero",
+            "recording-group",
+            changed(group, ("catalog_reference", "catalog_version"), 0),
+        ),
+        (
+            "standalone-reference-snapshot-path",
+            "catalog-reference",
+            reference | {"snapshot_path": f"elsewhere/{reference['catalog_sha256']}.json"},
+        ),
+        ("corpus-reservation-unready", "capture-reservation", unready),
+        (
+            "package-map-without-selected-suite",
+            "recording-package-map",
+            changed(package_map, ("selected_suite",), _ABSENT),
+        ),
+        (
+            "package-map-selected-purpose",
+            "recording-package-map",
+            changed(package_map, ("selected_suite", "purpose"), "capture-corpus"),
+        ),
+        (
+            "package-map-selected-content",
+            "recording-package-map",
+            changed(package_map, ("selected_suite", "prompts", 0, "text"), "Changed prompt"),
+        ),
+        (
+            "context-event-catalog",
+            "recording-response",
+            changed(context, ("data", "cursor", "selection", "catalog_sha256"), "0" * 64),
+        ),
+        (
+            "error-unlisted-corpus-code",
+            "recording-response",
+            changed(
+                RecordingResponse(
+                    data=None,
+                    error=RecordingError(
+                        code=CORPUS_WIRE_CODES[0], message="Synthetic", retryable=False
+                    ),
+                    meta=meta,
+                ),
+                ("error", "code"),
+                "CORPUS.PROMPT_DUPLICATE",
+            ),
+        ),
+    ]
+    return [
+        (f"recording-group-v2-{name}", model, True, "shared", payload)
+        for name, model, payload in valid
+    ] + [
+        (f"recording-group-v2-{name}", model, False, "shared", payload)
+        for name, model, payload in invalid
+    ]
+
+
+@pytest.mark.parametrize("case", recording_group_v2_cases(), ids=lambda case: case[0])
+def test_recording_group_v2_conformance_cases(case: Any) -> None:
+    _, name, valid, _, payload = case
+    if valid:
+        RECORDING_SCHEMA_MODELS[name].model_validate_json(json.dumps(payload))
+    else:
+        with pytest.raises(ValidationError):
+            RECORDING_SCHEMA_MODELS[name].model_validate_json(json.dumps(payload))
+
+
+def prompt_equality_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
+    """Prompt comparisons follow Python value equality on both sides.
+
+    An integer token in a float field is the same prompt (Python strict floats accept it and
+    ``1 == 1.0``); canonically equivalent but differently encoded text is a different prompt
+    (Python compares code points, Swift ``String ==`` would not).
+    """
+    values = synthetic_contracts()
+    composed, decomposed = "Remain sil\u00e9nt.", "Remain sile\u0301nt."
+
+    def dump(model: Any) -> dict[str, Any]:
+        return copy.deepcopy(model.model_dump(mode="json"))
+
+    def with_text(payload: dict[str, Any], text: str) -> dict[str, Any]:
+        return payload | {"text": text}
+
+    def embedded_group(prompt: dict[str, Any]) -> dict[str, Any]:
+        group = dump(values["recording-group"])
+        group["catalog"]["prompts"] = [prompt]
+        group["catalog_sha256"] = canonical_sha256(group["catalog"])
+        return group
+
+    def package(
+        group: dict[str, Any], entry: dict[str, Any], selected: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        payload = dump(values["recording-package-map"]) | {"group": group}
+        payload["entries"][0] |= {"prompt": entry, "catalog_sha256": group["catalog_sha256"]}
+        if selected is not None:
+            payload["selected_suite"] = {
+                "suite_id": "synthetic-export-subset",
+                "purpose": "capture-pilot",
+                "prompts": [selected],
+            }
+        return payload
+
+    def reservation(group: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
+        return dump(values["capture-reservation"]) | {"group": group, "prompt": prompt}
+
+    prompt = dump(values["recording-group"])["catalog"]["prompts"][0]
+    integer = prompt | {"expected_seconds": 1}
+    assert isinstance(prompt["expected_seconds"], float)
+    nfc, nfd = with_text(prompt, composed), with_text(prompt, decomposed)
+    plain = dump(values["recording-group"])
+    composed_group = embedded_group(nfc)
+    v2 = synthetic_v2_group().model_dump(mode="json")
+    valid = [
+        ("package-selected-integer-seconds", package(plain, prompt, integer)),
+        ("package-entry-integer-seconds", package(plain, integer, None)),
+        ("v2-package-integer-seconds", package(v2, integer, prompt)),
+        ("reservation-integer-seconds", reservation(plain, integer)),
+        ("package-composed-text", package(composed_group, nfc, nfc)),
+        ("reservation-composed-text", reservation(composed_group, nfc)),
+    ]
+    invalid = [
+        ("package-selected-decomposed-text", package(composed_group, nfc, nfd)),
+        ("package-entry-decomposed-text", package(composed_group, nfd, None)),
+        ("v2-package-decomposed-text", package(v2, nfc, nfd)),
+        ("reservation-decomposed-text", reservation(composed_group, nfd)),
+    ]
+    model = {"package": "recording-package-map", "reservation": "capture-reservation"}
+
+    def model_of(name: str) -> str:
+        return model["reservation" if name.startswith("reservation") else "package"]
+
+    return [
+        (f"prompt-equality-{name}", model_of(name), True, "shared", payload)
+        for name, payload in valid
+    ] + [
+        (f"prompt-equality-{name}", model_of(name), False, "shared", payload)
+        for name, payload in invalid
+    ]
+
+
+@pytest.mark.parametrize("case", prompt_equality_cases(), ids=lambda case: case[0])
+def test_prompt_comparisons_follow_python_value_equality(case: Any) -> None:
+    _, name, valid, _, payload = case
+    if valid:
+        RECORDING_SCHEMA_MODELS[name].model_validate_json(json.dumps(payload))
+    else:
+        with pytest.raises(ValidationError, match="exact"):
+            RECORDING_SCHEMA_MODELS[name].model_validate_json(json.dumps(payload))
+
+
+def test_recording_group_v1_bytes_are_unchanged_and_v2_embeds_no_catalog() -> None:
+    v1 = synthetic_contracts()["recording-group"]
+    v1_bytes = canonical_json_bytes(v1)
+    assert b'"catalog":' in v1_bytes and b"catalog_reference" not in v1_bytes
+    assert v1.schema_version == "cole-voice-lab.recording-group/v1"
+    assert RecordingGroup.model_validate_json(v1_bytes) == v1
+    assert v1.catalog_purpose == "capture-pilot"
+    assert not hasattr(v1, "require_embedded_catalog")
+    group = synthetic_v2_group()
+    encoded = canonical_json_bytes(group)
+    assert b'"catalog":' not in encoded and b'"catalog_reference":' in encoded
+    assert RecordingGroup.model_validate_json(encoded) == group
+    assert group.catalog_purpose == "capture-pilot"
+    assert (
+        synthetic_v2_group(
+            purpose="capture-corpus", gate=PreparedCaptureGate(state="unprepared")
+        ).catalog_purpose
+        == "capture-corpus"
+    )
+    for payload, message in (
+        (group.model_dump() | {"catalog": v1.catalog}, "recording-group/v2 carries"),
+        (v1.model_dump() | {"catalog_reference": group.catalog_reference}, "recording-group/v1"),
+        (
+            group.model_dump()
+            | {"catalog_reference": _catalog_reference(v1.catalog, catalog_version=2)}
+            | {"catalog_sha256": "0" * 64},
+            "digest must match its catalog reference",
+        ),
+        (
+            group.model_dump()
+            | {"catalog_reference": _catalog_reference(v1.catalog, purpose="capture-corpus")},
+            "corpus catalog requires a prepared capture gate",
+        ),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            RecordingGroup.model_validate(payload)
+
+
+def test_catalog_reference_group_package_map_requires_its_selected_suite() -> None:
+    package = next(
+        payload
+        for name, model, valid, _, payload in recording_group_v2_cases()
+        if name == "recording-group-v2-package-map"
+    )
+    assert RecordingPackageMap.model_validate_json(json.dumps(package)).selected_suite is not None
+    with pytest.raises(ValidationError, match="requires its selected suite"):
+        RecordingPackageMap.model_validate_json(json.dumps(package | {"selected_suite": None}))
 
 
 def test_catalog_reference_binds_the_content_addressed_snapshot_path() -> None:
@@ -2130,8 +2522,13 @@ def test_catalog_snapshot_validates_its_digest_and_aliases_and_maps_recorded_dig
     restored = CatalogSnapshot.model_validate_json(canonical_json_bytes(snapshot))
     assert restored == snapshot
     assert restored.current_for("1" * 64) == current[1]
-    assert set(CORPUS_SCHEMA_MODELS) == {"catalog-reference", "catalog-snapshot"}
+    assert set(CORPUS_SCHEMA_MODELS) == {"catalog-snapshot"}
     assert CORPUS_SCHEMA_MODELS["catalog-snapshot"] is CatalogSnapshot
+    assert RECORDING_SCHEMA_MODELS["catalog-reference"] is CatalogReference
+    embedded = CatalogSnapshot.embedded(suite)
+    assert embedded == CatalogSnapshot(suite=suite, catalog_sha256=digest, prompt_aliases=())
+    assert embedded.current_for(current[1]) == current[1]
+    assert embedded.current_for("1" * 64) is None
     for prompt_aliases, message in (
         (tuple(reversed(aliases)), "sorted and unique"),
         ((aliases[0], aliases[0]), "sorted and unique"),
@@ -2157,6 +2554,64 @@ def test_catalog_snapshot_validates_its_digest_and_aliases_and_maps_recorded_dig
             CatalogSnapshot(suite=suite, catalog_sha256=digest, prompt_aliases=prompt_aliases)
     with pytest.raises(ValidationError, match="digest must match the exact suite"):
         CatalogSnapshot(suite=suite, catalog_sha256="0" * 64, prompt_aliases=())
+
+
+def _aliased(current: PromptSuite, recorded: Prompt) -> CatalogSnapshot:
+    """A snapshot of ``current`` whose first prompt accepts ``recorded`` as an alias."""
+    return CatalogSnapshot(
+        suite=current,
+        catalog_sha256=canonical_sha256(current),
+        prompt_aliases=(
+            PromptAlias(
+                prompt_sha256=canonical_sha256(current.prompts[0]),
+                accepted_prompt_sha256=canonical_sha256(recorded),
+            ),
+        ),
+    )
+
+
+def test_an_alias_counts_only_a_recording_that_keeps_the_prompts_identity() -> None:
+    spoken = Prompt(
+        prompt_id="prompt-01",
+        text="A corrected sentence.",
+        category="neutral",
+        style="plain",
+        expected_seconds=2.0,
+    )
+    suite = PromptSuite(suite_id="training", purpose="capture-pilot", prompts=(spoken,))
+    earlier = spoken.model_copy(update={"text": "An earlier sentence."})
+    restyled = earlier.model_copy(update={"category": "technical", "style": "careful"})
+    evaluation = earlier.model_copy(update={"holdout": True})
+    silent = earlier.model_copy(update={"category": "room-tone"})
+    renamed = earlier.model_copy(update={"prompt_id": "prompt-02"})
+    assert keep_recordings_identity(earlier) == keep_recordings_identity(spoken)
+    assert keep_recordings_identity(restyled) == keep_recordings_identity(spoken)
+    for other in (evaluation, silent, renamed):
+        assert keep_recordings_identity(other) != keep_recordings_identity(spoken)
+    assert _aliased(suite, earlier).current_prompt_for(earlier) == spoken
+    assert _aliased(suite, restyled).current_prompt_for(restyled) == spoken
+    for other in (evaluation, silent, renamed):
+        snapshot = _aliased(suite, other)
+        assert snapshot.current_for(canonical_sha256(other)) == canonical_sha256(spoken)
+        assert snapshot.current_prompt_for(other) is None
+        with pytest.raises(RecordingPromptNotCountedError, match="no longer counts") as caught:
+            snapshot.require_current_prompt_for(other, take_id="take-synthetic")
+        assert isinstance(caught.value, ContractError)
+        assert (caught.value.take_id, caught.value.prompt_id) == ("take-synthetic", other.prompt_id)
+        assert "exact catalog" in str(caught.value)
+    assert _aliased(suite, earlier).require_current_prompt_for(spoken, take_id="t") == spoken
+    # Two silent categories never cover each other either.
+    tone = Prompt(
+        prompt_id="tone", category="room-tone", style="silence", expected_seconds=1.0, text="x"
+    )
+    procedure = tone.model_copy(update={"category": "procedure"})
+    assert keep_recordings_identity(tone) != keep_recordings_identity(procedure)
+    restored = pickle.loads(pickle.dumps(RecordingPromptNotCountedError("take-a", "prompt-a")))
+    assert (restored.take_id, restored.prompt_id, str(restored)) == (
+        "take-a",
+        "prompt-a",
+        str(RecordingPromptNotCountedError("take-a", "prompt-a")),
+    )
 
 
 if __name__ == "__main__":

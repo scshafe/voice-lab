@@ -16,6 +16,7 @@ from test_recording_takes import Rig
 
 from cole_voice_lab.canonical import canonical_sha256
 from cole_voice_lab.errors import ContractError
+from cole_voice_lab.recording_contracts import CatalogSnapshot
 from cole_voice_lab.recording_discovery import (
     MAX_DISCOVERY_QUEUE,
     RecordingDiscoveryCoordinator,
@@ -198,7 +199,7 @@ def test_deferred_constructor_preserves_genuine_unknown_evidence(
     layout, store, group = context(tmp_path)
     digest = store.get_group(group).catalog_sha256
     with RecordingIndex(layout, subject_id="synthetic-subject") as index:
-        index.register_catalog(store.get_group(group).catalog)
+        index.register_catalog(CatalogSnapshot.embedded(store.get_group(group).catalog))
         index.mark_unknown(
             digest,
             "known-invalid-source",

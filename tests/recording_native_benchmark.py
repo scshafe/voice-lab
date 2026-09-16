@@ -34,6 +34,7 @@ from cole_voice_lab.recording_contracts import (
     RECORDING_SCHEMA_MODELS,
     CaptureReservation,
     CaptureSealReceipt,
+    CatalogSnapshot,
     OpenContextCommand,
     RecordingBuildIdentity,
 )
@@ -148,7 +149,7 @@ def fabricate_history(layout: AssetLayout, catalog: PromptSuite, count: int) -> 
     index = RecordingIndex(layout, subject_id=SUBJECT)
     take_ids: list[str] = []
     try:
-        index.register_catalog(catalog)
+        index.register_catalog(CatalogSnapshot.embedded(catalog))
         digest = canonical_sha256(catalog)
         # Save and Next resolves the next missing prompt, which needs the catalog's own
         # metadata to be complete before the first fabricated take, not after the last.

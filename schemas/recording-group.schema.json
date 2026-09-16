@@ -57,6 +57,56 @@
       "title": "CaptureDevice",
       "type": "object"
     },
+    "CatalogReference": {
+      "additionalProperties": false,
+      "description": "A published catalog version by id, version, exact suite digest and snapshot digest.\n\n``catalog_sha256`` is the canonical digest of the suite alone (the digest every take\nand coverage projection keys on); ``snapshot_sha256`` is the sha256 of the exact\nsnapshot file bytes, so the alias half of the file is pinned too. ``suite_id`` and\n``purpose`` repeat what the snapshot's suite declares so contract-level checks (purpose\nagainst the capture gate) need no file read; the store verifies all of them against the\nsnapshot whenever a reference is materialized.",
+      "properties": {
+        "catalog_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "catalog_version": {
+          "$ref": "#/$defs/PositiveRevision"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation",
+            "physical-test"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "snapshot_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "snapshot_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "catalog_id",
+        "catalog_version",
+        "catalog_sha256",
+        "snapshot_sha256",
+        "suite_id",
+        "purpose",
+        "snapshot_path"
+      ],
+      "title": "CatalogReference",
+      "type": "object"
+    },
+    "PositiveRevision": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
     "PreparedCaptureGate": {
       "additionalProperties": false,
       "description": "Previously verified corpus approval identity, invalidated when its evidence changes.",
@@ -286,6 +336,7 @@
     }
   },
   "additionalProperties": false,
+  "description": "One capture context: subject, catalog, device, host and corpus gate.\n\nrecording-group/v1 embeds the exact ``catalog`` (every group written before the corpus\nstore; readable forever, byte-identical). recording-group/v2 carries ``catalog_reference``\nto a published corpus-store snapshot instead and embeds no catalog; its prompts are read\nthrough ``corpus_store.resolve_group_catalog``. Containers (capture-reservation/v1,\nrecording-take/v1, recording-package-map/v1, responses) keep their own versions and nest\neither form. Absent optional fields are omitted so v1 canonical bytes never change.",
   "properties": {
     "capture_device": {
       "$ref": "#/$defs/CaptureDevice"
@@ -297,7 +348,26 @@
       "type": "string"
     },
     "catalog": {
-      "$ref": "#/$defs/PromptSuite"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PromptSuite"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "catalog_reference": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CatalogReference"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "catalog_sha256": {
       "$ref": "#/$defs/Sha256"
@@ -334,8 +404,11 @@
       "type": "array"
     },
     "schema_version": {
-      "const": "cole-voice-lab.recording-group/v1",
       "default": "cole-voice-lab.recording-group/v1",
+      "enum": [
+        "cole-voice-lab.recording-group/v1",
+        "cole-voice-lab.recording-group/v2"
+      ],
       "title": "Schema Version",
       "type": "string"
     },
@@ -353,7 +426,6 @@
     "group_id",
     "context_revision",
     "subject_id",
-    "catalog",
     "catalog_sha256",
     "capture_device",
     "capture_host",

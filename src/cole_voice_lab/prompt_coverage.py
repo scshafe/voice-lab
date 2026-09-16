@@ -1,9 +1,11 @@
 """Read-only per-prompt coverage report for comparing two catalog versions.
 
-@canonical prompt_coverage -- coverage is the index rule (exact prompt hash, subject,
-retained take) computed from evidence through the canonical legacy reader and native
-head reader. It never constructs RecordingIndex and never writes under the asset root.
-Legacy WAVs are opened read-only for inspection. Related: recording_index.py.
+@canonical prompt_coverage -- coverage is the index rule (a retained take of the subject
+whose recorded prompt hash is the prompt's current hash or one of its accepted aliases,
+``CatalogSnapshot.current_prompt_for``) computed from evidence through the canonical legacy
+reader and native head reader. It never constructs RecordingIndex, never opens SQLite and
+never writes under the asset root. Legacy WAVs and catalog snapshot files are opened
+read-only. Related: recording_index.py, corpus_store.py (resolve_group_catalog).
 """
 
 from __future__ import annotations
@@ -15,10 +17,11 @@ from dataclasses import dataclass
 from pydantic import JsonValue
 
 from .canonical import canonical_sha256
+from .corpus_store import CorpusSnapshotSecurityError, GroupCatalogCache, GroupCatalogKey
 from .errors import ContractError, VoiceLabError
 from .models import PromptSuite
 from .paths import AssetLayout
-from .recording_contracts import RecordingHistoryEntry, RecordingTake
+from .recording_contracts import CatalogSnapshot, RecordingHistoryEntry, RecordingTake
 from .recording_discovery_contracts import (
     DiscoveryAlias,
     LegacyProjectionRow,
@@ -32,6 +35,18 @@ from .recording_takes import TAKE_PROVENANCE_ROOT, RecordingTakeStore
 
 class PromptCoverageProjectionError(ContractError):
     """Evidence could not be projected; the report must not read as missing coverage."""
+
+
+def coverage_catalog(catalog: PromptSuite | CatalogSnapshot) -> CatalogSnapshot:
+    """The snapshot a coverage reader matches recordings through.
+
+    Params: ``catalog`` is a plain ``PromptSuite`` (a built-in or embedded catalog, where only
+    its own prompts count) or a published ``CatalogSnapshot`` (whose prompt aliases also
+    count earlier revisions of a prompt).
+    Returns: ``catalog`` itself, or ``CatalogSnapshot.embedded`` of the plain suite.
+    Raises: nothing for a validated catalog.
+    """
+    return catalog if isinstance(catalog, CatalogSnapshot) else CatalogSnapshot.embedded(catalog)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +115,12 @@ class _CatalogCoverage:
 
 
 def iter_native_takes(store: RecordingTakeStore | None) -> Iterator[RecordingTake]:
+    """Every committed native take head, paged in take-id order; nothing without a store.
+
+    Raises: whatever ``RecordingTakeStore.iter_takes_for_projection`` raises
+    (``SecurityError`` / ``ContractError`` for unsafe or invalid evidence,
+    ``RecordingMetadataBusyError`` while a commit is pending, ``OSError``).
+    """
     if store is None:
         return
     after = None
@@ -108,14 +129,45 @@ def iter_native_takes(store: RecordingTakeStore | None) -> Iterator[RecordingTak
         after = page[-1].reservation.take_id
 
 
+def subject_native_takes(
+    store: RecordingTakeStore | None, subject_id: str
+) -> Iterator[RecordingTake]:
+    """The subject's committed native takes, each after its group's exact catalog resolved.
+
+    A take whose recording-group/v2 references a snapshot that is missing or altered is never
+    counted as evidence: the reader fails closed exactly as the index does when it projects
+    the take. Each distinct group catalog is resolved once per call, as a file
+    (``RecordingTakeStore.group_catalog``), never through the corpus database.
+    Params: ``store`` is a read-only take store (or ``None`` for a root without native
+    evidence); ``subject_id`` selects the takes whose group belongs to that subject.
+    Raises: ``CorpusSnapshotSecurityError`` (a ``SecurityError``; ``CORPUS.SNAPSHOT_MISSING``
+    or ``CORPUS.SNAPSHOT_MISMATCH``) for such a take; otherwise what ``iter_native_takes``
+    raises.
+    """
+    if store is None:
+        return
+    # Keys, not snapshots: a library with many catalog versions resolves each one once here,
+    # whatever the store's bounded cache evicts while takes of different groups interleave.
+    resolved: set[GroupCatalogKey] = set()
+    for take in iter_native_takes(store):
+        group = take.reservation.group
+        if group.subject_id != subject_id:
+            continue
+        key = GroupCatalogCache.key(group)
+        if key not in resolved:
+            store.group_catalog(group)
+            resolved.add(key)
+        yield take
+
+
 def _coverage(
     layout: AssetLayout,
     subject_id: str,
-    catalog: PromptSuite,
+    catalog: CatalogSnapshot,
     native: tuple[RecordingHistoryEntry, ...],
     store: RecordingTakeStore | None,
 ) -> _CatalogCoverage:
-    hashes = {canonical_sha256(prompt) for prompt in catalog.prompts}
+    digests = {prompt.prompt_id: canonical_sha256(prompt) for prompt in catalog.suite.prompts}
     entries = list(native)
     unknown: list[str] = []
 
@@ -129,15 +181,17 @@ def _coverage(
             entries.append(record.entry)
         elif isinstance(record, LegacyProjectionUnknown):
             unknown.append(record.record_id)
-    retained: dict[str, set[str]] = {digest: set() for digest in hashes}
+    retained: dict[str, set[str]] = {digest: set() for digest in digests.values()}
     for entry in entries:
-        digest = canonical_sha256(entry.prompt)
+        # Rows keep the prompt the audio was recorded against; the snapshot maps it to the
+        # current prompt it counts for (itself, or through a keep-recordings alias).
+        current = catalog.current_prompt_for(entry.prompt)
         if (
-            digest in hashes
+            current is not None
             and entry.subject_id == subject_id
             and is_retained(entry.decision, entry.analysis)
         ):
-            retained[digest].add(entry.take_id)
+            retained[digests[current.prompt_id]].add(entry.take_id)
     return _CatalogCoverage(
         {digest: frozenset(takes) for digest, takes in retained.items()}, tuple(sorted(unknown))
     )
@@ -146,11 +200,29 @@ def _coverage(
 def prompt_coverage_report(
     layout: AssetLayout,
     subject_id: str,
-    catalog: PromptSuite,
-    baseline: PromptSuite | None = None,
+    catalog: PromptSuite | CatalogSnapshot,
+    baseline: PromptSuite | CatalogSnapshot | None = None,
 ) -> PromptCoverageReport:
-    """Compute exact coverage under catalog, and what changes relative to baseline."""
+    """Compute coverage under catalog, and what changes relative to baseline.
+
+    A prompt is covered when a retained take of the subject was recorded against its current
+    prompt or, for a published ``CatalogSnapshot``, against an earlier revision its prompt
+    aliases accept (same prompt id). ``changed`` stays exact: a prompt whose digest differs
+    from the baseline's is changed even when its recordings keep counting, so a
+    keep-recordings edit reads as changed but not lost.
+    Params: ``catalog`` and ``baseline`` are plain suites or published snapshots (see
+    ``coverage_catalog``); the caller resolves a published version (file read or
+    ``CorpusStore.materialize``) before calling.
+    Returns: the report; ``exit_status`` is 0 when every loss is a changed prompt and every
+    Unknown predates the switch.
+    Raises: ``PromptCoverageProjectionError`` (a ``ContractError``) when evidence cannot be
+    read or projected; ``CorpusSnapshotSecurityError`` (a ``SecurityError``,
+    ``CORPUS.SNAPSHOT_MISSING`` / ``CORPUS.SNAPSHOT_MISMATCH``), unwrapped, when a native
+    take's group references a snapshot that is missing or altered.
+    """
     layout = AssetLayout.validate(layout.root)
+    snapshot = coverage_catalog(catalog)
+    earlier = None if baseline is None else coverage_catalog(baseline)
     try:
         # A root that never held native evidence has no take store; the read-only store
         # would otherwise wait for a service owner to create its directories.
@@ -160,23 +232,23 @@ def prompt_coverage_report(
             else None
         )
         native = tuple(
-            history_entry_for_take(take)
-            for take in iter_native_takes(store)
-            if take.reservation.group.subject_id == subject_id
+            history_entry_for_take(take) for take in subject_native_takes(store, subject_id)
         )
-        current = _coverage(layout, subject_id, catalog, native, store)
+        current = _coverage(layout, subject_id, snapshot, native, store)
         previous = (
-            None if baseline is None else _coverage(layout, subject_id, baseline, native, store)
+            None if earlier is None else _coverage(layout, subject_id, earlier, native, store)
         )
+    except CorpusSnapshotSecurityError:
+        raise  # a sealed reference that no longer resolves is a hard failure, not a gap
     except (OSError, ValueError, VoiceLabError) as error:
         raise PromptCoverageProjectionError(f"coverage projection failed: {error}") from error
 
     def covered(coverage: _CatalogCoverage, digest: str) -> bool:
         return bool(coverage.retained[digest])
 
-    baseline_prompts = {} if baseline is None else {p.prompt_id: p for p in baseline.prompts}
+    baseline_prompts = {} if earlier is None else {p.prompt_id: p for p in earlier.suite.prompts}
     rows = []
-    for prompt in catalog.prompts:
+    for prompt in snapshot.suite.prompts:
         digest = canonical_sha256(prompt)
         before = baseline_prompts.get(prompt.prompt_id)
         rows.append(
@@ -196,8 +268,8 @@ def prompt_coverage_report(
     by_id = {row.prompt_id: row for row in rows}
     changed: list[str] = []
     lost: list[str] = []
-    if previous is not None and baseline is not None:
-        for before in baseline.prompts:
+    if previous is not None and earlier is not None:
+        for before in earlier.suite.prompts:
             now = by_id.get(before.prompt_id)
             digest = canonical_sha256(before)
             if now is None or now.prompt_sha256 != digest:
@@ -206,8 +278,8 @@ def prompt_coverage_report(
                 lost.append(before.prompt_id)
     return PromptCoverageReport(
         subject_id=subject_id,
-        catalog_sha256=canonical_sha256(catalog),
-        baseline_catalog_sha256=None if baseline is None else canonical_sha256(baseline),
+        catalog_sha256=snapshot.catalog_sha256,
+        baseline_catalog_sha256=None if earlier is None else earlier.catalog_sha256,
         prompts=tuple(rows),
         covered_prompt_count=sum(row.covered for row in rows),
         total_prompt_count=len(rows),

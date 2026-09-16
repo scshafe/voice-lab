@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from functools import cached_property
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import AfterValidator, Field, StringConstraints, model_validator
 
 from .canonical import canonical_json_bytes, canonical_sha256
 from .capture import CaptureContinuityEvidence
+from .errors import ContractError
 from .models import (
     AudioQcMetrics,
     AudioSpec,
@@ -86,6 +87,11 @@ type ErrorCode = Literal[
     "RECORDING.EDIT_FAILED",
     "RECORDING.PACKAGE_INCOMPLETE",
     "RECORDING.CANCELLED",
+    # Corpus-store failures the service reports over the wire (corpus_store.CorpusStoreError).
+    "CORPUS.NO_ACTIVE_CATALOG",
+    "CORPUS.CATALOG_UNKNOWN",
+    "CORPUS.SNAPSHOT_MISMATCH",
+    "CORPUS.STORE_MISSING",
 ]
 
 
@@ -161,6 +167,43 @@ def catalog_snapshot_path(catalog_sha256: str) -> str:
     return f"{CATALOG_SNAPSHOT_ROOT}/{catalog_sha256}.json"
 
 
+def keep_recordings_identity(prompt: Prompt) -> str:
+    """What a keep-recordings revision must preserve for earlier takes to keep counting.
+
+    The one statement of the alias rule: a take recorded against an earlier revision counts
+    for the current prompt only when both share this identity -- the prompt id, the held-out
+    flag (evaluation audio never becomes training audio) and the behaviour (spoken, or the
+    exact silent category; silence never covers speech). ``CatalogSnapshot`` applies it in
+    memory and the recording index applies it in SQL through this same function.
+    Params: ``prompt`` is a recorded or current prompt.
+    Returns: a canonical JSON string; equal strings mean the same identity.
+    Raises: nothing.
+    """
+    behaviour = "spoken" if prompt.spoken else prompt.category
+    return canonical_json_bytes([prompt.prompt_id, prompt.holdout, behaviour]).decode()
+
+
+class RecordingPromptNotCountedError(ContractError):
+    """A take's recorded prompt counts for no prompt of the open catalog.
+
+    The prompt changed (or left the catalog) without keeping its recordings, so the take is
+    history of an earlier text rather than coverage. The audio itself is unchanged, so this
+    is not a security failure; the recording service reports it as
+    ``RECORDING.STALE_REVISION`` (the displayed history is older than the catalog).
+    """
+
+    def __init__(self, take_id: str, prompt_id: str) -> None:
+        self.take_id = take_id
+        self.prompt_id = prompt_id
+        super().__init__(
+            f"take {take_id} was recorded against a text of prompt {prompt_id} that this "
+            "exact catalog no longer counts; the prompt changed without keeping its recordings"
+        )
+
+    def __reduce__(self) -> tuple[type[RecordingPromptNotCountedError], tuple[str, str]]:
+        return (type(self), (self.take_id, self.prompt_id))
+
+
 class CatalogReference(ContractModel):
     """A published catalog version by id, version, exact suite digest and snapshot digest.
 
@@ -213,6 +256,16 @@ class CatalogSnapshot(ContractModel):
     catalog_sha256: Sha256
     prompt_aliases: tuple[PromptAlias, ...] = Field(max_length=MAX_CATALOG_SNAPSHOT_ALIASES)
 
+    @classmethod
+    def embedded(cls, suite: PromptSuite) -> CatalogSnapshot:
+        """The snapshot a recording-group/v1 implies: its embedded suite and no aliases.
+
+        Params: ``suite`` is the exact catalog a v1 group (or a built-in pin) embeds.
+        Returns: a snapshot whose ``catalog_sha256`` is the suite's canonical digest.
+        Raises: nothing for a valid ``PromptSuite``; a malformed suite fails when it was built.
+        """
+        return cls(suite=suite, catalog_sha256=canonical_sha256(suite), prompt_aliases=())
+
     @model_validator(mode="after")
     def _aliases_bind_to_current_prompts(self) -> CatalogSnapshot:
         if canonical_sha256(self.suite) != self.catalog_sha256:
@@ -233,8 +286,16 @@ class CatalogSnapshot(ContractModel):
         return self
 
     @cached_property
+    def _prompts_by_digest(self) -> dict[str, Prompt]:
+        return {canonical_sha256(prompt): prompt for prompt in self.suite.prompts}
+
+    @cached_property
+    def _prompts_by_id(self) -> dict[str, Prompt]:
+        return {prompt.prompt_id: prompt for prompt in self.suite.prompts}
+
+    @cached_property
     def _current_digests(self) -> frozenset[str]:
-        return frozenset(canonical_sha256(prompt) for prompt in self.suite.prompts)
+        return frozenset(self._prompts_by_digest)
 
     @cached_property
     def _accepted_by_current(self) -> dict[str, frozenset[str]]:
@@ -272,15 +333,75 @@ class CatalogSnapshot(ContractModel):
         """
         return self._current_by_recorded.get(recorded_sha256)
 
+    def prompt(self, prompt_id: str) -> Prompt | None:
+        """The suite prompt with this id.
+
+        Params: ``prompt_id`` is a prompt id (prompt ids are unique within a suite).
+        Returns: that prompt, or ``None`` when this catalog version has no such prompt.
+        Raises: nothing.
+        """
+        return self._prompts_by_id.get(prompt_id)
+
+    def current_prompt_for(self, recorded: Prompt) -> Prompt | None:
+        """The current suite prompt that a take recorded against ``recorded`` counts for.
+
+        A recorded prompt counts when its canonical digest is a current digest or an alias
+        ``current_for`` accepts, and the current prompt keeps the recorded prompt's
+        ``keep_recordings_identity`` (same prompt id, held-out flag and spoken/silent
+        behaviour: the store only accepts such revisions, a take's cursor selects its prompt
+        by id, and an alias never turns evaluation or silent audio into training speech).
+        Params: ``recorded`` is the exact prompt a take bound when it was reserved.
+        Returns: the current prompt (``recorded`` itself for an unchanged prompt), or ``None``
+        when this catalog version does not count the recording for any prompt.
+        Raises: nothing.
+        """
+        current = self.current_for(canonical_sha256(recorded))
+        if current is None:
+            return None
+        prompt = self._prompts_by_digest[current]
+        if keep_recordings_identity(prompt) != keep_recordings_identity(recorded):
+            return None
+        return prompt
+
+    def require_current_prompt_for(self, recorded: Prompt, *, take_id: str) -> Prompt:
+        """``current_prompt_for``, for a reader that must not proceed without a count.
+
+        Params: ``recorded`` is the take's recorded prompt; ``take_id`` names the take.
+        Returns: the current prompt the take counts for.
+        Raises: ``RecordingPromptNotCountedError`` (a ``ContractError``) when it counts for
+        no prompt of this catalog version.
+        """
+        current = self.current_prompt_for(recorded)
+        if current is None:
+            raise RecordingPromptNotCountedError(take_id, recorded.prompt_id)
+        return current
+
+
+RECORDING_GROUP_V1: Final = "cole-voice-lab.recording-group/v1"
+RECORDING_GROUP_V2: Final = "cole-voice-lab.recording-group/v2"
+
 
 class RecordingGroup(ContractModel):
-    schema_version: Literal["cole-voice-lab.recording-group/v1"] = (
-        "cole-voice-lab.recording-group/v1"
-    )
+    """One capture context: subject, catalog, device, host and corpus gate.
+
+    recording-group/v1 embeds the exact ``catalog`` (every group written before the corpus
+    store; readable forever, byte-identical). recording-group/v2 carries ``catalog_reference``
+    to a published corpus-store snapshot instead and embeds no catalog; its prompts are read
+    through ``corpus_store.resolve_group_catalog``. Containers (capture-reservation/v1,
+    recording-take/v1, recording-package-map/v1, responses) keep their own versions and nest
+    either form. Absent optional fields are omitted so v1 canonical bytes never change.
+    """
+
+    schema_version: Literal[
+        "cole-voice-lab.recording-group/v1", "cole-voice-lab.recording-group/v2"
+    ] = RECORDING_GROUP_V1
     group_id: StableId
     context_revision: Revision
     subject_id: StableId
-    catalog: PromptSuite
+    catalog: PromptSuite | None = Field(default=None, exclude_if=lambda value: value is None)
+    catalog_reference: CatalogReference | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     catalog_sha256: Sha256
     capture_device: CaptureDevice
     capture_host: str = Field(min_length=1, max_length=255)
@@ -292,11 +413,23 @@ class RecordingGroup(ContractModel):
 
     @model_validator(mode="after")
     def _exact_group_context(self) -> RecordingGroup:
-        if canonical_sha256(self.catalog) != self.catalog_sha256:
-            raise ValueError("group catalog digest must match the exact catalog")
+        if self.schema_version == RECORDING_GROUP_V1:
+            if self.catalog is None or self.catalog_reference is not None:
+                raise ValueError(
+                    "recording-group/v1 embeds its exact catalog and carries no catalog reference"
+                )
+            if canonical_sha256(self.catalog) != self.catalog_sha256:
+                raise ValueError("group catalog digest must match the exact catalog")
+        else:
+            if self.catalog_reference is None or self.catalog is not None:
+                raise ValueError(
+                    "recording-group/v2 carries a catalog reference and embeds no catalog"
+                )
+            if self.catalog_reference.catalog_sha256 != self.catalog_sha256:
+                raise ValueError("group catalog digest must match its catalog reference")
         if self.capture_device.backend != "coreaudio":
             raise ValueError("native recording groups require Core Audio")
-        if self.catalog.purpose == "capture-corpus":
+        if self.catalog_purpose == "capture-corpus":
             if self.gate.state == "not-required":
                 raise ValueError("corpus catalog requires a prepared capture gate")
         elif self.gate.state != "not-required":
@@ -304,6 +437,14 @@ class RecordingGroup(ContractModel):
         if len(self.room_tone_take_ids) != len(set(self.room_tone_take_ids)):
             raise ValueError("room-tone relationships must be unique")
         return self
+
+    @property
+    def catalog_purpose(self) -> PromptSuitePurpose:
+        """The bound catalog's purpose: the embedded suite's (v1) or the reference's (v2)."""
+        if self.catalog is not None:
+            return self.catalog.purpose
+        assert self.catalog_reference is not None  # exactly one form, validated above
+        return self.catalog_reference.purpose
 
 
 class CaptureReservation(ContractModel):
@@ -322,11 +463,13 @@ class CaptureReservation(ContractModel):
 
     @model_validator(mode="after")
     def _reservation_binding(self) -> CaptureReservation:
-        if self.prompt not in self.group.catalog.prompts:
+        # A v2 group carries no prompts; reserve checks the prompt against its snapshot.
+        catalog = self.group.catalog
+        if catalog is not None and self.prompt not in catalog.prompts:
             raise ValueError("reservation prompt must exactly match the bound catalog")
         if self.requested_at < self.group.opened_at:
             raise ValueError("capture request cannot precede its group")
-        if self.group.catalog.purpose == "capture-corpus" and self.group.gate.state != "ready":
+        if self.group.catalog_purpose == "capture-corpus" and self.group.gate.state != "ready":
             raise ValueError("corpus capture requires a ready verified gate")
         if self.partial_path != f"tmp/recording-takes/{self.take_id}/capture.partial.wav":
             raise ValueError("partial path must bind the reserved take")
@@ -664,23 +807,32 @@ class RecordingPackageMap(ContractModel):
         paths = [entry.package_relative_path for entry in self.entries]
         if len(ids) != len(set(ids)) or len(paths) != len(set(paths)):
             raise ValueError("package take identities and member paths must be unique")
+        catalog = self.group.catalog
         if any(
             entry.group_id != self.group.group_id
             or entry.subject_id != self.group.subject_id
             or entry.catalog_sha256 != self.group.catalog_sha256
-            or entry.prompt not in self.group.catalog.prompts
+            or (catalog is not None and entry.prompt not in catalog.prompts)
             for entry in self.entries
         ):
             raise ValueError("package entries must share exact group and catalog context")
+        if catalog is None and self.selected_suite is None:
+            # A v2 group embeds no prompts, so its map must carry the exact selected suite.
+            raise ValueError("a package of a catalog-reference group requires its selected suite")
         if self.selected_suite is not None:
-            selected_ids = {entry.prompt.prompt_id for entry in self.entries}
-            expected = tuple(
-                prompt for prompt in self.group.catalog.prompts if prompt.prompt_id in selected_ids
-            )
+            entry_prompts = tuple(entry.prompt for entry in self.entries)
+            if catalog is None:
+                # The snapshot subset (content and order) is checked where the map is built.
+                expected = entry_prompts
+            else:
+                selected_ids = {prompt.prompt_id for prompt in entry_prompts}
+                expected = tuple(
+                    prompt for prompt in catalog.prompts if prompt.prompt_id in selected_ids
+                )
             if (
-                self.selected_suite.purpose != self.group.catalog.purpose
+                self.selected_suite.purpose != self.group.catalog_purpose
                 or self.selected_suite.prompts != expected
-                or tuple(entry.prompt for entry in self.entries) != expected
+                or entry_prompts != expected
             ):
                 raise ValueError(
                     "package selected suite must preserve exact catalog purpose/content/order"
@@ -1409,9 +1561,10 @@ class ContextEvent(ContractModel):
             or self.cursor.selection.catalog_sha256 != self.group.catalog_sha256
         ):
             raise ValueError("context cursor must bind its exact group, subject and catalog")
-        if not any(
-            prompt.prompt_id == self.cursor.selection.prompt_id
-            for prompt in self.group.catalog.prompts
+        # A v2 group embeds no prompts; the service opens the cursor on a snapshot prompt.
+        catalog = self.group.catalog
+        if catalog is not None and not any(
+            prompt.prompt_id == self.cursor.selection.prompt_id for prompt in catalog.prompts
         ):
             raise ValueError("context cursor prompt must belong to the exact catalog")
         if self.history is not None and self.history.catalog_sha256 != self.group.catalog_sha256:
@@ -1759,6 +1912,8 @@ def native_recovery_bytes(receipt: NativeRecoveryReceipt) -> bytes:
 
 RECORDING_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "recording-group": RecordingGroup,
+    # A recording-group/v2 nests the reference, so Swift validates it like the group itself.
+    "catalog-reference": CatalogReference,
     "capture-reservation": CaptureReservation,
     "capture-seal": CaptureSealReceipt,
     "native-recovery": NativeRecoveryReceipt,
@@ -1776,9 +1931,8 @@ RECORDING_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "recording-transition": RecordingTransition,
     "recording-history-entry": RecordingHistoryEntry,
 }
-# Corpus-store contracts are generated like the rest but stay out of the native conformance
-# registry until a recording group nests the reference.
+# Snapshot files are read only by Python (corpus_store), so they stay out of the native
+# conformance registry; the reference a group nests is registered above.
 CORPUS_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
-    "catalog-reference": CatalogReference,
     "catalog-snapshot": CatalogSnapshot,
 }

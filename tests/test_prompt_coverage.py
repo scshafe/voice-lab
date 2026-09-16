@@ -1,4 +1,9 @@
-"""TD1-TD2: the read-only coverage report and its parity with RecordingIndex (design §7.2)."""
+"""TD1-TD2: the read-only coverage report and its parity with RecordingIndex (design §7.2).
+
+Published corpus-store catalog versions are read the same way: a keep-recordings alias keeps
+earlier recordings of a prompt covered (the prompt still reads as changed), and a take whose
+group references a snapshot is only counted once that snapshot resolves.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +14,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
 
@@ -23,22 +29,45 @@ from test_pilot_v2_coverage import (
     pilot_v1,
     prepare_pilot_v2_package,
     publish,
+    released_pilot_v2,
     spoken,
 )
 from test_pilot_v2_coverage import analyzer_build as analyzer_build
 from test_pilot_v2_coverage import foreign_pilot_v2_package as foreign_pilot_v2_package
 from test_pilot_v2_coverage import native_coverage as native_coverage
-from test_recording_takes import DEVICE, Rig
+from test_recording_index_backfill import Published
+from test_recording_index_backfill import published as published
+from test_recording_takes import DEVICE, Rig, open_referenced, publish_catalog, store_suite
 
-from cole_voice_lab.canonical import canonical_sha256
+from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256
 from cole_voice_lab.cli import main
-from cole_voice_lab.models import PromptSuite
+from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
+from cole_voice_lab.finetune import select_finetune_corpus
+from cole_voice_lab.models import PROMPT_SUITE_V2, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.prompt_catalogs import load_builtin_prompt_suite
-from cole_voice_lab.prompt_coverage import PromptCoverageProjectionError, prompt_coverage_report
-from cole_voice_lab.recording_contracts import AnalysisState, DecisionState
-from cole_voice_lab.recording_index import _RETAINED, RecordingIndex, is_retained
-from cole_voice_lab.recording_takes import RecordingTakeStore
+from cole_voice_lab.prompt_coverage import (
+    PromptCoverageProjectionError,
+    coverage_catalog,
+    prompt_coverage_report,
+)
+from cole_voice_lab.recording_contracts import (
+    RECORDING_GROUP_V1,
+    RECORDING_GROUP_V2,
+    AnalysisState,
+    CatalogSnapshot,
+    DecisionState,
+    PromptAlias,
+    RecordingGroup,
+    RecordingTake,
+)
+from cole_voice_lab.recording_index import (
+    _RETAINED,
+    RecordingIndex,
+    history_entry_for_take,
+    is_retained,
+)
+from cole_voice_lab.recording_takes import TAKE_PROVENANCE_ROOT, RecordingTakeStore
 
 
 def _tree(root: Path) -> dict[str, str | None]:
@@ -182,8 +211,11 @@ from cole_voice_lab.models import PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.prompt_catalogs import load_builtin_prompt_suite
 from cole_voice_lab.prompt_coverage import prompt_coverage_report
+from cole_voice_lab.recording_contracts import CatalogSnapshot
 
-catalog = PromptSuite.model_validate_json(Path(sys.argv[2]).read_bytes())
+payload = Path(sys.argv[2]).read_bytes()
+model = CatalogSnapshot if b'"prompt_aliases"' in payload else PromptSuite
+catalog = model.model_validate_json(payload)
 report = prompt_coverage_report(
     AssetLayout(Path(ROOT)), sys.argv[3], catalog, load_builtin_prompt_suite("pilot-v1.json")
 )
@@ -195,22 +227,15 @@ print(json.dumps({"violations": VIOLATIONS, "report": report.to_json(), "cli_sta
 """
 
 
-def test_report_never_writes_creates_or_opens_sqlite_under_the_asset_root(
-    tmp_path: Path,
-) -> None:
-    """TD1: an audit hook installed before import observes the report and its CLI."""
-    evidence = build_legacy_root(tmp_path.resolve() / "assets")
-    layout, pilot_v2 = evidence.layout, synthetic_pilot_v2_catalog()
-    rig = Rig(layout, RecordingTakeStore(layout), "")
-    rig.store = RecordingTakeStore(layout, clock=lambda: rig.now)
-    rig.group_id = rig.store.open_group(pilot_v1(), SUBJECT, DEVICE, "synthetic-host").group_id
-    native = rig.store.save(rig.command(rig.seal(rig.reserve("reserve-native", spoken(5))))).take
-    catalog_path = tmp_path / "pilot-v2.json"
-    catalog_path.write_text(pilot_v2.model_dump_json(), encoding="utf-8")
+def _audited_report(
+    tmp_path: Path, layout: AssetLayout, catalog: PromptSuite | CatalogSnapshot
+) -> dict[str, Any]:
+    """Run the report (``catalog`` against pilot-v1) and its CLI under the audit hook."""
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(catalog.model_dump_json(), encoding="utf-8")
     driver = tmp_path / "driver.py"
     driver.write_text(_AUDITED_DRIVER, encoding="utf-8")
     before = _tree(layout.root)
-
     completed = subprocess.run(
         (sys.executable, "-I", "-B", str(driver), str(layout.root), str(catalog_path), SUBJECT),
         cwd="/",
@@ -221,15 +246,69 @@ def test_report_never_writes_creates_or_opens_sqlite_under_the_asset_root(
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    result: dict[str, Any] = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result["violations"] == []
     assert result["cli_status"] == 0
+    assert _tree(layout.root) == before
+    return result
+
+
+def _native_rig(layout: AssetLayout) -> Rig:
+    rig = Rig(layout, RecordingTakeStore(layout), "")
+    rig.store = RecordingTakeStore(layout, clock=lambda: rig.now)
+    return rig
+
+
+def test_report_never_writes_creates_or_opens_sqlite_under_the_asset_root(
+    tmp_path: Path,
+) -> None:
+    """TD1: an audit hook installed before import observes the report and its CLI."""
+    evidence = build_legacy_root(tmp_path.resolve() / "assets")
+    layout, pilot_v2 = evidence.layout, synthetic_pilot_v2_catalog()
+    rig = _native_rig(layout)
+    rig.group_id = rig.store.open_group(pilot_v1(), SUBJECT, DEVICE, "synthetic-host").group_id
+    native = rig.store.save(rig.command(rig.seal(rig.reserve("reserve-native", spoken(5))))).take
+    result = _audited_report(tmp_path, layout, pilot_v2)
     rows = {row["prompt_id"]: row for row in result["report"]["prompts"]}
     assert rows[spoken(5)]["retained_take_count"] == 2  # sidecar-less legacy plus native
     assert native.decision == "kept"
     assert result["report"]["lost_prompt_ids"] == list(ROOM_TONES)
     assert result["report"]["exit_status"] == 0
-    assert _tree(layout.root) == before
+
+
+def test_report_through_a_published_snapshot_reads_files_only(tmp_path: Path) -> None:
+    """TD1 with a corpus store: snapshot files are read, the database is never opened."""
+    evidence = build_legacy_root(tmp_path.resolve() / "assets")
+    layout = evidence.layout
+    reworded = f"{released_pilot_v2().prompts[5].text} Again."
+    with open_corpus_store(layout, create=True) as corpus:
+        corpus.import_prompt_suite(released_pilot_v2(), source="pilot-v2")
+        corpus.create_catalog("cole-corpus", purpose="capture-pilot")
+        seeded = corpus.publish_version("cole-corpus")
+        seeded_snapshot = corpus.materialize(seeded)
+        corpus.edit_prompt(spoken(5), text=reworded, keep_recordings=True)
+        kept = corpus.materialize(corpus.publish_version("cole-corpus"))
+    rig = _native_rig(layout)
+    group = rig.store.open_group(
+        reference=seeded,
+        suite=seeded_snapshot.suite,
+        subject_id=SUBJECT,
+        capture_device=DEVICE,
+        capture_host="synthetic-host",
+    )
+    rig.group_id = group.group_id
+    native = rig.store.save(rig.command(rig.seal(rig.reserve("reserve-native", spoken(5))))).take
+    assert native.reservation.group.schema_version == RECORDING_GROUP_V2
+    # The native take was recorded against the earlier text; the alias keeps it counting.
+    result = _audited_report(tmp_path, layout, kept)
+    report = result["report"]
+    rows = {row["prompt_id"]: row for row in report["prompts"]}
+    assert rows[spoken(5)]["retained_take_count"] == 2  # sidecar-less legacy plus native
+    assert rows[spoken(5)]["covered"] is True and rows[spoken(5)]["changed"] is True
+    assert report["catalog_sha256"] == kept.catalog_sha256
+    assert report["changed_prompt_ids"] == [ROOM_TONES[0], spoken(5), ROOM_TONES[1]]
+    assert report["lost_prompt_ids"] == list(ROOM_TONES)
+    assert report["covered_prompt_count"] == 34 and report["exit_status"] == 0
 
 
 def test_is_retained_matches_the_index_predicate_for_every_state() -> None:
@@ -245,9 +324,11 @@ def test_is_retained_matches_the_index_predicate_for_every_state() -> None:
     assert retained == {("kept", analysis) for analysis in analyses} - {("kept", "invalid")}
 
 
-def _assert_parity(layout: AssetLayout, index: RecordingIndex, catalog: PromptSuite) -> None:
+def _assert_parity(
+    layout: AssetLayout, index: RecordingIndex, catalog: PromptSuite | CatalogSnapshot
+) -> None:
     report = prompt_coverage_report(layout, SUBJECT, catalog)
-    page = index.history(canonical_sha256(catalog), page_size=200)
+    page = index.history(coverage_catalog(catalog).catalog_sha256, page_size=200)
     assert not page.has_more_prompts
     indexed = {row.prompt_id: (row.kept_count > 0, row.kept_count) for row in page.prompts}
     assert {
@@ -275,3 +356,257 @@ def test_report_coverage_equals_indexed_history_for_legacy_takes(
             publish(evidence.layout, index, catalog)
         for catalog in (pilot_v1(), synthetic_pilot_v2_catalog()):
             _assert_parity(evidence.layout, index, catalog)
+
+
+# Published corpus-store catalog versions --------------------------------------------------
+
+
+def _record(rig: Rig, prompt_id: str, number: int, *, keep: bool) -> RecordingTake:
+    draft = rig.seal(rig.reserve(f"reserve-{number}", prompt_id), f"seal-{number}")
+    return rig.store.save(rig.command(draft, f"save-{number}")).take if keep else draft
+
+
+def test_embedded_and_referenced_groups_of_one_suite_report_identically(tmp_path: Path) -> None:
+    referenced_root = AssetLayout.initialize(tmp_path.resolve() / "referenced")
+    reference, snapshot = publish_catalog(referenced_root, store_suite(3))
+    embedded_root = AssetLayout.initialize(tmp_path.resolve() / "embedded")
+    takes: dict[str, tuple[RecordingTake, RecordingTake]] = {}
+    for layout in (embedded_root, referenced_root):
+        rig = _native_rig(layout)
+        if layout == embedded_root:
+            group = rig.store.open_group(snapshot.suite, SUBJECT, DEVICE, "synthetic-host")
+            assert group.schema_version == RECORDING_GROUP_V1
+        else:
+            group = rig.store.open_group(
+                reference=reference,
+                suite=snapshot.suite,
+                subject_id=SUBJECT,
+                capture_device=DEVICE,
+                capture_host="synthetic-host",
+            )
+            assert group.schema_version == RECORDING_GROUP_V2
+        rig.group_id = group.group_id
+        kept = _record(rig, "spoken-0001", 1, keep=True)
+        draft = _record(rig, "spoken-0002", 2, keep=False)
+        takes[layout.root.name] = (kept, draft)
+    identities = {"take_id", "group_id"}
+    for embedded, referenced in zip(takes["embedded"], takes["referenced"], strict=True):
+        assert history_entry_for_take(embedded).model_dump(
+            exclude=identities
+        ) == history_entry_for_take(referenced).model_dump(exclude=identities)
+    for catalog in (snapshot, snapshot.suite):
+        reports = [
+            prompt_coverage_report(layout, SUBJECT, catalog).to_json()
+            for layout in (embedded_root, referenced_root)
+        ]
+        assert reports[0] == reports[1]
+        assert reports[0]["covered_prompt_count"] == 1
+        assert reports[0]["missing_prompt_ids"] == ["spoken-0000", "spoken-0002"]
+
+
+def test_each_group_catalog_is_resolved_once_and_only_for_the_subject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    reference, snapshot = publish_catalog(layout, store_suite(3))
+    rig = _native_rig(layout)
+    rig.group_id = open_referenced(rig.store, reference, snapshot).group_id
+    for number, prompt_id in enumerate(("spoken-0001", "spoken-0002", "spoken-0001")):
+        _record(rig, prompt_id, number, keep=True)
+    resolved: list[str] = []
+    real = RecordingTakeStore.group_catalog
+
+    def counted(store: RecordingTakeStore, group: RecordingGroup) -> CatalogSnapshot:
+        resolved.append(group.group_id)
+        return real(store, group)
+
+    monkeypatch.setattr(RecordingTakeStore, "group_catalog", counted)
+    report = prompt_coverage_report(layout, "synthetic-subject", snapshot, snapshot)
+    assert report.covered_prompt_count == 2 and report.prompts[1].retained_take_count == 2
+    assert resolved == [rig.group_id]  # three takes, one group, one read for both catalogs
+    (layout.root / reference.snapshot_path).unlink()
+    # Another subject's report never reads that group's snapshot.
+    assert prompt_coverage_report(layout, SUBJECT, snapshot).covered_prompt_count == 0
+    assert resolved == [rig.group_id]
+    with pytest.raises(CorpusSnapshotSecurityError) as caught:
+        prompt_coverage_report(layout, "synthetic-subject", snapshot)
+    assert caught.value.code == "CORPUS.SNAPSHOT_MISSING"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"suite_id": "not-the-snapshot-suite"}, {"purpose": "held-out-evaluation"}],
+    ids=["suite-id", "purpose"],
+)
+def test_one_report_refuses_a_later_take_whose_reference_disagrees_with_its_snapshot(
+    tmp_path: Path, changes: dict[str, str]
+) -> None:
+    """Per-call resolution is keyed by the whole reference, not only by the snapshot bytes."""
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    reference, snapshot = publish_catalog(layout, store_suite(3))
+    rig = _native_rig(layout)
+    rig.group_id = open_referenced(rig.store, reference, snapshot).group_id
+    takes = [_record(rig, prompt_id, n, keep=True) for n, prompt_id in enumerate(PROMPT_PAIR)]
+    # The report reads takes in id order: the untouched one resolves the snapshot first.
+    legit, victim = sorted(takes, key=lambda take: take.reservation.take_id)
+    payload = json.loads(canonical_json_bytes(victim))
+    payload["reservation"]["group"]["catalog_reference"] |= changes
+    payload["seal"]["reservation_sha256"] = canonical_sha256(payload["reservation"])
+    forged = RecordingTake.model_validate_json(canonical_json_bytes(payload))
+    directory = layout.root / TAKE_PROVENANCE_ROOT / victim.reservation.take_id
+    for name, value in (
+        ("reservation.json", payload["reservation"]),
+        ("seal.json", payload["seal"]),
+        ("head.json", payload),
+    ):
+        (directory / name).write_bytes(canonical_json_bytes(value) + b"\n")
+        (directory / name).chmod(0o600)
+    reader = RecordingTakeStore(layout, read_only=True)
+    assert reader.get_take(victim.reservation.take_id) == forged
+    assert reader.get_take(legit.reservation.take_id) == legit
+    for attempt in (
+        lambda: prompt_coverage_report(layout, "synthetic-subject", snapshot),
+        lambda: select_finetune_corpus(layout, snapshot, "synthetic-subject", reference=reference),
+    ):
+        with pytest.raises(CorpusSnapshotSecurityError, match="declares suite") as caught:
+            attempt()
+        assert caught.value.code == "CORPUS.SNAPSHOT_MISMATCH"
+
+
+PROMPT_PAIR = ("spoken-0001", "spoken-0002")
+
+
+@dataclass(frozen=True)
+class IdentityChange:
+    """One kept take whose prompt a catalog lists as an alias across an identity change."""
+
+    layout: AssetLayout
+    snapshot: CatalogSnapshot
+    recorded_suite: PromptSuite
+    take: RecordingTake
+    prompt_id: str
+
+
+def identity_changing_alias(root: Path, change: str) -> IdentityChange:
+    """A take recorded against a held-out (``holdout``) or room-tone (``silent-to-spoken``)
+    prompt, and a capture-pilot snapshot whose same-id spoken prompt lists it as an alias.
+
+    The store refuses such keep-recordings edits, so the snapshot is built in memory; the
+    readers must still refuse to count the take.
+    """
+    layout = AssetLayout.initialize(root)
+    base = store_suite(2)
+    if change == "holdout":
+        prompt_id = "spoken-0001"
+        recorded_suite = PromptSuite(
+            schema_version=PROMPT_SUITE_V2,
+            suite_id="synthetic-evaluation",
+            purpose="held-out-evaluation",
+            prompts=tuple(prompt.model_copy(update={"holdout": True}) for prompt in base.prompts),
+        )
+        current = base.prompts[1].model_copy(update={"text": "A reworded synthetic sentence."})
+        prompts: tuple[Prompt, ...] = (base.prompts[0], current)
+    else:
+        prompt_id = "room-tone-start"
+        tone = Prompt(
+            prompt_id=prompt_id,
+            category="room-tone",
+            style="Silence.",
+            instructions="Stay silent for the whole take.",
+            expected_seconds=5.0,
+        )
+        recorded_suite = PromptSuite(
+            schema_version=PROMPT_SUITE_V2,
+            suite_id=base.suite_id,
+            purpose=base.purpose,
+            prompts=(tone, *base.prompts),
+        )
+        current = Prompt(
+            prompt_id=prompt_id,
+            text="Now this prompt is a spoken sentence.",
+            category="neutral",
+            style="Plain reading, natural pace.",
+            expected_seconds=2.0,
+        )
+        prompts = (current, *base.prompts)
+    suite = PromptSuite(
+        schema_version=PROMPT_SUITE_V2,
+        suite_id=base.suite_id,
+        purpose=base.purpose,
+        prompts=prompts,
+    )
+    recorded = next(prompt for prompt in recorded_suite.prompts if prompt.prompt_id == prompt_id)
+    snapshot = CatalogSnapshot(
+        suite=suite,
+        catalog_sha256=canonical_sha256(suite),
+        prompt_aliases=(
+            PromptAlias(
+                prompt_sha256=canonical_sha256(current),
+                accepted_prompt_sha256=canonical_sha256(recorded),
+            ),
+        ),
+    )
+    rig = _native_rig(layout)
+    rig.group_id = rig.store.open_group(recorded_suite, SUBJECT, DEVICE, "synthetic-host").group_id
+    take = _record(rig, prompt_id, 1, keep=True)
+    assert take.reservation.prompt == recorded
+    return IdentityChange(layout, snapshot, recorded_suite, take, prompt_id)
+
+
+@pytest.mark.parametrize("change", ["holdout", "silent-to-spoken"])
+def test_an_alias_that_changes_the_prompts_identity_covers_nothing(
+    tmp_path: Path, change: str
+) -> None:
+    case = identity_changing_alias(tmp_path.resolve() / "assets", change)
+    report = prompt_coverage_report(case.layout, SUBJECT, case.snapshot)
+    row = next(row for row in report.prompts if row.prompt_id == case.prompt_id)
+    assert (row.covered, row.retained_take_count) == (False, 0)
+    assert case.prompt_id in report.missing_prompt_ids
+    # Under the catalog it was recorded against, the take counts as before.
+    own = prompt_coverage_report(case.layout, SUBJECT, case.recorded_suite)
+    assert next(row for row in own.prompts if row.prompt_id == case.prompt_id).covered
+
+
+def test_report_counts_legacy_recordings_through_keep_recordings_aliases(
+    published: Published,
+) -> None:
+    """TC2 under published versions: rewording with kept recordings loses nothing."""
+    layout, pilot_v2 = published.evidence.layout, released_pilot_v2()
+    reworded = (spoken(1), spoken(3))
+    before = prompt_coverage_report(layout, SUBJECT, pilot_v2)
+    seeded = prompt_coverage_report(layout, SUBJECT, published.seeded, pilot_v2)
+    assert seeded.changed_prompt_ids == seeded.lost_prompt_ids == ()
+    kept = prompt_coverage_report(layout, SUBJECT, published.kept, pilot_v2)
+    assert kept.catalog_sha256 == published.kept.catalog_sha256
+    assert kept.baseline_catalog_sha256 == canonical_sha256(pilot_v2)
+    assert kept.changed_prompt_ids == reworded and kept.lost_prompt_ids == ()
+    assert (kept.covered_prompt_count, kept.total_prompt_count) == (34, 36)
+    assert kept.missing_prompt_ids == ROOM_TONES and kept.exit_status == 0
+    for report in (seeded, kept):
+        assert [
+            (row.prompt_id, row.covered, row.retained_take_count) for row in report.prompts
+        ] == [(row.prompt_id, row.covered, row.retained_take_count) for row in before.prompts]
+    rows = {row.prompt_id: row for row in kept.prompts}
+    assert rows[spoken(1)].retained_take_count == 3
+    assert rows[spoken(1)].changed is True and rows[spoken(1)].covered_in_baseline is True
+    assert rows[spoken(1)].prompt_sha256 != canonical_sha256(pilot_v2.prompts[1])
+    # Without the snapshot's aliases the reworded prompts' recordings do not count.
+    plain = prompt_coverage_report(layout, SUBJECT, published.kept.suite)
+    assert set(plain.missing_prompt_ids) == {*ROOM_TONES, *reworded}
+
+    changed = prompt_coverage_report(layout, SUBJECT, published.changed, published.kept)
+    assert changed.changed_prompt_ids == changed.lost_prompt_ids == (spoken(2),)
+    assert changed.missing_prompt_ids == (ROOM_TONES[0], spoken(2), ROOM_TONES[1])
+    assert changed.covered_prompt_count == 33 and changed.exit_status == 0
+    assert prompt_coverage_report(layout, SUBJECT, published.changed).exit_status == 0
+
+
+def test_report_coverage_equals_indexed_history_through_aliases(published: Published) -> None:
+    """TD2 on the TC2 fixture under published versions with kept and changed prompts."""
+    layout = published.evidence.layout
+    versions = (published.seeded, published.kept, published.changed)
+    with RecordingIndex(layout, subject_id=SUBJECT) as index:
+        for catalog in versions:
+            publish(layout, index, catalog)
+        for catalog in versions:
+            _assert_parity(layout, index, catalog)

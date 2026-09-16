@@ -11,6 +11,7 @@ from test_recording_takes import rig as rig
 
 from cole_voice_lab.canonical import canonical_sha256
 from cole_voice_lab.recording_contracts import (
+    CatalogSnapshot,
     RecordingError,
     RecordingRecoveryObservation,
     RecordingRecoveryWork,
@@ -31,7 +32,7 @@ ERROR = RecordingError(
 @pytest.fixture
 def inventory(rig: Rig) -> Iterator[RecordingIndex]:
     with RecordingIndex(rig.layout, subject_id=SUBJECT) as index:
-        index.register_catalog(rig.store.get_group(rig.group_id).catalog)
+        index.register_catalog(CatalogSnapshot.embedded(rig.store.get_group(rig.group_id).catalog))
         index.begin_recovery_scan(scan_generation=GENERATION)
         rig.store.projection_hook = index.update_take
         rig.store.reservation_projection_hook = lambda take: index.update_take(

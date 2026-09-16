@@ -26,7 +26,6 @@ from test_recording_takes import DEVICE, NOW, Rig
 
 from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256
 from cole_voice_lab.capture import CaptureInterrupted, TakeEngine
-from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.models import Prompt, PromptSuite, utc_now
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.prompt_catalogs import legacy_pilot_v1, load_builtin_prompt_suite
@@ -35,6 +34,7 @@ from cole_voice_lab.recording_contracts import (
     DecisionCommand,
     OpenContextCommand,
     PreparePackageCommand,
+    RecordingPromptNotCountedError,
     RecordingTake,
     ReviewTakeCommand,
 )
@@ -193,7 +193,8 @@ def test_native_takes_count_under_pilot_v2_only_for_unchanged_prompts(
     store = state.rig.store
     resolver = RecordingReviewResolver(state.rig.layout, store, state.index)
     open_context(store, state.pilot_v2, "open-pilot-v2")
-    with pytest.raises(SecurityError, match="exact catalog"):
+    # A room tone pilot-v2 changed is stale history under v2, not changed evidence.
+    with pytest.raises(RecordingPromptNotCountedError, match="exact catalog"):
         resolver.resolve(v2, tone_id)
     assert resolver.resolve(v2, state.spoken.reservation.take_id).take_id == (
         state.spoken.reservation.take_id

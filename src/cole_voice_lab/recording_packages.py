@@ -136,7 +136,7 @@ class RecordingPackagePlan(ContractModel):
             prompt.prompt_id for prompt in self.selected_suite.prompts
         ):
             raise ValueError("preparation sources must preserve exact declared suite order")
-        if self.selected_suite.purpose != self.group.catalog.purpose:
+        if self.selected_suite.purpose != self.group.catalog_purpose:
             raise ValueError("preparation cannot change catalog purpose")
         return self
 
@@ -245,26 +245,30 @@ def _edit_identity(layout: AssetLayout, take: RecordingTake) -> str:
     return native_edit_identity(layout, take.reservation.take_id, take=take)
 
 
-def _selected_suite(
-    group: RecordingGroup, sources: Sequence[RecordingPackageSource]
-) -> PromptSuite:
+def _selected_suite(catalog: PromptSuite, sources: Sequence[RecordingPackageSource]) -> PromptSuite:
+    """The package suite: the group's resolved catalog restricted to the selected prompts.
+
+    Prompts keep catalog order; ``catalog`` itself is returned when every prompt is selected.
+    Raises: ``RecordingPackageError`` when a source names a prompt the catalog lacks or two
+    sources name one prompt.
+    """
     selected = {source.prompt_id for source in sources}
-    prompts = tuple(prompt for prompt in group.catalog.prompts if prompt.prompt_id in selected)
+    prompts = tuple(prompt for prompt in catalog.prompts if prompt.prompt_id in selected)
     if len(prompts) != len(sources):
         raise RecordingPackageError("choose one take per exact prompt for each package")
-    if prompts == group.catalog.prompts:
-        return group.catalog
+    if prompts == catalog.prompts:
+        return catalog
     subset_sha = canonical_sha256([prompt.model_dump(mode="json") for prompt in prompts])
     # A manifest names its suite only by ID, so a physical-test subset keeps the reserved prefix.
     prefix = (
         f"{PHYSICAL_TEST_SUITE_PREFIX}subset-"
-        if group.catalog.purpose == "physical-test"
+        if catalog.purpose == "physical-test"
         else "native-subset-"
     )
     return PromptSuite(
-        schema_version=group.catalog.schema_version,
+        schema_version=catalog.schema_version,
         suite_id=f"{prefix}{subset_sha[:24]}",
-        purpose=group.catalog.purpose,
+        purpose=catalog.purpose,
         prompts=prompts,
     )
 
@@ -293,9 +297,25 @@ def partition_recording_package_selection(
 def validate_recording_package_map(
     package_map: RecordingPackageMap, validated: ValidatedPackage
 ) -> None:
-    """Bind a local rich map to an independently validated unchanged v1 package."""
+    """Bind a local rich map to an independently validated unchanged v1 package.
+
+    The package suite is the map's ``selected_suite``. Only a map of a recording-group/v1
+    may omit it (the complete embedded catalog was packaged); a map of a recording-group/v2
+    always carries it, and its group's catalog is never consulted here.
+    Raises: ``SecurityError`` when the map and the package evidence disagree;
+    ``RecordingPackageError`` (``RECORDING.PACKAGE_INCOMPLETE``) for a map that names no
+    package suite (the map contract refuses that for v2 groups before this point).
+    """
     manifest = validated.manifest
-    suite = package_map.selected_suite or package_map.group.catalog
+    suite = package_map.selected_suite
+    if suite is None:
+        # recording-package-map/v1 of an embedded catalog; resolved groups never get here.
+        suite = package_map.group.catalog
+    if suite is None:
+        raise RecordingPackageError(
+            "a package of a catalog-reference group requires its selected suite",
+            code="RECORDING.PACKAGE_INCOMPLETE",
+        )
     if (
         validated.manifest_sha256 != package_map.manifest_sha256
         or manifest.session_id != package_map.session_id
@@ -452,13 +472,14 @@ class RecordingPackageStore:
                     )
                 return existing
             group = self.takes.get_group(command.group_id)
+            catalog = self.takes.group_catalog(group).suite
             try:
-                require_catalog_root(self.layout, group.catalog, group.subject_id)
+                require_catalog_root(self.layout, catalog, group.subject_id)
             except ContractError as error:
                 raise RecordingPackageError(
                     str(error), code="RECORDING.PACKAGE_INCOMPLETE"
                 ) from error
-            if group.catalog.purpose == "held-out-evaluation":
+            if group.catalog_purpose == "held-out-evaluation":
                 raise RecordingPackageError(
                     "held-out material cannot be packaged as training recordings"
                 )
@@ -494,7 +515,7 @@ class RecordingPackageStore:
                 selected[prompt.prompt_id] = source
                 if prompt.category == "room-tone":
                     tones.add(take_id)
-            suite = _selected_suite(group, tuple(selected.values()))
+            suite = _selected_suite(catalog, tuple(selected.values()))
             if not tones or tones != set(command.room_tone_take_ids):
                 raise RecordingPackageError(
                     "select explicit compatible room-tone takes for this package"

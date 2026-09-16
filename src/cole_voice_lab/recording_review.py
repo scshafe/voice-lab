@@ -113,6 +113,26 @@ class RecordingReviewResolver:
     def resolve(
         self, catalog_sha256: str, take_id: str, *, require_verified: bool = False
     ) -> RecordingReviewSource:
+        """Authorize one take's original for review under the open context's exact catalog.
+
+        A native take qualifies when its recorded prompt counts for a prompt of the current
+        group's catalog: the prompt itself or an earlier revision that the prompt's
+        keep-recordings aliases accept (same prompt id). The source keeps the recorded
+        prompt as evidence; the cursor and UI show the current prompt by id. Legacy takes
+        are located through the index's source aliases.
+        Params: ``catalog_sha256`` is the displayed catalog; ``take_id`` a native ``take-``
+        id or an indexed legacy id; ``require_verified`` restricts legacy sources to ones
+        already verified by this resolver.
+        Returns: the authorized ``RecordingReviewSource``.
+        Raises: ``ContractError`` when no context is open, the take is not sealed or a legacy
+        row lacks a source identity; ``RecordingPromptNotCountedError`` (a ``ContractError``,
+        never a security failure) when the take, native or legacy, was recorded against a
+        prompt text the current catalog no longer counts; ``SecurityError`` when the take
+        belongs to another subject, the request names another catalog, its original changed,
+        or no legacy alias verifies; ``CorpusSnapshotSecurityError`` (a ``SecurityError``)
+        when the current group's referenced snapshot is missing or altered;
+        ``RecordingIndexError`` for an unindexed legacy take.
+        """
         if take_id.startswith("take-"):
             take = self.store.get_take(take_id)
             group = self.store.get_cursor(self.index.subject_id)
@@ -122,11 +142,13 @@ class RecordingReviewResolver:
             if (
                 current.catalog_sha256 != catalog_sha256
                 or take.reservation.group.subject_id != self.index.subject_id
-                or take.reservation.prompt not in current.catalog.prompts
             ):
                 raise SecurityError(
                     "selected native take differs from the current exact catalog/subject"
                 )
+            self.store.group_catalog(current).require_current_prompt_for(
+                take.reservation.prompt, take_id=take_id
+            )
             return self._native(
                 take, catalog_sha256, owned_selection=group.selection.take_id == take_id
             )

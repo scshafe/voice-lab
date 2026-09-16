@@ -3,7 +3,10 @@
 @canonical finetune -- the fine-tuning corpus is the latest retained take of every spoken
 catalog prompt, read straight from the library: native take heads and legacy (old-app) rows
 through the same readers prompt_coverage uses, never through packages or the SQLite index.
-Every artifact is bound by SHA-256 so a run can be reproduced and audited.
+A take counts for a prompt under the coverage rule (its recorded prompt, or an earlier
+revision a published catalog's keep-recordings alias accepts); the transcript is always the
+current prompt text. Every artifact is bound by SHA-256 so a run can be reproduced and
+audited.
 Related: prompt_coverage.py (readers), recording_index.py (retained predicate),
 docs/FINETUNE.md (operator guide), DECISIONS.md D-016.
 """
@@ -22,12 +25,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, Final, Literal, cast
+from typing import IO, TYPE_CHECKING, Final, Literal, cast
 
 from pydantic import BaseModel, Field, model_validator
 
 from .audio import CANONICAL_SAMPLE_RATE_HZ
 from .canonical import canonical_sha256, sha256_file, write_canonical_json
+from .corpus_store import CorpusSnapshotSecurityError, require_referenced_snapshot
 from .errors import VoiceLabError
 from .models import (
     SILENT_PROMPT_CATEGORIES,
@@ -39,8 +43,10 @@ from .models import (
     utc_now,
 )
 from .paths import AssetLayout, confined_path
-from .prompt_coverage import iter_native_takes
+from .prompt_coverage import coverage_catalog, subject_native_takes
 from .recording_contracts import (
+    CatalogReference,
+    CatalogSnapshot,
     RecordingFrameRange,
     RecordingHistoryEntry,
     RecordingTake,
@@ -86,10 +92,26 @@ class FineTuneError(VoiceLabError):
 
 
 class FineTuneCorpusEntry(ContractModel):
-    """One spoken prompt's current recording: the latest retained take and where its audio is."""
+    """One spoken prompt's current recording: the latest retained take and where its audio is.
+
+    ``prompt`` is the current catalog prompt (its text is the training transcript) and
+    ``prompt_sha256`` its digest. ``recorded_prompt_sha256`` is the digest the audio was
+    recorded against: equal to ``prompt_sha256`` unless the take counts through a
+    keep-recordings alias of the current prompt. Writers must always state it; ``None`` only
+    appears in a stored entry written before the field existed (omitted again on output, so
+    that corpus keeps its exact bytes and digest).
+    """
 
     prompt_id: StableId
     prompt_sha256: Sha256
+    if TYPE_CHECKING:
+        # No default for type checkers: every constructor call names the recorded digest.
+        recorded_prompt_sha256: Sha256 | None
+    else:
+        # Stored corpora from before the field omit it; they read as None.
+        recorded_prompt_sha256: Sha256 | None = Field(
+            default=None, exclude_if=lambda value: value is None
+        )
     prompt: Prompt
     take_id: StableId
     source_kind: FineTuneSourceKind
@@ -128,12 +150,19 @@ class FineTuneCorpusEntry(ContractModel):
 
 
 class FineTuneCorpus(ContractModel):
-    """The live corpus for one subject and catalog: one entry per spoken prompt, catalog order."""
+    """The live corpus for one subject and catalog: one entry per spoken prompt, catalog order.
+
+    ``catalog_reference`` names the published corpus-store catalog version the corpus was
+    selected from; it is absent for a built-in catalog.
+    """
 
     schema_version: Literal["cole-voice-lab.finetune-corpus/v1"] = FINETUNE_CORPUS_SCHEMA
     subject_id: StableId
     catalog_suite_id: StableId
     catalog_sha256: Sha256
+    catalog_reference: CatalogReference | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     entries: tuple[FineTuneCorpusEntry, ...] = Field(max_length=10_000)
     missing_prompt_ids: tuple[StableId, ...] = Field(max_length=10_000)
     unknown_record_ids: tuple[str, ...] = Field(max_length=10_000)
@@ -144,6 +173,12 @@ class FineTuneCorpus(ContractModel):
         ids = [entry.prompt_id for entry in self.entries] + list(self.missing_prompt_ids)
         if len(ids) != len(set(ids)):
             raise ValueError("a prompt is either selected once or missing, never both")
+        reference = self.catalog_reference
+        if reference is not None and (
+            reference.catalog_sha256 != self.catalog_sha256
+            or reference.suite_id != self.catalog_suite_id
+        ):
+            raise ValueError("corpus catalog reference must name the exact selected catalog")
         return self
 
     @property
@@ -280,14 +315,18 @@ class _Candidate:
         )
 
 
-def _native_candidate(take: RecordingTake, prompt_sha256: str) -> FineTuneCorpusEntry | None:
+def _native_candidate(
+    take: RecordingTake, prompt: Prompt, prompt_sha256: str
+) -> FineTuneCorpusEntry | None:
+    """A sealed retained native take as the entry of ``prompt`` (the current prompt)."""
     seal = take.seal
     if seal is None or not is_retained(take.decision, take.analysis):
         return None
     return FineTuneCorpusEntry(
-        prompt_id=take.reservation.prompt.prompt_id,
+        prompt_id=prompt.prompt_id,
         prompt_sha256=prompt_sha256,
-        prompt=take.reservation.prompt,
+        recorded_prompt_sha256=canonical_sha256(take.reservation.prompt),
+        prompt=prompt,
         take_id=take.reservation.take_id,
         source_kind="native",
         source_path=seal.original_path,
@@ -301,9 +340,12 @@ def _native_candidate(take: RecordingTake, prompt_sha256: str) -> FineTuneCorpus
 
 
 def _legacy_candidate(
-    row: LegacyProjectionRow, prompt_sha256: str
+    row: LegacyProjectionRow, prompt: Prompt, prompt_sha256: str
 ) -> tuple[FineTuneCorpusEntry | None, str | None]:
-    """A legacy row plus its readable source; trims of legacy takes are not applied here."""
+    """A legacy row as the entry of ``prompt`` (the current prompt), plus its readable source.
+
+    Trims of legacy takes are not applied here.
+    """
     entry: RecordingHistoryEntry = row.entry
     if not is_retained(entry.decision, entry.analysis):
         return None, None
@@ -315,9 +357,10 @@ def _legacy_candidate(
         return None, f"{entry.take_id}: legacy source digest disagrees with its history row"
     return (
         FineTuneCorpusEntry(
-            prompt_id=entry.prompt.prompt_id,
+            prompt_id=prompt.prompt_id,
             prompt_sha256=prompt_sha256,
-            prompt=entry.prompt,
+            recorded_prompt_sha256=canonical_sha256(entry.prompt),
+            prompt=prompt,
             take_id=entry.take_id,
             source_kind="legacy",
             source_path=path,
@@ -334,37 +377,73 @@ def _legacy_candidate(
 
 def select_finetune_corpus(
     layout: AssetLayout,
-    catalog: PromptSuite,
+    catalog: PromptSuite | CatalogSnapshot,
     subject_id: str,
     *,
+    reference: CatalogReference | None = None,
     clock: Callable[[], datetime] = utc_now,
 ) -> FineTuneCorpus:
     """Pick the latest retained take of every spoken prompt in ``catalog`` for ``subject_id``.
 
     Reads native heads and legacy rows read-only, exactly as the coverage report does; never
     opens the SQLite index and never writes under the asset root. Retained means kept and not
-    invalid (the index rule). Raises ``FineTuneError`` (FINETUNE.CORPUS_PROJECTION_FAILED)
-    when evidence cannot be read; unreadable individual records land in
-    ``unknown_record_ids`` instead of silently shrinking the corpus.
+    invalid (the index rule). A take counts for a current prompt when it was recorded against
+    that prompt or, for a published snapshot, against an earlier revision the prompt's
+    keep-recordings aliases accept (same prompt id); the latest retained take across all of
+    them wins. Each entry carries the current prompt (its text is the training transcript)
+    and the digest the audio was recorded against (``recorded_prompt_sha256``). Held-out
+    evaluation material never becomes training audio: a held-out catalog is refused, and a
+    take recorded in a held-out group, against a held-out prompt, or against a silent prompt
+    is never a candidate (the alias rule already keeps those apart; this is the backstop).
+    Params: ``catalog`` is a plain suite (built-in or embedded; only its own prompts count) or
+    a published ``CatalogSnapshot``; ``reference`` names the published version ``catalog``
+    was materialized from and is recorded as ``FineTuneCorpus.catalog_reference`` (``None``
+    for a built-in); ``clock`` stamps ``selected_at``.
+    Returns: the corpus, one entry per covered spoken prompt in catalog order.
+    Raises: ``FineTuneError`` FINETUNE.CATALOG_HELD_OUT when ``catalog`` is a
+    held-out-evaluation catalog, FINETUNE.CORPUS_PROJECTION_FAILED when evidence cannot be
+    read; unreadable individual records land in ``unknown_record_ids`` instead of silently
+    shrinking the corpus. ``CorpusSnapshotSecurityError`` (a ``SecurityError``), unwrapped,
+    with ``CORPUS.SNAPSHOT_MISMATCH`` when ``reference`` does not seal exactly ``catalog``,
+    or ``CORPUS.SNAPSHOT_MISSING`` / ``CORPUS.SNAPSHOT_MISMATCH`` when a native take's group
+    references a snapshot that is missing or altered.
     """
     layout = AssetLayout.validate(layout.root)
+    snapshot = coverage_catalog(catalog)
+    if reference is not None:
+        require_referenced_snapshot(snapshot, reference)
+    suite = snapshot.suite
+    if suite.purpose == "held-out-evaluation":
+        raise FineTuneError(
+            "FINETUNE.CATALOG_HELD_OUT",
+            f"catalog {suite.suite_id} is held-out evaluation material and never trains a voice",
+        )
     spoken = {
-        canonical_sha256(prompt): prompt
-        for prompt in catalog.prompts
+        prompt.prompt_id: (prompt, canonical_sha256(prompt))
+        for prompt in suite.prompts
         if prompt.category not in SILENT_PROMPT_CATEGORIES and prompt.text is not None
     }
-    candidates: dict[str, dict[str, _Candidate]] = {digest: {} for digest in spoken}
+    candidates: dict[str, dict[str, _Candidate]] = {prompt_id: {} for prompt_id in spoken}
     unknown: list[str] = []
 
+    def counted(recorded: Prompt) -> tuple[Prompt, str] | None:
+        """The spoken current prompt (and its digest) a take recorded against ``recorded``
+        counts for, or None. Only spoken, non-held-out recordings ever train."""
+        if not recorded.spoken or recorded.holdout:
+            return None
+        current = snapshot.current_prompt_for(recorded)
+        return None if current is None else spoken.get(current.prompt_id)
+
     def consider_native(take: RecordingTake) -> None:
-        if take.reservation.group.subject_id != subject_id:
+        group = take.reservation.group
+        if group.subject_id != subject_id or group.catalog_purpose == "held-out-evaluation":
             return
-        digest = canonical_sha256(take.reservation.prompt)
-        if digest not in candidates:
+        target = counted(take.reservation.prompt)
+        if target is None:
             return
-        entry = _native_candidate(take, digest)
+        entry = _native_candidate(take, *target)
         if entry is not None:
-            candidates[digest][entry.take_id] = _Candidate(entry)
+            candidates[entry.prompt_id][entry.take_id] = _Candidate(entry)
 
     def collect(take: RecordingTake, alias: DiscoveryAlias) -> None:
         # Package aliases resolve to native heads; the store enumeration already saw them.
@@ -376,9 +455,9 @@ def select_finetune_corpus(
             if os.path.lexists(layout.root / TAKE_PROVENANCE_ROOT)
             else None
         )
-        for take in iter_native_takes(store):
+        for take in subject_native_takes(store, subject_id):
             consider_native(take)
-        library = RecordingLibrary(layout, catalog, subject_id)
+        library = RecordingLibrary(layout, snapshot, subject_id)
         for record in legacy_projection_records(library, collect, take_store=store):
             if isinstance(record, LegacyProjectionUnknown):
                 unknown.append(record.record_id)
@@ -386,14 +465,16 @@ def select_finetune_corpus(
                 row_entry = record.entry
                 if row_entry.subject_id != subject_id:
                     continue
-                digest = canonical_sha256(row_entry.prompt)
-                if digest not in candidates:
+                target = counted(row_entry.prompt)
+                if target is None:
                     continue
-                entry, problem = _legacy_candidate(record, digest)
+                entry, problem = _legacy_candidate(record, *target)
                 if problem is not None:
                     unknown.append(problem)
                 elif entry is not None:
-                    candidates[digest][entry.take_id] = _Candidate(entry)
+                    candidates[entry.prompt_id][entry.take_id] = _Candidate(entry)
+    except CorpusSnapshotSecurityError:
+        raise  # a sealed reference that no longer resolves is a hard failure, not a gap
     except (OSError, ValueError, VoiceLabError) as error:
         raise FineTuneError(
             "FINETUNE.CORPUS_PROJECTION_FAILED",
@@ -402,19 +483,16 @@ def select_finetune_corpus(
 
     entries: list[FineTuneCorpusEntry] = []
     missing: list[str] = []
-    for prompt in catalog.prompts:
-        digest = canonical_sha256(prompt)
-        if digest not in candidates:
-            continue
-        options = candidates[digest]
+    for prompt_id, options in candidates.items():  # catalog order
         if not options:
-            missing.append(prompt.prompt_id)
+            missing.append(prompt_id)
             continue
         entries.append(max(options.values(), key=lambda candidate: candidate.order).entry)
     return FineTuneCorpus(
         subject_id=subject_id,
-        catalog_suite_id=catalog.suite_id,
-        catalog_sha256=canonical_sha256(catalog),
+        catalog_suite_id=suite.suite_id,
+        catalog_sha256=snapshot.catalog_sha256,
+        catalog_reference=reference,
         entries=tuple(entries),
         missing_prompt_ids=tuple(missing),
         unknown_record_ids=tuple(sorted(set(unknown))),

@@ -32,10 +32,11 @@ from .canonical import (
     open_regular_no_follow,
     write_canonical_json,
 )
+from .corpus_store import CorpusSnapshotSecurityError, resolve_group_catalog
 from .errors import ContractError, SecurityError
 from .models import ContractModel, Sha256, StableId
 from .paths import AssetLayout, confined_path, ensure_private_directory
-from .recording_contracts import RecordingError, RecordingGroup, RecordingTake
+from .recording_contracts import CatalogSnapshot, RecordingError, RecordingGroup, RecordingTake
 from .recording_discovery_contracts import (
     DiscoveryAck,
     DiscoveryAlias,
@@ -188,16 +189,24 @@ def _retry_background_metadata[ResultT](operation: Callable[[], ResultT]) -> Res
             time.sleep(min(DISCOVERY_METADATA_RETRY_INTERVAL, remaining))
 
 
-def _read_group(layout: AssetLayout, group_id: str) -> RecordingGroup:
-    # Bootstrap the projection before constructing the repairing store. Immutable
-    # group evidence can be read without taking or repairing the metadata journal.
+def _read_group(layout: AssetLayout, group_id: str) -> tuple[RecordingGroup, CatalogSnapshot]:
+    """Read one group record and the exact catalog it binds, from files alone.
+
+    Bootstraps the projection before the repairing store exists: immutable group evidence
+    and content-addressed snapshots are read without the metadata journal or the corpus
+    database, so the read-only worker process can call this too.
+    Raises: ``SecurityError`` for a non-canonical record or one naming another group;
+    ``ContractError`` for an invalid record; ``CorpusSnapshotSecurityError``
+    (``CORPUS.SNAPSHOT_MISSING`` / ``CORPUS.SNAPSHOT_MISMATCH``) when a recording-group/v2's
+    snapshot is missing or altered; ``OSError`` when a file cannot be read.
+    """
     identifier: str = TypeAdapter(StableId).validate_python(group_id)
     group = read_recording_evidence(
         confined_path(layout.root, f"{GROUP_PROVENANCE_ROOT}/{identifier}.json"), RecordingGroup
     )
     if group.group_id != identifier:
         raise SecurityError("recording group filename does not match its identity")
-    return group
+    return group, resolve_group_catalog(layout, group)
 
 
 def _take_pages(store: RecordingTakeStore, subject_id: str) -> Iterator[RecordingTake]:
@@ -256,9 +265,17 @@ def produce_discovery(
     output_fd: int,
     publish: Callable[[DiscoveryPublication], bool],
 ) -> DiscoveryFinished:
-    """Inspect evidence without opening SQLite; publish only fully prepared typed metadata."""
+    """Inspect evidence without opening SQLite; publish only fully prepared typed metadata.
+
+    The group's exact catalog (embedded, or its referenced snapshot file with prompt
+    aliases) drives the legacy library scan, so legacy takes recorded against an accepted
+    earlier revision are published too.
+    Returns: the ``DiscoveryFinished`` summary, ``deferred`` when the metadata journal is
+    busy; any other evidence, snapshot or contract failure becomes its retryable
+    ``RECORDING.HISTORY_UNKNOWN`` error instead of a raise.
+    """
     try:
-        group = _read_group(layout, request.group_id)
+        group, catalog = _read_group(layout, request.group_id)
         if group.subject_id != request.subject_id or group.catalog_sha256 != request.catalog_sha256:
             raise SecurityError("discovery worker group differs from its parent's exact context")
         legacy = _fingerprint(layout, legacy=True)
@@ -306,7 +323,7 @@ def produce_discovery(
                             )
                         )
         if not legacy_current:
-            library = RecordingLibrary(layout, group.catalog, group.subject_id)
+            library = RecordingLibrary(layout, catalog, group.subject_id)
 
             def publish_alias(take: RecordingTake, alias: DiscoveryAlias) -> None:
                 publish_take(take)
@@ -497,8 +514,15 @@ def discover_recording_library(
     stop: threading.Event | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
-    """Standalone or supervised discovery shares one evidence producer and parent publisher."""
-    group = _read_group(layout, group_id)
+    """Standalone or supervised discovery shares one evidence producer and parent publisher.
+
+    Raises: ``CorpusSnapshotSecurityError`` (a ``SecurityError``) before any index write
+    when the group's referenced snapshot is missing or altered; ``SecurityError`` /
+    ``ContractError`` for an unreadable group record or a mismatched index;
+    ``RecordingIndexError`` when the catalog cannot be registered. Failures after that
+    mark the catalog Unknown and are reported in the returned summary, not raised.
+    """
+    group, catalog = _read_group(layout, group_id)
     directory = ensure_private_directory(
         confined_path(layout.root, "provenance/recording-library-discovery")
     )
@@ -510,7 +534,7 @@ def discover_recording_library(
     ):
         if owner.layout != layout or owner.subject_id != group.subject_id:
             raise ContractError("discovery index differs from its exact subject/root")
-        owner.register_catalog(group.catalog)
+        owner.register_catalog(catalog)
         try:
             # Repair uses the ordinary parent store and its existing projection ordering.
             if store is None:
@@ -668,9 +692,11 @@ class RecordingDiscoveryCoordinator:
                     progress=self.progress,
                 )
                 deferred = report.get("deferred") is True
-            except OSError:
+            except (OSError, CorpusSnapshotSecurityError):
                 # No false Complete checkpoint is written. Notify the service so
                 # the unchanged Building/Unknown state remains visible and retryable.
+                # A missing or altered snapshot fails before any index write; the
+                # service's own group read reports it as CORPUS.SNAPSHOT_MISMATCH.
                 pass
             finally:
                 if deferred:

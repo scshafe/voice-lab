@@ -14,7 +14,7 @@ from test_recording_navigation import nav as nav
 
 from cole_voice_lab.canonical import canonical_sha256
 from cole_voice_lab.models import PromptSuite
-from cole_voice_lab.recording_contracts import RecordingHistoryPage, ServiceRequest
+from cole_voice_lab.recording_contracts import CatalogSnapshot, RecordingHistoryPage, ServiceRequest
 from cole_voice_lab.recording_index import RecordingIndex, RecordingIndexError
 from cole_voice_lab.recording_service import RecordingCancellation, RecordingWorkspaceBackend
 
@@ -112,7 +112,7 @@ def test_filter_requires_exact_current_catalog_content(
             )
         }
     )
-    index.register_catalog(changed)
+    index.register_catalog(CatalogSnapshot.embedded(changed))
     assert index.history(digest, prompt_id=prompt.prompt_id).takes
     assert not index.history(canonical_sha256(changed), prompt_id=prompt.prompt_id).takes
     assert not index.history(digest, prompt_id=catalog.prompts[5].prompt_id).takes

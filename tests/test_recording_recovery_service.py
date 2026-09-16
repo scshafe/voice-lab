@@ -14,6 +14,7 @@ from test_recording_takes import rig as rig
 
 from cole_voice_lab.canonical import sha256_file
 from cole_voice_lab.recording_contracts import (
+    CatalogSnapshot,
     RecordingError,
     RecordingRecoveryInventoryPage,
     RecordingRecoveryPage,
@@ -37,7 +38,7 @@ from cole_voice_lab.recording_service import (
 @pytest.fixture
 def recovery_index(rig: Rig) -> Iterator[RecordingIndex]:
     with RecordingIndex(rig.layout, subject_id="synthetic-subject") as index:
-        index.register_catalog(rig.store.get_group(rig.group_id).catalog)
+        index.register_catalog(CatalogSnapshot.embedded(rig.store.get_group(rig.group_id).catalog))
         index.begin_recovery_scan(scan_generation="synthetic-recovery-scan")
         previous = rig.store.projection_hook
         rig.store.projection_hook = index.update_take

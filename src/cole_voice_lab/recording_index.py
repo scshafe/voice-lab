@@ -3,7 +3,14 @@
 @canonical recording_index -- SQLite serves bounded coherent metadata snapshots;
 immutable take/legacy evidence owns decisions, source identities and raw authority.
 Related: recording_takes.py, recording_library.py, recording_index_backfill.py,
-sqlite_migrations.py (the shared user_version runner behind the index's schema stages).
+sqlite_migrations.py (the shared user_version runner behind the index's schema stages),
+corpus_store.py (resolve_group_catalog: the exact catalog, with prompt aliases, a take's
+group binds).
+
+Coverage is alias-aware: a retained take counts for a catalog's current prompt when its
+recorded prompt digest is that prompt's digest or an alias the registered catalog snapshot
+accepts (keep-recordings revisions of the same prompt id). History counts, prompt summaries,
+Save & Next, legacy publication and take invalidation all match through that one mapping.
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Literal, cast
@@ -33,18 +41,22 @@ from .canonical import (
     file_identity,
     require_private_metadata,
 )
+from .corpus_store import GroupCatalogCache, GroupCatalogKey
 from .errors import ContractError, SecurityError
 from .models import Prompt, PromptSuite, StableId
 from .paths import AssetLayout, validate_relative_path
 from .recording_contracts import (
     MAX_HISTORY_PAGE_SIZE,
     AnalysisState,
+    CatalogSnapshot,
     DecisionState,
+    PromptAlias,
     RecordingError,
     RecordingGroupSummary,
     RecordingHistoryEntry,
     RecordingHistoryPage,
     RecordingNavigationResult,
+    RecordingPromptNotCountedError,
     RecordingPromptSummary,
     RecordingRecoveryFinding,
     RecordingRecoveryInventoryPage,
@@ -53,6 +65,7 @@ from .recording_contracts import (
     RecordingRecoveryWork,
     RecordingSelection,
     RecordingTake,
+    keep_recordings_identity,
 )
 from .sqlite_migrations import (
     SqliteMigrationError,
@@ -67,8 +80,15 @@ from .sqlite_migrations import (
 _MIGRATION_NAME = "20260911070000_create_recording_library_projection.sql"
 _ANALYSIS_MIGRATION_NAME = "20260911080000_create_recording_analysis_queue.sql"
 _RECOVERY_MIGRATION_NAME = "20260913090000_create_recording_recovery_inventory.sql"
-# Index schema versions 1..3 in application order; the corpus store versions its own file.
-_INDEX_MIGRATION_NAMES = (_MIGRATION_NAME, _ANALYSIS_MIGRATION_NAME, _RECOVERY_MIGRATION_NAME)
+_ALIAS_MIGRATION_NAME = "20260916110000_create_recording_prompt_alias_projection.sql"
+# Index schema versions 1..4 in application order; the corpus store versions its own file.
+_INDEX_MIGRATION_NAMES = (
+    _MIGRATION_NAME,
+    _ANALYSIS_MIGRATION_NAME,
+    _RECOVERY_MIGRATION_NAME,
+    _ALIAS_MIGRATION_NAME,
+)
+_INDEX_SCHEMA_VERSION = len(_INDEX_MIGRATION_NAMES)
 _DATABASE_NAME = "recording-library.sqlite3"
 _MAX_CATALOG_PROMPTS = 10_000
 # Leaves space for the response envelope/correlation IDs below the 1 MiB frame.
@@ -81,11 +101,78 @@ _AliasKind = Literal[
     "native-original", "legacy-tmp", "legacy-raw", "rejected", "package-tmp", "package-raw"
 ]
 _RETAINED = "recording_take_decision = 'kept' AND recording_take_analysis != 'invalid'"
+# SQL name of _alias_identity, registered on the index connection.
+_ALIAS_IDENTITY_FUNCTION = "recording_alias_identity"
+# The keep-recordings rule in SQL: alias rows ``a`` whose recorded prompt ``rec`` keeps the
+# current prompt ``cur``'s keep_recordings_identity (the rule CatalogSnapshot.current_prompt_for
+# applies), evaluated by that one Python function. A recorded prompt that was never indexed
+# has no ``rec`` row and counts nowhere yet.
+_COUNTED_ALIASES = (
+    "recording_prompt_aliases a JOIN recording_prompts cur "
+    "ON cur.recording_prompt_sha256=a.recording_prompt_sha256 JOIN recording_prompts rec "
+    "ON rec.recording_prompt_sha256=a.recording_accepted_prompt_sha256 "
+    f"AND {_ALIAS_IDENTITY_FUNCTION}(rec.recording_prompt_json)="
+    f"{_ALIAS_IDENTITY_FUNCTION}(cur.recording_prompt_json) "
+)
+# Maps every recorded prompt digest one catalog counts to the current prompt it counts for:
+# a current digest to itself, an accepted alias to its prompt through _COUNTED_ALIASES.
+# Recorded digests are distinct within a catalog (registration and the audit enforce it), so
+# joining takes on them never repeats a take. Prefix exactly one statement with it and bind
+# RecordingIndex._accepted(catalog) ahead of that statement's own parameters.
+_ACCEPTED_PROMPTS = (
+    "WITH accepted(current_prompt_sha256, recorded_prompt_sha256) AS MATERIALIZED ("
+    "SELECT recording_prompt_sha256, recording_prompt_sha256 FROM recording_catalog_prompts "
+    "WHERE recording_catalog_sha256=? AND recording_subject_id=? UNION ALL "
+    "SELECT a.recording_prompt_sha256, a.recording_accepted_prompt_sha256 FROM "
+    + _COUNTED_ALIASES
+    + "WHERE a.recording_catalog_sha256=? AND a.recording_subject_id=?) "
+)
+_PROMPT_ALIASES: TypeAdapter[tuple[PromptAlias, ...]] = TypeAdapter(tuple[PromptAlias, ...])
 
 
 def is_retained(decision: DecisionState, analysis: AnalysisState) -> bool:
     """The coverage predicate of _RETAINED for readers that never open this index."""
     return decision == "kept" and analysis != "invalid"
+
+
+@lru_cache(maxsize=4096)
+def _alias_identity(prompt_json: str) -> str:
+    """``keep_recordings_identity`` of an indexed prompt row's canonical JSON.
+
+    Registered on the index connection as ``recording_alias_identity`` so SQL and Python
+    apply the one rule. Raises ``ValidationError`` for a row that is not a valid prompt
+    (inside SQL, the statement fails and the index reports unknown history).
+    """
+    return keep_recordings_identity(Prompt.model_validate_json(prompt_json))
+
+
+def _alias_set_json(aliases: Sequence[PromptAlias]) -> str:
+    """Canonical JSON of one snapshot's prompt aliases, the root its alias rows audit against."""
+    return canonical_json_bytes([alias.model_dump(mode="json") for alias in aliases]).decode()
+
+
+@dataclass(frozen=True, slots=True)
+class _AdmittedPrompts:
+    """The recorded prompts one indexed catalog counts, for evidence not yet projected."""
+
+    current: frozenset[str]
+    # Accepted alias digest -> (its current prompt's digest, that prompt's alias identity).
+    aliases: dict[str, tuple[str, str]]
+
+    def counted(self, prompt_sha256: str, recorded: Prompt | str) -> str | None:
+        """The current digest a recording of ``recorded`` (a prompt, or its canonical JSON)
+        with digest ``prompt_sha256`` counts for, or ``None`` (the _COUNTED_ALIASES rule)."""
+        if prompt_sha256 in self.current:
+            return prompt_sha256
+        target = self.aliases.get(prompt_sha256)
+        if target is None:
+            return None
+        identity = (
+            keep_recordings_identity(recorded)
+            if isinstance(recorded, Prompt)
+            else _alias_identity(recorded)
+        )
+        return target[0] if identity == target[1] else None
 
 
 class RecordingIndexError(ContractError):
@@ -321,8 +408,10 @@ def recording_index_migration_resources() -> tuple[tuple[str, str, int], ...]:
 def recording_index_migration(direction: Literal["up", "down"] = "up", *, version: int = 1) -> str:
     """Read the single timestamped schema source (or its packaged build resource).
 
+    Version 4 is the prompt-alias projection (recording_catalog_alias_sets and
+    recording_prompt_aliases).
     Raises: ``RecordingIndexError`` for a direction other than up/down, a version outside
-    1..3, or when neither a packaged nor a checkout copy of the file exists;
+    1..4, or when neither a packaged nor a checkout copy of the file exists;
     ``SqliteMigrationError`` (``SQLITE_MIGRATIONS.MALFORMED``) when the file is not UTF-8 or
     its markers are absent or out of order; ``SecurityError`` when the resolved path is a
     symlink or not a regular file. ``RecordingIndex.__init__`` wraps the malformed case as
@@ -330,7 +419,7 @@ def recording_index_migration(direction: Literal["up", "down"] = "up", *, versio
     """
     if direction not in ("up", "down"):
         raise RecordingIndexError("migration direction must be up or down")
-    if version not in (1, 2, 3):
+    if not 1 <= version <= _INDEX_SCHEMA_VERSION:
         raise RecordingIndexError("unsupported recording migration version")
     return migration_sql(
         _INDEX_MIGRATION_NAMES[version - 1], direction, resolve=_migration_resource
@@ -389,6 +478,8 @@ class RecordingIndex:
         self.recovery_wake = threading.Event()
         self._closed = False
         self._connection: sqlite3.Connection | None = None
+        # Group catalogs resolved for take projection; files are read outside SQLite locks.
+        self._group_catalogs = GroupCatalogCache(self.layout)
         try:
             for path in (self.layout.root, self.layout.directory("provenance")):
                 descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -424,6 +515,9 @@ class RecordingIndex:
                     check_same_thread=False,
                 )
                 self._connection.row_factory = sqlite3.Row
+                self._connection.create_function(
+                    _ALIAS_IDENTITY_FUNCTION, 1, _alias_identity, deterministic=True
+                )
                 self._check_paths()
                 self._connection.execute("PRAGMA foreign_keys = ON")
                 self._connection.execute("PRAGMA trusted_schema = OFF")
@@ -433,7 +527,7 @@ class RecordingIndex:
                 self._connection.execute("PRAGMA temp_store = MEMORY")
                 self._connection.execute("PRAGMA wal_autocheckpoint = 256")
                 version = current_user_version(self._connection)
-                if version not in (0, 1, 2, 3):
+                if not 0 <= version <= _INDEX_SCHEMA_VERSION:
                     raise RecordingIndexError(
                         f"unsupported recording index schema version: {version}"
                     )
@@ -466,6 +560,13 @@ class RecordingIndex:
                         self._connection,
                         version=3,
                         up_sql=recording_index_migration(version=3),
+                        directory_fd=directory_fd,
+                    )
+                if version < 4:
+                    apply_migration(
+                        self._connection,
+                        version=4,
+                        up_sql=recording_index_migration(version=4),
                         directory_fd=directory_fd,
                     )
                 self._check_paths()
@@ -604,6 +705,40 @@ class RecordingIndex:
                 for p, r in zip(suite.prompts, prompts, strict=True)
             ):
                 raise RecordingIndexError("indexed prompt metadata changed; rebuild required")
+            self._audit_prompt_aliases(
+                row["recording_catalog_sha256"], row["recording_subject_id"], suite
+            )
+
+    def _audit_prompt_aliases(
+        self, catalog_sha256: str, subject_id: str, suite: PromptSuite
+    ) -> None:
+        """Re-derive one catalog's alias rows from its registered alias set, as prompts are."""
+        stored = self.connection.execute(
+            "SELECT recording_alias_set_json FROM recording_catalog_alias_sets WHERE "
+            "recording_catalog_sha256=? AND recording_subject_id=?",
+            (catalog_sha256, subject_id),
+        ).fetchone()
+        if stored is None:
+            raise RecordingIndexError("indexed catalog has no alias set; rebuild required")
+        try:
+            aliases = _PROMPT_ALIASES.validate_json(stored[0])
+            if aliases:
+                # The contract rules: sorted, unique, owned by a current prompt, never current.
+                CatalogSnapshot(suite=suite, catalog_sha256=catalog_sha256, prompt_aliases=aliases)
+        except ValidationError as error:
+            raise RecordingIndexError(
+                "indexed prompt aliases are invalid; rebuild required"
+            ) from error
+        rows = self.connection.execute(
+            "SELECT recording_prompt_sha256, recording_accepted_prompt_sha256 FROM "
+            "recording_prompt_aliases WHERE recording_catalog_sha256=? AND recording_subject_id=? "
+            "ORDER BY recording_prompt_sha256, recording_accepted_prompt_sha256",
+            (catalog_sha256, subject_id),
+        ).fetchall()
+        if _alias_set_json(aliases) != stored[0] or [(r[0], r[1]) for r in rows] != [
+            (alias.prompt_sha256, alias.accepted_prompt_sha256) for alias in aliases
+        ]:
+            raise RecordingIndexError("indexed prompt aliases changed; rebuild required")
 
     @contextmanager
     def _transaction(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
@@ -730,20 +865,33 @@ class RecordingIndex:
         return cast(int, row[0])
 
     def _register_catalog(
-        self, connection: sqlite3.Connection, suite: PromptSuite, subject_id: str
+        self, connection: sqlite3.Connection, snapshot: CatalogSnapshot, subject_id: str
     ) -> str:
-        digest = canonical_sha256(suite)
+        suite = snapshot.suite
+        # CatalogSnapshot validation already bound catalog_sha256 to canonical_sha256(suite).
+        digest = snapshot.catalog_sha256
         if len(suite.prompts) > _MAX_CATALOG_PROMPTS:
             raise RecordingIndexError("catalog exceeds the bounded 10000-prompt metadata contract")
         row = connection.execute(
-            "SELECT recording_catalog_json FROM recording_catalogs WHERE "
-            "recording_catalog_sha256=? AND recording_subject_id=?",
+            "SELECT c.recording_catalog_json, s.recording_alias_set_json FROM recording_catalogs c "
+            "LEFT JOIN recording_catalog_alias_sets s "
+            "USING(recording_catalog_sha256, recording_subject_id) WHERE "
+            "c.recording_catalog_sha256=? AND c.recording_subject_id=?",
             (digest, subject_id),
         ).fetchone()
         payload = canonical_json_bytes(suite).decode()
+        aliases = _alias_set_json(snapshot.prompt_aliases)
         if row is not None:
             if row[0] != payload:
                 raise RecordingIndexError("indexed catalog changed under its identity")
+            if row[1] is None:
+                raise RecordingIndexError("indexed catalog has no alias set; rebuild required")
+            if row[1] != aliases:
+                # One suite digest bound to two alias sets (an embedded catalog and a store
+                # snapshot of the same suite) would make coverage depend on registration order.
+                raise RecordingIndexError(
+                    "indexed catalog accepts different prompt aliases under its identity"
+                )
             return digest
         connection.execute(
             "INSERT INTO recording_catalogs VALUES (?, ?, ?, 'building')",
@@ -759,8 +907,67 @@ class RecordingIndex:
                 "INSERT INTO recording_catalog_prompts VALUES (?, ?, ?, ?)",
                 (digest, subject_id, prompt_digest, ordinal),
             )
+        connection.execute(
+            "INSERT INTO recording_catalog_alias_sets VALUES (?, ?, ?)",
+            (digest, subject_id, aliases),
+        )
+        connection.executemany(
+            "INSERT INTO recording_prompt_aliases VALUES (?, ?, ?, ?)",
+            (
+                (digest, subject_id, alias.prompt_sha256, alias.accepted_prompt_sha256)
+                for alias in snapshot.prompt_aliases
+            ),
+        )
         self._bump(connection)
         return digest
+
+    def _accepted(self, catalog_sha256: str) -> tuple[str, str, str, str]:
+        """The leading bindings of a statement prefixed with ``_ACCEPTED_PROMPTS``."""
+        return (catalog_sha256, self.subject_id, catalog_sha256, self.subject_id)
+
+    def _admitted_prompts(
+        self,
+        connection: sqlite3.Connection,
+        catalog_sha256: str,
+        *,
+        recorded: str | None = None,
+    ) -> _AdmittedPrompts:
+        """One catalog's current digests and aliases, for prompts that may not be indexed yet.
+
+        ``recorded`` narrows both lookups to that one recorded digest. The alias rule itself
+        is applied by ``_AdmittedPrompts.counted``.
+        """
+        narrow = () if recorded is None else (recorded,)
+        current = frozenset(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT recording_prompt_sha256 FROM recording_catalog_prompts WHERE "
+                "recording_catalog_sha256=? AND recording_subject_id=?"
+                + ("" if recorded is None else " AND recording_prompt_sha256=?"),
+                (catalog_sha256, self.subject_id, *narrow),
+            )
+        )
+        aliases = {
+            str(row[0]): (str(row[1]), _alias_identity(str(row[2])))
+            for row in connection.execute(
+                "SELECT a.recording_accepted_prompt_sha256, a.recording_prompt_sha256, "
+                "cur.recording_prompt_json FROM recording_prompt_aliases a "
+                "JOIN recording_prompts cur "
+                "ON cur.recording_prompt_sha256=a.recording_prompt_sha256 WHERE "
+                "a.recording_catalog_sha256=? AND a.recording_subject_id=?"
+                + ("" if recorded is None else " AND a.recording_accepted_prompt_sha256=?"),
+                (catalog_sha256, self.subject_id, *narrow),
+            )
+        }
+        return _AdmittedPrompts(current, aliases)
+
+    def _counted_prompt(
+        self, connection: sqlite3.Connection, catalog_sha256: str, prompt: Prompt
+    ) -> str | None:
+        """The current prompt digest a take recorded against ``prompt`` counts for, if any."""
+        digest = canonical_sha256(prompt)
+        admitted = self._admitted_prompts(connection, catalog_sha256, recorded=digest)
+        return admitted.counted(digest, prompt)
 
     @property
     def instance_id(self) -> str:
@@ -800,10 +1007,20 @@ class RecordingIndex:
                 )
             )
 
-    def register_catalog(self, suite: PromptSuite) -> str:
-        """Bind exact immutable prompts once; new catalogs start explicitly building."""
+    def register_catalog(self, snapshot: CatalogSnapshot) -> str:
+        """Bind one exact catalog version once; new catalogs start explicitly building.
+
+        Params: ``snapshot`` is the catalog to index: ``CatalogSnapshot.embedded(suite)`` for an
+        embedded or built-in suite (no aliases), or a corpus-store snapshot whose prompt
+        aliases then count for coverage in this catalog.
+        Returns: the catalog's ``catalog_sha256``.
+        Raises: ``RecordingIndexError`` (``RECORDING.HISTORY_UNKNOWN``) when the suite has more
+        than 10,000 prompts, when this digest is already indexed with a different suite or a
+        different alias set ("... under its identity"), when the index is closed, or when the
+        query fails.
+        """
         with self._transaction(write=True) as connection:
-            return self._register_catalog(connection, suite, self.subject_id)
+            return self._register_catalog(connection, snapshot, self.subject_id)
 
     def _require_catalog(self, connection: sqlite3.Connection, catalog_sha256: str) -> _IndexState:
         row = connection.execute(
@@ -862,9 +1079,14 @@ class RecordingIndex:
     def invalidate_take(self, take_id: str, error: RecordingError) -> int:
         """Mark all matching catalog projections Unknown after a selected source changes.
 
-        This does not invent a durable invalid-analysis decision. A later committed
-        analysis/recovery revision goes through update_take; reconciliation clears
-        its named unknown record and explicitly restores completeness.
+        Matching catalogs are every indexed catalog the take counts in: its recorded prompt
+        digest is current there or a same-id prompt alias. This does not invent a durable
+        invalid-analysis decision. A later committed analysis/recovery revision goes through
+        update_take; reconciliation clears its named unknown record and explicitly restores
+        completeness.
+        Returns: the index revision after the change.
+        Raises: ``RecordingIndexError`` (``RECORDING.HISTORY_UNKNOWN``) for an unindexed take
+        or a failed query.
         """
         with self._transaction(write=True) as connection:
             self._invalidate_take(connection, take_id, error)
@@ -896,10 +1118,14 @@ class RecordingIndex:
         ).fetchone()
         if row is None:
             raise RecordingIndexError("cannot invalidate an unindexed take")
+        # Every catalog the take counts in: its digest is current there or a counted alias.
         catalogs = connection.execute(
             "SELECT recording_catalog_sha256 FROM recording_catalog_prompts "
-            "WHERE recording_prompt_sha256=? AND recording_subject_id=?",
-            (row[0], self.subject_id),
+            "WHERE recording_prompt_sha256=? AND recording_subject_id=? "
+            "UNION SELECT a.recording_catalog_sha256 FROM "
+            + _COUNTED_ALIASES
+            + "WHERE a.recording_accepted_prompt_sha256=? AND a.recording_subject_id=?",
+            (row[0], self.subject_id, row[0], self.subject_id),
         ).fetchall()
         for catalog in catalogs:
             connection.execute(
@@ -1013,10 +1239,21 @@ class RecordingIndex:
         )
         return True
 
-    def _update_take(self, connection: sqlite3.Connection, take: RecordingTake) -> bool:
+    def _take_catalog(self, take: RecordingTake) -> CatalogSnapshot:
+        """Check the take's subject, then resolve its group's exact catalog (cached).
+
+        Called before the index lock is taken: a snapshot file is never read under it.
+        Raises: ``RecordingIndexError`` for another subject's take;
+        ``CorpusSnapshotSecurityError`` for a missing or altered referenced snapshot.
+        """
         if take.reservation.group.subject_id != self.subject_id:
             raise RecordingIndexError("take projection belongs to another subject")
-        self._register_catalog(connection, take.reservation.group.catalog, self.subject_id)
+        return self._group_catalogs.resolve(take.reservation.group)
+
+    def _update_take(
+        self, connection: sqlite3.Connection, take: RecordingTake, catalog: CatalogSnapshot
+    ) -> bool:
+        self._register_catalog(connection, catalog, self.subject_id)
         changed = self._project(
             connection,
             history_entry_for_take(take),
@@ -1035,9 +1272,22 @@ class RecordingIndex:
         return changed
 
     def update_take(self, take: RecordingTake, *, current_session_reservation: bool = False) -> int:
-        """Project a committed canonical take for TakeStore's post-sync hook."""
+        """Project a committed canonical take for TakeStore's post-sync hook.
+
+        The take's group catalog (embedded, or the snapshot its reference seals) is resolved
+        before the index lock and registered with its prompt aliases if it is new.
+        Params: ``take`` is a committed head; ``current_session_reservation`` protects an
+        unsealed reservation of this process in the recovery inventory.
+        Returns: the index revision after the projection.
+        Raises: ``RecordingIndexError`` (``RECORDING.HISTORY_UNKNOWN``) for another subject's
+        take, a catalog conflicting with its indexed identity, a revision that changes
+        immutable take identity, or a failed query; ``CorpusSnapshotSecurityError`` (a
+        ``SecurityError``; ``CORPUS.SNAPSHOT_MISSING`` / ``CORPUS.SNAPSHOT_MISMATCH``) before
+        any index write when the take's group references a missing or altered snapshot.
+        """
+        catalog = self._take_catalog(take)
         with self._transaction(write=True) as connection:
-            changed = self._update_take(connection, take)
+            changed = self._update_take(connection, take, catalog)
             self._project_recovery_take(connection, take, current_session_reservation)
             return self._bump(connection) if changed else self._revision(connection)
 
@@ -1095,18 +1345,34 @@ class RecordingIndex:
     def review_aliases(
         self, catalog_sha256: str, take_id: str
     ) -> tuple[RecordingHistoryEntry, tuple[tuple[str, str, _AliasKind], ...]]:
-        """Return one catalog-bound metadata row and bounded aliases; no source bytes are read."""
+        """Return one catalog-bound metadata row and bounded aliases; no source bytes are read.
+
+        The row counts for the catalog directly or through an accepted prompt alias; its entry
+        keeps the recorded prompt. (The returned aliases are source-file aliases.)
+        Raises: ``RecordingIndexError`` when the catalog is not indexed, the take is not
+        indexed for this subject, or it has more than 32 source aliases;
+        ``RecordingPromptNotCountedError`` (a ``ContractError``) when the take is indexed but
+        its recorded prompt counts for no prompt of the catalog (changed without keeping
+        recordings).
+        """
         with self._transaction() as connection:
             self._require_catalog(connection, catalog_sha256)
             row = connection.execute(
-                "SELECT t.* FROM recording_takes t JOIN recording_catalog_prompts cp ON "
-                "t.recording_prompt_sha256=cp.recording_prompt_sha256 AND "
-                "t.recording_subject_id=cp.recording_subject_id WHERE "
-                "cp.recording_catalog_sha256=? AND cp.recording_subject_id=? "
-                "AND t.recording_take_id=?",
-                (catalog_sha256, self.subject_id, take_id),
+                _ACCEPTED_PROMPTS + "SELECT t.* FROM recording_takes t JOIN accepted a ON "
+                "t.recording_prompt_sha256=a.recorded_prompt_sha256 WHERE "
+                "t.recording_subject_id=? AND t.recording_take_id=?",
+                (*self._accepted(catalog_sha256), self.subject_id, take_id),
             ).fetchone()
             if row is None:
+                other = connection.execute(
+                    "SELECT * FROM recording_takes WHERE recording_subject_id=? AND "
+                    "recording_take_id=?",
+                    (self.subject_id, take_id),
+                ).fetchone()
+                if other is not None:
+                    raise RecordingPromptNotCountedError(
+                        take_id, self._decode(other).prompt.prompt_id
+                    )
                 raise RecordingIndexError("selected take is absent from this exact catalog")
             aliases = connection.execute(
                 "SELECT recording_alias_path,recording_alias_sha256,recording_alias_kind "
@@ -1125,12 +1391,18 @@ class RecordingIndex:
         takes: Sequence[RecordingTake],
         aliases: Sequence[tuple[str, str, str, _AliasKind]],
     ) -> int:
-        """Publish a bounded complete package projection in one SQLite transaction."""
+        """Publish a bounded complete package projection in one SQLite transaction.
+
+        Raises: ``RecordingIndexError`` beyond 10,000 takes or 20,000 aliases and as
+        ``update_take``; ``CorpusSnapshotSecurityError`` before any write when a take's group
+        references a missing or altered snapshot.
+        """
         if len(takes) > 10_000 or len(aliases) > 20_000:
             raise RecordingIndexError("package alias projection exceeds its bounded contract")
+        catalogs = [self._take_catalog(take) for take in takes]
         with self._transaction(write=True) as connection:
-            for take in takes:
-                self._update_take(connection, take)
+            for take, catalog in zip(takes, catalogs, strict=True):
+                self._update_take(connection, take, catalog)
             for take_id, path, digest, kind in aliases:
                 self._alias(connection, take_id, path, digest, kind)
             return self._bump(connection)
@@ -1152,9 +1424,16 @@ class RecordingIndex:
         )
 
     def latest_retained_take(self, catalog_sha256: str, prompt: Prompt) -> str | None:
-        """Newest retained take of one exact prompt in any group; None unless coverage is complete.
+        """Newest retained take covering one current prompt; None unless coverage is complete.
 
-        Ordered by capture time, unknown dates last, then projection order. Metadata only.
+        A take covers ``prompt`` when it was recorded against it or against an earlier
+        revision the catalog's prompt aliases accept. Ordered by capture time, unknown dates
+        last, then projection order, in any group. Metadata only.
+        Params: ``catalog_sha256`` is an indexed catalog; ``prompt`` one of its current prompts.
+        Returns: the take id, or ``None`` when nothing retained covers it or the catalog's
+        metadata is not complete.
+        Raises: ``RecordingIndexError`` when the catalog is not indexed, ``prompt`` is not one
+        of its current prompts, or the query fails.
         """
         prompt_sha256 = canonical_sha256(prompt)
         with self._transaction() as connection:
@@ -1170,11 +1449,12 @@ class RecordingIndex:
             ):
                 raise RecordingIndexError("selected prompt is absent from the exact catalog")
             row = connection.execute(
-                "SELECT * FROM recording_takes WHERE recording_subject_id=? AND "
-                "recording_prompt_sha256=? AND "
+                _ACCEPTED_PROMPTS + "SELECT t.* FROM recording_takes t JOIN accepted a ON "
+                "t.recording_prompt_sha256=a.recorded_prompt_sha256 WHERE "
+                "t.recording_subject_id=? AND a.current_prompt_sha256=? AND "
                 + _RETAINED
-                + " ORDER BY recording_take_recorded_at DESC NULLS LAST, rowid DESC LIMIT 1",
-                (self.subject_id, prompt_sha256),
+                + " ORDER BY t.recording_take_recorded_at DESC NULLS LAST, t.rowid DESC LIMIT 1",
+                (*self._accepted(catalog_sha256), self.subject_id, prompt_sha256),
             ).fetchone()
             return None if row is None else self._decode(row).take_id
 
@@ -1185,7 +1465,19 @@ class RecordingIndex:
         after_prompt_id: str | None = None,
         proposed_take: RecordingTake | None = None,
     ) -> RecordingNavigationResult:
-        """Search canonical order with one wrap; only complete exact metadata can navigate."""
+        """Search canonical order with one wrap; only complete exact metadata can navigate.
+
+        A prompt is covered when a retained take was recorded against it or against a digest
+        its prompt aliases accept, so Save & Next skips alias-covered prompts. A proposed take
+        (Save's overlay) counts for the prompt it covers in this catalog.
+        Params: ``catalog_sha256`` is an indexed catalog; ``after_prompt_id`` one of its prompt
+        ids to search after; ``proposed_take`` a draft about to be kept in this catalog.
+        Returns: the next uncovered prompt, or a complete result when every prompt is covered.
+        Raises: ``RecordingIndexError`` when the catalog is not indexed or its metadata is not
+        complete ("Continue Missing requires complete catalog metadata"), when the proposed
+        take belongs to another catalog or subject, when ``after_prompt_id`` is not in the
+        catalog, or when the query fails.
+        """
         with self._transaction() as connection:
             if self._require_catalog(connection, catalog_sha256) != "complete":
                 raise RecordingIndexError("Continue Missing requires complete catalog metadata")
@@ -1201,20 +1493,33 @@ class RecordingIndex:
                         "proposed navigation take belongs to another catalog/subject"
                     )
                 overlay_id = proposed_take.reservation.take_id
-                overlay_prompt = canonical_sha256(proposed_take.reservation.prompt)
+                overlay_prompt = self._counted_prompt(
+                    connection, catalog_sha256, proposed_take.reservation.prompt
+                )
                 overlay_covered = proposed_take.satisfies_coverage
+            # One uncorrelated covered set: a per-prompt EXISTS over the alias mapping lets
+            # SQLite scan every take of the subject once per catalog prompt.
             rows = connection.execute(
+                _ACCEPTED_PROMPTS + ", covered(current_prompt_sha256) AS MATERIALIZED ("
+                "SELECT DISTINCT a.current_prompt_sha256 FROM accepted a "
+                "JOIN recording_takes t ON t.recording_prompt_sha256=a.recorded_prompt_sha256 "
+                "WHERE t.recording_subject_id=? AND "
+                + _RETAINED
+                + " AND (? IS NULL OR t.recording_take_id != ?)) "
                 "SELECT cp.recording_prompt_ordinal, p.recording_prompt_id, "
                 "p.recording_prompt_sha256, p.recording_prompt_json, "
-                "EXISTS(SELECT 1 FROM recording_takes t WHERE "
-                "t.recording_subject_id=cp.recording_subject_id AND "
-                "t.recording_prompt_sha256=cp.recording_prompt_sha256 AND "
-                + _RETAINED
-                + " AND (? IS NULL OR t.recording_take_id != ?)) AS covered "
-                "FROM recording_catalog_prompts cp JOIN recording_prompts p "
+                "cp.recording_prompt_sha256 IN (SELECT current_prompt_sha256 FROM covered) "
+                "AS covered FROM recording_catalog_prompts cp JOIN recording_prompts p "
                 "USING(recording_prompt_sha256) WHERE cp.recording_catalog_sha256=? AND "
                 "cp.recording_subject_id=? ORDER BY cp.recording_prompt_ordinal",
-                (overlay_id, overlay_id, catalog_sha256, self.subject_id),
+                (
+                    *self._accepted(catalog_sha256),
+                    self.subject_id,
+                    overlay_id,
+                    overlay_id,
+                    catalog_sha256,
+                    self.subject_id,
+                ),
             ).fetchall()
             start = -1
             if after_prompt_id is not None:
@@ -1327,7 +1632,17 @@ class RecordingIndex:
         group_cursor: str | None = None,
         page_size: int = 50,
     ) -> RecordingHistoryPage:
-        """Read bounded takes, prompt rows, groups and totals from the same SQLite snapshot."""
+        """Read bounded takes, prompt rows, groups and totals from the same SQLite snapshot.
+
+        Every count matches through the catalog's prompt aliases: a take recorded against an
+        accepted earlier digest is listed and counted for its current prompt (its entry keeps
+        the recorded prompt), and a current prompt is covered at most once however many of
+        its digests have retained takes, so the missing count is never negative.
+        Raises: ``RecordingIndexError`` for a page size outside [1, 200], an unknown catalog or
+        prompt id, a stale or foreign cursor (``RECORDING.STALE_REVISION``), coverage that
+        exceeds the catalog (rebuild required), a page that cannot fit the control frame, or
+        a failed query.
+        """
         if isinstance(page_size, bool) or not 1 <= page_size <= MAX_HISTORY_PAGE_SIZE:
             raise RecordingIndexError("history page size must be an integer in [1, 200]")
         with self._transaction() as connection:
@@ -1360,30 +1675,42 @@ class RecordingIndex:
                 )
             ]
             bindings = (catalog_sha256, self.subject_id)
+            accepted = self._accepted(catalog_sha256)
             join = (
-                " FROM recording_takes t JOIN recording_catalog_prompts cp ON "
-                "t.recording_prompt_sha256=cp.recording_prompt_sha256 AND "
-                "t.recording_subject_id=cp.recording_subject_id WHERE "
-                "cp.recording_catalog_sha256=? AND cp.recording_subject_id=? "
+                " FROM recording_takes t JOIN accepted a ON "
+                "t.recording_prompt_sha256=a.recorded_prompt_sha256 WHERE "
+                "t.recording_subject_id=? "
             )
-            take_count = connection.execute("SELECT count(*)" + join, bindings).fetchone()[0]
+            join_bindings = (*accepted, self.subject_id)
+            take_count = connection.execute(
+                _ACCEPTED_PROMPTS + "SELECT count(*)" + join, join_bindings
+            ).fetchone()[0]
             prompt_count = connection.execute(
                 "SELECT count(*) FROM recording_catalog_prompts WHERE "
                 "recording_catalog_sha256=? AND recording_subject_id=?",
                 bindings,
             ).fetchone()[0]
             covered_count = connection.execute(
-                "SELECT count(DISTINCT t.recording_prompt_sha256)" + join + "AND " + _RETAINED,
-                bindings,
+                _ACCEPTED_PROMPTS
+                + "SELECT count(DISTINCT a.current_prompt_sha256)"
+                + join
+                + "AND "
+                + _RETAINED,
+                join_bindings,
             ).fetchone()[0]
-            take_filter = (
-                "" if selected_prompt_sha256 is None else "AND t.recording_prompt_sha256=? "
-            )
+            if covered_count > prompt_count:
+                raise RecordingIndexError(
+                    "indexed coverage exceeds its catalog prompts; rebuild required"
+                )
+            take_filter = "" if selected_prompt_sha256 is None else "AND a.current_prompt_sha256=? "
             take_bindings = (
-                bindings if selected_prompt_sha256 is None else (*bindings, selected_prompt_sha256)
+                join_bindings
+                if selected_prompt_sha256 is None
+                else (*join_bindings, selected_prompt_sha256)
             )
             rows = connection.execute(
-                "SELECT t.rowid AS recording_page_position, t.*"
+                _ACCEPTED_PROMPTS
+                + "SELECT t.rowid AS recording_page_position, t.*"
                 + join
                 + take_filter
                 + "AND t.rowid > ? ORDER BY t.rowid LIMIT ?",
@@ -1408,51 +1735,48 @@ class RecordingIndex:
                         }
                     )
                 )
+            # Each current prompt joins its own digest and every alias it accepts.
             prompt_rows = connection.execute(
-                "SELECT p.recording_prompt_id, p.recording_prompt_sha256, "
+                _ACCEPTED_PROMPTS + "SELECT p.recording_prompt_id, p.recording_prompt_sha256, "
                 "cp.recording_prompt_ordinal, count(t.recording_take_id) AS take_count, "
                 "sum(CASE WHEN " + _RETAINED + " THEN 1 ELSE 0 END) AS kept_count "
                 "FROM recording_catalog_prompts cp JOIN recording_prompts p "
                 "USING(recording_prompt_sha256) "
+                "JOIN accepted a ON a.current_prompt_sha256=cp.recording_prompt_sha256 "
                 "LEFT JOIN recording_takes t ON "
-                "t.recording_prompt_sha256=cp.recording_prompt_sha256 AND "
+                "t.recording_prompt_sha256=a.recorded_prompt_sha256 AND "
                 "t.recording_subject_id=cp.recording_subject_id "
                 "WHERE cp.recording_catalog_sha256=? AND cp.recording_subject_id=? "
                 "AND cp.recording_prompt_ordinal > ? GROUP BY cp.recording_prompt_ordinal "
                 "ORDER BY cp.recording_prompt_ordinal LIMIT ?",
-                (*bindings, positions[1], page_size + 1),
+                (*accepted, *bindings, positions[1], page_size + 1),
             ).fetchall()
-            prompts = [
-                self._prompt_summary(connection, row, completeness, catalog_sha256)
-                for row in prompt_rows[:page_size]
-            ]
+            prompts = self._prompt_summaries(
+                connection, prompt_rows[:page_size], completeness, catalog_sha256
+            )
             group_query = (
                 " FROM recording_groups g WHERE g.recording_subject_id=? AND (EXISTS(SELECT 1 "
-                "FROM recording_takes t JOIN recording_catalog_prompts cp ON "
-                "t.recording_prompt_sha256=cp.recording_prompt_sha256 AND "
-                "t.recording_subject_id=cp.recording_subject_id WHERE "
+                "FROM recording_takes t JOIN accepted a ON "
+                "t.recording_prompt_sha256=a.recorded_prompt_sha256 WHERE "
                 "t.recording_group_key=g.recording_group_key AND "
-                "t.recording_subject_id=g.recording_subject_id AND "
-                "cp.recording_catalog_sha256=?) "
+                "t.recording_subject_id=g.recording_subject_id) "
                 "OR EXISTS(SELECT 1 FROM recording_catalog_groups cg WHERE "
                 "cg.recording_group_key=g.recording_group_key AND "
                 "cg.recording_subject_id=g.recording_subject_id AND "
                 "cg.recording_catalog_sha256=?)) "
             )
-            group_bindings = (self.subject_id, catalog_sha256, catalog_sha256)
+            group_bindings = (*accepted, self.subject_id, catalog_sha256)
             group_count = connection.execute(
-                "SELECT count(*)" + group_query, group_bindings
+                _ACCEPTED_PROMPTS + "SELECT count(*)" + group_query, group_bindings
             ).fetchone()[0]
             group_rows = connection.execute(
-                "SELECT g.rowid AS recording_page_position, g.*"
+                _ACCEPTED_PROMPTS
+                + "SELECT g.rowid AS recording_page_position, g.*"
                 + group_query
                 + "AND g.rowid > ? ORDER BY g.rowid LIMIT ?",
                 (*group_bindings, positions[2], page_size + 1),
             ).fetchall()
-            groups = [
-                self._group_summary(connection, row, catalog_sha256)
-                for row in group_rows[:page_size]
-            ]
+            groups = self._group_summaries(connection, group_rows[:page_size], catalog_sha256)
             error_rows = connection.execute(
                 "SELECT recording_unknown_error_json FROM recording_unknown_records WHERE "
                 "recording_catalog_sha256=? AND recording_subject_id=? ORDER BY "
@@ -1532,83 +1856,117 @@ class RecordingIndex:
                             "bounded history metadata exceeds the control frame budget"
                         )
 
-    def _prompt_summary(
+    def _prompt_summaries(
         self,
         connection: sqlite3.Connection,
-        row: sqlite3.Row,
+        rows: Sequence[sqlite3.Row],
         completeness: _IndexState,
         catalog_sha256: str,
-    ) -> RecordingPromptSummary:
-        latest = connection.execute(
-            "SELECT * FROM recording_takes WHERE recording_subject_id=? AND "
-            "recording_prompt_sha256=? ORDER BY CASE WHEN "
+    ) -> list[RecordingPromptSummary]:
+        """Summarize one page of current prompts, each over its own and its aliases' takes."""
+        digests = [str(row["recording_prompt_sha256"]) for row in rows]
+        if not digests:
+            return []
+        marks = ",".join("?" for _ in digests)
+        accepted = self._accepted(catalog_sha256)
+        latest: dict[str, RecordingHistoryEntry] = {}
+        for found in connection.execute(
+            _ACCEPTED_PROMPTS
+            + ", ranked AS (SELECT a.current_prompt_sha256 AS recording_current_prompt_sha256, "
+            "t.*, row_number() OVER (PARTITION BY a.current_prompt_sha256 ORDER BY CASE WHEN "
             + _RETAINED
-            + (
-                " THEN 0 WHEN recording_take_decision='draft' THEN 1 ELSE 2 END, "
-                "recording_take_recorded_at DESC, recording_take_id DESC LIMIT 1"
-            ),
-            (self.subject_id, row["recording_prompt_sha256"]),
-        ).fetchone()
-        entry = None if latest is None else self._decode(latest)
-        status: Literal["missing", "unknown", "draft", "saved-checking", "recorded", "needs-review"]
-        unknown = connection.execute(
-            "SELECT 1 FROM recording_unknown_records u JOIN recording_takes t "
-            "ON t.recording_take_id=u.recording_unknown_record_id "
-            "AND t.recording_subject_id=u.recording_subject_id "
-            "WHERE u.recording_catalog_sha256=? AND u.recording_subject_id=? "
-            "AND t.recording_prompt_sha256=? LIMIT 1",
-            (catalog_sha256, self.subject_id, row["recording_prompt_sha256"]),
-        ).fetchone()
-        if unknown is not None:
-            status = "unknown"
-        elif row["kept_count"]:
-            status = (
-                "recorded"
-                if entry is not None and entry.analysis == "verified"
-                else "needs-review"
-                if entry is not None and entry.analysis in ("needs-review", "failed")
-                else "saved-checking"
+            + " THEN 0 WHEN t.recording_take_decision='draft' THEN 1 ELSE 2 END, "
+            "t.recording_take_recorded_at DESC, t.recording_take_id DESC) AS recording_rank "
+            "FROM recording_takes t JOIN accepted a ON "
+            "t.recording_prompt_sha256=a.recorded_prompt_sha256 WHERE t.recording_subject_id=? "
+            f"AND a.current_prompt_sha256 IN ({marks})) "
+            "SELECT * FROM ranked WHERE recording_rank=1",
+            (*accepted, self.subject_id, *digests),
+        ):
+            latest[str(found["recording_current_prompt_sha256"])] = self._decode(found)
+        unknown = {
+            str(found[0])
+            for found in connection.execute(
+                _ACCEPTED_PROMPTS
+                + "SELECT DISTINCT a.current_prompt_sha256 FROM recording_unknown_records u "
+                "JOIN recording_takes t ON t.recording_take_id=u.recording_unknown_record_id "
+                "AND t.recording_subject_id=u.recording_subject_id "
+                "JOIN accepted a ON t.recording_prompt_sha256=a.recorded_prompt_sha256 "
+                "WHERE u.recording_catalog_sha256=? AND u.recording_subject_id=? "
+                f"AND a.current_prompt_sha256 IN ({marks})",
+                (*accepted, catalog_sha256, self.subject_id, *digests),
             )
-        elif entry is not None and entry.decision == "draft":
-            status = "draft"
-        else:
-            status = "missing" if completeness == "complete" else "unknown"
-        return RecordingPromptSummary(
-            prompt_id=row["recording_prompt_id"],
-            prompt_sha256=row["recording_prompt_sha256"],
-            canonical_ordinal=row["recording_prompt_ordinal"],
-            take_count=row["take_count"],
-            kept_count=row["kept_count"],
-            status=status,
-            latest_recorded_at=None if entry is None else entry.recorded_at,
-            date_precision="unknown" if entry is None else entry.date_precision,
-        )
+        }
+        summaries = []
+        for row, digest in zip(rows, digests, strict=True):
+            entry = latest.get(digest)
+            status: Literal[
+                "missing", "unknown", "draft", "saved-checking", "recorded", "needs-review"
+            ]
+            if digest in unknown:
+                status = "unknown"
+            elif row["kept_count"]:
+                status = (
+                    "recorded"
+                    if entry is not None and entry.analysis == "verified"
+                    else "needs-review"
+                    if entry is not None and entry.analysis in ("needs-review", "failed")
+                    else "saved-checking"
+                )
+            elif entry is not None and entry.decision == "draft":
+                status = "draft"
+            else:
+                status = "missing" if completeness == "complete" else "unknown"
+            summaries.append(
+                RecordingPromptSummary(
+                    prompt_id=row["recording_prompt_id"],
+                    prompt_sha256=digest,
+                    canonical_ordinal=row["recording_prompt_ordinal"],
+                    take_count=row["take_count"],
+                    kept_count=row["kept_count"],
+                    status=status,
+                    latest_recorded_at=None if entry is None else entry.recorded_at,
+                    date_precision="unknown" if entry is None else entry.date_precision,
+                )
+            )
+        return summaries
 
-    def _group_summary(
-        self, connection: sqlite3.Connection, row: sqlite3.Row, catalog: str
-    ) -> RecordingGroupSummary:
-        counts = connection.execute(
-            "SELECT count(*), coalesce(sum(CASE WHEN "
-            + _RETAINED
-            + (
-                " THEN 1 ELSE 0 END),0) FROM recording_takes t JOIN recording_catalog_prompts "
-                "cp ON t.recording_prompt_sha256=cp.recording_prompt_sha256 AND "
-                "t.recording_subject_id=cp.recording_subject_id WHERE "
-                "cp.recording_catalog_sha256=? AND cp.recording_subject_id=? AND "
-                "t.recording_group_key=?"
-            ),
-            (catalog, self.subject_id, row["recording_group_key"]),
-        ).fetchone()
-        return RecordingGroupSummary(
-            group_id=row["recording_group_id"],
-            legacy_session_id=row["recording_legacy_session_id"],
-            opened_at=None
-            if row["recording_group_opened_at"] is None
-            else datetime.fromisoformat(row["recording_group_opened_at"]),
-            date_precision=row["recording_group_date_precision"],
-            take_count=counts[0],
-            kept_count=counts[1],
-        )
+    def _group_summaries(
+        self, connection: sqlite3.Connection, rows: Sequence[sqlite3.Row], catalog: str
+    ) -> list[RecordingGroupSummary]:
+        """Summarize one page of groups over the takes that count in ``catalog``."""
+        keys = [str(row["recording_group_key"]) for row in rows]
+        counts: dict[str, tuple[int, int]] = {}
+        if keys:
+            marks = ",".join("?" for _ in keys)
+            for found in connection.execute(
+                _ACCEPTED_PROMPTS
+                + "SELECT t.recording_group_key, count(*), coalesce(sum(CASE WHEN "
+                + _RETAINED
+                + " THEN 1 ELSE 0 END),0) FROM recording_takes t JOIN accepted a ON "
+                "t.recording_prompt_sha256=a.recorded_prompt_sha256 WHERE "
+                f"t.recording_subject_id=? AND t.recording_group_key IN ({marks}) "
+                "GROUP BY t.recording_group_key",
+                (*self._accepted(catalog), self.subject_id, *keys),
+            ):
+                counts[str(found[0])] = (int(found[1]), int(found[2]))
+        summaries = []
+        for row, key in zip(rows, keys, strict=True):
+            # A group listed only through recording_catalog_groups has no counted takes.
+            take_count, kept_count = counts.get(key, (0, 0))
+            summaries.append(
+                RecordingGroupSummary(
+                    group_id=row["recording_group_id"],
+                    legacy_session_id=row["recording_legacy_session_id"],
+                    opened_at=None
+                    if row["recording_group_opened_at"] is None
+                    else datetime.fromisoformat(row["recording_group_opened_at"]),
+                    date_precision=row["recording_group_date_precision"],
+                    take_count=take_count,
+                    kept_count=kept_count,
+                )
+            )
+        return summaries
 
     def reconcile_takes(self, takes: Iterable[RecordingTake]) -> int:
         """Rebuild native projections from canonical bounded-reader output in one transaction.
@@ -1616,6 +1974,11 @@ class RecordingIndex:
         Caller performs TakeStore.recover first. No WAV or independent verification
         is performed. A failed iteration rolls back the replacement atomically.
         Catalog completeness remains building until legacy discovery also finishes.
+        Each distinct group catalog is resolved while spooling, outside the index lock.
+        Raises: ``RecordingIndexError`` for another subject's take or a catalog/projection
+        conflict; ``CorpusSnapshotSecurityError`` when a take's group references a missing or
+        altered snapshot; any error of ``takes``. Every failure marks the subject's indexed
+        catalogs Unknown (``native-reconcile``) and re-raises.
         """
         with self._transaction(write=True) as connection:
             catalogs = tuple(
@@ -1637,24 +2000,26 @@ class RecordingIndex:
             # our SQLite lock: Save holds evidence first, then updates this index.
             # An unlinked private spool also bounds retained model/catalog memory.
             with tempfile.TemporaryFile(mode="w+b", dir=self.layout.directory("tmp")) as spool:
-                seen_catalogs: set[str] = set()
+                seen_catalogs: set[GroupCatalogKey] = set()
                 for take in takes:
-                    if take.reservation.group.subject_id != self.subject_id:
+                    group = take.reservation.group
+                    if group.subject_id != self.subject_id:
                         raise RecordingIndexError("take projection belongs to another subject")
-                    digest = take.reservation.group.catalog_sha256
+                    key = GroupCatalogCache.key(group)
+                    catalog = None if key in seen_catalogs else self._group_catalogs.resolve(group)
                     spool.write(
                         canonical_json_bytes(
                             {
                                 "entry": history_entry_for_take(take).model_dump(mode="json"),
-                                "opened_at": take.reservation.group.opened_at.isoformat(),
+                                "opened_at": group.opened_at.isoformat(),
                                 "catalog": None
-                                if digest in seen_catalogs
-                                else take.reservation.group.catalog.model_dump(mode="json"),
+                                if catalog is None
+                                else catalog.model_dump(mode="json"),
                             }
                         )
                         + b"\n"
                     )
-                    seen_catalogs.add(digest)
+                    seen_catalogs.add(key)
                 spool.seek(0)
                 with self._transaction(write=True) as connection:
                     connection.execute(
@@ -1665,10 +2030,10 @@ class RecordingIndex:
                     for line in spool:
                         record = json.loads(line)
                         if record["catalog"] is not None:
-                            suite = PromptSuite.model_validate_json(
+                            snapshot = CatalogSnapshot.model_validate_json(
                                 canonical_json_bytes(record["catalog"])
                             )
-                            self._register_catalog(connection, suite, self.subject_id)
+                            self._register_catalog(connection, snapshot, self.subject_id)
                         entry = RecordingHistoryEntry.model_validate_json(
                             canonical_json_bytes(record["entry"])
                         )
@@ -1715,7 +2080,17 @@ class RecordingIndex:
         groups: Iterable[RecordingGroupSummary] = (),
         unknown_errors: Iterable[tuple[str, RecordingError]] = (),
     ) -> int:
-        """Prepare validated legacy metadata outside the lock, then replace it atomically."""
+        """Prepare validated legacy metadata outside the lock, then replace it atomically.
+
+        Every legacy row the catalog counts (current digests and same-id prompt aliases) is
+        replaced; each incoming row must be recorded against such a prompt.
+        Returns: the index revision after publication.
+        Raises: ``RecordingIndexError`` (``RECORDING.HISTORY_UNKNOWN``) for an unindexed
+        catalog, a row of another subject or origin, a row whose prompt the catalog does not
+        count ("legacy projection does not exactly match its indexed prompt"), an identity
+        conflict or a failed query; ``RecordingLegacyPublicationCapacityError`` beyond 32 MiB
+        or 200,000 prepared records.
+        """
         prepared = _prepare_legacy_catalog(self.subject_id, entries, groups, unknown_errors)
         revision = self._replace_prepared_legacy(catalog_sha256, prepared, expected_token=None)
         assert revision is not None
@@ -1732,7 +2107,11 @@ class RecordingIndex:
         *,
         expected_token: tuple[int, int],
     ) -> int | None:
-        """Publish staged evidence only if no local legacy edit/external commit superseded it."""
+        """Publish staged evidence only if no local legacy edit/external commit superseded it.
+
+        Returns: the index revision, or ``None`` when ``expected_token`` is stale.
+        Raises: as ``replace_legacy_catalog``.
+        """
         prepared = _prepare_legacy_catalog(self.subject_id, entries, groups, unknown_errors)
         return self._replace_prepared_legacy(
             catalog_sha256, prepared, expected_token=expected_token
@@ -1752,13 +2131,14 @@ class RecordingIndex:
                 int(connection.execute("PRAGMA data_version").fetchone()[0]),
             ):
                 return None
+            # Every legacy row this catalog counts, directly or through a prompt alias, is
+            # republished from the prepared evidence below.
             connection.execute(
-                "DELETE FROM recording_takes WHERE recording_take_origin='legacy' AND "
+                _ACCEPTED_PROMPTS
+                + "DELETE FROM recording_takes WHERE recording_take_origin='legacy' AND "
                 "recording_subject_id=? "
-                "AND recording_prompt_sha256 IN (SELECT recording_prompt_sha256 FROM "
-                "recording_catalog_prompts WHERE recording_catalog_sha256=? AND "
-                "recording_subject_id=?)",
-                (self.subject_id, catalog_sha256, self.subject_id),
+                "AND recording_prompt_sha256 IN (SELECT recorded_prompt_sha256 FROM accepted)",
+                (*self._accepted(catalog_sha256), self.subject_id),
             )
             connection.execute(
                 "DELETE FROM recording_unknown_records WHERE recording_catalog_sha256=? AND "
@@ -1792,17 +2172,11 @@ class RecordingIndex:
             bulk_inserted = self._insert_new_prepared_legacy(
                 connection, catalog_sha256, prepared.insertions
             )
+            admitted = None if bulk_inserted else self._admitted_prompts(connection, catalog_sha256)
             for item in () if bulk_inserted else prepared.entries:
                 entry = item.entry
-                if (
-                    connection.execute(
-                        "SELECT 1 FROM recording_catalog_prompts WHERE "
-                        "recording_catalog_sha256=? AND recording_subject_id=? AND "
-                        "recording_prompt_sha256=?",
-                        (catalog_sha256, self.subject_id, item.projection.prompt_sha256),
-                    ).fetchone()
-                    is None
-                ):
+                assert admitted is not None
+                if admitted.counted(item.projection.prompt_sha256, entry.prompt) is None:
                     raise RecordingIndexError(
                         "legacy projection does not exactly match its indexed prompt"
                     )
@@ -1871,15 +2245,9 @@ class RecordingIndex:
                     is not None
                 ):
                     return False
-        prompt_hashes = {
-            row[0]
-            for row in connection.execute(
-                "SELECT recording_prompt_sha256 FROM recording_catalog_prompts WHERE "
-                "recording_catalog_sha256=? AND recording_subject_id=?",
-                (catalog_sha256, self.subject_id),
-            )
-        }
-        if any(prompt[0] not in prompt_hashes for prompt in prepared.prompts):
+        # A legacy row may keep an earlier revision the catalog accepts through an alias.
+        admitted = self._admitted_prompts(connection, catalog_sha256)
+        if any(admitted.counted(digest, json) is None for digest, _, json in prepared.prompts):
             raise RecordingIndexError("legacy projection does not exactly match its indexed prompt")
         connection.executemany(
             "INSERT OR IGNORE INTO recording_prompts VALUES (?, ?, ?)", prepared.prompts

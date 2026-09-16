@@ -308,6 +308,7 @@ class SyntheticLibrary:
             f"audio/{prompt_id}.wav",
             "b" * 64,
             Path("/synthetic/session"),
+            next(prompt for prompt in PILOT_SUITE.prompts if prompt.prompt_id == prompt_id),
         )
         self.row_values = tuple(
             replace(
@@ -422,6 +423,7 @@ class SyntheticLibrary:
             "audio/test.wav",
             "a" * 64,
             Path("/synthetic/recent"),
+            prompt,
         )
         old = replace(
             recent,

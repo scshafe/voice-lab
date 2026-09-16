@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -11,16 +13,20 @@ from typing import Any
 import pytest
 from recording_fixtures import synthetic_catalog
 from test_datasets import _corpus
-from test_recording_takes import DEVICE, NOW, Rig
+from test_recording_takes import DEVICE, NOW, Rig, open_referenced, publish_catalog, store_suite
 
 from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256
+from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
 from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.paths import AssetLayout
+from cole_voice_lab.recording_contracts import CatalogReference
 from cole_voice_lab.recording_discovery import (
     RecordingDiscoveryCoordinator,
     _fingerprint,
     discover_recording_library,
+    produce_discovery,
 )
+from cole_voice_lab.recording_discovery_contracts import DiscoveryRequest
 from cole_voice_lab.recording_index import RecordingIndex
 from cole_voice_lab.recording_takes import RecordingTakeOperation, RecordingTakeStore
 
@@ -225,3 +231,103 @@ def test_discovery_process_launch_failure_remains_retryable(
     assert done.wait(2)
     assert coordinator._worker.is_alive() and not coordinator._pending
     coordinator.close()
+
+
+def referenced_context(tmp_path: Path) -> tuple[AssetLayout, CatalogReference, str]:
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    reference, snapshot = publish_catalog(layout, store_suite(3))
+    store = RecordingTakeStore(layout, clock=lambda: NOW)
+    return layout, reference, open_referenced(store, reference, snapshot).group_id
+
+
+def test_discovery_reads_a_referenced_group_catalog_from_its_snapshot_file_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout, reference, group = referenced_context(tmp_path)
+    connect = sqlite3.connect
+
+    def no_corpus_database(database: Any, *args: Any, **kwargs: Any) -> Any:
+        if "provenance/corpus/" in str(database):
+            raise AssertionError("discovery opened the corpus database")
+        return connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", no_corpus_database)
+    assert discover_recording_library(layout, group)["completeness"] == "complete"
+    with RecordingIndex(layout, subject_id="synthetic-subject") as index:
+        page = index.history(reference.catalog_sha256, page_size=10)
+    assert page.completeness == "complete"
+    assert [prompt.prompt_id for prompt in page.prompts] == [
+        "spoken-0000",
+        "spoken-0001",
+        "spoken-0002",
+    ]
+
+
+def test_discovery_of_a_group_with_a_missing_snapshot_fails_before_any_index_write(
+    tmp_path: Path,
+) -> None:
+    layout, reference, group = referenced_context(tmp_path)
+    (layout.root / reference.snapshot_path).unlink()
+    with pytest.raises(CorpusSnapshotSecurityError) as caught:
+        discover_recording_library(layout, group)
+    assert caught.value.code == "CORPUS.SNAPSHOT_MISSING"
+    assert not (layout.root / "provenance/recording-library").exists()
+    assert not (layout.root / "provenance/recording-library-discovery").exists()
+    # The worker-side producer reports a named unknown and publishes nothing.
+    request = DiscoveryRequest(
+        generation="synthetic-generation",
+        group_id=group,
+        subject_id="synthetic-subject",
+        catalog_sha256=reference.catalog_sha256,
+        index_instance="synthetic-index",
+        legacy_token=(0, 0),
+    )
+    published: list[Any] = []
+    with tempfile.TemporaryFile() as inventory, tempfile.TemporaryFile() as output:
+        finished = produce_discovery(
+            layout,
+            request,
+            inventory.fileno(),
+            None,
+            output.fileno(),
+            lambda publication: published.append(publication) is None,
+        )
+    assert finished.error is not None and finished.error.code == "RECORDING.HISTORY_UNKNOWN"
+    assert published == []
+    # The supervisor survives the refusal and still notifies its owner.
+    done = threading.Event()
+    coordinator = RecordingDiscoveryCoordinator(layout, completed=lambda _: done.set())
+    try:
+        coordinator.schedule(group)
+        assert done.wait(5)
+        assert coordinator._worker.is_alive() and not coordinator._pending
+    finally:
+        coordinator.close()
+
+
+def test_discovery_projects_referenced_takes_and_counts_them_through_aliases(
+    tmp_path: Path,
+) -> None:
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    first, snapshot = publish_catalog(layout, store_suite(3))
+    rig = Rig(layout, RecordingTakeStore(layout), "")
+    rig.store = RecordingTakeStore(layout, clock=lambda: rig.now)
+    rig.group_id = open_referenced(rig.store, first, snapshot).group_id
+    kept = rig.store.save(rig.command(rig.seal(rig.reserve(prompt="spoken-0001")))).take
+    with open_corpus_store(layout, create=False) as corpus:
+        corpus.edit_prompt(
+            "spoken-0001", text="Synthetic sentence number one.", keep_recordings=True
+        )
+        second = corpus.publish_version("synthetic-corpus")
+        revised = corpus.materialize(second)
+    group = open_referenced(rig.store, second, revised).group_id
+    # The worker and the parent both resolve each group's snapshot from its file.
+    assert discover_recording_library(layout, group)["completeness"] == "complete"
+    with RecordingIndex(layout, subject_id="synthetic-subject") as index:
+        page = index.history(second.catalog_sha256)
+        assert (page.covered_prompt_count, page.missing_prompt_count) == (1, 2)
+        assert [take.take_id for take in page.takes] == [kept.reservation.take_id]
+        assert page.takes[0].prompt == kept.reservation.prompt
+        after = index.next_missing(second.catalog_sha256, after_prompt_id="spoken-0000")
+        assert after.next_prompt == revised.prompt("spoken-0002")
+        assert index.history(first.catalog_sha256).covered_prompt_count == 1

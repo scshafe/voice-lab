@@ -28,6 +28,7 @@ import secrets
 import sqlite3
 import stat
 import threading
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -61,8 +62,10 @@ from .recording_contracts import (
     CatalogReference,
     CatalogSnapshot,
     PromptAlias,
+    RecordingGroup,
     UtcTimestamp,
     catalog_snapshot_path,
+    keep_recordings_identity,
 )
 from .sqlite_migrations import (
     MigrationDirection,
@@ -104,6 +107,8 @@ SNAPSHOT_DIRECTORY: Final = "snapshots"
 MAX_CATALOG_PROMPTS: Final = 10_000
 MAX_CATALOG_SNAPSHOT_BYTES: Final = 16 * 1024 * 1024
 MAX_CATALOG_DESCRIPTION_CHARS: Final = 1024
+# Resolved group catalogs kept per owner (take store, index); a process binds a handful.
+MAX_CACHED_GROUP_CATALOGS: Final = 8
 STORE_MISSING_MESSAGE: Final = (
     f"no corpus store at provenance/{CORPUS_DIRECTORY}/{CORPUS_DATABASE_NAME}; "
     "run `voice-lab catalog init` to create one"
@@ -436,6 +441,117 @@ def read_catalog_snapshot(layout: AssetLayout, reference: CatalogReference) -> C
     with os.fdopen(descriptor, "rb") as stream:
         payload = _snapshot_payload(stream, reference.snapshot_path)
     return _decode_snapshot(payload, reference)
+
+
+def require_referenced_snapshot(snapshot: CatalogSnapshot, reference: CatalogReference) -> None:
+    """Check that an in-memory snapshot is exactly the file a reference seals.
+
+    For readers handed a (reference, snapshot) pair, e.g. from ``CorpusStore.materialize``,
+    that record the reference next to results derived from the snapshot. The snapshot's
+    file bytes (canonical JSON plus a newline, as ``publish_version`` writes them) are
+    checked exactly as ``read_catalog_snapshot`` checks a file, so the prompt aliases are
+    bound too. A plain suite's ``CatalogSnapshot.embedded`` matches only a published version
+    that accepts no aliases.
+    Params: ``snapshot`` is the catalog the caller selects through; ``reference`` is the
+    published version the caller will name.
+    Returns: nothing.
+    Raises: ``CorpusSnapshotSecurityError`` (a ``SecurityError``) with
+    ``CORPUS.SNAPSHOT_MISMATCH`` when the bytes, suite digest, suite id or purpose disagree.
+    """
+    _decode_snapshot(canonical_json_bytes(snapshot) + b"\n", reference)
+
+
+def resolve_group_catalog(layout: AssetLayout, group: RecordingGroup) -> CatalogSnapshot:
+    """The exact catalog a recording group binds, as a snapshot; the one group-catalog reader.
+
+    Pure file access, never the database, so the read-only discovery worker and the
+    coverage report can use it while another process holds the store.
+    Params: ``layout`` is the asset root the group belongs to; ``group`` is a validated
+    ``RecordingGroup`` of either version.
+    Returns: for recording-group/v1, ``CatalogSnapshot.embedded`` of the embedded suite (no
+    aliases); for recording-group/v2, the snapshot file its ``catalog_reference`` names,
+    verified by ``read_catalog_snapshot`` (whole-file digest, suite digest, suite id,
+    purpose and content-addressed path all equal the sealed reference).
+    Raises: ``CorpusSnapshotSecurityError`` (a ``SecurityError``) for a v2 group:
+    ``CORPUS.SNAPSHOT_MISSING`` when the referenced snapshot file does not exist,
+    ``CORPUS.SNAPSHOT_MISMATCH`` when it is altered, unsafe or disagrees with the
+    reference. A v2 group never falls back to anything else.
+    """
+    if group.catalog is not None:
+        return CatalogSnapshot.embedded(group.catalog)
+    # RecordingGroup validation guarantees exactly one form and binds the reference's
+    # catalog_sha256 to the group's; read_catalog_snapshot binds the file to the reference.
+    assert group.catalog_reference is not None
+    return read_catalog_snapshot(layout, group.catalog_reference)
+
+
+type GroupCatalogKey = tuple[str, CatalogReference | None]
+
+
+class GroupCatalogCache:
+    """A small per-owner LRU in front of ``resolve_group_catalog``.
+
+    Entries are keyed by the suite digest plus, for a recording-group/v2, the whole sealed
+    ``CatalogReference`` -- every field the file check compares (snapshot digest, suite
+    digest, suite id, purpose, path) -- so a cached entry is exactly what a fresh verified
+    read of that reference returns, a reference that disagrees with a snapshot another group
+    already verified is still read (and refused), and an embedded catalog never shares an
+    entry with a snapshot of the same suite. Each reference is therefore verified once per
+    owner instance; a file altered after that is detected by the next owner (a restarted
+    service, a discovery worker, a new index). Thread-safe; the file is read outside the
+    cache lock.
+    """
+
+    def __init__(self, layout: AssetLayout, *, capacity: int = MAX_CACHED_GROUP_CATALOGS) -> None:
+        """Params: ``layout`` is the asset root every resolved group belongs to;
+        ``capacity`` is the most snapshots kept (least recently used leave first).
+        Raises: ``ValueError`` for a capacity below one.
+        """
+        if capacity < 1:
+            raise ValueError("a group catalog cache needs room for at least one catalog")
+        self.layout = layout
+        self.capacity = capacity
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[GroupCatalogKey, CatalogSnapshot] = OrderedDict()
+
+    @staticmethod
+    def key(group: RecordingGroup) -> GroupCatalogKey:
+        """The identity two groups share exactly when one verified read serves both.
+
+        Readers that resolve each distinct group catalog once (reconcile, coverage) dedupe
+        on this key too, so it binds everything ``read_catalog_snapshot`` checks.
+        Params: ``group`` is a validated group of either version.
+        Returns: ``(catalog_sha256, None)`` for recording-group/v1 (the digest binds the
+        embedded suite) or ``(catalog_sha256, catalog_reference)`` for recording-group/v2
+        (the sealed reference, whose snapshot digest also binds the prompt aliases and whose
+        suite id and purpose the file must repeat).
+        Raises: nothing.
+        """
+        return group.catalog_sha256, group.catalog_reference
+
+    def resolve(self, group: RecordingGroup) -> CatalogSnapshot:
+        """The exact catalog ``group`` binds, from the cache or ``resolve_group_catalog``.
+
+        Params: ``group`` is a validated group of either version.
+        Returns: the embedded suite without aliases (v1) or the verified snapshot (v2).
+        Raises: ``CorpusSnapshotSecurityError`` (a ``SecurityError``) with
+        ``CORPUS.SNAPSHOT_MISSING`` or ``CORPUS.SNAPSHOT_MISMATCH`` when a v2 group's snapshot
+        file is missing, altered or disagrees with its reference; nothing is cached then.
+        """
+        key = self.key(group)
+        with self._lock:
+            cached = self._entries.get(key)
+            if cached is not None:
+                self._entries.move_to_end(key)
+                return cached
+        # A concurrent duplicate read resolves the same verified bytes.
+        snapshot = resolve_group_catalog(self.layout, group)
+        with self._lock:
+            self._entries[key] = snapshot
+            self._entries.move_to_end(key)
+            while len(self._entries) > self.capacity:
+                self._entries.popitem(last=False)
+        return snapshot
 
 
 def open_corpus_store(
@@ -1093,12 +1209,20 @@ class CorpusStore:
         text stop counting until the prompt is re-recorded. With ``keep_recordings`` the
         revision accepts the previous revision's digest plus everything that revision
         accepted (minus its own digest when the edit reverts to an earlier text); the chain
-        breaks at the first revision made without the flag.
+        breaks at the first revision made without the flag. A keep-recordings revision must
+        keep the prompt's ``keep_recordings_identity``: it cannot change the held-out flag
+        or the spoken/silent behaviour (a room tone never becomes speech coverage, and
+        evaluation audio never becomes training audio); make such a change as a default edit.
+        A catalog version's identity is its suite content, so recordings kept only through
+        a revert (A, then B kept, then A again kept) count again only in a version whose
+        content differs from the one already published for A; ``publish_version`` names
+        such prompts when it refuses to republish that content.
         Params: ``prompt_id``; ``keep_recordings``; each field as in ``add_prompt`` or
         ``UNCHANGED``.
         Returns: the new current record.
         Raises: ``CorpusStoreError`` with ``CORPUS.PROMPT_UNKNOWN``, ``CORPUS.PROMPT_RETIRED``,
-        ``CORPUS.PROMPT_INVALID`` (the edited fields do not form a valid ``Prompt``),
+        ``CORPUS.PROMPT_INVALID`` (the edited fields do not form a valid ``Prompt``, or a
+        keep-recordings edit changes the held-out flag or spoken/silent behaviour),
         ``CORPUS.PROMPT_UNCHANGED`` (the edit reproduces the current content exactly) or
         ``CORPUS.PROMPT_DUPLICATE`` (another live prompt already has the new text); store and
         path failures as ``open_corpus_store``.
@@ -1133,6 +1257,12 @@ class CorpusStore:
             self._require_unique_text(connection, prompt)
             accepted: set[str] = set()
             if keep_recordings:
+                if keep_recordings_identity(prompt) != keep_recordings_identity(current.prompt):
+                    raise CorpusStoreError(
+                        "CORPUS.PROMPT_INVALID",
+                        f"a keep-recordings edit of {prompt_id} cannot change its held-out flag "
+                        "or whether it is spoken or silent; make that change as a default edit",
+                    )
                 accepted = {*current.accepted_prompt_sha256s, current.prompt_sha256} - {digest}
             revision = current.revision + 1
             self._insert_revision(
@@ -1413,7 +1543,9 @@ class CorpusStore:
         ``CORPUS.EMPTY_CATALOG`` (nothing to publish), ``CORPUS.CATALOG_INVALID`` (the suite
         fails the ``PromptSuite`` contract, exceeds ``MAX_CATALOG_PROMPTS`` or its snapshot
         would exceed ``MAX_CATALOG_SNAPSHOT_BYTES``), ``CORPUS.VERSION_UNCHANGED`` (this
-        exact content is already published, message names the catalog and version);
+        exact content is already published; the message names the catalog and version and,
+        when that version accepts other earlier recordings than the current revisions do,
+        the prompts concerned);
         ``CorpusSnapshotSecurityError`` when a snapshot file of the same digest exists with
         different bytes; store and path failures as ``open_corpus_store``.
         """
@@ -1474,11 +1606,35 @@ class CorpusStore:
                 (digest,),
             ).fetchone()
             if existing is not None:
-                raise CorpusStoreError(
-                    "CORPUS.VERSION_UNCHANGED",
+                message = (
                     f"this exact content is already published as catalog "
-                    f"{existing['catalog_id']} version {existing['catalog_version']}",
+                    f"{existing['catalog_id']} version {existing['catalog_version']}"
                 )
+                published_aliases = {
+                    (row[0], row[1])
+                    for row in connection.execute(
+                        _VERSION_ALIASES, (existing["catalog_id"], existing["catalog_version"])
+                    )
+                }
+                differing = {current for current, _ in set(aliases) ^ published_aliases}
+                changed = sorted(
+                    record.prompt.prompt_id
+                    for record in records
+                    if record.prompt_sha256 in differing
+                )
+                if changed:
+                    # A version's identity is its suite digest, so a keep-recordings revert
+                    # cannot republish the same content with other accepted recordings.
+                    shown = ", ".join(changed[:10]) + (
+                        f" and {len(changed) - 10} more" if len(changed) > 10 else ""
+                    )
+                    message += (
+                        f", which accepts other earlier recordings of {shown} than the current "
+                        "revisions do; a version is identified by its content, so that "
+                        "version's recording rule stays until a version with other content "
+                        "is published"
+                    )
+                raise CorpusStoreError("CORPUS.VERSION_UNCHANGED", message)
             version = connection.execute(
                 "SELECT COALESCE(MAX(catalog_version), 0) + 1 FROM corpus_catalog_versions "
                 "WHERE catalog_id = ?",

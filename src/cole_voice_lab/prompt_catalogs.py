@@ -8,7 +8,7 @@ which identifies sidecar-less legacy captures). Related: resources.py, recording
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from functools import cache
 from types import MappingProxyType
 from typing import Final
@@ -49,16 +49,23 @@ def _pilot_v1() -> tuple[PromptSuite, frozenset[str]]:
     return suite, frozenset(canonical_sha256(prompt) for prompt in suite.prompts)
 
 
-def legacy_pilot_v1(suite: PromptSuite) -> bool:
+def legacy_pilot_v1(suite: PromptSuite, *, aliases: Iterable[str] = ()) -> bool:
     """The suite shares at least one exact prompt hash with pilot-v1.
 
-    Depends only on the suite's bytes and the immutable pilot-v1 resource, never on
-    which other built-ins this build ships, so every build computes the same answer.
+    Depends only on the suite's bytes (and the accepted digests the caller names) and the
+    immutable pilot-v1 resource, never on which other built-ins this build ships, so every
+    build computes the same answer.
+    Params: ``aliases`` are the earlier prompt digests the suite's catalog snapshot still
+    accepts (keep-recordings revisions); one of them equal to a pilot-v1 prompt digest
+    counts as shared too.
+    Raises: ``SecurityError`` when the pilot-v1 resource differs from its pin.
     """
     if canonical_sha256(suite) == PILOT_V1_SHA256:
         return True
     hashes = _pilot_v1()[1]
-    return any(canonical_sha256(prompt) in hashes for prompt in suite.prompts)
+    return any(canonical_sha256(prompt) in hashes for prompt in suite.prompts) or any(
+        digest in hashes for digest in aliases
+    )
 
 
 def legacy_pilot_v1_suite(suite: PromptSuite) -> PromptSuite:

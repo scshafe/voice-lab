@@ -129,6 +129,10 @@ def test_legacy_pilot_v1_is_decided_by_content_not_membership(
     assert legacy_pilot_v1(pilot) and legacy_pilot_v1(pilot_v2) and legacy_pilot_v1(shared)
     assert not legacy_pilot_v1(evaluation)
     assert not legacy_pilot_v1(restyled)
+    # A catalog whose only pilot prompt was reworded keeps it through its accepted digest.
+    accepted = canonical_sha256(pilot.prompts[5])
+    assert legacy_pilot_v1(restyled, aliases=(accepted,))
+    assert not legacy_pilot_v1(restyled, aliases=(canonical_sha256(restyled.prompts[1]),))
     assert not legacy_pilot_v1(synthetic_physical_test_catalog())
     assert legacy_pilot_v1_suite(pilot) is pilot
     assert legacy_pilot_v1_suite(shared) == pilot

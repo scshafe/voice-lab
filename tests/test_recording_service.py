@@ -907,3 +907,80 @@ def test_cli_service_route_preserves_explicit_launch_arguments(
     ]
     assert main(["recording", "service", *args]) == 0
     assert calls == [args]
+
+
+def test_backends_name_a_missing_or_altered_group_snapshot(tmp_path: Path) -> None:
+    from test_recording_takes import DEVICE, publish_catalog, store_suite
+
+    from cole_voice_lab.recording_contracts import (
+        ContextEvent,
+        OpenContextCommand,
+        ReserveTakeCommand,
+    )
+    from cole_voice_lab.recording_service import RecordingTakesBackend, RecordingWorkspaceBackend
+    from cole_voice_lab.recording_takes import RecordingTakeStore
+
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    reference, snapshot = publish_catalog(layout, store_suite(2))
+    store = RecordingTakeStore(layout)
+    context = store.open_context(
+        OpenContextCommand(
+            operation_id="context-referenced",
+            subject_id="synthetic-subject",
+            catalog=snapshot.suite,
+            catalog_sha256=reference.catalog_sha256,
+            capture_device=DEVICE,
+            capture_host="host",
+        ),
+        catalog_reference=reference,
+    )
+    takes = RecordingTakesBackend(store, context.group.group_id)
+    reserve = ReserveTakeCommand(
+        recorder_generation="helper-generation",
+        operation_id="reserve-damaged",
+        group_id=context.group.group_id,
+        selection=context.cursor.selection,
+    )
+    path = layout.root / reference.snapshot_path
+    original = path.read_bytes()
+
+    def assert_named(state: str) -> None:
+        backend = RecordingWorkspaceBackend(
+            layout, "synthetic-subject", reference.catalog_sha256, discover=False
+        )
+        try:
+            with pytest.raises(RecordingServiceError, match=f"references is {state}") as failure:
+                backend.execute(
+                    request(SnapshotCommand(), revision=backend.state_revision),
+                    RecordingCancellation(),
+                )
+            assert failure.value.recording_error.code == "CORPUS.SNAPSHOT_MISMATCH"
+        finally:
+            backend.index.close()
+        # A store that has not verified the snapshot yet refuses the reservation too.
+        takes.store = RecordingTakeStore(layout)
+        with pytest.raises(RecordingServiceError, match=f"references is {state}") as failure:
+            takes.execute(request(reserve, revision=takes.state_revision), RecordingCancellation())
+        assert failure.value.recording_error.code == "CORPUS.SNAPSHOT_MISMATCH"
+        assert not (
+            layout.root / "provenance/recording-takes/.operations/reserve-damaged.json"
+        ).exists()
+
+    backend = RecordingWorkspaceBackend(
+        layout, "synthetic-subject", reference.catalog_sha256, discover=False
+    )
+    try:
+        event = backend.execute(
+            request(SnapshotCommand(), revision=backend.state_revision), RecordingCancellation()
+        )
+        assert isinstance(event, ContextEvent)
+        assert event.group.catalog_reference == reference and event.group.catalog is None
+        assert event.history is not None
+        assert event.history.catalog_sha256 == reference.catalog_sha256
+        assert backend.library is not None and backend.library.prompt_suite == snapshot.suite
+    finally:
+        backend.index.close()
+    path.write_bytes(original.replace(b"number 1.", b"number 9."))
+    assert_named("altered or unsafe")
+    path.unlink()
+    assert_named("missing")

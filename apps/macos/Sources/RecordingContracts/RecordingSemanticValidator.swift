@@ -4,6 +4,7 @@ import Foundation
 /// digests are revalidated by Python, the single canonical serialization owner.
 enum RecordingSemanticValidator {
     private static let silentPromptCategories: Set<String> = ["room-tone", "procedure"]
+    private static let recordingGroupV2 = "cole-voice-lab.recording-group/v2"
     /// Mirrors Python RESERVED_PROMPT_LABELS; conformance fixtures keep the two lists aligned.
     private static let reservedPromptLabels: Set<String> = [
         "room-tone", "neutral", "conversational", "warm-narration", "technical", "numbers", "expressive", "reference", "procedure",
@@ -27,6 +28,15 @@ enum RecordingSemanticValidator {
         func ordered(_ paths: [String]) -> Bool {
             let dates = paths.compactMap { timestamp(string($0)) }
             return dates.count == paths.count && zip(dates, dates.dropFirst()).allSatisfy { $0 <= $1 }
+        }
+        // Mirrors Python RecordingGroup: v1 (the default) embeds `catalog`; v2 carries
+        // `catalog_reference` (with the suite purpose) and embeds no prompts to check against.
+        func embedsCatalog(_ group: String) -> Bool {
+            string(group.isEmpty ? "schema_version" : group + ".schema_version") != recordingGroupV2
+        }
+        func catalogPurpose(_ group: String) -> String {
+            let prefix = group.isEmpty ? "" : group + "."
+            return string(prefix + (embedsCatalog(group) ? "catalog.purpose" : "catalog_reference.purpose"))
         }
         switch title {
         case "RecordingError":
@@ -81,13 +91,24 @@ enum RecordingSemanticValidator {
                 }, "Prompt-suite v2 text cannot contain format or control characters")
             }
         case "RecordingGroup":
+            if embedsCatalog("") {
+                try require(present("catalog") && !present("catalog_reference"), "Recording group v1 embeds its catalog and carries no reference")
+            } else {
+                try require(present("catalog_reference") && !present("catalog"), "Recording group v2 references its catalog and embeds none")
+                try require(field("catalog_reference.catalog_sha256") == field("catalog_sha256"), "Group catalog digest must match its reference")
+            }
             try require(string("capture_device.backend") == "coreaudio", "Native group requires Core Audio")
-            try require((string("catalog.purpose") == "capture-corpus") != (string("gate.state") == "not-required"), "Capture gate purpose mismatch")
+            try require((catalogPurpose("") == "capture-corpus") != (string("gate.state") == "not-required"), "Capture gate purpose mismatch")
             try unique(field("room_tone_take_ids"), title: title)
+        case "CatalogReference":
+            try require(string("snapshot_path") == "provenance/corpus/snapshots/\(string("catalog_sha256")).json", "Catalog snapshot path must be content-addressed")
         case "CaptureReservation":
-            try require((field("group.catalog.prompts").array ?? []).contains(field("prompt")), "Reserved prompt must exactly match its catalog")
+            // A v2 group embeds no prompts; the service checks the prompt against its snapshot.
+            if embedsCatalog("group") {
+                try require((field("group.catalog.prompts").array ?? []).contains { pythonEqual($0, field("prompt")) }, "Reserved prompt must exactly match its catalog")
+            }
             try require(ordered(["group.opened_at", "requested_at"]), "Capture request precedes its group")
-            try require(string("group.catalog.purpose") != "capture-corpus" || string("group.gate.state") == "ready", "Corpus capture requires a ready gate")
+            try require(catalogPurpose("group") != "capture-corpus" || string("group.gate.state") == "ready", "Corpus capture requires a ready gate")
             try require(string("partial_path") == "tmp/recording-takes/\(string("take_id"))/capture.partial.wav", "Partial path must bind its take")
             try require(string("original_path") == "tmp/recording-takes/\(string("take_id"))/original.wav", "Original path must bind its take")
         case "AudioSpec":
@@ -210,10 +231,23 @@ enum RecordingSemanticValidator {
             let entries = field("entries").array ?? []
             try unique(.array(entries.map { lookup($0, "take_id") }), title: title)
             try unique(.array(entries.map { lookup($0, "package_relative_path") }), title: title)
+            let embedded = embedsCatalog("group")
+            let catalogPrompts = field("group.catalog.prompts").array ?? []
             try require(entries.allSatisfy { item in
                 ["group_id", "subject_id", "catalog_sha256"].allSatisfy { lookup(item, $0) == field("group." + $0) } &&
-                (field("group.catalog.prompts").array ?? []).contains(lookup(item, "prompt"))
+                (!embedded || catalogPrompts.contains { pythonEqual($0, lookup(item, "prompt")) })
             }, "Package entries must share group and exact catalog")
+            // A v2 group embeds no prompts, so its map must carry the exact selected suite.
+            try require(embedded || present("selected_suite"), "Package of a catalog-reference group requires its selected suite")
+            if present("selected_suite") {
+                let entryPrompts = entries.map { lookup($0, "prompt") }
+                let selectedIDs = Set(entryPrompts.compactMap { lookup($0, "prompt_id").string })
+                let expected = embedded ? catalogPrompts.filter { selectedIDs.contains(lookup($0, "prompt_id").string ?? "") } : entryPrompts
+                try require(string("selected_suite.purpose") == catalogPurpose("group")
+                            && pythonEqual(field("selected_suite.prompts"), .array(expected))
+                            && pythonEqual(.array(entryPrompts), .array(expected)),
+                            "Package selected suite must preserve exact catalog purpose, content and order")
+            }
             let tones = entries.filter { lookup($0, "prompt.category") == .string("room-tone") }
             try require(!tones.isEmpty && tones.allSatisfy { (field("group.room_tone_take_ids").array ?? []).contains(lookup($0, "take_id")) }, "Package requires explicit compatible room tone")
         case "OpenContextCommand":
@@ -222,7 +256,9 @@ enum RecordingSemanticValidator {
             try require(!present("pilot_approval_path") || string("catalog.purpose") == "capture-corpus", "Pilot approval applies only to corpus capture")
         case "ContextEvent":
             try require(field("cursor.subject_id") == field("group.subject_id") && field("cursor.group_id") == field("group.group_id") && field("cursor.selection.catalog_sha256") == field("group.catalog_sha256"), "Context cursor must bind its group, subject and catalog")
-            try require((field("group.catalog.prompts").array ?? []).contains { lookup($0, "prompt_id") == field("cursor.selection.prompt_id") }, "Context cursor prompt must belong to its catalog")
+            if embedsCatalog("group") {
+                try require((field("group.catalog.prompts").array ?? []).contains { pythonEqual(lookup($0, "prompt_id"), field("cursor.selection.prompt_id")) }, "Context cursor prompt must belong to its catalog")
+            }
             if present("history") { try require(field("history.catalog_sha256") == field("group.catalog_sha256"), "Context history catalog mismatch") }
         case "NavigationEvent":
             if present("cursor") {
@@ -338,6 +374,37 @@ enum RecordingSemanticValidator {
               !value.hasPrefix("/"), !pieces.contains(".."), !pieces.contains("."),
               !pieces.contains("") else {
             throw RecordingContractError(code: "RECORDING.INVALID_MESSAGE", message: "Path must be confined and relative")
+        }
+    }
+
+    /// Python `==` on parsed contract values, for the checks that mirror one (prompt
+    /// membership and selected-suite content). Numbers compare by exact value whatever the
+    /// token (a Python float field accepts an integer token, and 1 == 1.0); strings compare by
+    /// Unicode scalars (Python never applies the canonical equivalence Swift `String ==` does);
+    /// arrays compare in order and objects by key and value. Object keys are schema property
+    /// names, which the schema has already confined.
+    static func pythonEqual(_ lhs: RecordingJSON, _ rhs: RecordingJSON) -> Bool {
+        switch (lhs, rhs) {
+        case let (.object(left), .object(right)):
+            return left.count == right.count && left.allSatisfy { key, value in
+                right[key].map { pythonEqual(value, $0) } ?? false
+            }
+        case let (.array(left), .array(right)):
+            return left.count == right.count && zip(left, right).allSatisfy { pythonEqual($0, $1) }
+        case let (.string(left), .string(right)):
+            return left.unicodeScalars.elementsEqual(right.unicodeScalars)
+        case let (.integer(left), .integer(right)):
+            return left == right
+        case let (.number(left), .number(right)):
+            return left == right
+        case let (.integer(integer), .number(number)), let (.number(number), .integer(integer)):
+            return Int64(exactly: number) == integer
+        case let (.boolean(left), .boolean(right)):
+            return left == right
+        case (.null, .null):
+            return true
+        default:
+            return false
         }
     }
 
