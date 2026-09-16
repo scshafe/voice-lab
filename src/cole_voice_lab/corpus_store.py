@@ -28,13 +28,14 @@ import secrets
 import sqlite3
 import stat
 import threading
+import unicodedata
 from collections import OrderedDict
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Final, Literal
+from typing import BinaryIO, Final, Literal, get_args
 from urllib.parse import quote
 
 from pydantic import Field, TypeAdapter, ValidationError
@@ -47,6 +48,7 @@ from .canonical import (
 )
 from .errors import ContractError, SecurityError
 from .models import (
+    PHYSICAL_TEST_SUITE_PREFIX,
     PROMPT_SUITE_V2,
     ContractModel,
     Prompt,
@@ -60,6 +62,7 @@ from .models import (
 from .paths import AssetLayout, confined_path
 from .recording_contracts import (
     MAX_CATALOG_SUITE_BYTES,
+    MAX_RECORDING_REVISION,
     CatalogReference,
     CatalogSnapshot,
     PromptAlias,
@@ -86,7 +89,9 @@ type CorpusStoreCode = Literal[
     "CORPUS.PROMPT_RETIRED",
     "CORPUS.PROMPT_INVALID",
     "CORPUS.PROMPT_UNCHANGED",
+    "CORPUS.PROMPT_CHANGED",
     "CORPUS.SOURCE_INVALID",
+    "CORPUS.SOURCE_UNAVAILABLE",
     "CORPUS.SOURCE_REFERENCE_INVALID",
     "CORPUS.CATALOG_DUPLICATE",
     "CORPUS.CATALOG_UNKNOWN",
@@ -108,6 +113,12 @@ SNAPSHOT_DIRECTORY: Final = "snapshots"
 MAX_CATALOG_PROMPTS: Final = 10_000
 MAX_CATALOG_SNAPSHOT_BYTES: Final = 16 * 1024 * 1024
 MAX_CATALOG_DESCRIPTION_CHARS: Final = 1024
+# Version and revision numbers are SQLite integers.
+MAX_CATALOG_VERSION: Final = MAX_RECORDING_REVISION
+# A typo-class text fix (the only rewording an operator's --keep-recordings accepts): at most
+# this many word and character edits once case, punctuation and spacing are ignored.
+MAX_KEPT_WORD_EDITS: Final = 2
+MAX_KEPT_CHARACTER_EDITS: Final = 3
 # Resolved group catalogs kept per owner (take store, index); a process binds a handful.
 MAX_CACHED_GROUP_CATALOGS: Final = 8
 STORE_MISSING_MESSAGE: Final = (
@@ -118,6 +129,11 @@ _LEASE_NAME = ".corpus.lease"
 _LOCK_NAME = ".corpus.lock"
 _SNAPSHOT_NAME = re.compile(r"^[0-9a-f]{64}\.json$")
 _SNAPSHOT_TEMPORARY_NAME = re.compile(r"^\.[0-9a-f]{64}\.json\.tmp-[0-9a-f]{16}$")
+_NOT_SPOKEN = re.compile(r"[^\w\s]|_")
+# Descriptions are printed to terminals: no control, format or line/paragraph separators.
+_DESCRIPTION_FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+_PURPOSES: Final[tuple[PromptSuitePurpose, ...]] = get_args(PromptSuitePurpose)
+_PROMPT_FIT_SUITE_ID = "prompt-fit"
 _STABLE_ID: TypeAdapter[str] = TypeAdapter(StableId)
 _PURPOSE: TypeAdapter[PromptSuitePurpose] = TypeAdapter(PromptSuitePurpose)
 _SOURCE: TypeAdapter[PromptSource] = TypeAdapter(PromptSource)
@@ -190,6 +206,14 @@ class _Unchanged(enum.Enum):
     token = "unchanged"
 
 
+class _DryRunRollback(Exception):
+    """Carries a previewed record out of a transaction that must roll back."""
+
+    def __init__(self, record: PromptRecord) -> None:
+        self.record = record
+        super().__init__(record.prompt.prompt_id)
+
+
 UNCHANGED: Final = _Unchanged.token
 """Passed for an ``edit_prompt`` field that keeps its current value."""
 
@@ -223,6 +247,216 @@ class CatalogRecord:
     versions: tuple[CatalogReference, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CatalogDefinition:
+    """A catalog's identity as ``catalog_definition`` validated it, before it is stored."""
+
+    catalog_id: str
+    suite_id: str
+    purpose: PromptSuitePurpose
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class TextChange:
+    """How far an edit moves a prompt's spoken text, measured on the words read aloud.
+
+    Both counts ignore case, punctuation and spacing. ``word_edits`` is ``None`` when the
+    word sequences differ by more than ``MAX_KEPT_WORD_EDITS`` insertions, deletions or
+    substitutions; ``character_edits`` is ``None`` beyond ``MAX_KEPT_CHARACTER_EDITS``.
+    """
+
+    before: str
+    after: str
+    word_edits: int | None
+    character_edits: int | None
+
+    @property
+    def typo_class(self) -> bool:
+        """True when the recorded audio can still read as the new text (a typo fix)."""
+        return self.word_edits is not None and self.character_edits is not None
+
+    @property
+    def spoken_words_unchanged(self) -> bool:
+        """True when only case, punctuation or spacing changed."""
+        return self.word_edits == 0
+
+
+@dataclass(frozen=True, slots=True)
+class PromptCatalogFit:
+    """Which prompt-suite/v2 catalog purposes can hold one prompt.
+
+    ``suites`` holds, per purpose that accepts the prompt, a one-prompt suite of that
+    purpose (a physical-test one carries the physical-test suite id prefix); ``problems``
+    says, per other purpose, why its catalogs refuse the prompt.
+    """
+
+    prompt_id: str
+    suites: Mapping[str, PromptSuite]  # keyed by PromptSuitePurpose
+    problems: Mapping[str, str]  # keyed by PromptSuitePurpose
+
+    def holds(self, purpose: str) -> bool:
+        """True when a catalog of ``purpose`` can publish the prompt."""
+        return purpose in self.suites
+
+    def explanation(self) -> str:
+        """Every refusing purpose with its reason, purposes sharing a reason grouped."""
+        grouped: dict[str, list[str]] = {}
+        for purpose, problem in self.problems.items():
+            grouped.setdefault(problem, []).append(purpose)
+        return "; ".join(
+            f"{', '.join(purposes)}: {problem}" for problem, purposes in grouped.items()
+        )
+
+
+def validation_problems(error: ValidationError) -> str:
+    """A pydantic failure as one line: ``location: message`` parts joined by ``; ``.
+
+    Pydantic's ``Value error, `` prefix for a validator's own ``ValueError`` is dropped, so
+    the text reads as the contract's sentence.
+    Params: ``error`` is any pydantic ``ValidationError``.
+    Returns: the one-line text.
+    Raises: nothing.
+    """
+    parts = []
+    for item in error.errors():
+        location = ".".join(str(part) for part in item["loc"])
+        message = item["msg"].removeprefix("Value error, ")
+        parts.append(f"{location}: {message}" if location else message)
+    return "; ".join(parts)
+
+
+def _spoken_words(text: str) -> tuple[str, ...]:
+    return tuple(_NOT_SPOKEN.sub("", text.casefold()).split())
+
+
+def _edits_within(first: Sequence[str], second: Sequence[str], limit: int) -> int | None:
+    """Levenshtein distance when it is at most ``limit``, else ``None`` (banded, O(limit·n))."""
+    if abs(len(first) - len(second)) > limit:
+        return None
+    beyond = limit + 1
+    previous = [column if column <= limit else beyond for column in range(len(second) + 1)]
+    for row in range(1, len(first) + 1):
+        current = [beyond] * (len(second) + 1)
+        if row <= limit:
+            current[0] = row
+        for column in range(max(1, row - limit), min(len(second), row + limit) + 1):
+            substitution = previous[column - 1] + (first[row - 1] != second[column - 1])
+            current[column] = min(
+                previous[column] + 1, current[column - 1] + 1, substitution, beyond
+            )
+        previous = current
+    return previous[-1] if previous[-1] <= limit else None
+
+
+def text_change(before: str, after: str) -> TextChange:
+    """Measure a spoken-text edit the way the keep-recordings rule judges it.
+
+    A kept recording keeps its audio and trains with the new text, so the new text must
+    still be what the audio says: case, punctuation and spacing are free, and beyond that
+    at most ``MAX_KEPT_WORD_EDITS`` word edits and ``MAX_KEPT_CHARACTER_EDITS`` character
+    edits (``TextChange.typo_class``). ``CorpusStore.edit_prompt`` does not enforce this --
+    programmatic callers own their pairs -- but ``voice-lab catalog edit-prompt
+    --keep-recordings`` refuses anything else unless the operator overrides it.
+    Params: ``before`` and ``after`` are the current and the new spoken text.
+    Returns: the measured change.
+    Raises: nothing.
+    """
+    words_before, words_after = _spoken_words(before), _spoken_words(after)
+    return TextChange(
+        before=before,
+        after=after,
+        word_edits=_edits_within(words_before, words_after, MAX_KEPT_WORD_EDITS),
+        character_edits=_edits_within(
+            " ".join(words_before), " ".join(words_after), MAX_KEPT_CHARACTER_EDITS
+        ),
+    )
+
+
+def prompt_catalog_fit(prompt: Prompt, purposes: Sequence[str] | None = None) -> PromptCatalogFit:
+    """Check one prompt against the prompt-suite/v2 rules of every catalog purpose.
+
+    Each purpose's rules are applied to the prompt alone (a one-prompt suite), which is
+    exactly the per-prompt part of ``PromptSuite`` validation: the held-out flag must match
+    the purpose, only physical-test catalogs take procedures and the ``test`` label (and
+    require it), a room tone carries instructions and no text, and text is hygienic.
+    Params: ``prompt`` is a validated ``Prompt``; ``purposes`` limits the check to these
+    purposes (every purpose when ``None``; unknown names are ignored).
+    Returns: the checked purposes that hold it (with their one-prompt suites) and why the
+    other checked purposes do not.
+    Raises: nothing.
+    """
+    suites: dict[str, PromptSuite] = {}
+    problems: dict[str, str] = {}
+    for purpose in _PURPOSES if purposes is None else (p for p in _PURPOSES if p in purposes):
+        prefix = PHYSICAL_TEST_SUITE_PREFIX if purpose == "physical-test" else ""
+        try:
+            suites[purpose] = PromptSuite(
+                schema_version=PROMPT_SUITE_V2,
+                suite_id=prefix + _PROMPT_FIT_SUITE_ID,
+                purpose=purpose,
+                prompts=(prompt,),
+            )
+        except ValidationError as error:
+            problems[purpose] = "; ".join(
+                dict.fromkeys(item["msg"].removeprefix("Value error, ") for item in error.errors())
+            )
+    return PromptCatalogFit(prompt_id=prompt.prompt_id, suites=suites, problems=problems)
+
+
+def catalog_definition(
+    catalog_id: str, *, suite_id: str | None = None, purpose: str, description: str = ""
+) -> CatalogDefinition:
+    """Validate a catalog's identity before anything is stored.
+
+    Params: ``catalog_id``; ``suite_id`` becomes ``PromptSuite.suite_id`` of every version
+    (``catalog_id`` when ``None``); ``purpose`` is the suite purpose; ``description`` is free
+    text of at most ``MAX_CATALOG_DESCRIPTION_CHARS`` characters on one line.
+    Returns: the validated definition.
+    Raises: ``CorpusStoreError`` ``CORPUS.CATALOG_INVALID`` for an id or suite id that is
+    not a stable id, an unknown purpose, a suite id whose physical-test prefix disagrees
+    with the purpose (no version could ever publish), or a description that is too long or
+    carries a control, format or line-separator character (it is printed to terminals).
+    """
+    identifier = _validated(_STABLE_ID, catalog_id, "CORPUS.CATALOG_INVALID", "catalog id")
+    suite = (
+        identifier
+        if suite_id is None
+        else _validated(_STABLE_ID, suite_id, "CORPUS.CATALOG_INVALID", "suite id")
+    )
+    catalog_purpose = _validated(_PURPOSE, purpose, "CORPUS.CATALOG_INVALID", "purpose")
+    if (catalog_purpose == "physical-test") != suite.startswith(PHYSICAL_TEST_SUITE_PREFIX):
+        raise CorpusStoreError(
+            "CORPUS.CATALOG_INVALID",
+            f"suite id {suite} cannot name a {catalog_purpose} catalog: exactly the "
+            f"physical-test catalogs have suite ids starting with {PHYSICAL_TEST_SUITE_PREFIX}",
+        )
+    if len(description) > MAX_CATALOG_DESCRIPTION_CHARS:
+        raise CorpusStoreError(
+            "CORPUS.CATALOG_INVALID",
+            f"description exceeds {MAX_CATALOG_DESCRIPTION_CHARS} characters",
+        )
+    if any(
+        unicodedata.category(character) in _DESCRIPTION_FORBIDDEN_CATEGORIES
+        for character in description
+    ):
+        raise CorpusStoreError(
+            "CORPUS.CATALOG_INVALID",
+            "description cannot contain control, format or line-separator characters",
+        )
+    return CatalogDefinition(identifier, suite, catalog_purpose, description)
+
+
+def validated_subject_id(subject_id: str) -> str:
+    """Validate a subject id before a catalog is activated for it.
+
+    Params: ``subject_id``.
+    Returns: the same id.
+    Raises: ``CorpusStoreError`` ``CORPUS.SUBJECT_INVALID`` unless it is a stable id.
+    """
+    return _validated(_STABLE_ID, subject_id, "CORPUS.SUBJECT_INVALID", "subject id")
+
+
 def corpus_store_migration_resources() -> tuple[tuple[str, str, int], ...]:
     """Fingerprint the corpus migration so a build identity can include it.
 
@@ -242,25 +476,22 @@ def corpus_store_migration(direction: MigrationDirection = "up") -> str:
     return migration_sql(CORPUS_MIGRATION_NAME, direction)
 
 
-def _validation_message(error: ValidationError) -> str:
-    parts = []
-    for item in error.errors():
-        location = ".".join(str(part) for part in item["loc"])
-        parts.append(f"{location}: {item['msg']}" if location else item["msg"])
-    return "; ".join(parts)
-
-
 def _validated[ValueT](
     adapter: TypeAdapter[ValueT], value: object, code: CorpusStoreCode, label: str
 ) -> ValueT:
     try:
         return adapter.validate_python(value)
     except ValidationError as error:
-        raise CorpusStoreError(code, f"{label}: {_validation_message(error)}") from error
+        raise CorpusStoreError(code, f"{label}: {validation_problems(error)}") from error
 
 
-def _hygienic_prompt(prompt: Prompt) -> Prompt:
-    """Apply the prompt-suite/v2 text rule now, so every stored prompt can publish later."""
+def _storable_prompt(prompt: Prompt) -> Prompt:
+    """Apply the prompt-suite/v2 rules now, so every stored prompt can publish somewhere.
+
+    The store publishes prompt-suite/v2 only, so a prompt no v2 catalog of any purpose can
+    hold (a room tone that carries text, a procedure without the ``test`` label, ...) would
+    stay live forever without ever publishing.
+    """
     if any(
         value is not None and has_hidden_control(value)
         for value in (prompt.text, prompt.instructions, prompt.style)
@@ -268,6 +499,13 @@ def _hygienic_prompt(prompt: Prompt) -> Prompt:
         raise CorpusStoreError(
             "CORPUS.PROMPT_INVALID",
             f"prompt {prompt.prompt_id} text cannot contain format or control characters",
+        )
+    fit = prompt_catalog_fit(prompt)
+    if not fit.suites:
+        raise CorpusStoreError(
+            "CORPUS.PROMPT_INVALID",
+            f"prompt {prompt.prompt_id} fits no prompt-suite/v2 catalog of any purpose "
+            f"({fit.explanation()})",
         )
     return prompt
 
@@ -277,9 +515,44 @@ def _validated_prompt(payload: dict[str, object]) -> Prompt:
         prompt = Prompt.model_validate(payload)
     except ValidationError as error:
         raise CorpusStoreError(
-            "CORPUS.PROMPT_INVALID", f"prompt is invalid: {_validation_message(error)}"
+            "CORPUS.PROMPT_INVALID", f"prompt is invalid: {validation_problems(error)}"
         ) from error
-    return _hygienic_prompt(prompt)
+    return _storable_prompt(prompt)
+
+
+def prompt_from_fields(
+    prompt_id: str,
+    *,
+    text: str | None,
+    category: str,
+    style: str,
+    expected_seconds: float,
+    instructions: str | None = None,
+    labels: Sequence[str] = (),
+    reference_candidate: bool = False,
+    holdout: bool = False,
+) -> Prompt:
+    """The prompt ``CorpusStore.add_prompt`` would store, checked the same way, unstored.
+
+    Params: as ``CorpusStore.add_prompt``.
+    Returns: the validated ``Prompt``.
+    Raises: ``CorpusStoreError`` ``CORPUS.PROMPT_INVALID`` when the fields do not form a
+    valid ``Prompt``, carry a format or control character, or fit no prompt-suite/v2
+    catalog of any purpose.
+    """
+    return _validated_prompt(
+        {
+            "prompt_id": prompt_id,
+            "text": text,
+            "category": category,
+            "style": style,
+            "instructions": instructions,
+            "labels": tuple(labels),
+            "expected_seconds": expected_seconds,
+            "reference_candidate": reference_candidate,
+            "holdout": holdout,
+        }
+    )
 
 
 def _validated_source_reference(source: PromptSource, reference: str | None) -> str | None:
@@ -296,7 +569,7 @@ def _validated_source_reference(source: PromptSource, reference: str | None) -> 
     except ValidationError as error:
         raise CorpusStoreError(
             "CORPUS.SOURCE_REFERENCE_INVALID",
-            f"prompt source reference is invalid: {_validation_message(error)}",
+            f"prompt source reference is invalid: {validation_problems(error)}",
         ) from error
     return canonical_json_bytes(parsed).decode()
 
@@ -324,7 +597,7 @@ def _aware(value: datetime) -> datetime:
 
 def _problem(error: ValueError) -> str:
     """One-line text of a row validation failure (pydantic errors span several lines)."""
-    return _validation_message(error) if isinstance(error, ValidationError) else str(error)
+    return validation_problems(error) if isinstance(error, ValidationError) else str(error)
 
 
 def _timestamp(value: object, column: str) -> datetime:
@@ -332,7 +605,7 @@ def _timestamp(value: object, column: str) -> datetime:
     try:
         return _UTC_TIMESTAMP.validate_python(value)
     except ValidationError as error:
-        raise ValueError(f"{column}: {_validation_message(error)}") from error
+        raise ValueError(f"{column}: {validation_problems(error)}") from error
 
 
 def _snapshot_payload(stream: BinaryIO, label: str) -> bytes:
@@ -366,7 +639,7 @@ def _decode_snapshot(payload: bytes, reference: CatalogReference) -> CatalogSnap
         raise CorpusSnapshotSecurityError(
             "CORPUS.SNAPSHOT_MISMATCH",
             f"catalog snapshot {reference.snapshot_path} is not a valid snapshot: "
-            f"{_validation_message(error)}",
+            f"{validation_problems(error)}",
         ) from error
     if payload != canonical_json_bytes(snapshot) + b"\n":
         raise CorpusSnapshotSecurityError(
@@ -1155,25 +1428,24 @@ class CorpusStore:
         from; ``source_reference`` is the ``PromptSourceReference`` JSON for imported sets.
         Returns: the stored record with its canonical ``prompt_sha256``.
         Raises: ``CorpusStoreError`` with ``CORPUS.PROMPT_INVALID`` when the fields do not
-        form a valid ``Prompt`` or text, instructions or style carry a format or control
-        character (the prompt-suite/v2 rule, applied here so the prompt can always publish),
+        form a valid ``Prompt``, text, instructions or style carry a format or control
+        character, or no prompt-suite/v2 catalog of any purpose could hold the prompt
+        (``prompt_catalog_fit``; applied here so every stored prompt can publish somewhere),
         ``CORPUS.SOURCE_INVALID`` for an unknown source, ``CORPUS.SOURCE_REFERENCE_INVALID``
         for a malformed reference or a harvard/arctic prompt without one,
         ``CORPUS.PROMPT_DUPLICATE`` when the id exists or a live prompt already has exactly
         this text; store and path failures as ``open_corpus_store``.
         """
-        prompt = _validated_prompt(
-            {
-                "prompt_id": prompt_id,
-                "text": text,
-                "category": category,
-                "style": style,
-                "instructions": instructions,
-                "labels": tuple(labels),
-                "expected_seconds": expected_seconds,
-                "reference_candidate": reference_candidate,
-                "holdout": holdout,
-            }
+        prompt = prompt_from_fields(
+            prompt_id,
+            text=text,
+            category=category,
+            style=style,
+            expected_seconds=expected_seconds,
+            instructions=instructions,
+            labels=labels,
+            reference_candidate=reference_candidate,
+            holdout=holdout,
         )
         prompt_source = _validated(_SOURCE, source, "CORPUS.SOURCE_INVALID", "prompt source")
         reference = _validated_source_reference(prompt_source, source_reference)
@@ -1192,24 +1464,34 @@ class CorpusStore:
         ``source`` and ``source_reference`` as in ``add_prompt``, applied to every prompt.
         Returns: the added prompt ids in order.
         Raises: as ``add_prompt`` (``CORPUS.PROMPT_INVALID`` covers a v1 suite whose text
-        carries format or control characters); ``CORPUS.PROMPT_DUPLICATE`` when any prompt
-        repeats an existing id or a live prompt's text, in which case nothing is added.
+        carries format or control characters, or whose room tone carries text);
+        ``CORPUS.PROMPT_DUPLICATE`` when any prompt repeats an existing id or a live
+        prompt's text. Nothing is added unless every prompt is.
         """
-        prompts = tuple(_hygienic_prompt(prompt) for prompt in suite.prompts)
+        prompts = tuple(_storable_prompt(prompt) for prompt in suite.prompts)
         prompt_source = _validated(_SOURCE, source, "CORPUS.SOURCE_INVALID", "prompt source")
         reference = _validated_source_reference(prompt_source, source_reference)
         now = self._now()
         with self._transaction(write=True) as connection:
-            return tuple(
-                self._insert_prompt(
-                    connection,
-                    prompt,
-                    source=prompt_source,
-                    source_reference=reference,
-                    created_at=now,
-                ).prompt.prompt_id
-                for prompt in prompts
+            return self._insert_prompts(
+                connection, prompts, source=prompt_source, source_reference=reference, now=now
             )
+
+    def _insert_prompts(
+        self,
+        connection: sqlite3.Connection,
+        prompts: Sequence[Prompt],
+        *,
+        source: PromptSource,
+        source_reference: str | None,
+        now: str,
+    ) -> tuple[str, ...]:
+        return tuple(
+            self._insert_prompt(
+                connection, prompt, source=source, source_reference=source_reference, created_at=now
+            ).prompt.prompt_id
+            for prompt in prompts
+        )
 
     def edit_prompt(
         self,
@@ -1224,6 +1506,8 @@ class CorpusStore:
         expected_seconds: float | _Unchanged = UNCHANGED,
         reference_candidate: bool | _Unchanged = UNCHANGED,
         holdout: bool | _Unchanged = UNCHANGED,
+        expected_revision: int | None = None,
+        dry_run: bool = False,
     ) -> PromptRecord:
         """Append a revision with the given fields changed; unmentioned fields stay.
 
@@ -1240,11 +1524,17 @@ class CorpusStore:
         content differs from the one already published for A; ``publish_version`` names
         such prompts when it refuses to republish that content.
         Params: ``prompt_id``; ``keep_recordings``; each field as in ``add_prompt`` or
-        ``UNCHANGED``.
-        Returns: the new current record.
+        ``UNCHANGED``; ``expected_revision`` is the revision the caller inspected (counted
+        recordings for, showed the operator): the edit is refused unless it is still the
+        current one, checked inside the write transaction; ``dry_run`` runs every check and
+        builds the revision inside the write transaction, then rolls it back, so nothing is
+        stored.
+        Returns: the new current record (with ``dry_run``, the record the edit would store).
         Raises: ``CorpusStoreError`` with ``CORPUS.PROMPT_UNKNOWN``, ``CORPUS.PROMPT_RETIRED``,
-        ``CORPUS.PROMPT_INVALID`` (the edited fields do not form a valid ``Prompt``, or a
-        keep-recordings edit changes the held-out flag or spoken/silent behaviour),
+        ``CORPUS.PROMPT_CHANGED`` (the current revision is not ``expected_revision``),
+        ``CORPUS.PROMPT_INVALID`` (the edited fields do not form a valid ``Prompt``, the
+        prompt would fit no prompt-suite/v2 catalog, or a keep-recordings edit changes the
+        held-out flag or spoken/silent behaviour),
         ``CORPUS.PROMPT_UNCHANGED`` (the edit reproduces the current content exactly) or
         ``CORPUS.PROMPT_DUPLICATE`` (another live prompt already has the new text); store and
         path failures as ``open_corpus_store``.
@@ -1260,11 +1550,39 @@ class CorpusStore:
             "holdout": holdout,
         }
         now = self._now()
+        try:
+            return self._edit_prompt(
+                prompt_id,
+                requested,
+                keep_recordings=keep_recordings,
+                expected_revision=expected_revision,
+                now=now,
+                dry_run=dry_run,
+            )
+        except _DryRunRollback as preview:
+            return preview.record
+
+    def _edit_prompt(
+        self,
+        prompt_id: str,
+        requested: dict[str, object],
+        *,
+        keep_recordings: bool,
+        expected_revision: int | None,
+        now: str,
+        dry_run: bool,
+    ) -> PromptRecord:
         with self._transaction(write=True) as connection:
             current = self._current(connection, prompt_id)
             if current.retired_at is not None:
                 raise CorpusStoreError(
                     "CORPUS.PROMPT_RETIRED", f"prompt is retired and cannot be edited: {prompt_id}"
+                )
+            if expected_revision is not None and current.revision != expected_revision:
+                raise CorpusStoreError(
+                    "CORPUS.PROMPT_CHANGED",
+                    f"prompt {prompt_id} is at revision {current.revision}, not the expected "
+                    f"revision {expected_revision}; look at it again before editing it",
                 )
             payload = _prompt_payload(current.prompt)
             payload.update(
@@ -1299,7 +1617,11 @@ class CorpusStore:
                 "UPDATE corpus_prompts SET prompt_current_revision = ? WHERE prompt_id = ?",
                 (revision, prompt_id),
             )
-            return self._current(connection, prompt_id)
+            record = self._current(connection, prompt_id)
+            if dry_run:
+                # Raised inside the transaction, so the revision above is rolled back.
+                raise _DryRunRollback(record)
+            return record
 
     def retire_prompt(self, prompt_id: str) -> PromptRecord:
         """Retire a prompt: new versions omit it; published snapshots keep it.
@@ -1389,7 +1711,7 @@ class CorpusStore:
             raise CorpusStoreError(
                 "CORPUS.STORE_UNAVAILABLE",
                 f"stored catalog version is invalid: {catalog['catalog_id']}: "
-                f"{_validation_message(error)}",
+                f"{validation_problems(error)}",
             ) from error
 
     def _catalog_record(
@@ -1485,39 +1807,91 @@ class CorpusStore:
     ) -> CatalogRecord:
         """Create an empty catalog that later versions materialize as one ``PromptSuite``.
 
-        Params: ``catalog_id``; ``suite_id`` becomes ``PromptSuite.suite_id`` of every
-        version (``catalog_id`` when ``None``); ``purpose`` is the suite purpose;
-        ``description`` is free text up to ``MAX_CATALOG_DESCRIPTION_CHARS``.
+        Params: as ``catalog_definition``.
         Returns: the record with no versions.
-        Raises: ``CorpusStoreError`` with ``CORPUS.CATALOG_INVALID`` for an id, suite id,
-        purpose or description outside the contracts, ``CORPUS.CATALOG_DUPLICATE`` when the
-        id exists; store and path failures as ``open_corpus_store``.
+        Raises: ``CorpusStoreError`` with ``CORPUS.CATALOG_INVALID`` as
+        ``catalog_definition``, ``CORPUS.CATALOG_DUPLICATE`` when the id exists; store and
+        path failures as ``open_corpus_store``.
         """
-        catalog_id = _validated(_STABLE_ID, catalog_id, "CORPUS.CATALOG_INVALID", "catalog id")
-        suite_id = (
-            catalog_id
-            if suite_id is None
-            else _validated(_STABLE_ID, suite_id, "CORPUS.CATALOG_INVALID", "suite id")
+        definition = catalog_definition(
+            catalog_id, suite_id=suite_id, purpose=purpose, description=description
         )
-        catalog_purpose = _validated(_PURPOSE, purpose, "CORPUS.CATALOG_INVALID", "purpose")
-        if len(description) > MAX_CATALOG_DESCRIPTION_CHARS:
-            raise CorpusStoreError(
-                "CORPUS.CATALOG_INVALID",
-                f"description exceeds {MAX_CATALOG_DESCRIPTION_CHARS} characters",
-            )
         now = self._now()
         with self._transaction(write=True) as connection:
-            if connection.execute(
-                "SELECT 1 FROM corpus_catalogs WHERE catalog_id = ?", (catalog_id,)
-            ).fetchone():
-                raise CorpusStoreError(
-                    "CORPUS.CATALOG_DUPLICATE", f"catalog id already exists: {catalog_id}"
-                )
-            connection.execute(
-                "INSERT INTO corpus_catalogs VALUES (?, ?, ?, ?, NULL, ?)",
-                (catalog_id, suite_id, catalog_purpose, now, description),
+            return self._insert_catalog(connection, definition, now=now)
+
+    def _insert_catalog(
+        self, connection: sqlite3.Connection, definition: CatalogDefinition, *, now: str
+    ) -> CatalogRecord:
+        catalog_id = definition.catalog_id
+        if connection.execute(
+            "SELECT 1 FROM corpus_catalogs WHERE catalog_id = ?", (catalog_id,)
+        ).fetchone():
+            raise CorpusStoreError(
+                "CORPUS.CATALOG_DUPLICATE", f"catalog id already exists: {catalog_id}"
             )
-            return self._catalog_record(connection, self._catalog_row(connection, catalog_id))
+        connection.execute(
+            "INSERT INTO corpus_catalogs VALUES (?, ?, ?, ?, NULL, ?)",
+            (catalog_id, definition.suite_id, definition.purpose, now, definition.description),
+        )
+        return self._catalog_record(connection, self._catalog_row(connection, catalog_id))
+
+    def initialize_catalog(
+        self,
+        definition: CatalogDefinition,
+        *,
+        seed: PromptSuite | None = None,
+        source: str = "import",
+        subject_id: str | None = None,
+    ) -> tuple[CatalogRecord, CatalogReference | None]:
+        """Set up an empty store in one transaction: seed, create, publish, activate.
+
+        With a ``seed`` every one of its prompts is added (in suite order), the catalog is
+        created, version 1 is published from exactly those prompts and activated for
+        ``subject_id``. Without one only the empty catalog is created. Either all of it is
+        stored or nothing is (a snapshot file written for a version that then rolled back
+        may stay behind: it is content-addressed, no row names it, and publishing the same
+        content later reuses it).
+        Params: ``definition`` from ``catalog_definition``; ``seed`` is a validated suite
+        whose prompts become revision 1; ``source`` names their origin as in ``add_prompt``;
+        ``subject_id`` is required with a seed and refused without one.
+        Returns: the stored catalog record and the version-1 reference (``None`` without a
+        seed).
+        Raises: ``ValueError`` when ``subject_id`` is given without a seed or missing with
+        one (a caller bug); ``CorpusStoreError`` with ``CORPUS.CATALOG_DUPLICATE`` when the
+        store already holds any prompt or catalog, ``CORPUS.SUBJECT_INVALID``, and as
+        ``import_prompt_suite``, ``publish_version`` and ``activate``; store and path
+        failures as ``open_corpus_store``.
+        """
+        if (seed is None) != (subject_id is None):
+            raise ValueError("a seeded catalog is activated for exactly one subject")
+        subject = None if subject_id is None else validated_subject_id(subject_id)
+        prompts = () if seed is None else tuple(_storable_prompt(p) for p in seed.prompts)
+        prompt_source = _validated(_SOURCE, source, "CORPUS.SOURCE_INVALID", "prompt source")
+        now = self._now()
+        with self._transaction(write=True) as connection:
+            held = (
+                connection.execute("SELECT COUNT(*) FROM corpus_prompts").fetchone()[0],
+                connection.execute("SELECT COUNT(*) FROM corpus_catalogs").fetchone()[0],
+            )
+            if any(held):
+                raise CorpusStoreError(
+                    "CORPUS.CATALOG_DUPLICATE",
+                    f"the corpus store is not empty: it holds {held[0]} prompt(s) and "
+                    f"{held[1]} catalog(s)",
+                )
+            prompt_ids = self._insert_prompts(
+                connection, prompts, source=prompt_source, source_reference=None, now=now
+            )
+            record = self._insert_catalog(connection, definition, now=now)
+            if subject is None:
+                return record, None
+            reference = self._publish(connection, definition.catalog_id, prompt_ids, now=now)
+            self._activate(connection, subject, reference)
+            return (
+                self._catalog_record(connection, self._catalog_row(connection, record.catalog_id)),
+                reference,
+            )
 
     def _publish_prompts(
         self, connection: sqlite3.Connection, prompt_ids: Sequence[str] | None
@@ -1575,131 +1949,154 @@ class CorpusStore:
         """
         now = self._now()
         with self._transaction(write=True) as connection:
-            catalog = self._catalog_row(connection, catalog_id)
-            records = self._publish_prompts(connection, prompt_ids)
-            if not records:
-                raise CorpusStoreError(
-                    "CORPUS.EMPTY_CATALOG", f"catalog {catalog_id} has no prompts to publish"
-                )
-            if len(records) > MAX_CATALOG_PROMPTS:
-                raise CorpusStoreError(
-                    "CORPUS.CATALOG_INVALID",
-                    f"catalog {catalog_id} exceeds {MAX_CATALOG_PROMPTS} prompts",
-                )
-            try:
-                suite = PromptSuite.model_validate(
-                    {
-                        "schema_version": PROMPT_SUITE_V2,
-                        "suite_id": catalog["catalog_suite_id"],
-                        "purpose": catalog["catalog_purpose"],
-                        "prompts": tuple(record.prompt for record in records),
-                    }
-                )
-                suite_bytes = canonical_json_bytes(suite)
-                digest = hashlib.sha256(suite_bytes).hexdigest()
-                aliases = sorted(
-                    {
-                        (record.prompt_sha256, accepted)
-                        for record in records
-                        for accepted in record.accepted_prompt_sha256s
-                    }
-                )
-                snapshot = CatalogSnapshot(
-                    suite=suite,
-                    catalog_sha256=digest,
-                    prompt_aliases=tuple(
-                        PromptAlias(prompt_sha256=current, accepted_prompt_sha256=accepted)
-                        for current, accepted in aliases
-                    ),
-                )
-            except ValidationError as error:
-                raise CorpusStoreError(
-                    "CORPUS.CATALOG_INVALID",
-                    f"catalog {catalog_id} does not materialize a valid suite: "
-                    f"{_validation_message(error)}",
-                ) from error
-            if len(suite_bytes) > MAX_CATALOG_SUITE_BYTES:
-                # The app receives a catalog whole, in one service message.
-                raise CorpusStoreError(
-                    "CORPUS.CATALOG_INVALID",
-                    f"catalog {catalog_id} would be {len(suite_bytes)} bytes with "
-                    f"{len(records)} prompts, more than the {MAX_CATALOG_SUITE_BYTES} bytes "
-                    "the recording app receives in one message; publish fewer prompts",
-                )
-            payload = canonical_json_bytes(snapshot) + b"\n"
-            if len(payload) > MAX_CATALOG_SNAPSHOT_BYTES:
-                raise CorpusStoreError(
-                    "CORPUS.CATALOG_INVALID",
-                    f"catalog {catalog_id} snapshot would exceed {MAX_CATALOG_SNAPSHOT_BYTES} "
-                    "bytes",
-                )
-            existing = connection.execute(
-                "SELECT catalog_id, catalog_version FROM corpus_catalog_versions "
-                "WHERE catalog_sha256 = ?",
-                (digest,),
-            ).fetchone()
-            if existing is not None:
-                message = (
-                    f"this exact content is already published as catalog "
-                    f"{existing['catalog_id']} version {existing['catalog_version']}"
-                )
-                published_aliases = {
-                    (row[0], row[1])
-                    for row in connection.execute(
-                        _VERSION_ALIASES, (existing["catalog_id"], existing["catalog_version"])
-                    )
+            return self._publish(connection, catalog_id, prompt_ids, now=now)
+
+    def _publish(
+        self,
+        connection: sqlite3.Connection,
+        catalog_id: str,
+        prompt_ids: Sequence[str] | None,
+        *,
+        now: str,
+    ) -> CatalogReference:
+        catalog = self._catalog_row(connection, catalog_id)
+        records = self._publish_prompts(connection, prompt_ids)
+        if not records:
+            raise CorpusStoreError(
+                "CORPUS.EMPTY_CATALOG", f"catalog {catalog_id} has no prompts to publish"
+            )
+        if len(records) > MAX_CATALOG_PROMPTS:
+            raise CorpusStoreError(
+                "CORPUS.CATALOG_INVALID",
+                f"catalog {catalog_id} exceeds {MAX_CATALOG_PROMPTS} prompts",
+            )
+        try:
+            suite = PromptSuite.model_validate(
+                {
+                    "schema_version": PROMPT_SUITE_V2,
+                    "suite_id": catalog["catalog_suite_id"],
+                    "purpose": catalog["catalog_purpose"],
+                    "prompts": tuple(record.prompt for record in records),
                 }
-                differing = {current for current, _ in set(aliases) ^ published_aliases}
-                changed = sorted(
-                    record.prompt.prompt_id
+            )
+            suite_bytes = canonical_json_bytes(suite)
+            digest = hashlib.sha256(suite_bytes).hexdigest()
+            aliases = sorted(
+                {
+                    (record.prompt_sha256, accepted)
                     for record in records
-                    if record.prompt_sha256 in differing
-                )
-                if changed:
-                    # A version's identity is its suite digest, so a keep-recordings revert
-                    # cannot republish the same content with other accepted recordings.
-                    shown = ", ".join(changed[:10]) + (
-                        f" and {len(changed) - 10} more" if len(changed) > 10 else ""
-                    )
-                    message += (
-                        f", which accepts other earlier recordings of {shown} than the current "
-                        "revisions do; a version is identified by its content, so that "
-                        "version's recording rule stays until a version with other content "
-                        "is published"
-                    )
-                raise CorpusStoreError("CORPUS.VERSION_UNCHANGED", message)
-            version = connection.execute(
-                "SELECT COALESCE(MAX(catalog_version), 0) + 1 FROM corpus_catalog_versions "
-                "WHERE catalog_id = ?",
-                (catalog_id,),
-            ).fetchone()[0]
-            self._write_snapshot(f"{digest}.json", payload)
-            connection.execute(
-                "INSERT INTO corpus_catalog_versions VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    catalog_id,
-                    version,
-                    digest,
-                    catalog_snapshot_path(digest),
-                    hashlib.sha256(payload).hexdigest(),
-                    now,
+                    for accepted in record.accepted_prompt_sha256s
+                }
+            )
+            snapshot = CatalogSnapshot(
+                suite=suite,
+                catalog_sha256=digest,
+                prompt_aliases=tuple(
+                    PromptAlias(prompt_sha256=current, accepted_prompt_sha256=accepted)
+                    for current, accepted in aliases
                 ),
             )
-            connection.executemany(
-                "INSERT INTO corpus_catalog_version_prompts VALUES (?, ?, ?, ?, ?)",
-                [
-                    (catalog_id, version, record.prompt.prompt_id, record.revision, ordinal)
-                    for ordinal, record in enumerate(records)
-                ],
+        except ValidationError as error:
+            purpose = str(catalog["catalog_purpose"])
+            refused = [
+                (record.prompt.prompt_id, fit.problems[purpose])
+                for record in (records if purpose in _PURPOSES else ())
+                if not (fit := prompt_catalog_fit(record.prompt, (purpose,))).holds(purpose)
+            ]
+            named = ""
+            if refused:
+                # A suite-level message does not say which of possibly thousands of live
+                # prompts to retire or edit; name them.
+                shown = ", ".join(f"{prompt_id} ({problem})" for prompt_id, problem in refused[:10])
+                more = f" and {len(refused) - 10} more" if len(refused) > 10 else ""
+                named = (
+                    f"; prompts a {purpose} catalog cannot hold: {shown}{more}; retire them or "
+                    "edit them to fit"
+                )
+            raise CorpusStoreError(
+                "CORPUS.CATALOG_INVALID",
+                f"catalog {catalog_id} does not materialize a valid suite: "
+                f"{validation_problems(error)}{named}",
+            ) from error
+        if len(suite_bytes) > MAX_CATALOG_SUITE_BYTES:
+            # The app receives a catalog whole, in one service message.
+            raise CorpusStoreError(
+                "CORPUS.CATALOG_INVALID",
+                f"catalog {catalog_id} would be {len(suite_bytes)} bytes with "
+                f"{len(records)} prompts, more than the {MAX_CATALOG_SUITE_BYTES} bytes "
+                "the recording app receives in one message; publish fewer prompts",
             )
-            return self._reference(
-                catalog,
-                connection.execute(
-                    "SELECT * FROM corpus_catalog_versions "
-                    "WHERE catalog_id = ? AND catalog_version = ?",
-                    (catalog_id, version),
-                ).fetchone(),
+        payload = canonical_json_bytes(snapshot) + b"\n"
+        if len(payload) > MAX_CATALOG_SNAPSHOT_BYTES:
+            raise CorpusStoreError(
+                "CORPUS.CATALOG_INVALID",
+                f"catalog {catalog_id} snapshot would exceed {MAX_CATALOG_SNAPSHOT_BYTES} bytes",
             )
+        existing = connection.execute(
+            "SELECT catalog_id, catalog_version FROM corpus_catalog_versions "
+            "WHERE catalog_sha256 = ?",
+            (digest,),
+        ).fetchone()
+        if existing is not None:
+            message = (
+                f"this exact content is already published as catalog "
+                f"{existing['catalog_id']} version {existing['catalog_version']}"
+            )
+            published_aliases = {
+                (row[0], row[1])
+                for row in connection.execute(
+                    _VERSION_ALIASES, (existing["catalog_id"], existing["catalog_version"])
+                )
+            }
+            differing = {current for current, _ in set(aliases) ^ published_aliases}
+            changed = sorted(
+                record.prompt.prompt_id for record in records if record.prompt_sha256 in differing
+            )
+            if changed:
+                # A version's identity is its suite digest, so a keep-recordings revert
+                # cannot republish the same content with other accepted recordings.
+                shown = ", ".join(changed[:10]) + (
+                    f" and {len(changed) - 10} more" if len(changed) > 10 else ""
+                )
+                message += (
+                    f", which accepts other earlier recordings of {shown} than the current "
+                    "revisions do; a version is identified by its content, so that "
+                    "version's recording rule stays until a version with other content "
+                    "is published"
+                )
+            raise CorpusStoreError("CORPUS.VERSION_UNCHANGED", message)
+        version = connection.execute(
+            "SELECT COALESCE(MAX(catalog_version), 0) + 1 FROM corpus_catalog_versions "
+            "WHERE catalog_id = ?",
+            (catalog_id,),
+        ).fetchone()[0]
+        self._write_snapshot(f"{digest}.json", payload)
+        connection.execute(
+            "INSERT INTO corpus_catalog_versions VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                catalog_id,
+                version,
+                digest,
+                catalog_snapshot_path(digest),
+                hashlib.sha256(payload).hexdigest(),
+                now,
+            ),
+        )
+        connection.executemany(
+            "INSERT INTO corpus_catalog_version_prompts VALUES (?, ?, ?, ?, ?)",
+            [
+                (catalog_id, version, record.prompt.prompt_id, record.revision, ordinal)
+                for ordinal, record in enumerate(records)
+            ],
+        )
+        return self._reference(
+            catalog,
+            connection.execute(
+                "SELECT * FROM corpus_catalog_versions "
+                "WHERE catalog_id = ? AND catalog_version = ?",
+                (catalog_id, version),
+            ).fetchone(),
+        )
 
     def resolve_reference(self, catalog_id: str, version: int | None = None) -> CatalogReference:
         """Look up a published version by catalog id and version number.
@@ -1707,11 +2104,17 @@ class CorpusStore:
         Params: ``catalog_id``; ``version`` or ``None`` for the latest published version.
         Returns: the stored reference.
         Raises: ``CorpusStoreError`` with ``CORPUS.CATALOG_UNKNOWN`` or
-        ``CORPUS.VERSION_UNKNOWN`` (no such version, or nothing published yet); store and
-        path failures as ``open_corpus_store``.
+        ``CORPUS.VERSION_UNKNOWN`` (no such version -- any number outside 1 to
+        ``MAX_CATALOG_VERSION`` included -- or nothing published yet); store and path
+        failures as ``open_corpus_store``.
         """
         with self._transaction() as connection:
             catalog = self._catalog_row(connection, catalog_id)
+            if version is not None and not 1 <= version <= MAX_CATALOG_VERSION:
+                # Also keeps an out-of-range integer away from SQLite (OverflowError).
+                raise CorpusStoreError(
+                    "CORPUS.VERSION_UNKNOWN", f"catalog {catalog_id} has no version {version}"
+                )
             if version is None:
                 row = connection.execute(
                     "SELECT * FROM corpus_catalog_versions WHERE catalog_id = ? "
@@ -1776,16 +2179,21 @@ class CorpusStore:
         or ``CORPUS.VERSION_UNKNOWN``; ``CorpusSnapshotSecurityError`` as ``materialize``;
         store and path failures as ``open_corpus_store``.
         """
-        subject_id = _validated(_STABLE_ID, subject_id, "CORPUS.SUBJECT_INVALID", "subject id")
+        subject_id = validated_subject_id(subject_id)
         with self._transaction(write=True) as connection:
-            self._require_published(connection, reference)
-            self._verified_snapshot(connection, reference)
-            connection.execute(
-                "INSERT INTO corpus_subjects VALUES (?, ?, ?) ON CONFLICT(subject_id) DO UPDATE "
-                "SET subject_active_catalog_id = excluded.subject_active_catalog_id, "
-                "subject_active_catalog_version = excluded.subject_active_catalog_version",
-                (subject_id, reference.catalog_id, reference.catalog_version),
-            )
+            self._activate(connection, subject_id, reference)
+
+    def _activate(
+        self, connection: sqlite3.Connection, subject_id: str, reference: CatalogReference
+    ) -> None:
+        self._require_published(connection, reference)
+        self._verified_snapshot(connection, reference)
+        connection.execute(
+            "INSERT INTO corpus_subjects VALUES (?, ?, ?) ON CONFLICT(subject_id) DO UPDATE "
+            "SET subject_active_catalog_id = excluded.subject_active_catalog_id, "
+            "subject_active_catalog_version = excluded.subject_active_catalog_version",
+            (subject_id, reference.catalog_id, reference.catalog_version),
+        )
 
     def active_catalog(self, subject_id: str) -> tuple[PromptSuite, CatalogReference]:
         """The suite a subject records against, read from its verified snapshot.

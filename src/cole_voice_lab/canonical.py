@@ -68,12 +68,22 @@ def file_identity(metadata: os.stat_result) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
-def open_regular_no_follow(path: Path) -> BinaryIO:
-    """Open one regular file without following its final symlink."""
+def open_regular_no_follow(path: Path, *, nonblocking: bool = False) -> BinaryIO:
+    """Open one regular file without following its final symlink.
+
+    Params: ``path``; ``nonblocking`` opens with ``O_NONBLOCK`` so an operator-named FIFO or
+    device cannot block the open itself (the flag is cleared again once ``fstat`` shows a
+    regular file, so reads behave exactly as without it).
+    Returns: the open binary stream.
+    Raises: ``SecurityError`` when the path cannot be opened this way (a final symlink
+    included) or is not a regular file.
+    """
 
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    if nonblocking:
+        flags |= os.O_NONBLOCK
     try:
         descriptor = os.open(path, flags)
     except OSError as error:
@@ -82,6 +92,8 @@ def open_regular_no_follow(path: Path) -> BinaryIO:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise SecurityError(f"expected a regular file: {path}")
+        if nonblocking:
+            os.set_blocking(descriptor, True)
         return cast(BinaryIO, os.fdopen(descriptor, "rb", closefd=True))
     except Exception:
         os.close(descriptor)

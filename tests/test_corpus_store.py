@@ -818,6 +818,285 @@ def test_edit_cannot_take_another_live_prompts_text(store: CorpusStore) -> None:
     assert store.list_prompts()[1].revision == 1
 
 
+def test_a_dry_run_edit_runs_every_check_and_stores_nothing(store: CorpusStore) -> None:
+    first = add(store, "prompt-01", "Sentence one.")
+    add(store, "prompt-02", "Sentence two.")
+    preview = store.edit_prompt(
+        "prompt-01", text="Sentence one, revised.", keep_recordings=True, dry_run=True
+    )
+    assert (preview.revision, preview.prompt.text) == (2, "Sentence one, revised.")
+    assert preview.keeps_recordings is True
+    assert preview.accepted_prompt_sha256s == (first.prompt_sha256,)
+    assert store.prompt_history("prompt-01") == (first,)
+    assert store.list_prompts()[0] == first
+    for changes, code in (
+        ({"text": "Sentence two."}, "CORPUS.PROMPT_DUPLICATE"),
+        ({"text": "Sentence one."}, "CORPUS.PROMPT_UNCHANGED"),
+        ({"text": None}, "CORPUS.PROMPT_INVALID"),
+    ):
+        with pytest.raises(CorpusStoreError) as caught:
+            store.edit_prompt("prompt-01", dry_run=True, **changes)
+        assert caught.value.code == code
+    store.retire_prompt("prompt-02")
+    with pytest.raises(CorpusStoreError) as retired:
+        store.edit_prompt("prompt-02", style="Brisk.", dry_run=True)
+    assert retired.value.code == "CORPUS.PROMPT_RETIRED"
+    written = store.edit_prompt("prompt-01", text="Sentence one, revised.", keep_recordings=True)
+    assert written.prompt == preview.prompt and written.revision == preview.revision
+    assert written.accepted_prompt_sha256s == preview.accepted_prompt_sha256s
+    assert store.prompt_history("prompt-01") == (first, written)
+
+
+def test_an_edit_is_refused_once_the_prompt_moved_past_the_revision_the_caller_saw(
+    store: CorpusStore,
+) -> None:
+    first = add(store, "prompt-01", "Sentence one.")
+    # Another editor lands a revision between the caller's look and its write.
+    other = store.edit_prompt("prompt-01", style="Brisk.", expected_revision=1)
+    assert other.revision == 2
+    for dry_run in (True, False):
+        with pytest.raises(CorpusStoreError, match="at revision 2, not the expected") as caught:
+            store.edit_prompt(
+                "prompt-01",
+                text="Sentence one!",
+                keep_recordings=True,
+                expected_revision=1,
+                dry_run=dry_run,
+            )
+        assert caught.value.code == "CORPUS.PROMPT_CHANGED"
+    assert store.prompt_history("prompt-01") == (first, other)
+    kept = store.edit_prompt(
+        "prompt-01", text="Sentence one!", keep_recordings=True, expected_revision=2
+    )
+    assert kept.accepted_prompt_sha256s == (other.prompt_sha256,)
+
+
+def test_a_prompt_no_prompt_suite_v2_catalog_can_hold_is_never_stored(store: CorpusStore) -> None:
+    """Every stored prompt can publish somewhere: the store publishes prompt-suite/v2 only."""
+    with pytest.raises(CorpusStoreError, match="fits no prompt-suite/v2 catalog") as caught:
+        add(store, "tone-01", "Silence please.", category="room-tone")
+    assert caught.value.code == "CORPUS.PROMPT_INVALID"
+    assert "room tone requires instructions and no text" in str(caught.value)
+    assert "Value error" not in str(caught.value)
+    add(store, "step-01", "Press Record.", category="neutral")
+    with pytest.raises(CorpusStoreError, match="fits no prompt-suite/v2 catalog") as caught:
+        store.edit_prompt("step-01", text=None, category="procedure", instructions="Press it.")
+    assert "physical-test: physical-test prompts require the test label" in str(caught.value)
+    assert len(store.prompt_history("step-01")) == 1
+    procedure = store.edit_prompt(
+        "step-01", text=None, category="procedure", instructions="Press it.", labels=("test",)
+    )
+    assert procedure.prompt.category == "procedure"
+    # A prompt-suite/v1 room tone carries its text; the store takes all of a suite or nothing.
+    pilot = load_builtin_prompt_suite("pilot-v1.json")
+    with pytest.raises(CorpusStoreError, match="prompt room-tone-start fits no") as caught:
+        store.import_prompt_suite(pilot, source="pilot-v1")
+    assert caught.value.code == "CORPUS.PROMPT_INVALID"
+    assert [record.prompt.prompt_id for record in store.list_prompts()] == ["step-01"]
+
+
+def test_prompt_catalog_fit_names_each_purpose_that_refuses_a_prompt() -> None:
+    spoken = Prompt(
+        prompt_id="held-01",
+        text="A held out sentence.",
+        category="neutral",
+        style="Plain.",
+        expected_seconds=2.0,
+        holdout=True,
+    )
+    fit = corpus_store.prompt_catalog_fit(spoken)
+    assert list(fit.suites) == ["held-out-evaluation"] and fit.holds("held-out-evaluation")
+    assert not fit.holds("capture-pilot") and not fit.holds("karaoke")
+    assert fit.suites["held-out-evaluation"].prompts == (spoken,)
+    assert fit.explanation() == (
+        "capture-pilot, capture-corpus, physical-test: prompt holdout flags must agree with "
+        "suite purpose"
+    )
+    tested = spoken.model_copy(update={"holdout": False, "labels": ("test",)})
+    only = corpus_store.prompt_catalog_fit(tested, ("capture-pilot", "physical-test", "karaoke"))
+    assert list(only.suites) == ["physical-test"]
+    assert only.suites["physical-test"].suite_id.startswith("cole-physical-test-")
+    assert only.problems == {
+        "capture-pilot": "only physical-test catalogs may use the test label or procedures"
+    }
+
+
+def test_publish_names_the_live_prompts_its_catalog_purpose_refuses(store: CorpusStore) -> None:
+    seeded(store, 1)
+    for number in range(12):
+        add(store, f"held-{number:02d}", f"Held sentence {number}.", holdout=True)
+    store.create_catalog(CATALOG, purpose="capture-pilot")
+    with pytest.raises(CorpusStoreError, match="does not materialize a valid suite") as caught:
+        store.publish_version(CATALOG)
+    assert caught.value.code == "CORPUS.CATALOG_INVALID"
+    message = str(caught.value)
+    assert (
+        "prompts a capture-pilot catalog cannot hold: held-00 (prompt holdout flags must agree "
+        "with suite purpose), held-01 (" in message
+    )
+    assert "held-09 (prompt holdout flags must agree with suite purpose) and 2 more" in message
+    assert "held-10" not in message and "prompt-01" not in message
+    assert message.endswith("; retire them or edit them to fit")
+    assert "Value error" not in message
+    # A failure no prompt explains (here a forged purpose) names none.
+    with raw(store) as attacker:
+        attacker.execute("UPDATE corpus_catalogs SET catalog_purpose = 'karaoke'")
+    with pytest.raises(CorpusStoreError, match="does not materialize a valid suite") as caught:
+        store.publish_version(CATALOG, prompt_ids=("prompt-01",))
+    assert "cannot hold" not in str(caught.value)
+
+
+def test_catalog_definitions_refuse_a_mismatched_prefix_and_a_terminal_unsafe_description() -> None:
+    definition = corpus_store.catalog_definition(
+        "cole-corpus", purpose="capture-pilot", description="Living corpus · v2"
+    )
+    assert definition == corpus_store.CatalogDefinition(
+        "cole-corpus", "cole-corpus", "capture-pilot", "Living corpus · v2"
+    )
+    physical = corpus_store.catalog_definition(
+        "bench", suite_id="cole-physical-test-bench", purpose="physical-test"
+    )
+    assert physical.suite_id == "cole-physical-test-bench"
+    for fields, message in (
+        ({"catalog_id": "bench", "purpose": "physical-test"}, "cannot name a physical-test"),
+        (
+            {"catalog_id": "cole-physical-test-x", "purpose": "capture-pilot"},
+            "cannot name a capture-pilot",
+        ),
+        ({"catalog_id": "c", "purpose": "capture-pilot", "description": "a\nb"}, "control"),
+        (
+            {"catalog_id": "c", "purpose": "capture-pilot", "description": "safe\x1b]0;x\x07"},
+            "control",
+        ),
+        ({"catalog_id": "c", "purpose": "capture-pilot", "description": "a\u2028b"}, "separator"),
+        ({"catalog_id": "c", "purpose": "capture-pilot", "description": "a\u200eb"}, "format"),
+    ):
+        with pytest.raises(CorpusStoreError, match=message) as caught:
+            corpus_store.catalog_definition(**fields)
+        assert caught.value.code == "CORPUS.CATALOG_INVALID"
+    with pytest.raises(CorpusStoreError, match="subject id") as subject:
+        corpus_store.validated_subject_id("Cole Self")
+    assert subject.value.code == "CORPUS.SUBJECT_INVALID"
+    assert corpus_store.validated_subject_id(SUBJECT) == SUBJECT
+
+
+def test_creating_a_catalog_applies_its_definition(store: CorpusStore) -> None:
+    with pytest.raises(CorpusStoreError, match="control") as caught:
+        store.create_catalog("second", purpose="capture-pilot", description="safe\x1b[2J")
+    assert caught.value.code == "CORPUS.CATALOG_INVALID"
+    with pytest.raises(CorpusStoreError, match="cannot name a physical-test"):
+        store.create_catalog("second", purpose="physical-test")
+    assert store.list_catalogs() == ()
+
+
+def test_initializing_a_catalog_stores_seed_version_and_activation_or_nothing(
+    store: CorpusStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed = load_builtin_prompt_suite("pilot-v2.json")
+    pin = BUILTIN_PROMPT_SUITE_SHA256["pilot-v2.json"]
+    definition = corpus_store.catalog_definition(
+        "pilot-mirror", suite_id=seed.suite_id, purpose=seed.purpose
+    )
+    for fields in ({"seed": seed}, {"subject_id": SUBJECT}):
+        with pytest.raises(ValueError, match="exactly one subject"):
+            store.initialize_catalog(definition, **fields)
+    with pytest.raises(CorpusStoreError, match="subject id") as caught:
+        store.initialize_catalog(definition, seed=seed, subject_id="Not A Subject")
+    assert caught.value.code == "CORPUS.SUBJECT_INVALID"
+
+    def refuse(*_: object) -> None:
+        raise CorpusStoreError("CORPUS.STORE_UNAVAILABLE", "activation failed")
+
+    monkeypatch.setattr(CorpusStore, "_activate", refuse)
+    with pytest.raises(CorpusStoreError, match="activation failed"):
+        store.initialize_catalog(definition, seed=seed, subject_id=SUBJECT)
+    assert store.list_prompts(include_retired=True) == () and store.list_catalogs() == ()
+    # The refused version's content-addressed snapshot may stay; publishing reuses it.
+    leftover = list(store.snapshot_directory.iterdir())
+    assert [path.name for path in leftover] == [f"{pin}.json"]
+    monkeypatch.undo()
+
+    record, reference = store.initialize_catalog(definition, seed=seed, subject_id=SUBJECT)
+    assert reference is not None
+    assert reference.catalog_sha256 == pin
+    assert record.versions == (reference,) and record.catalog_id == "pilot-mirror"
+    assert store.active_catalog(SUBJECT) == (seed, reference)
+    assert {r.source for r in store.list_prompts()} == {"import"}
+    with pytest.raises(CorpusStoreError, match="holds 36 prompt") as caught:
+        store.initialize_catalog(corpus_store.catalog_definition("other", purpose="capture-corpus"))
+    assert caught.value.code == "CORPUS.CATALOG_DUPLICATE"
+
+
+def test_initializing_without_a_seed_creates_only_the_empty_catalog(store: CorpusStore) -> None:
+    definition = corpus_store.catalog_definition("cole-corpus", purpose="capture-corpus")
+    record, reference = store.initialize_catalog(definition)
+    assert reference is None and record.versions == () and record.purpose == "capture-corpus"
+    assert store.list_prompts() == ()
+
+
+def test_a_version_number_outside_the_sqlite_range_is_simply_unknown(store: CorpusStore) -> None:
+    seeded(store, 1)
+    store.create_catalog(CATALOG, purpose="capture-corpus")
+    store.publish_version(CATALOG)
+    for version in (0, -1, 2**63, 2**70):
+        with pytest.raises(CorpusStoreError, match=f"has no version {version}$") as caught:
+            store.resolve_reference(CATALOG, version)
+        assert caught.value.code == "CORPUS.VERSION_UNKNOWN"
+    assert store.resolve_reference(CATALOG, 1).catalog_version == 1
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "words", "characters"),
+    [
+        ("The birch canoe.", "the Birch canoe!", 0, 0),
+        ("It's easy.", "Its  easy", 0, 0),
+        ("Four words right here.", "Four words right there.", 1, 1),
+        ("The smoth planks.", "The smooth planks.", 1, 1),
+        ("Send it to me.", "Send it me.", 1, 3),
+        ("Colour me red.", "Color me red.", 1, 1),
+        ("Synthetic sentence number 0.", "Synthetic sentence zero.", 2, None),
+        ("A cat sat.", "A dog sat.", 1, 3),
+        ("A cat sat.", "A horse sat.", 1, None),
+        ("One two three.", "Three two one.", 2, None),
+        ("One.", "One two three four.", None, None),
+        ("A long sentence about birds.", "Bananas are yellow.", None, None),
+    ],
+)
+def test_text_changes_are_measured_on_the_words_read_aloud(
+    before: str, after: str, words: int | None, characters: int | None
+) -> None:
+    change = corpus_store.text_change(before, after)
+    assert (change.before, change.after) == (before, after)
+    assert (change.word_edits, change.character_edits) == (words, characters)
+    assert change.typo_class is (words is not None and characters is not None)
+    assert change.spoken_words_unchanged is (words == 0)
+
+
+def _levenshtein(first: str, second: str) -> int:
+    previous = list(range(len(second) + 1))
+    for row, left in enumerate(first, 1):
+        current = [row]
+        for column, right in enumerate(second, 1):
+            current.append(
+                min(previous[column] + 1, current[-1] + 1, previous[column - 1] + (left != right))
+            )
+        previous = current
+    return previous[-1]
+
+
+def test_the_banded_edit_distance_agrees_with_the_full_one_within_its_band() -> None:
+    import random
+
+    generator = random.Random(20260916)
+    for _ in range(3000):
+        first = "".join(generator.choice("ab ") for _ in range(generator.randint(0, 9)))
+        second = "".join(generator.choice("ab ") for _ in range(generator.randint(0, 9)))
+        limit = generator.randint(0, 4)
+        exact = _levenshtein(first, second)
+        expected = exact if exact <= limit else None
+        assert corpus_store._edits_within(first, second, limit) == expected, (first, second)
+
+
 def test_keep_recordings_chain_accumulates_until_a_default_edit_breaks_it(
     store: CorpusStore,
 ) -> None:

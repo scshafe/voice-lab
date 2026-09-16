@@ -5,7 +5,11 @@ whose recorded prompt hash is the prompt's current hash or one of its accepted a
 ``CatalogSnapshot.current_prompt_for``) computed from evidence through the canonical legacy
 reader and native head reader. It never constructs RecordingIndex, never opens SQLite and
 never writes under the asset root. Legacy WAVs and catalog snapshot files are opened
-read-only. Related: recording_index.py, corpus_store.py (resolve_group_catalog).
+read-only; a caller that names a published version resolves it (``CorpusStore.materialize``)
+before calling, and the report only checks that the snapshot is exactly the file the
+reference seals. ``prompt_recordings`` counts the same way for one prompt revision (what a
+``voice-lab catalog edit-prompt`` keeps or invalidates).
+Related: recording_index.py, corpus_store.py (resolve_group_catalog).
 """
 
 from __future__ import annotations
@@ -14,14 +18,26 @@ import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 from .canonical import canonical_sha256
-from .corpus_store import CorpusSnapshotSecurityError, GroupCatalogCache, GroupCatalogKey
+from .corpus_store import (
+    CorpusSnapshotSecurityError,
+    GroupCatalogCache,
+    GroupCatalogKey,
+    prompt_catalog_fit,
+    require_referenced_snapshot,
+)
 from .errors import ContractError, VoiceLabError
-from .models import PromptSuite
+from .models import PROMPT_SUITE_V1, Prompt, PromptSuite, PromptSuitePurpose
 from .paths import AssetLayout
-from .recording_contracts import CatalogSnapshot, RecordingHistoryEntry, RecordingTake
+from .recording_contracts import (
+    CatalogReference,
+    CatalogSnapshot,
+    PromptAlias,
+    RecordingHistoryEntry,
+    RecordingTake,
+)
 from .recording_discovery_contracts import (
     DiscoveryAlias,
     LegacyProjectionRow,
@@ -72,6 +88,11 @@ class PromptCoverageReport:
     lost_prompt_ids: tuple[str, ...]
     unknown_record_ids: tuple[str, ...]
     baseline_unknown_record_ids: tuple[str, ...]
+    # The published versions compared, or None for a built-in or embedded suite.
+    catalog_id: str | None = None
+    catalog_version: int | None = None
+    baseline_catalog_id: str | None = None
+    baseline_catalog_version: int | None = None
 
     @property
     def exit_status(self) -> int:
@@ -94,7 +115,11 @@ class PromptCoverageReport:
             prompts.append(item)
         return {
             "subject_id": self.subject_id,
+            "catalog_id": self.catalog_id,
+            "catalog_version": self.catalog_version,
             "catalog_sha256": self.catalog_sha256,
+            "baseline_catalog_id": self.baseline_catalog_id,
+            "baseline_catalog_version": self.baseline_catalog_version,
             "baseline_catalog_sha256": self.baseline_catalog_sha256,
             "prompts": prompts,
             "covered_prompt_count": self.covered_prompt_count,
@@ -106,6 +131,22 @@ class PromptCoverageReport:
             "baseline_unknown_record_ids": list(self.baseline_unknown_record_ids),
             "exit_status": self.exit_status,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PromptRecordings:
+    """The subject's retained takes that count for one prompt revision now."""
+
+    subject_id: str
+    prompt_id: str
+    prompt_sha256: str
+    take_ids: tuple[str, ...]
+    # Records whose prompts cannot be told at all (a native package without its map, a
+    # legacy session without provenance); a readable package that simply holds no
+    # counting recording of this prompt is not one of them.
+    unknown_record_ids: tuple[str, ...]
+    # Why no catalog can hold this revision (so nothing can count for it), or None.
+    fits_no_catalog: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,11 +238,28 @@ def _coverage(
     )
 
 
+def _native_entries(
+    layout: AssetLayout, subject_id: str
+) -> tuple[RecordingTakeStore | None, tuple[RecordingHistoryEntry, ...]]:
+    # A root that never held native evidence has no take store; the read-only store
+    # would otherwise wait for a service owner to create its directories.
+    store = (
+        RecordingTakeStore(layout, read_only=True)
+        if os.path.lexists(layout.root / TAKE_PROVENANCE_ROOT)
+        else None
+    )
+    native = tuple(history_entry_for_take(take) for take in subject_native_takes(store, subject_id))
+    return store, native
+
+
 def prompt_coverage_report(
     layout: AssetLayout,
     subject_id: str,
     catalog: PromptSuite | CatalogSnapshot,
     baseline: PromptSuite | CatalogSnapshot | None = None,
+    *,
+    reference: CatalogReference | None = None,
+    baseline_reference: CatalogReference | None = None,
 ) -> PromptCoverageReport:
     """Compute coverage under catalog, and what changes relative to baseline.
 
@@ -212,28 +270,28 @@ def prompt_coverage_report(
     keep-recordings edit reads as changed but not lost.
     Params: ``catalog`` and ``baseline`` are plain suites or published snapshots (see
     ``coverage_catalog``); the caller resolves a published version (file read or
-    ``CorpusStore.materialize``) before calling.
+    ``CorpusStore.materialize``) before calling. ``reference`` / ``baseline_reference`` name
+    the published version each snapshot was materialized from (``None`` for a built-in);
+    the report records their catalog id and version.
     Returns: the report; ``exit_status`` is 0 when every loss is a changed prompt and every
     Unknown predates the switch.
     Raises: ``PromptCoverageProjectionError`` (a ``ContractError``) when evidence cannot be
     read or projected; ``CorpusSnapshotSecurityError`` (a ``SecurityError``,
     ``CORPUS.SNAPSHOT_MISSING`` / ``CORPUS.SNAPSHOT_MISMATCH``), unwrapped, when a native
-    take's group references a snapshot that is missing or altered.
+    take's group references a snapshot that is missing or altered, or when ``reference`` /
+    ``baseline_reference`` does not seal exactly its catalog.
     """
     layout = AssetLayout.validate(layout.root)
     snapshot = coverage_catalog(catalog)
     earlier = None if baseline is None else coverage_catalog(baseline)
+    if reference is not None:
+        require_referenced_snapshot(snapshot, reference)
+    if baseline_reference is not None:
+        if earlier is None:
+            raise ValueError("a baseline reference needs the baseline catalog it names")
+        require_referenced_snapshot(earlier, baseline_reference)
     try:
-        # A root that never held native evidence has no take store; the read-only store
-        # would otherwise wait for a service owner to create its directories.
-        store = (
-            RecordingTakeStore(layout, read_only=True)
-            if os.path.lexists(layout.root / TAKE_PROVENANCE_ROOT)
-            else None
-        )
-        native = tuple(
-            history_entry_for_take(take) for take in subject_native_takes(store, subject_id)
-        )
+        store, native = _native_entries(layout, subject_id)
         current = _coverage(layout, subject_id, snapshot, native, store)
         previous = (
             None if earlier is None else _coverage(layout, subject_id, earlier, native, store)
@@ -288,4 +346,120 @@ def prompt_coverage_report(
         lost_prompt_ids=tuple(lost),
         unknown_record_ids=current.unknown_record_ids,
         baseline_unknown_record_ids=() if previous is None else previous.unknown_record_ids,
+        catalog_id=None if reference is None else reference.catalog_id,
+        catalog_version=None if reference is None else reference.catalog_version,
+        baseline_catalog_id=None if baseline_reference is None else baseline_reference.catalog_id,
+        baseline_catalog_version=None
+        if baseline_reference is None
+        else baseline_reference.catalog_version,
+    )
+
+
+def _counting_suite(prompt: Prompt) -> PromptSuite | str:
+    """The one-prompt catalog a prompt revision can be counted through, or why none exists.
+
+    Recordings count by the recorded prompt alone, never by the catalog around it, so any
+    suite that validates with the prompt gives the same answer: the first prompt-suite/v2
+    purpose that holds it (``corpus_store.prompt_catalog_fit``), else a prompt-suite/v1
+    suite (a v1-style room tone that still carries text; v1 has no physical-test purpose).
+    When neither schema validates, no catalog of any purpose can contain the revision.
+    """
+    fit = prompt_catalog_fit(prompt)
+    suite = next(iter(fit.suites.values()), None)
+    if suite is not None:
+        return suite
+    purpose: PromptSuitePurpose = "held-out-evaluation" if prompt.holdout else "capture-pilot"
+    try:
+        return PromptSuite(
+            schema_version=PROMPT_SUITE_V1,
+            suite_id="recording-count",
+            purpose=purpose,
+            prompts=(prompt,),
+        )
+    except ValidationError as error:
+        legacy = "; ".join(
+            dict.fromkeys(item["msg"].removeprefix("Value error, ") for item in error.errors())
+        )
+    return f"{fit.explanation()}; prompt-suite/v1 {purpose}: {legacy}"
+
+
+def _unassignable(layout: AssetLayout, record_ids: tuple[str, ...]) -> tuple[str, ...]:
+    """The Unknown records of a one-prompt projection that are Unknown in every catalog.
+
+    A subject's native package carries a map naming the exact prompt of every take, so it
+    is read completely; under a one-prompt catalog it only reads as Unknown ("catalog
+    unknown") because it holds no recording that counts for that prompt. Sessions without
+    a map or without provenance stay Unknown: their prompts cannot be told.
+    """
+    from .recording_packages import load_recording_package_map
+
+    kept: list[str] = []
+    for record_id in record_ids:
+        if (
+            record_id.startswith("legacy:native-")
+            and load_recording_package_map(layout, record_id.removeprefix("legacy:")) is not None
+        ):
+            continue
+        kept.append(record_id)
+    return tuple(kept)
+
+
+def prompt_recordings(
+    layout: AssetLayout,
+    subject_id: str,
+    prompt: Prompt,
+    accepted_prompt_sha256s: tuple[str, ...] = (),
+) -> PromptRecordings:
+    """The subject's retained takes (native and legacy) that count for one prompt revision.
+
+    The coverage rule, for one prompt: a retained take counts when it was recorded against
+    ``prompt`` itself or against an earlier revision whose digest the revision accepts
+    (``accepted_prompt_sha256s``) and which keeps the prompt's identity. File-only, like the
+    report: no SQLite, no writes.
+    Params: ``layout`` is the asset root; ``subject_id`` selects the takes; ``prompt`` is the
+    revision; ``accepted_prompt_sha256s`` are the earlier digests it accepts (the store's
+    ``PromptRecord.accepted_prompt_sha256s``).
+    Returns: the counted take ids (sorted) and the records whose prompts cannot be told
+    (a subject's native package whose map validated is read exactly, so it is never one of
+    them even when it holds no recording of this prompt). A revision that no catalog can
+    contain (``fits_no_catalog`` names why) is counted by no catalog, so it has no counted
+    takes and no evidence is read.
+    Raises: ``PromptCoverageProjectionError`` when the accepted digests do not form valid
+    aliases or evidence cannot be read or projected; ``CorpusSnapshotSecurityError``,
+    unwrapped, as ``prompt_coverage_report``.
+    """
+    layout = AssetLayout.validate(layout.root)
+    suite = _counting_suite(prompt)
+    digest = canonical_sha256(prompt)
+    if isinstance(suite, str):
+        return PromptRecordings(
+            subject_id=subject_id,
+            prompt_id=prompt.prompt_id,
+            prompt_sha256=digest,
+            take_ids=(),
+            unknown_record_ids=(),
+            fits_no_catalog=suite,
+        )
+    try:
+        snapshot = CatalogSnapshot(
+            suite=suite,
+            catalog_sha256=canonical_sha256(suite),
+            prompt_aliases=tuple(
+                PromptAlias(prompt_sha256=digest, accepted_prompt_sha256=accepted)
+                for accepted in sorted(set(accepted_prompt_sha256s))
+            ),
+        )
+        store, native = _native_entries(layout, subject_id)
+        coverage = _coverage(layout, subject_id, snapshot, native, store)
+        unknown = _unassignable(layout, coverage.unknown_record_ids)
+    except CorpusSnapshotSecurityError:
+        raise  # a sealed reference that no longer resolves is a hard failure, not a gap
+    except (OSError, ValueError, VoiceLabError) as error:
+        raise PromptCoverageProjectionError(f"recording count failed: {error}") from error
+    return PromptRecordings(
+        subject_id=subject_id,
+        prompt_id=prompt.prompt_id,
+        prompt_sha256=digest,
+        take_ids=tuple(sorted(coverage.retained[digest])),
+        unknown_record_ids=unknown,
     )

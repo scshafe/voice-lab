@@ -50,6 +50,7 @@ from cole_voice_lab.prompt_coverage import (
     PromptCoverageProjectionError,
     coverage_catalog,
     prompt_coverage_report,
+    prompt_recordings,
 )
 from cole_voice_lab.recording_contracts import (
     RECORDING_GROUP_V1,
@@ -153,14 +154,20 @@ def test_report_exit_status_fails_on_projection_errors_and_catalog_only_unknowns
 
 @pytest.mark.parametrize("name", ["pilot", "evaluation", "pilot-v1.json", "/tmp/pilot-v1.json"])
 def test_coverage_report_accepts_built_in_versioned_names_only(
-    name: str, capsys: pytest.CaptureFixture[str]
+    name: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    arguments = ["prompts", "coverage-report", "--asset-root", "/private/tmp/unused-root"]
+    """Unversioned aliases and paths are no built-ins; with no published catalog of that
+    name (this root has no corpus store) they are refused by name and nothing is created."""
+    root = AssetLayout.initialize(tmp_path.resolve() / "assets").root
+    before = _tree(root)
+    arguments = ["prompts", "coverage-report", "--asset-root", str(root)]
     for option in ("--catalog", "--baseline"):
         extra = [] if option == "--catalog" else ["--catalog", "pilot-v1"]
-        with pytest.raises(SystemExit) as refused:
-            main([*arguments, "--subject-id", SUBJECT, *extra, option, name])
-        assert refused.value.code == 2 and "invalid choice" in capsys.readouterr().err
+        assert main([*arguments, "--subject-id", SUBJECT, *extra, option, name]) == 2
+        refused = capsys.readouterr()
+        assert refused.out == ""
+        assert f"not a released built-in prompt suite or a published catalog: {name}" in refused.err
+    assert _tree(root) == before
 
 
 _AUDITED_DRIVER = r"""
@@ -610,3 +617,113 @@ def test_report_coverage_equals_indexed_history_through_aliases(published: Publi
             publish(layout, index, catalog)
         for catalog in versions:
             _assert_parity(layout, index, catalog)
+
+
+def test_report_names_the_published_versions_it_compares(published: Published) -> None:
+    layout = published.evidence.layout
+    with open_corpus_store(layout, create=False) as corpus:
+        seeded, kept = (corpus.resolve_reference("cole-corpus", version) for version in (1, 2))
+    report = prompt_coverage_report(
+        layout,
+        SUBJECT,
+        published.kept,
+        published.seeded,
+        reference=kept,
+        baseline_reference=seeded,
+    )
+    assert (report.catalog_id, report.catalog_version) == ("cole-corpus", 2)
+    assert (report.baseline_catalog_id, report.baseline_catalog_version) == ("cole-corpus", 1)
+    payload = report.to_json()
+    assert (payload["catalog_id"], payload["catalog_version"]) == ("cole-corpus", 2)
+    assert (payload["baseline_catalog_id"], payload["baseline_catalog_version"]) == (
+        "cole-corpus",
+        1,
+    )
+    built_in = prompt_coverage_report(layout, SUBJECT, released_pilot_v2()).to_json()
+    assert built_in["catalog_id"] is built_in["catalog_version"] is None
+    assert built_in["baseline_catalog_id"] is built_in["baseline_catalog_version"] is None
+
+    with pytest.raises(CorpusSnapshotSecurityError) as mismatch:
+        prompt_coverage_report(layout, SUBJECT, published.kept, reference=seeded)
+    assert mismatch.value.code == "CORPUS.SNAPSHOT_MISMATCH"
+    with pytest.raises(CorpusSnapshotSecurityError):
+        prompt_coverage_report(
+            layout, SUBJECT, published.kept, published.kept, baseline_reference=seeded
+        )
+    with pytest.raises(ValueError, match="baseline reference needs the baseline catalog"):
+        prompt_coverage_report(layout, SUBJECT, published.kept, baseline_reference=kept)
+
+
+def test_one_prompt_revision_counts_the_recordings_the_report_counts(
+    published: Published,
+) -> None:
+    """What `catalog edit-prompt` states: the report's retained takes, for one revision."""
+    layout = published.evidence.layout
+    for snapshot in (published.kept, published.changed):
+        report = {
+            row.prompt_id: row for row in prompt_coverage_report(layout, SUBJECT, snapshot).prompts
+        }
+        for prompt_id in (spoken(1), spoken(2), spoken(3), ROOM_TONES[0]):
+            prompt = snapshot.prompt(prompt_id)
+            assert prompt is not None
+            digest = canonical_sha256(prompt)
+            accepted = tuple(
+                alias.accepted_prompt_sha256
+                for alias in snapshot.prompt_aliases
+                if alias.prompt_sha256 == digest
+            )
+            counted = prompt_recordings(layout, SUBJECT, prompt, accepted)
+            assert (counted.prompt_id, counted.prompt_sha256) == (prompt_id, digest)
+            assert len(counted.take_ids) == report[prompt_id].retained_take_count, prompt_id
+            assert counted.unknown_record_ids == () and counted.fits_no_catalog is None
+            if prompt_id == spoken(1) and snapshot is published.kept:
+                assert len(counted.take_ids) == 3
+                # Without its aliases the reworded revision counts nothing.
+                assert prompt_recordings(layout, SUBJECT, prompt).take_ids == ()
+    assert prompt_recordings(layout, "someone-else", pilot_v1().prompts[1]).take_ids == ()
+
+
+def test_a_revision_is_counted_through_the_one_catalog_shape_that_can_hold_it(
+    tmp_path: Path,
+) -> None:
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+
+    def prompt(**fields: Any) -> Prompt:
+        base: dict[str, Any] = {
+            "prompt_id": "probe",
+            "text": "A probe sentence.",
+            "category": "neutral",
+            "style": "Plain.",
+            "expected_seconds": 2.0,
+        }
+        return Prompt.model_validate({**base, **fields})
+
+    countable = (
+        prompt(),
+        prompt(holdout=True),
+        prompt(labels=("test",)),
+        prompt(text=None, category="procedure", instructions="Press Record.", labels=("test",)),
+        prompt(category="room-tone"),  # a prompt-suite/v1 room tone keeps its text
+        prompt(text=None, category="room-tone", instructions="Stay silent.", labels=("quiet",)),
+    )
+    for candidate in countable:
+        counted = prompt_recordings(layout, SUBJECT, candidate)
+        assert counted.take_ids == () and counted.fits_no_catalog is None, candidate
+    for candidate, problem in (
+        (
+            prompt(text=None, category="procedure", instructions="Press Record."),
+            "physical-test prompts require the test label",
+        ),
+        (prompt(holdout=True, labels=("test",)), "only physical-test catalogs may use the test"),
+        (
+            prompt(category="room-tone", labels=("quiet",)),
+            "prompt-suite/v2 room tone requires instructions",
+        ),
+        (prompt(labels=("test",), reference_candidate=True), "no references"),
+    ):
+        counted = prompt_recordings(layout, SUBJECT, candidate, ("a" * 64,))
+        assert counted.take_ids == () and counted.unknown_record_ids == ()
+        assert counted.fits_no_catalog is not None and problem in counted.fits_no_catalog
+    probe = prompt()
+    with pytest.raises(PromptCoverageProjectionError, match="recording count failed"):
+        prompt_recordings(layout, SUBJECT, probe, (canonical_sha256(probe),))

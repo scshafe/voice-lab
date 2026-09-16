@@ -6,15 +6,17 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
-from pydantic import BaseModel, JsonValue, ValidationError
+from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
 from .audition import (
     AuditionPlan,
@@ -66,18 +68,24 @@ from .datasets import (
 from .diagnostic_roots import (
     DIAGNOSTIC_ROOT_MARKER,
     initialize_diagnostic_root,
+    require_catalog_root,
     require_corpus_eligible_package,
+    require_root_purpose,
 )
 from .doctor import run_doctor
 from .errors import VoiceLabError
 from .intake import accept_capture_session, validate_capture_package
 from .models import (
+    PHYSICAL_TEST_SUITE_PREFIX,
     PROMPT_SUITE_V1,
+    PROMPT_SUITE_V2,
     CaptureDevice,
     ConsentRecord,
     Prompt,
     PromptSuite,
+    PromptSuitePurpose,
     ReferenceEvidence,
+    StableId,
     utc_now,
 )
 from .paths import ASSET_DIRECTORIES, AssetLayout
@@ -112,6 +120,10 @@ from .sync import (
     execute_sync_plan,
 )
 
+if TYPE_CHECKING:
+    from .corpus_store import CatalogRecord, CorpusStore, CorpusStoreCode, PromptRecord
+    from .recording_contracts import CatalogReference, CatalogSnapshot
+
 Command = Callable[[argparse.Namespace], int]
 MAX_CLI_DATASET_JSON_BYTES = 16 * 1024 * 1024
 # `prompts show` names built-ins only; unversioned names stay v1 (docs/PROMPT_CATALOG_V2.md §4).
@@ -123,6 +135,50 @@ PROMPT_SHOW_RESOURCES = {
     "pilot-v2": "pilot-v2.json",
     "physical-test-v1": "physical-test-v1.json",
 }
+# `--catalog` / `--baseline` name a released versioned built-in, or a published catalog.
+BUILTIN_CATALOG_RESOURCES: Mapping[str, str] = {
+    name.removesuffix(".json"): name for name in BUILTIN_PROMPT_SUITE_SHA256
+}
+UNKNOWN_CATALOG_MESSAGE = "not a released built-in prompt suite or a published catalog"
+DEFAULT_CATALOG_ID = "cole-corpus"
+BUILTIN_PROMPT_SOURCES = {"pilot-v1": "pilot-v1", "pilot-v2": "pilot-v2"}
+# Catalog versions and prompt revisions are SQLite integers (corpus_store.MAX_CATALOG_VERSION).
+MAX_CLI_VERSION = 2**63 - 1
+# At most this many prompts are named in one refusal.
+MAX_NAMED_PROMPTS = 10
+_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]*\.[A-Z][A-Z0-9_]*$")
+
+type CatalogCommandCode = Literal[
+    "CATALOG_CLI.USAGE_INVALID",
+    "CATALOG_CLI.CATALOG_ID_RESERVED",
+    "CATALOG_CLI.REWORDING_REFUSED",
+    "CATALOG_CLI.PROMPT_UNPUBLISHABLE",
+    "CATALOG_CLI.CATALOG_UNPUBLISHABLE",
+]
+
+
+class CatalogCommandError(VoiceLabError):
+    """A refusal the catalog commands decide themselves; ``code`` names it.
+
+    ``CATALOG_CLI.USAGE_INVALID``: a flag combination the command refuses.
+    ``CATALOG_CLI.CATALOG_ID_RESERVED``: a new catalog named like a released built-in.
+    ``CATALOG_CLI.REWORDING_REFUSED``: ``--keep-recordings`` for more than a typo-class fix.
+    ``CATALOG_CLI.PROMPT_UNPUBLISHABLE``: a prompt one of the store's catalogs cannot hold.
+    ``CATALOG_CLI.CATALOG_UNPUBLISHABLE``: a new catalog that cannot hold the live prompts.
+    Store refusals stay ``CorpusStoreError`` (``CORPUS.*``).
+    """
+
+    def __init__(self, code: CatalogCommandCode, message: str) -> None:
+        self.code: CatalogCommandCode = code
+        super().__init__(message)
+
+
+def _error_text(error: BaseException) -> str:
+    """``<CODE>: <message>`` for an error that names itself, else the message alone."""
+    code = getattr(error, "code", None)
+    if isinstance(code, str) and _ERROR_CODE.match(code):
+        return f"{code}: {error}"
+    return str(error)
 
 
 def _repository_root() -> Path:
@@ -158,6 +214,16 @@ def _aware_datetime(value: str) -> datetime:
     return parsed
 
 
+def _positive_number(value: str) -> int:
+    """An argparse type for a catalog version or prompt revision (1 to ``MAX_CLI_VERSION``)."""
+    digits = value.isascii() and value.isdecimal() and len(value.lstrip("0")) <= 19
+    if not digits or not 1 <= int(value) <= MAX_CLI_VERSION:
+        raise argparse.ArgumentTypeError(
+            f"expected a positive whole number of at most {MAX_CLI_VERSION}: {value}"
+        )
+    return int(value)
+
+
 def _asset_root(value: str | None) -> Path:
     configured = value or os.environ.get("COLE_VOICE_LAB_ASSET_ROOT")
     if not configured:
@@ -168,10 +234,13 @@ def _asset_root(value: str | None) -> Path:
 def _read_bounded_contract[ContractT: BaseModel](
     path: Path, model_type: type[ContractT]
 ) -> ContractT:
-    """Read one strict operator-supplied JSON contract through a bounded descriptor."""
+    """Read one strict operator-supplied JSON contract through a bounded descriptor.
+
+    A FIFO or device is refused (``SecurityError``) without blocking on its open.
+    """
 
     source = path.expanduser()
-    with open_regular_no_follow(source) as stream:
+    with open_regular_no_follow(source, nonblocking=True) as stream:
         if os.fstat(stream.fileno()).st_size > MAX_CLI_DATASET_JSON_BYTES:
             raise VoiceLabError(f"JSON input exceeds {MAX_CLI_DATASET_JSON_BYTES} bytes: {source}")
         payload = stream.read(MAX_CLI_DATASET_JSON_BYTES + 1)
@@ -428,11 +497,109 @@ def _effective_labels(suite: PromptSuite, prompt: Prompt) -> list[str]:
     ]
 
 
-def _prompts_show(options: argparse.Namespace) -> int:
-    suite = load_builtin_prompt_suite(PROMPT_SHOW_RESOURCES[options.suite])
-    if options.json:
-        _json_print(suite.model_dump(mode="json"))
-        return 0
+@dataclass(frozen=True, slots=True)
+class _ResolvedCatalog:
+    """A catalog named on the command line: a built-in suite, or a published version."""
+
+    suite: PromptSuite
+    snapshot: CatalogSnapshot | None
+    reference: CatalogReference | None
+
+    @property
+    def catalog(self) -> PromptSuite | CatalogSnapshot:
+        return self.suite if self.snapshot is None else self.snapshot
+
+
+def _is_stable_id(value: str) -> bool:
+    try:
+        TypeAdapter(StableId).validate_python(value)
+    except ValidationError:
+        return False
+    return True
+
+
+def _unknown_catalog(
+    name: str, builtins: Mapping[str, str], code: CorpusStoreCode, detail: str | None = None
+) -> VoiceLabError:
+    """The refusal of a ``--catalog``-style name, keeping the store's code for the cause."""
+    from .corpus_store import CorpusStoreError
+
+    explained = "" if detail is None else f" ({detail})"
+    return CorpusStoreError(
+        code,
+        f"{UNKNOWN_CATALOG_MESSAGE}: {name}{explained}; built-in names: {', '.join(builtins)}",
+    )
+
+
+def _parse_catalog_name(name: str, builtins: Mapping[str, str]) -> tuple[str, int | None]:
+    """Split ``<catalog_id>[@<version>]``; anything else is an unknown catalog."""
+    catalog_id, separator, version_text = name.partition("@")
+    if not _is_stable_id(catalog_id):
+        raise _unknown_catalog(name, builtins, "CORPUS.CATALOG_UNKNOWN")
+    if not separator:
+        return catalog_id, None
+    if (
+        not version_text.isascii()
+        or not version_text.isdecimal()
+        or version_text[0] == "0"
+        or len(version_text) > len(str(MAX_CLI_VERSION))
+        or int(version_text) > MAX_CLI_VERSION
+    ):
+        raise _unknown_catalog(
+            name,
+            builtins,
+            "CORPUS.VERSION_UNKNOWN",
+            f"a version is a positive whole number of at most {MAX_CLI_VERSION}",
+        )
+    return catalog_id, int(version_text)
+
+
+def _resolve_catalog(
+    name: str, asset_root: str | None, builtins: Mapping[str, str]
+) -> _ResolvedCatalog:
+    """Resolve a ``--catalog``-style name: an exact built-in name wins, then the store.
+
+    A built-in never touches the asset root or the corpus store. A published catalog is
+    ``<catalog_id>`` (its latest version) or ``<catalog_id>@<version>``; it is resolved
+    through the library's corpus store (``open_corpus_store(create=False)``: the store's
+    lease and lock are taken and its database opened, nothing is created where no store
+    exists), which is closed again before the caller reads any evidence.
+    Raises: ``CorpusStoreError`` naming ``UNKNOWN_CATALOG_MESSAGE`` and the built-in names
+    for an unknown name (``CORPUS.CATALOG_UNKNOWN`` / ``CORPUS.VERSION_UNKNOWN``, or
+    ``CORPUS.STORE_MISSING`` when there is no library or store); other store and snapshot
+    failures unchanged.
+    """
+    resource = builtins.get(name)
+    if resource is not None:
+        return _ResolvedCatalog(load_builtin_prompt_suite(resource), None, None)
+    catalog_id, version = _parse_catalog_name(name, builtins)
+    if not (asset_root or os.environ.get("COLE_VOICE_LAB_ASSET_ROOT")):
+        raise _unknown_catalog(
+            name,
+            builtins,
+            "CORPUS.STORE_MISSING",
+            "published catalogs are read from the --asset-root or COLE_VOICE_LAB_ASSET_ROOT "
+            "library",
+        )
+    from .corpus_store import CorpusStoreError, open_corpus_store
+
+    layout = AssetLayout.validate(_asset_root(asset_root))
+    try:
+        with open_corpus_store(layout, create=False) as store:
+            reference = store.resolve_reference(catalog_id, version)
+            snapshot = store.materialize(reference)
+    except CorpusStoreError as error:
+        if error.code in (
+            "CORPUS.STORE_MISSING",
+            "CORPUS.CATALOG_UNKNOWN",
+            "CORPUS.VERSION_UNKNOWN",
+        ):
+            raise _unknown_catalog(name, builtins, error.code, str(error)) from error
+        raise
+    return _ResolvedCatalog(snapshot.suite, snapshot, reference)
+
+
+def _print_suite(suite: PromptSuite) -> None:
     total = sum(prompt.expected_seconds for prompt in suite.prompts)
     print(f"{suite.suite_id} · {len(suite.prompts)} prompts · {total / 60:.1f} expected minutes")
     for prompt in suite.prompts:
@@ -448,6 +615,14 @@ def _prompts_show(options: argparse.Namespace) -> int:
         if prompt.instructions is not None:
             print(f"  Instructions: {prompt.instructions}")
         print(f"  Guidance: {prompt.style}")
+
+
+def _prompts_show(options: argparse.Namespace) -> int:
+    suite = _resolve_catalog(options.suite, options.asset_root, PROMPT_SHOW_RESOURCES).suite
+    if options.json:
+        _json_print(suite.model_dump(mode="json"))
+        return 0
+    _print_suite(suite)
     return 0
 
 
@@ -474,10 +649,12 @@ def _finetune_run_id(options: argparse.Namespace) -> str:
 
 
 def _finetune_corpus_summary(corpus: Any) -> dict[str, JsonValue]:
+    reference = corpus.catalog_reference
     return {
         "subject_id": corpus.subject_id,
         "catalog_suite_id": corpus.catalog_suite_id,
         "catalog_sha256": corpus.catalog_sha256,
+        "catalog_reference": None if reference is None else reference.model_dump(mode="json"),
         "corpus_sha256": canonical_sha256(corpus),
         "selected_prompt_count": len(corpus.entries),
         "spoken_prompt_count": corpus.spoken_prompt_count,
@@ -494,8 +671,10 @@ def _finetune_select(options: argparse.Namespace) -> Any:
     from .finetune import select_finetune_corpus
 
     layout = AssetLayout.validate(_asset_root(options.asset_root))
-    catalog = load_builtin_prompt_suite(f"{options.catalog}.json")
-    corpus = select_finetune_corpus(layout, catalog, options.subject_id)
+    resolved = _resolve_catalog(options.catalog, options.asset_root, BUILTIN_CATALOG_RESOURCES)
+    corpus = select_finetune_corpus(
+        layout, resolved.catalog, options.subject_id, reference=resolved.reference
+    )
     if not corpus.complete and not options.allow_missing:
         raise VoiceLabError(
             "the corpus is incomplete (missing: "
@@ -733,21 +912,35 @@ def _prompts_coverage_report(options: argparse.Namespace) -> int:
     from .prompt_coverage import PromptCoverageProjectionError, prompt_coverage_report
 
     layout = AssetLayout.validate(_asset_root(options.asset_root))
-    catalog = load_builtin_prompt_suite(f"{options.catalog}.json")
+    # Built-ins resolve without the store; a published version is resolved and verified
+    # through the store, which is closed again before any evidence is read.
+    catalog = _resolve_catalog(options.catalog, options.asset_root, BUILTIN_CATALOG_RESOURCES)
     baseline = (
-        None if options.baseline is None else load_builtin_prompt_suite(f"{options.baseline}.json")
+        None
+        if options.baseline is None
+        else _resolve_catalog(options.baseline, options.asset_root, BUILTIN_CATALOG_RESOURCES)
     )
     try:
-        report = prompt_coverage_report(layout, options.subject_id, catalog, baseline)
+        report = prompt_coverage_report(
+            layout,
+            options.subject_id,
+            catalog.catalog,
+            None if baseline is None else baseline.catalog,
+            reference=catalog.reference,
+            baseline_reference=None if baseline is None else baseline.reference,
+        )
     except PromptCoverageProjectionError as error:
-        print(f"voice-lab: {error}", file=sys.stderr)
+        print(f"voice-lab: {_error_text(error)}", file=sys.stderr)
         return 1
     if options.json:
         _json_print(report.to_json())
     else:
+        version = (
+            "" if report.catalog_id is None else f"{report.catalog_id}@{report.catalog_version} "
+        )
         print(
             f"{report.covered_prompt_count}/{report.total_prompt_count} prompts covered · "
-            f"catalog {report.catalog_sha256}"
+            f"catalog {version}{report.catalog_sha256}"
         )
         for label, values in (
             ("missing", report.missing_prompt_ids),
@@ -758,6 +951,740 @@ def _prompts_coverage_report(options: argparse.Namespace) -> int:
         ):
             print(f"{label}: {', '.join(values) or '-'}")
     return report.exit_status
+
+
+# -- voice-lab catalog: the corpus store (provenance/corpus) --------------------------------
+
+
+def _catalog_layout(options: argparse.Namespace) -> AssetLayout:
+    return AssetLayout.validate(_asset_root(options.asset_root))
+
+
+def _new_catalog_id(catalog_id: str) -> str:
+    """A new catalog needs a stable id that the CLI does not resolve to a built-in first."""
+    if not _is_stable_id(catalog_id):
+        from .corpus_store import CorpusStoreError
+
+        raise CorpusStoreError(
+            "CORPUS.CATALOG_INVALID",
+            f"catalog id {catalog_id!r} is not a stable id (lowercase letters, digits, '.', "
+            "'_' and '-')",
+        )
+    if catalog_id in PROMPT_SHOW_RESOURCES or catalog_id in BUILTIN_CATALOG_RESOURCES:
+        raise CatalogCommandError(
+            "CATALOG_CLI.CATALOG_ID_RESERVED",
+            f"catalog id {catalog_id} is the name of a released built-in prompt suite; "
+            "choose another id",
+        )
+    return catalog_id
+
+
+def _named(items: Sequence[str]) -> str:
+    """At most ``MAX_NAMED_PROMPTS`` items, then how many more there are."""
+    shown = ", ".join(items[:MAX_NAMED_PROMPTS])
+    extra = len(items) - MAX_NAMED_PROMPTS
+    return shown + (f" and {extra} more" if extra > 0 else "")
+
+
+def _timestamp_json(value: datetime | None) -> str | None:
+    return None if value is None else value.isoformat()
+
+
+def _prompt_record_json(record: PromptRecord) -> dict[str, JsonValue]:
+    reference = record.source_reference
+    return {
+        "prompt_id": record.prompt.prompt_id,
+        "revision": record.revision,
+        "prompt_sha256": record.prompt_sha256,
+        "prompt": record.prompt.model_dump(mode="json"),
+        "keeps_recordings": record.keeps_recordings,
+        "accepted_prompt_sha256s": list(record.accepted_prompt_sha256s),
+        "source": record.source,
+        "source_reference": None if reference is None else json.loads(reference),
+        "created_at": _timestamp_json(record.created_at),
+        "revision_created_at": _timestamp_json(record.revision_created_at),
+        "retired_at": _timestamp_json(record.retired_at),
+    }
+
+
+def _catalog_record_json(record: CatalogRecord) -> dict[str, JsonValue]:
+    return {
+        "catalog_id": record.catalog_id,
+        "suite_id": record.suite_id,
+        "purpose": record.purpose,
+        "description": record.description,
+        "created_at": _timestamp_json(record.created_at),
+        "retired_at": _timestamp_json(record.retired_at),
+        "versions": [version.model_dump(mode="json") for version in record.versions],
+    }
+
+
+def _open_catalog_store(layout: AssetLayout, *, create: bool = False) -> CorpusStore:
+    from .corpus_store import open_corpus_store
+
+    return open_corpus_store(layout, create=create)
+
+
+def _published(
+    store: CorpusStore, catalog_id: str, version: int | None
+) -> tuple[CatalogReference, CatalogSnapshot]:
+    reference = store.resolve_reference(catalog_id, version)
+    return reference, store.materialize(reference)
+
+
+def _active_reference(store: CorpusStore, subject_id: str) -> CatalogReference | None:
+    """The subject's active version, or ``None``; a damaged active snapshot still fails."""
+    from .corpus_store import CorpusStoreError
+
+    try:
+        return store.active_catalog(subject_id)[1]
+    except CorpusStoreError as error:
+        if error.code != "CORPUS.NO_ACTIVE_CATALOG":
+            raise
+        return None
+
+
+def _require_publishable(store: CorpusStore, prompts: Sequence[Prompt]) -> None:
+    """Refuse prompts that a catalog of this store could never publish.
+
+    ``voice-lab catalog publish`` publishes every live prompt, so one live prompt that a
+    catalog's purpose refuses (a held-out prompt in a capture catalog, a ``test`` label
+    outside a physical-test one) would stop every later version of that catalog, and
+    retiring it would use its id up for good. Raises ``CatalogCommandError``
+    ``CATALOG_CLI.PROMPT_UNPUBLISHABLE`` naming the prompts before anything is written.
+    """
+    from .corpus_store import prompt_catalog_fit
+
+    catalogs = [record for record in store.list_catalogs() if record.retired_at is None]
+    if not catalogs:
+        return
+    purposes = tuple(dict.fromkeys(record.purpose for record in catalogs))
+    refused: list[str] = []
+    for prompt in prompts:
+        fit = prompt_catalog_fit(prompt, purposes)
+        blocked = next((record for record in catalogs if not fit.holds(record.purpose)), None)
+        if blocked is not None:
+            refused.append(
+                f"{prompt.prompt_id} (catalog {blocked.catalog_id} is {blocked.purpose}: "
+                f"{fit.problems[blocked.purpose]})"
+            )
+    if refused:
+        raise CatalogCommandError(
+            "CATALOG_CLI.PROMPT_UNPUBLISHABLE",
+            "`voice-lab catalog publish` publishes every live prompt, and a catalog of this "
+            f"store could never publish {_named(refused)}; nothing was written",
+        )
+
+
+def _init_refusal(store: CorpusStore, subject_id: str) -> str | None:
+    """Why ``catalog init`` stops on this store, with the command that continues, or None."""
+    prompts = store.list_prompts(include_retired=True)
+    catalogs = store.list_catalogs()
+    if not prompts and not catalogs:
+        return None
+    published = [record for record in catalogs if record.versions]
+    activate = f"`voice-lab catalog activate --subject-id {subject_id} --catalog-id"
+    if not catalogs:
+        step = (
+            "create a catalog for them (`voice-lab catalog create <catalog_id> --purpose "
+            "<purpose>`), publish it (`voice-lab catalog publish --catalog-id <catalog_id>`) "
+            f"and activate it ({activate} <catalog_id> --version 1`)"
+        )
+    elif not published:
+        first = catalogs[0].catalog_id
+        step = (
+            f"publish {first} (`voice-lab catalog publish --catalog-id {first}`) and activate "
+            f"it ({activate} {first} --version 1`)"
+        )
+    elif (active := _active_reference(store, subject_id)) is None:
+        latest = published[-1].versions[-1]
+        step = (
+            f"activate a published version ({activate} {latest.catalog_id} "
+            f"--version {latest.catalog_version}`)"
+        )
+    else:
+        step = (
+            f"nothing; {subject_id} already records against {active.catalog_id} version "
+            f"{active.catalog_version}"
+        )
+    return (
+        f"the corpus store already holds {len(prompts)} prompt(s) and {len(catalogs)} "
+        f"catalog(s); `voice-lab catalog init` never seeds it again; next step: {step} "
+        f"(inspect it with `voice-lab catalog list --subject-id {subject_id}`)"
+    )
+
+
+def _catalog_init(options: argparse.Namespace) -> int:
+    from .corpus_store import (
+        CORPUS_DATABASE_NAME,
+        CORPUS_DIRECTORY,
+        CorpusStoreError,
+        catalog_definition,
+        validated_subject_id,
+        validation_problems,
+    )
+
+    layout = _catalog_layout(options)
+    catalog_id = _new_catalog_id(options.catalog_id)
+    subject_id = validated_subject_id(options.subject_id)
+    builtin = (
+        None
+        if options.from_builtin is None
+        else load_builtin_prompt_suite(BUILTIN_CATALOG_RESOURCES[options.from_builtin])
+    )
+    if builtin is None and options.purpose is None:
+        raise CatalogCommandError(
+            "CATALOG_CLI.USAGE_INVALID", "catalog init without --from-builtin requires --purpose"
+        )
+    if builtin is None and options.drop_room_tones:
+        raise CatalogCommandError(
+            "CATALOG_CLI.USAGE_INVALID", "--drop-room-tones applies only to a --from-builtin seed"
+        )
+    purpose = options.purpose or cast(PromptSuite, builtin).purpose
+    # The root decides first: a physical-test catalog belongs on a marked root only, and a
+    # marked root binds its one subject.
+    require_root_purpose(
+        layout, "physical-test" if purpose == "physical-test" else "standard", subject_id=subject_id
+    )
+    suite_id = options.suite_id
+    if suite_id is None:
+        suite_id = catalog_id
+        if purpose == "physical-test" and not catalog_id.startswith(PHYSICAL_TEST_SUITE_PREFIX):
+            if builtin is None or builtin.purpose != "physical-test":
+                raise CatalogCommandError(
+                    "CATALOG_CLI.USAGE_INVALID",
+                    f"a physical-test catalog needs a suite id starting with "
+                    f"{PHYSICAL_TEST_SUITE_PREFIX}; pass --suite-id "
+                    f"{PHYSICAL_TEST_SUITE_PREFIX}<name> (or such a --catalog-id)",
+                )
+            suite_id = builtin.suite_id
+    # Everything the store will hold is validated before the store is created.
+    definition = catalog_definition(
+        catalog_id, suite_id=suite_id, purpose=purpose, description=options.description
+    )
+    seed: PromptSuite | None = None
+    dropped: list[str] = []
+    if builtin is not None:
+        kept = []
+        for prompt in builtin.prompts:
+            if options.drop_room_tones and prompt.category == "room-tone":
+                dropped.append(prompt.prompt_id)
+            else:
+                kept.append(prompt)
+        try:
+            seed = PromptSuite(
+                schema_version=PROMPT_SUITE_V2,
+                suite_id=definition.suite_id,
+                purpose=definition.purpose,
+                prompts=tuple(kept),
+            )
+        except ValidationError as error:
+            raise CorpusStoreError(
+                "CORPUS.CATALOG_INVALID",
+                f"{options.from_builtin} cannot seed catalog {catalog_id} as a "
+                f"{purpose} prompt-suite/v2 catalog: {validation_problems(error)}",
+            ) from error
+        require_catalog_root(layout, seed, subject_id)
+    with _open_catalog_store(layout, create=True) as store:
+        refusal = _init_refusal(store, subject_id)
+        if refusal is not None:
+            raise CorpusStoreError("CORPUS.CATALOG_DUPLICATE", refusal)
+        # One store transaction: seed, catalog, version 1 and activation, or nothing.
+        record, reference = store.initialize_catalog(
+            definition,
+            seed=seed,
+            source=BUILTIN_PROMPT_SOURCES.get(options.from_builtin, "import"),
+            subject_id=None if seed is None else subject_id,
+        )
+    _json_print(
+        {
+            "asset_root": str(layout.root),
+            "store": f"provenance/{CORPUS_DIRECTORY}/{CORPUS_DATABASE_NAME}",
+            "catalog": _catalog_record_json(record),
+            "seeded_from": options.from_builtin,
+            "prompt_count": 0 if seed is None else len(seed.prompts),
+            "dropped_prompt_ids": dropped,
+            "reference": None if reference is None else reference.model_dump(mode="json"),
+            "active_subject_id": None if reference is None else subject_id,
+        }
+    )
+    return 0
+
+
+def _catalog_create(options: argparse.Namespace) -> int:
+    from .corpus_store import catalog_definition, prompt_catalog_fit
+
+    layout = _catalog_layout(options)
+    definition = catalog_definition(
+        _new_catalog_id(options.catalog_id),
+        suite_id=options.suite_id,
+        purpose=options.purpose,
+        description=options.description,
+    )
+    with _open_catalog_store(layout) as store:
+        refused = [
+            record.prompt.prompt_id
+            for record in store.list_prompts()
+            if not prompt_catalog_fit(record.prompt, (definition.purpose,)).holds(
+                definition.purpose
+            )
+        ]
+        if refused:
+            raise CatalogCommandError(
+                "CATALOG_CLI.CATALOG_UNPUBLISHABLE",
+                f"a {definition.purpose} catalog cannot hold the live prompts "
+                f"{_named(refused)}, and `voice-lab catalog publish` publishes every live "
+                "prompt; nothing was written",
+            )
+        record = store.create_catalog(
+            definition.catalog_id,
+            suite_id=definition.suite_id,
+            purpose=definition.purpose,
+            description=definition.description,
+        )
+    _json_print(_catalog_record_json(record))
+    return 0
+
+
+def _catalog_list(options: argparse.Namespace) -> int:
+    layout = _catalog_layout(options)
+    active: CatalogReference | None = None
+    with _open_catalog_store(layout) as store:
+        catalogs = store.list_catalogs()
+        prompts = store.list_prompts(include_retired=True)
+        if options.subject_id is not None:
+            active = _active_reference(store, options.subject_id)
+    retired = sum(record.retired_at is not None for record in prompts)
+    if options.json:
+        _json_print(
+            {
+                "catalogs": [_catalog_record_json(record) for record in catalogs],
+                "live_prompt_count": len(prompts) - retired,
+                "retired_prompt_count": retired,
+                "subject_id": options.subject_id,
+                "active": None if active is None else active.model_dump(mode="json"),
+            }
+        )
+        return 0
+    for record in catalogs:
+        latest = record.versions[-1] if record.versions else None
+        published = (
+            "nothing published"
+            if latest is None
+            else f"latest version {latest.catalog_version} · {latest.catalog_sha256}"
+        )
+        print(f"{record.catalog_id} · suite {record.suite_id} · {record.purpose} · {published}")
+        if record.description:
+            print(f"  {record.description}")
+    if not catalogs:
+        print("no catalogs")
+    print(f"prompts: {len(prompts) - retired} live · {retired} retired")
+    if options.subject_id is not None:
+        print(
+            f"{options.subject_id} has no active catalog"
+            if active is None
+            else f"{options.subject_id} records against {active.catalog_id} "
+            f"version {active.catalog_version}"
+        )
+    return 0
+
+
+def _catalog_show(options: argparse.Namespace) -> int:
+    layout = _catalog_layout(options)
+    with _open_catalog_store(layout) as store:
+        reference, snapshot = _published(store, options.catalog_id, options.version)
+    if options.json:
+        _json_print(
+            {
+                "reference": reference.model_dump(mode="json"),
+                "snapshot": snapshot.model_dump(mode="json"),
+            }
+        )
+        return 0
+    print(
+        f"{reference.catalog_id} version {reference.catalog_version} · "
+        f"{len(snapshot.prompt_aliases)} kept-recording aliases · catalog "
+        f"{reference.catalog_sha256}"
+    )
+    _print_suite(snapshot.suite)
+    return 0
+
+
+def _catalog_export(options: argparse.Namespace) -> int:
+    layout = _catalog_layout(options)
+    with _open_catalog_store(layout) as store:
+        _reference, snapshot = _published(store, options.catalog_id, options.version)
+    _json_print(snapshot.suite.model_dump(mode="json"))
+    return 0
+
+
+def _prompt_field_changes(options: argparse.Namespace) -> dict[str, Any]:
+    changes: dict[str, Any] = {}
+    if options.text is not None or options.no_text:
+        changes["text"] = options.text
+    if options.instructions is not None or options.no_instructions:
+        changes["instructions"] = options.instructions
+    for field in ("category", "style", "expected_seconds", "reference_candidate", "holdout"):
+        if getattr(options, field) is not None:
+            changes[field] = getattr(options, field)
+    if options.label is not None or options.no_labels:
+        changes["labels"] = tuple(options.label or ())
+    return changes
+
+
+def _catalog_add_prompt(options: argparse.Namespace) -> int:
+    from .corpus_store import prompt_from_fields
+    from .standard_prompt_sets import (
+        STANDARD_PROMPT_CATEGORY,
+        STANDARD_PROMPT_STYLE,
+        standard_expected_seconds,
+    )
+
+    layout = _catalog_layout(options)
+    expected_seconds = options.expected_seconds
+    if expected_seconds is None:
+        if options.text is None:
+            raise CatalogCommandError(
+                "CATALOG_CLI.USAGE_INVALID", "a prompt without --text needs --expected-seconds"
+            )
+        expected_seconds = standard_expected_seconds(options.text)
+    fields: dict[str, Any] = {
+        "text": options.text,
+        "instructions": options.instructions,
+        "category": options.category or STANDARD_PROMPT_CATEGORY,
+        "style": options.style or STANDARD_PROMPT_STYLE,
+        "expected_seconds": expected_seconds,
+        "labels": tuple(options.label or ()),
+        "reference_candidate": options.reference_candidate,
+        "holdout": options.holdout,
+    }
+    prompt = prompt_from_fields(options.prompt_id, **fields)
+    with _open_catalog_store(layout) as store:
+        _require_publishable(store, (prompt,))
+        record = store.add_prompt(options.prompt_id, source="manual", **fields)
+    _json_print(_prompt_record_json(record))
+    return 0
+
+
+def _quoted(text: str | None) -> str:
+    return "(no spoken text)" if text is None else json.dumps(text, ensure_ascii=False)
+
+
+def _text_change_line(prompt_id: str, before: Prompt, after: Prompt) -> str | None:
+    """The spoken-text edit as the operator should see it before it is written."""
+    from .corpus_store import MAX_KEPT_CHARACTER_EDITS, MAX_KEPT_WORD_EDITS, text_change
+
+    if before.text == after.text:
+        return None
+    line = f"{prompt_id} text: {_quoted(before.text)} -> {_quoted(after.text)}"
+    if before.text is None or after.text is None:
+        return line
+    change = text_change(before.text, after.text)
+    if change.spoken_words_unchanged:
+        kind = "case, punctuation or spacing only"
+    elif change.typo_class:
+        words, characters = change.word_edits, change.character_edits
+        kind = (
+            f"a typo-class fix: {words} word edit{'' if words == 1 else 's'}, "
+            f"{characters} character edit{'' if characters == 1 else 's'}"
+        )
+    else:
+        kind = (
+            f"a rewording: more than {MAX_KEPT_WORD_EDITS} word edits or "
+            f"{MAX_KEPT_CHARACTER_EDITS} character edits"
+        )
+    return f"{line} ({kind})"
+
+
+def _text_change_json(before: Prompt, after: Prompt) -> dict[str, JsonValue] | None:
+    from .corpus_store import text_change
+
+    if before.text == after.text:
+        return None
+    change = (
+        None if before.text is None or after.text is None else text_change(before.text, after.text)
+    )
+    return {
+        "before": before.text,
+        "after": after.text,
+        "word_edits": None if change is None else change.word_edits,
+        "character_edits": None if change is None else change.character_edits,
+        "typo_class": change is not None and change.typo_class,
+    }
+
+
+def _recordings_line(
+    prompt_id: str, subject_id: str, count: int, keep: bool, fits_no_catalog: str | None
+) -> str:
+    """What an edit does to the recordings that count for the prompt now, in one line."""
+    if count == 0:
+        reason = "" if fits_no_catalog is None else f" (no catalog can hold it: {fits_no_catalog})"
+        return (
+            f"{prompt_id}: no recordings of {subject_id} count for this prompt now{reason}, so "
+            f"this edit {'keeps' if keep else 'invalidates'} none"
+        )
+    them = "it" if count == 1 else "them"
+    consequence = (
+        f"this edit keeps {them} (counted for the new text, which becomes the training transcript)"
+        if keep
+        else f"this edit invalidates {them} (not counted until {prompt_id} is recorded again)"
+    )
+    return (
+        f"{prompt_id}: {count} recording{'' if count == 1 else 's'} of {subject_id} "
+        f"count{'s' if count == 1 else ''} for this prompt now; {consequence}"
+    )
+
+
+def _require_typo_class(prompt_id: str, before: Prompt, after: Prompt) -> None:
+    """``--keep-recordings`` pairs old audio with the new text, so the words must still match."""
+    from .corpus_store import MAX_KEPT_CHARACTER_EDITS, MAX_KEPT_WORD_EDITS, text_change
+
+    if before.text is None or after.text is None or before.text == after.text:
+        return  # silent prompts carry no transcript; spoken/silent changes the store refuses
+    if text_change(before.text, after.text).typo_class:
+        return
+    raise CatalogCommandError(
+        "CATALOG_CLI.REWORDING_REFUSED",
+        f"--keep-recordings keeps {prompt_id}'s recordings only for a typo-class fix (at most "
+        f"{MAX_KEPT_WORD_EDITS} word edits and {MAX_KEPT_CHARACTER_EDITS} character edits, "
+        f"ignoring case, punctuation and spacing), and {_quoted(before.text)} -> "
+        f"{_quoted(after.text)} is a rewording: the kept audio would train with words it does "
+        "not say. Edit without --keep-recordings (the prompt is recorded again), or add "
+        "--allow-rewording if the recordings already say the new text; nothing was written",
+    )
+
+
+def _catalog_edit_prompt(options: argparse.Namespace) -> int:
+    from .prompt_coverage import prompt_recordings
+
+    layout = _catalog_layout(options)
+    changes = _prompt_field_changes(options)
+    if not changes:
+        raise CatalogCommandError(
+            "CATALOG_CLI.USAGE_INVALID",
+            "catalog edit-prompt needs a field to change (--text, --instructions, --category, "
+            "--style, --expected-seconds, --label, --reference-candidate or --holdout)",
+        )
+    if options.allow_rewording and not options.keep_recordings:
+        raise CatalogCommandError(
+            "CATALOG_CLI.USAGE_INVALID", "--allow-rewording only qualifies --keep-recordings"
+        )
+    prompt_id = options.prompt_id
+    keep = options.keep_recordings
+    with _open_catalog_store(layout) as store:
+        current = store.prompt_history(prompt_id)[-1]
+        # The revision counted and shown here is the only one the write may replace.
+        revision = options.expected_revision or current.revision
+        # Every store check runs first (the preview is rolled back), so a refused edit
+        # never reports recordings it would not touch.
+        preview = store.edit_prompt(
+            prompt_id, keep_recordings=keep, expected_revision=revision, dry_run=True, **changes
+        )
+        if keep and not options.allow_rewording:
+            _require_typo_class(prompt_id, current.prompt, preview.prompt)
+        _require_publishable(store, (preview.prompt,))
+        counted = prompt_recordings(
+            layout, options.subject_id, current.prompt, current.accepted_prompt_sha256s
+        )
+        count = len(counted.take_ids)
+        lines = [
+            line
+            for line in (_text_change_line(prompt_id, current.prompt, preview.prompt),)
+            if line is not None
+        ]
+        lines.append(
+            _recordings_line(prompt_id, options.subject_id, count, keep, counted.fits_no_catalog)
+        )
+        unknown = counted.unknown_record_ids
+        if unknown:
+            state = "record whose prompts" if len(unknown) == 1 else "records whose prompts"
+            verb = "is" if len(unknown) == 1 else "are"
+            lines.append(
+                f"  {len(unknown)} {state} cannot be told {verb} not counted: {', '.join(unknown)}"
+            )
+        # Shown before anything is written; with --json stdout carries one document only.
+        print("\n".join(lines), file=sys.stderr if options.json else sys.stdout, flush=True)
+        record = (
+            preview
+            if options.dry_run
+            else store.edit_prompt(
+                prompt_id, keep_recordings=keep, expected_revision=current.revision, **changes
+            )
+        )
+    if options.json:
+        _json_print(
+            {
+                "prompt_id": prompt_id,
+                "subject_id": options.subject_id,
+                "keep_recordings": keep,
+                "text_change": _text_change_json(current.prompt, preview.prompt),
+                "recordings": {
+                    "count": count,
+                    "outcome": "kept" if keep else "invalidated",
+                    "take_ids": list(counted.take_ids),
+                    "unknown_record_ids": list(unknown),
+                    "fits_no_catalog": counted.fits_no_catalog,
+                },
+                "written": not options.dry_run,
+                "previous": _prompt_record_json(current),
+                "record": _prompt_record_json(record),
+            }
+        )
+        return 0
+    state = "would be" if options.dry_run else "is now"
+    print(
+        f"{prompt_id} {state} revision {record.revision} · {record.prompt_sha256} · "
+        f"counts recordings of {len(record.accepted_prompt_sha256s)} earlier revision(s)"
+    )
+    print(
+        f"not written (--dry-run; write it with --expected-revision {current.revision})"
+        if options.dry_run
+        else "publish a version (`voice-lab catalog publish`) and activate it for the app"
+    )
+    return 0
+
+
+def _catalog_retire_prompt(options: argparse.Namespace) -> int:
+    layout = _catalog_layout(options)
+    with _open_catalog_store(layout) as store:
+        record = store.retire_prompt(options.prompt_id)
+    _json_print(_prompt_record_json(record))
+    return 0
+
+
+def _require_standard_set_absent(store: CorpusStore, name: str, first_prompt_id: str) -> None:
+    from .corpus_store import CorpusStoreError
+
+    try:
+        store.prompt_history(first_prompt_id)
+    except CorpusStoreError as error:
+        if error.code == "CORPUS.PROMPT_UNKNOWN":
+            return
+        raise
+    raise CorpusStoreError(
+        "CORPUS.PROMPT_DUPLICATE",
+        f"the store already holds {first_prompt_id}, the first sentence of the {name} set, so "
+        "the set is imported already; nothing was read, fetched or written",
+    )
+
+
+def _catalog_import_standard(
+    options: argparse.Namespace, name: Literal["harvard", "arctic"]
+) -> int:
+    from .standard_prompt_sets import (
+        STANDARD_SET_FIRST_PROMPT_IDS,
+        fetch_standard_set,
+        read_standard_set_file,
+        source_url,
+        standard_prompt_set,
+    )
+
+    layout = _catalog_layout(options)
+    if options.fetch and (options.fetched_at is not None or options.source_url is not None):
+        raise CatalogCommandError(
+            "CATALOG_CLI.USAGE_INVALID",
+            "--fetched-at and --source-url describe a --from-file copy; --fetch records the "
+            "time it fetches and the URL the list came from",
+        )
+    if not options.fetch and (options.fetched_at is None or options.source_url is None):
+        raise CatalogCommandError(
+            "CATALOG_CLI.USAGE_INVALID",
+            "--from-file requires --fetched-at and --source-url (when and where the copy was "
+            "downloaded; both are recorded as given)",
+        )
+    if not options.fetch:
+        source_url(options.source_url)
+    # An import that cannot succeed reads and downloads nothing: the store must exist and
+    # must not hold the set yet.
+    with _open_catalog_store(layout) as store:
+        _require_standard_set_absent(store, name, STANDARD_SET_FIRST_PROMPT_IDS[name])
+    if options.fetch:
+        payload, fetched_at, url = fetch_standard_set(name)
+    else:
+        payload = read_standard_set_file(Path(options.from_file))
+        fetched_at, url = options.fetched_at, options.source_url
+    prompt_set = standard_prompt_set(name, payload, fetched_at=fetched_at, url=url)
+    with _open_catalog_store(layout) as store:
+        _require_publishable(store, prompt_set.suite.prompts)
+        prompt_ids = store.import_prompt_suite(
+            prompt_set.suite, source=name, source_reference=prompt_set.source_reference
+        )
+    _json_print(
+        {
+            "source": name,
+            "url": prompt_set.url,
+            "fetched_at": prompt_set.fetched_at.isoformat(),
+            "sha256": prompt_set.sha256,
+            "prompt_count": len(prompt_ids),
+            "first_prompt_id": prompt_ids[0],
+            "last_prompt_id": prompt_ids[-1],
+            "expected_seconds": round(
+                sum(prompt.expected_seconds for prompt in prompt_set.suite.prompts), 1
+            ),
+        }
+    )
+    return 0
+
+
+def _catalog_import_harvard(options: argparse.Namespace) -> int:
+    return _catalog_import_standard(options, "harvard")
+
+
+def _catalog_import_arctic(options: argparse.Namespace) -> int:
+    return _catalog_import_standard(options, "arctic")
+
+
+def _catalog_import_json(options: argparse.Namespace) -> int:
+    layout = _catalog_layout(options)
+    suite = _read_bounded_contract(Path(options.suite_path), PromptSuite)
+    with _open_catalog_store(layout) as store:
+        _require_publishable(store, suite.prompts)
+        prompt_ids = store.import_prompt_suite(suite, source="import")
+    _json_print(
+        {
+            "suite_id": suite.suite_id,
+            "suite_sha256": canonical_sha256(suite),
+            "source": "import",
+            "prompt_count": len(prompt_ids),
+            "prompt_ids": list(prompt_ids),
+        }
+    )
+    return 0
+
+
+def _catalog_publish(options: argparse.Namespace) -> int:
+    layout = _catalog_layout(options)
+    with _open_catalog_store(layout) as store:
+        reference = store.publish_version(options.catalog_id)
+        snapshot = store.materialize(reference)
+    _json_print(
+        {
+            "reference": reference.model_dump(mode="json"),
+            "prompt_count": len(snapshot.suite.prompts),
+            "alias_count": len(snapshot.prompt_aliases),
+            "expected_seconds": round(
+                sum(prompt.expected_seconds for prompt in snapshot.suite.prompts), 1
+            ),
+        }
+    )
+    return 0
+
+
+def _catalog_activate(options: argparse.Namespace) -> int:
+    layout = _catalog_layout(options)
+    with _open_catalog_store(layout) as store:
+        reference, snapshot = _published(store, options.catalog_id, options.version)
+        require_catalog_root(layout, snapshot.suite, options.subject_id)
+        store.activate(options.subject_id, reference)
+    _json_print(
+        {
+            "subject_id": options.subject_id,
+            "reference": reference.model_dump(mode="json"),
+            "prompt_count": len(snapshot.suite.prompts),
+            "takes_effect": "at the next launch of the recording app",
+        }
+    )
+    return 0
 
 
 def _capture_devices(options: argparse.Namespace) -> int:
@@ -1911,21 +2838,35 @@ def build_parser() -> argparse.ArgumentParser:
     assets_status.add_argument("--asset-root")
     assets_status.set_defaults(handler=_assets_status)
 
-    prompts = commands.add_parser("prompts", help="inspect bundled prompt suites")
+    published_help = (
+        "a published <catalog_id>[@<version>] (latest version without @), resolved through "
+        "the library's corpus store, which takes its lock and opens its database"
+    )
+    catalog_help = (
+        "a released built-in (" + ", ".join(BUILTIN_CATALOG_RESOURCES) + ") or " + published_help
+    )
+    prompts = commands.add_parser("prompts", help="inspect bundled and published prompt suites")
     prompt_commands = prompts.add_subparsers(dest="prompts_command", required=True)
     prompt_show = prompt_commands.add_parser("show")
-    prompt_show.add_argument("suite", choices=tuple(PROMPT_SHOW_RESOURCES))
+    prompt_show.add_argument(
+        "suite",
+        metavar="catalog",
+        help="a built-in name (" + ", ".join(PROMPT_SHOW_RESOURCES) + ") or " + published_help,
+    )
+    prompt_show.add_argument("--asset-root", help="library holding published catalogs")
     prompt_show.add_argument("--json", action="store_true")
     prompt_show.set_defaults(handler=_prompts_show)
-    builtin_suites = tuple(name.removesuffix(".json") for name in BUILTIN_PROMPT_SUITE_SHA256)
+    builtin_suites = tuple(BUILTIN_CATALOG_RESOURCES)
     coverage_report = prompt_commands.add_parser(
         "coverage-report",
-        help="read-only exact coverage of a built-in catalog; exit 1 on unexplained losses",
+        help="exact coverage of a built-in or published catalog, reading evidence without "
+        "writing it (a published catalog is resolved through the corpus store first); exit 1 "
+        "on unexplained losses",
     )
     coverage_report.add_argument("--asset-root")
     coverage_report.add_argument("--subject-id", required=True)
-    coverage_report.add_argument("--catalog", required=True, choices=builtin_suites)
-    coverage_report.add_argument("--baseline", choices=builtin_suites)
+    coverage_report.add_argument("--catalog", required=True, help=catalog_help)
+    coverage_report.add_argument("--baseline", help=catalog_help)
     coverage_report.add_argument("--json", action="store_true")
     coverage_report.set_defaults(handler=_prompts_coverage_report)
 
@@ -1937,7 +2878,7 @@ def build_parser() -> argparse.ArgumentParser:
     def _finetune_corpus_arguments(parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--asset-root")
         parser.add_argument("--subject-id", default="cole-self")
-        parser.add_argument("--catalog", required=True, choices=builtin_suites)
+        parser.add_argument("--catalog", required=True, help=catalog_help)
         parser.add_argument(
             "--allow-missing",
             action="store_true",
@@ -2036,6 +2977,187 @@ def build_parser() -> argparse.ArgumentParser:
     finetune_fetch.add_argument("--runtime-root", required=True)
     finetune_fetch.add_argument("--allow-downloads", action="store_true")
     finetune_fetch.set_defaults(handler=_finetune_fetch_pretrained)
+
+    catalog = commands.add_parser(
+        "catalog", help="edit, import, publish and activate prompt catalogs (the corpus store)"
+    )
+    catalog_commands = catalog.add_subparsers(dest="catalog_command", required=True)
+    purposes = get_args(PromptSuitePurpose)
+
+    def _catalog_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--asset-root")
+
+    def _catalog_id_argument(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--catalog-id", default=DEFAULT_CATALOG_ID)
+
+    def _prompt_field_arguments(parser: argparse.ArgumentParser, *, adding: bool) -> None:
+        text = parser.add_mutually_exclusive_group()
+        text.add_argument("--text", help="the sentence read aloud")
+        instructions = parser.add_mutually_exclusive_group()
+        instructions.add_argument("--instructions", help="what a silent prompt asks for")
+        parser.add_argument("--category", help="defaults to neutral" if adding else None)
+        parser.add_argument(
+            "--style", help="reading guidance; defaults to plain reading" if adding else None
+        )
+        parser.add_argument(
+            "--expected-seconds",
+            type=float,
+            help="defaults to 0.42 s per word + 0.8 s for spoken text" if adding else None,
+        )
+        labels = parser.add_mutually_exclusive_group()
+        labels.add_argument("--label", action="append", help="repeatable")
+        if adding:
+            parser.add_argument("--reference-candidate", action="store_true")
+            parser.add_argument("--holdout", action="store_true")
+            return
+        text.add_argument("--no-text", action="store_true", help="make the prompt silent")
+        instructions.add_argument("--no-instructions", action="store_true")
+        labels.add_argument("--no-labels", action="store_true")
+        parser.add_argument("--reference-candidate", action=argparse.BooleanOptionalAction)
+        parser.add_argument("--holdout", action=argparse.BooleanOptionalAction)
+
+    catalog_init = catalog_commands.add_parser(
+        "init", help="create the store, seed a built-in, publish version 1 and activate it"
+    )
+    _catalog_arguments(catalog_init)
+    catalog_init.add_argument("--subject-id", required=True)
+    catalog_init.add_argument("--catalog-id", default=DEFAULT_CATALOG_ID)
+    catalog_init.add_argument("--suite-id", help="suite id of every version; the catalog id")
+    catalog_init.add_argument("--from-builtin", choices=builtin_suites)
+    catalog_init.add_argument("--drop-room-tones", action="store_true")
+    catalog_init.add_argument("--purpose", choices=purposes, help="defaults to the seed's purpose")
+    catalog_init.add_argument("--description", default="")
+    catalog_init.set_defaults(handler=_catalog_init)
+
+    catalog_create = catalog_commands.add_parser("create", help="create an empty catalog")
+    _catalog_arguments(catalog_create)
+    catalog_create.add_argument("catalog_id")
+    catalog_create.add_argument("--purpose", required=True, choices=purposes)
+    catalog_create.add_argument("--suite-id", help="suite id of every version; the catalog id")
+    catalog_create.add_argument("--description", default="")
+    catalog_create.set_defaults(handler=_catalog_create)
+
+    catalog_list = catalog_commands.add_parser(
+        "list", help="catalogs, their versions and prompt counts (read-only)"
+    )
+    _catalog_arguments(catalog_list)
+    catalog_list.add_argument("--subject-id", help="also name this subject's active version")
+    catalog_list.add_argument("--json", action="store_true")
+    catalog_list.set_defaults(handler=_catalog_list)
+
+    catalog_show = catalog_commands.add_parser(
+        "show", help="one published version, latest by default (read-only)"
+    )
+    _catalog_arguments(catalog_show)
+    _catalog_id_argument(catalog_show)
+    catalog_show.add_argument("--version", type=_positive_number, help="default: latest")
+    catalog_show.add_argument("--json", action="store_true")
+    catalog_show.set_defaults(handler=_catalog_show)
+
+    catalog_export = catalog_commands.add_parser(
+        "export", help="print a published version as prompt-suite JSON (read-only)"
+    )
+    _catalog_arguments(catalog_export)
+    _catalog_id_argument(catalog_export)
+    catalog_export.add_argument("--version", type=_positive_number, help="default: latest")
+    catalog_export.add_argument("--json", action="store_true", required=True)
+    catalog_export.set_defaults(handler=_catalog_export)
+
+    catalog_add = catalog_commands.add_parser("add-prompt", help="add a prompt (revision 1)")
+    _catalog_arguments(catalog_add)
+    catalog_add.add_argument("prompt_id")
+    _prompt_field_arguments(catalog_add, adding=True)
+    catalog_add.set_defaults(handler=_catalog_add_prompt)
+
+    catalog_edit = catalog_commands.add_parser(
+        "edit-prompt",
+        help="append a revision; earlier recordings stop counting unless --keep-recordings",
+    )
+    _catalog_arguments(catalog_edit)
+    catalog_edit.add_argument("prompt_id")
+    _prompt_field_arguments(catalog_edit, adding=False)
+    catalog_edit.add_argument(
+        "--keep-recordings",
+        action="store_true",
+        help="typo-class fix (at most 2 word and 3 character edits beyond case and "
+        "punctuation): earlier recordings keep counting and train with the new text",
+    )
+    catalog_edit.add_argument(
+        "--allow-rewording",
+        action="store_true",
+        help="with --keep-recordings: keep them for a larger rewording the recordings already say",
+    )
+    catalog_edit.add_argument(
+        "--subject-id", default="cole-self", help="whose recordings are counted"
+    )
+    catalog_edit.add_argument(
+        "--expected-revision",
+        type=_positive_number,
+        help="refuse unless the prompt is still at this revision (the one a preview showed)",
+    )
+    catalog_edit.add_argument(
+        "--dry-run", action="store_true", help="count and check, but write nothing"
+    )
+    catalog_edit.add_argument(
+        "--json",
+        action="store_true",
+        help="one JSON document on stdout, after the write; the preview lines go to stderr "
+        "first (preview with --dry-run --json, then write with --expected-revision)",
+    )
+    catalog_edit.set_defaults(handler=_catalog_edit_prompt)
+
+    catalog_retire = catalog_commands.add_parser(
+        "retire-prompt", help="leave a prompt out of every later version"
+    )
+    _catalog_arguments(catalog_retire)
+    catalog_retire.add_argument("prompt_id")
+    catalog_retire.set_defaults(handler=_catalog_retire_prompt)
+
+    for name, handler in (
+        ("import-harvard", _catalog_import_harvard),
+        ("import-arctic", _catalog_import_arctic),
+    ):
+        importer = catalog_commands.add_parser(
+            name, help="import a standard sentence set from a saved copy or an explicit fetch"
+        )
+        _catalog_arguments(importer)
+        origin = importer.add_mutually_exclusive_group(required=True)
+        origin.add_argument("--from-file", help="a saved copy of the published list")
+        origin.add_argument(
+            "--fetch", action="store_true", help="download the published list (network)"
+        )
+        importer.add_argument(
+            "--fetched-at",
+            type=_aware_datetime,
+            help="when the --from-file copy was downloaded (ISO-8601 with offset)",
+        )
+        importer.add_argument(
+            "--source-url", help="where the --from-file copy was downloaded from (http/https)"
+        )
+        importer.set_defaults(handler=handler)
+
+    catalog_import_json = catalog_commands.add_parser(
+        "import-json", help="import every prompt of a prompt-suite JSON file"
+    )
+    _catalog_arguments(catalog_import_json)
+    catalog_import_json.add_argument("suite_path", metavar="prompt_suite_json")
+    catalog_import_json.set_defaults(handler=_catalog_import_json)
+
+    catalog_publish = catalog_commands.add_parser(
+        "publish", help="publish every live prompt, in insertion order, as a new version"
+    )
+    _catalog_arguments(catalog_publish)
+    _catalog_id_argument(catalog_publish)
+    catalog_publish.set_defaults(handler=_catalog_publish)
+
+    catalog_activate = catalog_commands.add_parser(
+        "activate", help="make a published version the subject's (next app launch)"
+    )
+    _catalog_arguments(catalog_activate)
+    catalog_activate.add_argument("--subject-id", required=True)
+    _catalog_id_argument(catalog_activate)
+    catalog_activate.add_argument("--version", type=_positive_number, required=True)
+    catalog_activate.set_defaults(handler=_catalog_activate)
 
     capture = commands.add_parser("capture", help="foreground UMIK-1 capture on macOS")
     capture_commands = capture.add_subparsers(dest="capture_command", required=True)
@@ -2407,7 +3529,9 @@ def main(argv: list[str] | None = None) -> int:
         PermissionError,
         subprocess.SubprocessError,
     ) as error:
-        print(f"voice-lab: {error}", file=sys.stderr)
+        # A named failure (``DOMAIN.FAILURE``) leads with its code, so callers need not parse
+        # prose to tell one refusal from another.
+        print(f"voice-lab: {_error_text(error)}", file=sys.stderr)
         return 2
 
 

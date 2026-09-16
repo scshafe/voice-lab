@@ -90,7 +90,7 @@ def test_prompts_show_v1_output_is_byte_identical_and_never_shadowed(
 
 
 def test_prompts_show_v2_adds_instructions_labels_and_no_spoken_prompt(
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["prompts", "show", "pilot-v2"]) == 0
     blocks = capsys.readouterr().out.split("\n\n")
@@ -130,9 +130,13 @@ def test_prompts_show_v2_adds_instructions_labels_and_no_spoken_prompt(
     assert output["purpose"] == "physical-test"
     assert output["prompts"][0]["labels"] == ["test", "setup"]
     assert "text" not in output["prompts"][0]
-    with pytest.raises(SystemExit) as refused:
-        main(["prompts", "show", "physical-test"])
-    assert refused.value.code == 2 and "invalid choice" in capsys.readouterr().err
+    # No unversioned physical-test alias exists; without a library it names no catalog either.
+    monkeypatch.delenv("COLE_VOICE_LAB_ASSET_ROOT", raising=False)
+    assert main(["prompts", "show", "physical-test"]) == 2
+    assert (
+        "not a released built-in prompt suite or a published catalog: physical-test"
+        in capsys.readouterr().err
+    )
 
 
 def test_assets_and_pending_consent_flow(tmp_path: Path, capsys: object) -> None:
