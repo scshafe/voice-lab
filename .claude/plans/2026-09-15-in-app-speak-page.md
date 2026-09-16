@@ -1,0 +1,47 @@
+# Plan: in-app Speak page — type text, hear it in the fine-tuned voice
+
+**Goal:** A second page in the native app, **Speak**, where Cole types text, picks a model (latest fine-tune, base, or an earlier run) and a reference clip, presses Speak, hears the result, and can save the WAV. The Record page is untouched.
+**Out of scope:** Anything the corpus-first pipeline plan delivers (`2026-09-15-corpus-first-app-pipeline.md`, a prerequisite: it adds `finetune_runtime_root` to the app settings and the fine-tune runs the picker lists). Streaming or long-form synthesis (one utterance of at most 2,000 characters per request). Voice conversion. Any transfer of generated audio off the machine; the lab's consent and promotion rules for rendering are unchanged.
+
+## Context
+
+- Synthesis exists as a lab function: `synthesize_finetune_samples` in `src/cole_voice_lab/finetune.py` runs `resources/f5_synthesize.py` in the pinned F5 runtime; it takes a checkpoint, a reference clip plus its exact text, and texts, and writes 24 kHz mono 16-bit WAVs plus a `FineTuneSampleSet` record. `latest` model resolution and reference selection are the only new logic.
+- Playback to reuse: `RecordingPlaybackSource(takeID:sourceSHA256:assetRoot:relativePath:frameCount:)` + `RecordingPlaybackController.select/playPause/seek` (`apps/macos/Sources/RecordingCore/RecordingPlaybackController.swift`), backend `AVFoundationRecordingPlaybackBackend.swift`. Check first whether the source accepts 24 kHz 16-bit input; prefer teaching it the format over transcoding in the synthesizer.
+- App entry: `apps/macos/Sources/RecordingApp/RecordingApp.swift:14` shows `RecordingWorkspace(model:)` in a `WindowGroup` with a toolbar `Picker` for appearance. The workspace's fixed regions (`RecordingLayout.regions`) are checked by the workspace/accessibility suites, so the page switch must not resize the workspace: a toolbar segmented control, not a tab bar inside the window.
+- The playback/capture interlock (no playback while recording; capture owns the audio session) is enforced in `RecordingPlaybackController.beginCapture/endCapture`; the Speak page must respect it.
+- Reference clips: the pilot catalog flags four `reference_candidate` prompts; the default reference is the first of them with a clip in the chosen run's dataset.
+- Verification as in the pipeline plan; the `speak` native suite is new.
+
+## Steps
+
+- [ ] **Step 1: Synthesis contract and service handler**
+  - `recording_contracts.py`: `SynthesizeCommand` (operation_id, text 1–2,000 chars, model `latest`|`base`|run_id, reference_prompt_id optional, nfe_steps 4–64) and `SynthesisEvent` (operation_id, state queued|running|finished|failed, run_id, relative_path, sha256, frames, sample_rate_hz, seconds, error); add both to the unions and the conformance fixtures (invalid: finished without a path, text over the bound).
+  - `recording_service.py`: resolve the model (`latest` = newest `derived/finetune/*/run.json` with status finished; `base` = pinned weights; explicit run id), resolve the reference (`reference_prompt_id` or the first `reference_candidate` prompt with a clip in that run's dataset), call `synthesize_finetune_samples` off the control thread, one synthesis at a time with a 120 s deadline, output under `derived/finetune/<run-id>/speech/<operation-id>/`, events queued → running → finished/failed.
+  - Tests in `tests/test_recording_service.py`: `latest` resolution order, base fallback, missing runtime refusal, text bounds, one-at-a-time, reference default.
+  - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_recording_contracts.py tests/test_recording_service.py -k "synthes or contract" && .venv/bin/python -I -B -m cole_voice_lab.schema --check && scripts/verify-native-recording --suite contracts`
+
+- [ ] **Step 2: Swift client and Speak model**
+  - `RecordingServiceClient.synthesize(operationID:text:model:referencePromptID:nfeSteps:)`. `RecordingUI/RecordingSpeakModel.swift`: text, model choice (list built from the service's finished runs plus Base), reference choice, generating flag with cancel, this session's clips (path, sha256, seconds, text), playback through a second `RecordingPlaybackController` that yields to capture (Speak is disabled while recording and cannot start while a take is being saved).
+  - Tests: `apps/macos/Tests/RecordingWorkspaceTests/RecordingSpeakModelTests.swift` (event application, phase transitions, interlock, model list ordering).
+  - Verify: `cd apps/macos && swift test --filter RecordingSpeakModelTests`
+
+- [ ] **Step 3: Speak view and page switch**
+  - `RecordingUI/RecordingSpeakView.swift`: multi-line text editor with placeholder (⌘↩ = Speak), model picker, reference picker (reference prompts only), `Speak` button with `Generating…` and cancel, a player for the newest clip (play/pause, elapsed/total, scrub), the session's clip list with text and duration, `Save As…` (NSSavePanel, WAV copy). In `RecordingApp.swift`: a segmented `Picker("Page")` in the window toolbar, `Record` | `Speak`; the workspace keeps its size and geometry; keyboard shortcuts stay window-scoped per page (R/Space/Return on Record; ⌘↩ on Speak).
+  - Accessibility: labels on every control, VoiceOver reads generation state changes, Reduce Motion respected, contrast per `RecordingPalette`.
+  - Verify: `cd apps/macos && swift test --filter RecordingSpeakTests && scripts/verify-native-recording --suite accessibility` (extended with the Speak page)
+
+- [ ] **Step 4: Native `speak` verification suite**
+  - Add `speak` to `scripts/verify_native_recording.py`/`verify_native_workspace.py`: synthesis against the stub runtime, `SynthesisEvent` sequence observed, the clip's sha256 re-read by Python, playback source accepted, interlock while a synthetic recording is active, cancel mid-generation, failure message shown verbatim.
+  - Verify: `scripts/verify-native-recording --suite speak`
+
+- [ ] **Step 5: Docs and decision record**
+  - `docs/NATIVE_RECORDING_UX.md`: Speak page section (text bounds, model/reference choice, playback interlock, Save As, failure rows in the §10 matrix: runtime missing, synthesis deadline, no finished run yet). `docs/FINETUNE.md`: "Speak page". `DECISIONS.md` D-018: in-app synthesis is a listening tool; generated audio stays local and is not a reference, dataset or promotion artifact.
+  - Verify: `.venv/bin/ruff format --check . && .venv/bin/ruff check . && .venv/bin/mypy src/cole_voice_lab`
+
+- [ ] **Step 6: Build, physical check, install**
+  - Build on top of the corpus-first pipeline release (same settings), release verification, `codesign --strict --deep`, full `scripts/verify`. Physical check with Cole: switch to Speak, type a sentence, hear it from the latest fine-tune and from Base, Save As to a folder, confirm Record still records. Install by copytree per the handoff procedure.
+  - Verify: Cole hears the fine-tuned voice from the Speak page in the installed app; `speech/<operation-id>/samples.json` validates
+
+## Done criteria
+
+`scripts/verify` passes with the `speak` native suite; the installed app plays typed text in the fine-tuned voice from the Speak page and the Record page is byte-identical in geometry; committed on `capture-console` as `feat: in-app Speak page` after Cole's go-ahead.
