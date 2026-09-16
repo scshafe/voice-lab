@@ -2,7 +2,8 @@
 
 @canonical recording_index -- SQLite serves bounded coherent metadata snapshots;
 immutable take/legacy evidence owns decisions, source identities and raw authority.
-Related: recording_takes.py, recording_library.py, recording_index_backfill.py.
+Related: recording_takes.py, recording_library.py, recording_index_backfill.py,
+sqlite_migrations.py (the shared user_version runner behind the index's schema stages).
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from importlib.resources import as_file, files
 from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Literal, cast
@@ -28,7 +28,7 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
-from .canonical import canonical_json_bytes, canonical_sha256, open_regular_no_follow
+from .canonical import canonical_json_bytes, canonical_sha256
 from .errors import ContractError, SecurityError
 from .models import Prompt, PromptSuite, StableId
 from .paths import AssetLayout, validate_relative_path
@@ -50,10 +50,21 @@ from .recording_contracts import (
     RecordingSelection,
     RecordingTake,
 )
+from .sqlite_migrations import (
+    SqliteMigrationError,
+    apply_migration,
+    current_user_version,
+    migration_bytes,
+    migration_resource,
+    migration_resources,
+    migration_sql,
+)
 
 _MIGRATION_NAME = "20260911070000_create_recording_library_projection.sql"
 _ANALYSIS_MIGRATION_NAME = "20260911080000_create_recording_analysis_queue.sql"
 _RECOVERY_MIGRATION_NAME = "20260913090000_create_recording_recovery_inventory.sql"
+# Index schema versions 1..3 in application order; the corpus store versions its own file.
+_INDEX_MIGRATION_NAMES = (_MIGRATION_NAME, _ANALYSIS_MIGRATION_NAME, _RECOVERY_MIGRATION_NAME)
 _DATABASE_NAME = "recording-library.sqlite3"
 _MAX_CATALOG_PROMPTS = 10_000
 # Leaves space for the response envelope/correlation IDs below the 1 MiB frame.
@@ -285,41 +296,41 @@ def _prepare_legacy_catalog(
 
 
 def _migration_resource(name: str = _MIGRATION_NAME) -> Traversable:
-    packaged = files("cole_voice_lab").joinpath("resources", "recording_migrations", name)
-    if packaged.is_file():
-        return packaged
-    source_file = Path(__file__).resolve()
-    source_root = source_file.parents[2]
-    if source_file.parents[1].name != "src" or not (source_root / "pyproject.toml").is_file():
-        raise RecordingIndexError("packaged recording index migration resource is missing")
-    return source_root / "migrations" / name
+    """The index's lookup seam (tests substitute it); a missing copy is the index's error."""
+    try:
+        return migration_resource(name)
+    except SqliteMigrationError as error:
+        raise RecordingIndexError(
+            "packaged recording index migration resource is missing"
+        ) from error
 
 
 def _migration_bytes(name: str = _MIGRATION_NAME) -> bytes:
-    with as_file(_migration_resource(name)) as path, open_regular_no_follow(path) as stream:
-        return stream.read()
+    return migration_bytes(name, resolve=_migration_resource)
 
 
 def recording_index_migration_resources() -> tuple[tuple[str, str, int], ...]:
     """Fingerprint the exact runtime SQL resource, including reversible down code."""
-    return tuple(
-        (f"migrations/{name}", hashlib.sha256(payload).hexdigest(), len(payload))
-        for name in (_MIGRATION_NAME, _ANALYSIS_MIGRATION_NAME, _RECOVERY_MIGRATION_NAME)
-        for payload in (_migration_bytes(name),)
-    )
+    return migration_resources(_INDEX_MIGRATION_NAMES, resolve=_migration_resource)
 
 
 def recording_index_migration(direction: Literal["up", "down"] = "up", *, version: int = 1) -> str:
-    """Read the single timestamped schema source (or its packaged build resource)."""
+    """Read the single timestamped schema source (or its packaged build resource).
+
+    Raises: ``RecordingIndexError`` for a direction other than up/down, a version outside
+    1..3, or when neither a packaged nor a checkout copy of the file exists;
+    ``SqliteMigrationError`` (``SQLITE_MIGRATIONS.MALFORMED``) when the file is not UTF-8 or
+    its markers are absent or out of order; ``SecurityError`` when the resolved path is a
+    symlink or not a regular file. ``RecordingIndex.__init__`` wraps the malformed case as
+    ``cannot open recording index; rebuild required: …``.
+    """
     if direction not in ("up", "down"):
         raise RecordingIndexError("migration direction must be up or down")
     if version not in (1, 2, 3):
         raise RecordingIndexError("unsupported recording migration version")
-    payload = _migration_bytes(
-        (_MIGRATION_NAME, _ANALYSIS_MIGRATION_NAME, _RECOVERY_MIGRATION_NAME)[version - 1]
-    ).decode("utf-8")
-    up, down = payload.split("-- +migrate Up\n", 1)[1].split("-- +migrate Down\n", 1)
-    return up if direction == "up" else down
+    return migration_sql(
+        _INDEX_MIGRATION_NAMES[version - 1], direction, resolve=_migration_resource
+    )
 
 
 def _private_metadata(metadata: os.stat_result, label: str, *, directory: bool = False) -> None:
@@ -432,7 +443,7 @@ class RecordingIndex:
                 self._connection.execute("PRAGMA cache_size = -2048")
                 self._connection.execute("PRAGMA temp_store = MEMORY")
                 self._connection.execute("PRAGMA wal_autocheckpoint = 256")
-                version = self._connection.execute("PRAGMA user_version").fetchone()[0]
+                version = current_user_version(self._connection)
                 if version not in (0, 1, 2, 3):
                     raise RecordingIndexError(
                         f"unsupported recording index schema version: {version}"
@@ -440,10 +451,14 @@ class RecordingIndex:
                 if version == 0:
                     if self._connection.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone():
                         raise RecordingIndexError("unversioned nonempty index requires rebuild")
-                    self._connection.executescript(
-                        "BEGIN IMMEDIATE;\n"
-                        + recording_index_migration()
-                        + "\nPRAGMA user_version = 1;\nCOMMIT;"
+                    # The index syncs the directory itself, after the autocommit seed row:
+                    # a sync failure between the stage and the seed would otherwise leave a
+                    # versioned database with no revision row that no later open can repair.
+                    apply_migration(
+                        self._connection,
+                        version=1,
+                        up_sql=recording_index_migration(),
+                        directory_fd=None,
                     )
                     self._connection.execute(
                         "INSERT OR IGNORE INTO recording_index_states VALUES (1, ?, 0)",
@@ -451,25 +466,31 @@ class RecordingIndex:
                     )
                     os.fsync(directory_fd)
                 if version < 2:
-                    self._connection.executescript(
-                        "BEGIN IMMEDIATE;\n"
-                        + recording_index_migration(version=2)
-                        + "\nPRAGMA user_version = 2;\nCOMMIT;"
+                    apply_migration(
+                        self._connection,
+                        version=2,
+                        up_sql=recording_index_migration(version=2),
+                        directory_fd=directory_fd,
                     )
-                    os.fsync(directory_fd)
                 if version < 3:
-                    self._connection.executescript(
-                        "BEGIN IMMEDIATE;\n"
-                        + recording_index_migration(version=3)
-                        + "\nPRAGMA user_version = 3;\nCOMMIT;"
+                    apply_migration(
+                        self._connection,
+                        version=3,
+                        up_sql=recording_index_migration(version=3),
+                        directory_fd=directory_fd,
                     )
-                    os.fsync(directory_fd)
                 self._check_paths()
                 self._audit()
                 self._data_version = self._connection.execute("PRAGMA data_version").fetchone()[0]
             finally:
                 fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
-        except (OSError, sqlite3.Error, ValidationError, ValueError) as error:
+        except (
+            OSError,
+            sqlite3.Error,
+            ValidationError,
+            ValueError,
+            SqliteMigrationError,
+        ) as error:
             self.close()
             raise RecordingIndexError(
                 f"cannot open recording index; rebuild required: {error}"

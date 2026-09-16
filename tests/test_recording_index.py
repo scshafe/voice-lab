@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -40,6 +41,7 @@ from cole_voice_lab.recording_index import (
 )
 from cole_voice_lab.recording_index_backfill import backfill_recording_library
 from cole_voice_lab.recording_library import RecordingLibrary
+from cole_voice_lab.sqlite_migrations import SqliteMigrationError
 
 
 @pytest.fixture
@@ -914,6 +916,82 @@ def test_current_revision_property_does_not_query_history(index: RecordingIndex)
     assert index.revision > 0
     index.connection.set_trace_callback(None)
     assert not any("recording_takes" in query or "count(" in query for query in statements)
+
+
+def test_missing_migration_resource_is_reported_as_the_index_error_callers_expect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cole_voice_lab.recording_index as index_module
+    import cole_voice_lab.sqlite_migrations as runner_module
+
+    # An installed package with no wheel resource copy and no checkout around it.
+    monkeypatch.setattr(
+        runner_module,
+        "__file__",
+        str(tmp_path / "site-packages" / "cole_voice_lab" / "sqlite_migrations.py"),
+    )
+    with pytest.raises(
+        RecordingIndexError, match="^packaged recording index migration resource is missing$"
+    ) as caught:
+        index_module._migration_resource()
+    assert isinstance(caught.value.__cause__, SqliteMigrationError)
+    assert caught.value.__cause__.code == "SQLITE_MIGRATIONS.RESOURCE_MISSING"
+
+
+@pytest.mark.parametrize(
+    "arguments, message",
+    [
+        ({"direction": "sideways"}, "^migration direction must be up or down$"),
+        ({"version": 0}, "^unsupported recording migration version$"),
+        ({"version": 4}, "^unsupported recording migration version$"),
+    ],
+    ids=["sideways-direction", "version-0", "version-4"],
+)
+def test_index_migration_refuses_unknown_direction_and_version(
+    arguments: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(RecordingIndexError, match=message):
+        recording_index_migration(**arguments)
+
+
+def test_directory_sync_failure_on_first_open_is_recoverable_on_reopen(
+    layout: AssetLayout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The first open commits schema version 1, seeds the revision row, then syncs the
+    # library directory. A sync that fails there must leave a database the next open can
+    # finish migrating, so the seed has to precede the sync (a versioned database with no
+    # revision row is refused forever as "revision is missing").
+    directory = layout.directory("provenance") / "recording-library"
+    real_fsync = os.fsync
+    failed: list[int] = []
+
+    def fsync_failing_once_on_the_library_directory(descriptor: int) -> None:
+        metadata = os.fstat(descriptor)
+        library = os.stat(directory) if directory.is_dir() else None
+        if (
+            not failed
+            and library is not None
+            and (metadata.st_dev, metadata.st_ino) == (library.st_dev, library.st_ino)
+        ):
+            failed.append(descriptor)
+            raise OSError(errno.EIO, "synthetic directory sync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fsync_failing_once_on_the_library_directory)
+    with pytest.raises(RecordingIndexError, match="rebuild required") as caught:
+        RecordingIndex(layout)
+    assert isinstance(caught.value.__cause__, OSError)
+    assert len(failed) == 1
+    database = sqlite3.connect(directory / "recording-library.sqlite3")
+    try:
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert database.execute("SELECT count(*) FROM recording_index_states").fetchone()[0] == 1
+    finally:
+        database.close()
+    with RecordingIndex(layout) as index:
+        # Reading the revision proves the seed row survived; a fresh index starts at 0.
+        assert index.revision == 0
+        assert index.connection.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_runtime_sql_resource_change_alters_service_build_identity(
