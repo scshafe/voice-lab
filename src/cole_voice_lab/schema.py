@@ -30,6 +30,7 @@ from .datasets import (
     PilotGateApproval,
 )
 from .diagnostic_roots import DiagnosticRootMarker
+from .finetune import FINETUNE_SCHEMA_MODELS
 from .intake import IntakeReceipt
 from .models import (
     CandidateSpec,
@@ -120,6 +121,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "experiment-request": ExperimentRequest,
     "experiment-result": ExperimentResult,
     "executed-code-evidence": ExecutedCodeEvidence,
+    **FINETUNE_SCHEMA_MODELS,
     "fine-tuning-transfer-plan": FineTuningTransferPlan,
     "headphone-review": HeadphoneReviewEvidence,
     "hosted-transfer-approval": HostedTransferApproval,

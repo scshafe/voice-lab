@@ -1,0 +1,94 @@
+{
+  "additionalProperties": false,
+  "description": "Training settings passed verbatim to the F5-TTS fine-tune launcher.",
+  "properties": {
+    "batch_frames": {
+      "default": 3200,
+      "maximum": 200000,
+      "minimum": 256,
+      "title": "Batch Frames",
+      "type": "integer"
+    },
+    "dataloader_workers": {
+      "default": 2,
+      "maximum": 64,
+      "minimum": 1,
+      "title": "Dataloader Workers",
+      "type": "integer"
+    },
+    "epochs": {
+      "default": 120,
+      "maximum": 10000,
+      "minimum": 1,
+      "title": "Epochs",
+      "type": "integer"
+    },
+    "keep_last_n_checkpoints": {
+      "default": 1,
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Keep Last N Checkpoints",
+      "type": "integer"
+    },
+    "last_per_updates": {
+      "default": 180,
+      "maximum": 10000000,
+      "minimum": 1,
+      "title": "Last Per Updates",
+      "type": "integer"
+    },
+    "learning_rate": {
+      "default": 1e-05,
+      "exclusiveMinimum": 0.0,
+      "maximum": 1.0,
+      "title": "Learning Rate",
+      "type": "number"
+    },
+    "light_checkpoints": {
+      "default": true,
+      "title": "Light Checkpoints",
+      "type": "boolean"
+    },
+    "max_grad_norm": {
+      "default": 1.0,
+      "exclusiveMinimum": 0.0,
+      "title": "Max Grad Norm",
+      "type": "number"
+    },
+    "max_samples_per_batch": {
+      "default": 16,
+      "maximum": 1024,
+      "minimum": 1,
+      "title": "Max Samples Per Batch",
+      "type": "integer"
+    },
+    "model_name": {
+      "const": "F5TTS_v1_Base",
+      "default": "F5TTS_v1_Base",
+      "title": "Model Name",
+      "type": "string"
+    },
+    "save_per_updates": {
+      "default": 540,
+      "maximum": 10000000,
+      "minimum": 1,
+      "title": "Save Per Updates",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-hyperparameters/v1",
+      "default": "cole-voice-lab.finetune-hyperparameters/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "warmup_updates": {
+      "default": 50,
+      "maximum": 1000000,
+      "minimum": 0,
+      "title": "Warmup Updates",
+      "type": "integer"
+    }
+  },
+  "title": "FineTuneHyperparameters",
+  "type": "object"
+}

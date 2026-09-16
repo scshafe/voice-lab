@@ -12,9 +12,9 @@ import sys
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 
 from .audition import (
     AuditionPlan,
@@ -78,6 +78,7 @@ from .models import (
     Prompt,
     PromptSuite,
     ReferenceEvidence,
+    utc_now,
 )
 from .paths import ASSET_DIRECTORIES, AssetLayout
 from .promotion import PromotionManifest, build_chloespeech_handoff, validate_promotion
@@ -447,6 +448,284 @@ def _prompts_show(options: argparse.Namespace) -> int:
         if prompt.instructions is not None:
             print(f"  Instructions: {prompt.instructions}")
         print(f"  Guidance: {prompt.style}")
+    return 0
+
+
+def _finetune_hyperparameters(options: argparse.Namespace) -> Any:
+    from .finetune import FineTuneHyperparameters
+
+    overrides = {
+        "epochs": options.epochs,
+        "learning_rate": options.learning_rate,
+        "batch_frames": options.batch_frames,
+        "max_samples_per_batch": options.max_samples_per_batch,
+        "warmup_updates": options.warmup_updates,
+        "save_per_updates": options.save_per_updates,
+        "keep_last_n_checkpoints": options.keep_last_n_checkpoints,
+        "last_per_updates": options.last_per_updates,
+        "dataloader_workers": options.dataloader_workers,
+        "light_checkpoints": None if options.no_light_checkpoints is False else False,
+    }
+    return FineTuneHyperparameters(**{k: v for k, v in overrides.items() if v is not None})
+
+
+def _finetune_run_id(options: argparse.Namespace) -> str:
+    return options.run_id or utc_now().strftime("finetune-%Y%m%dt%H%M%Sz")
+
+
+def _finetune_corpus_summary(corpus: Any) -> dict[str, JsonValue]:
+    return {
+        "subject_id": corpus.subject_id,
+        "catalog_suite_id": corpus.catalog_suite_id,
+        "catalog_sha256": corpus.catalog_sha256,
+        "corpus_sha256": canonical_sha256(corpus),
+        "selected_prompt_count": len(corpus.entries),
+        "spoken_prompt_count": corpus.spoken_prompt_count,
+        "retained_seconds": round(corpus.retained_seconds, 1),
+        "native_count": sum(entry.source_kind == "native" for entry in corpus.entries),
+        "legacy_count": sum(entry.source_kind == "legacy" for entry in corpus.entries),
+        "missing_prompt_ids": list(corpus.missing_prompt_ids),
+        "unknown_record_ids": list(corpus.unknown_record_ids),
+        "complete": corpus.complete,
+    }
+
+
+def _finetune_select(options: argparse.Namespace) -> Any:
+    from .finetune import select_finetune_corpus
+
+    layout = AssetLayout.validate(_asset_root(options.asset_root))
+    catalog = load_builtin_prompt_suite(f"{options.catalog}.json")
+    corpus = select_finetune_corpus(layout, catalog, options.subject_id)
+    if not corpus.complete and not options.allow_missing:
+        raise VoiceLabError(
+            "the corpus is incomplete (missing: "
+            + ", ".join(corpus.missing_prompt_ids)
+            + "; unknown: "
+            + ", ".join(corpus.unknown_record_ids)
+            + "); record the missing prompts or pass --allow-missing"
+        )
+    return layout, corpus
+
+
+def _finetune_corpus(options: argparse.Namespace) -> int:
+    _layout, corpus = _finetune_select(options)
+    summary = _finetune_corpus_summary(corpus)
+    if options.json:
+        _json_print({**summary, "corpus": corpus.model_dump(mode="json")})
+    else:
+        print(
+            f"{summary['selected_prompt_count']}/{summary['spoken_prompt_count']} spoken prompts "
+            f"have a latest kept take · {summary['retained_seconds']} s · "
+            f"native {summary['native_count']} · old-app {summary['legacy_count']}"
+        )
+        for entry in corpus.entries:
+            when = "unknown date" if entry.recorded_at is None else entry.recorded_at.isoformat()
+            print(f"  {entry.prompt_id:<30} {entry.source_kind:<7} {when}  {entry.take_id}")
+        for prompt_id in corpus.missing_prompt_ids:
+            print(f"  {prompt_id:<30} MISSING")
+    return 0
+
+
+def _finetune_dataset(options: argparse.Namespace) -> int:
+    from .finetune import materialize_finetune_dataset
+
+    layout, corpus = _finetune_select(options)
+    run_id = _finetune_run_id(options)
+    dataset = materialize_finetune_dataset(
+        layout,
+        corpus,
+        f"{options.output_root}/{run_id}/dataset",
+        ffmpeg=Path(options.ffmpeg),
+    )
+    _json_print(
+        {
+            "run_id": run_id,
+            "dataset_root": dataset.dataset_root,
+            "dataset_sha256": canonical_sha256(dataset),
+            "clip_count": len(dataset.clips),
+            "corpus": _finetune_corpus_summary(corpus),
+            "gain_db": {clip.prompt_id: clip.gain_db for clip in dataset.clips},
+        }
+    )
+    return 0
+
+
+def _finetune_load_run_inputs(layout: AssetLayout, run_root: str) -> tuple[Any, Any]:
+    from .finetune import FineTuneCorpus, FineTuneDataset
+
+    dataset_directory = layout.root / run_root / "dataset"
+    dataset = _read_bounded_contract(dataset_directory / "dataset.json", FineTuneDataset)
+    corpus = _read_bounded_contract(dataset_directory / "corpus.json", FineTuneCorpus)
+    if canonical_sha256(corpus) != dataset.corpus_sha256:
+        raise VoiceLabError(f"{dataset_directory}: corpus.json does not match dataset.json")
+    return corpus, dataset
+
+
+def _finetune_train(options: argparse.Namespace) -> int:
+    from .finetune import describe_finetune_runtime, run_f5_finetune
+
+    layout = AssetLayout.validate(_asset_root(options.asset_root))
+    run_root = f"{options.output_root}/{options.run_id}"
+    corpus, dataset = _finetune_load_run_inputs(layout, run_root)
+    runtime = describe_finetune_runtime(Path(options.runtime_root))
+    run = run_f5_finetune(
+        layout,
+        dataset,
+        runtime,
+        _finetune_hyperparameters(options),
+        run_root,
+        run_id=options.run_id,
+        subject_id=corpus.subject_id,
+        catalog_sha256=corpus.catalog_sha256,
+    )
+    _json_print(run.model_dump(mode="json"))
+    return 0 if run.status == "finished" else 1
+
+
+def _finetune_synthesize_one(
+    layout: AssetLayout,
+    options: argparse.Namespace,
+    dataset: Any,
+    runtime: Any,
+    *,
+    run_root: str,
+    label: str,
+    checkpoint: Path,
+    use_ema: bool,
+) -> Any:
+    from .finetune import FINETUNE_DEFAULT_SAMPLE_TEXTS, synthesize_finetune_samples
+
+    reference = options.reference_prompt_id or dataset.clips[0].prompt_id
+    return synthesize_finetune_samples(
+        layout,
+        dataset,
+        runtime,
+        checkpoint,
+        f"{run_root}/samples/{label}",
+        label=label,
+        reference_prompt_id=reference,
+        texts=tuple(options.text) if options.text else FINETUNE_DEFAULT_SAMPLE_TEXTS,
+        use_ema=use_ema,
+        nfe_steps=options.nfe_steps,
+        device=options.device,
+    )
+
+
+def _finetune_synthesize(options: argparse.Namespace) -> int:
+    from .finetune import describe_finetune_runtime
+
+    layout = AssetLayout.validate(_asset_root(options.asset_root))
+    run_root = f"{options.output_root}/{options.run_id}"
+    _corpus, dataset = _finetune_load_run_inputs(layout, run_root)
+    runtime = describe_finetune_runtime(Path(options.runtime_root))
+    if options.checkpoint == "last":
+        checkpoint = layout.root / run_root / "checkpoints" / "model_last.pt"
+    elif options.checkpoint == "base":
+        checkpoint = runtime.pretrained_path
+    else:
+        checkpoint = Path(options.checkpoint)
+    samples = _finetune_synthesize_one(
+        layout,
+        options,
+        dataset,
+        runtime,
+        run_root=run_root,
+        label=options.label,
+        checkpoint=checkpoint,
+        use_ema=not options.no_ema,
+    )
+    _json_print(samples.model_dump(mode="json"))
+    return 0
+
+
+def _finetune_run(options: argparse.Namespace) -> int:
+    from .finetune import describe_finetune_runtime, materialize_finetune_dataset, run_f5_finetune
+
+    layout, corpus = _finetune_select(options)
+    runtime = describe_finetune_runtime(Path(options.runtime_root))
+    run_id = _finetune_run_id(options)
+    run_root = f"{options.output_root}/{run_id}"
+    dataset = materialize_finetune_dataset(
+        layout, corpus, f"{run_root}/dataset", ffmpeg=Path(options.ffmpeg)
+    )
+    run = run_f5_finetune(
+        layout,
+        dataset,
+        runtime,
+        _finetune_hyperparameters(options),
+        run_root,
+        run_id=run_id,
+        subject_id=corpus.subject_id,
+        catalog_sha256=corpus.catalog_sha256,
+    )
+    finetuned = _finetune_synthesize_one(
+        layout,
+        options,
+        dataset,
+        runtime,
+        run_root=run_root,
+        label="finetuned",
+        checkpoint=layout.root / run_root / "checkpoints" / "model_last.pt",
+        use_ema=not options.no_ema,
+    )
+    base = _finetune_synthesize_one(
+        layout,
+        options,
+        dataset,
+        runtime,
+        run_root=run_root,
+        label="base",
+        checkpoint=runtime.pretrained_path,
+        use_ema=True,
+    )
+    _json_print(
+        {
+            "run_id": run_id,
+            "run_root": run.run_root,
+            "status": run.status,
+            "corpus": _finetune_corpus_summary(corpus),
+            "checkpoints": [item.model_dump(mode="json") for item in run.checkpoints],
+            "samples": {
+                "finetuned": [item.relative_path for item in finetuned.samples],
+                "base": [item.relative_path for item in base.samples],
+            },
+        }
+    )
+    return 0
+
+
+def _finetune_provision_runtime(options: argparse.Namespace) -> int:
+    from .finetune import (
+        execute_finetune_runtime_provisioning,
+        plan_finetune_runtime_provisioning,
+    )
+
+    plan = plan_finetune_runtime_provisioning(
+        Path(options.runtime_root),
+        python=None if options.python is None else Path(options.python),
+        requirements=None if options.requirements is None else Path(options.requirements),
+    )
+    if not options.execute:
+        _json_print({"executed": False, "plan": plan.to_json()})
+        return 0
+    runtime = execute_finetune_runtime_provisioning(plan, allow_downloads=options.allow_downloads)
+    _json_print({"executed": True, "runtime": runtime.identity.model_dump(mode="json")})
+    return 0
+
+
+def _finetune_fetch_pretrained(options: argparse.Namespace) -> int:
+    from .finetune import describe_finetune_runtime, fetch_finetune_pretrained
+
+    paths = fetch_finetune_pretrained(
+        Path(options.runtime_root), allow_downloads=options.allow_downloads
+    )
+    runtime = describe_finetune_runtime(Path(options.runtime_root))
+    _json_print(
+        {
+            "files": [str(path) for path in paths],
+            "runtime": runtime.identity.model_dump(mode="json"),
+        }
+    )
     return 0
 
 
@@ -1634,6 +1913,114 @@ def build_parser() -> argparse.ArgumentParser:
     coverage_report.add_argument("--baseline", choices=builtin_suites)
     coverage_report.add_argument("--json", action="store_true")
     coverage_report.set_defaults(handler=_prompts_coverage_report)
+
+    finetune = commands.add_parser(
+        "finetune", help="fine-tune a TTS model from the latest kept take of every prompt"
+    )
+    finetune_commands = finetune.add_subparsers(dest="finetune_command", required=True)
+
+    def _finetune_corpus_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--asset-root")
+        parser.add_argument("--subject-id", default="cole-self")
+        parser.add_argument("--catalog", required=True, choices=builtin_suites)
+        parser.add_argument(
+            "--allow-missing",
+            action="store_true",
+            help="proceed with the prompts that have a take instead of refusing",
+        )
+
+    def _finetune_run_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--output-root", default="derived/finetune")
+        parser.add_argument("--run-id", help="defaults to finetune-<UTC time>")
+        parser.add_argument("--ffmpeg", default="/opt/homebrew/bin/ffmpeg")
+
+    def _finetune_training_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--runtime-root", required=True, help="provisioned F5-TTS runtime")
+        parser.add_argument("--epochs", type=int)
+        parser.add_argument("--learning-rate", type=float)
+        parser.add_argument("--batch-frames", type=int)
+        parser.add_argument("--max-samples-per-batch", type=int)
+        parser.add_argument("--warmup-updates", type=int)
+        parser.add_argument("--save-per-updates", type=int)
+        parser.add_argument("--keep-last-n-checkpoints", type=int)
+        parser.add_argument("--last-per-updates", type=int)
+        parser.add_argument("--dataloader-workers", type=int)
+        parser.add_argument("--no-light-checkpoints", action="store_true")
+
+    def _finetune_sample_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--reference-prompt-id", help="defaults to the first corpus clip")
+        parser.add_argument("--text", action="append", help="sentence to synthesize; repeatable")
+        parser.add_argument("--no-ema", action="store_true", help="use raw instead of EMA weights")
+        parser.add_argument("--nfe-steps", type=int, default=32)
+        parser.add_argument("--device", choices=("mps", "cpu"), default="mps")
+
+    finetune_corpus = finetune_commands.add_parser(
+        "corpus", help="list the latest kept take per spoken prompt (read-only)"
+    )
+    _finetune_corpus_arguments(finetune_corpus)
+    finetune_corpus.add_argument("--json", action="store_true")
+    finetune_corpus.set_defaults(handler=_finetune_corpus)
+
+    finetune_dataset = finetune_commands.add_parser(
+        "dataset", help="write normalized 24 kHz training copies under derived/finetune/<run>"
+    )
+    _finetune_corpus_arguments(finetune_dataset)
+    _finetune_run_arguments(finetune_dataset)
+    finetune_dataset.set_defaults(handler=_finetune_dataset)
+
+    finetune_train = finetune_commands.add_parser(
+        "train", help="fine-tune F5-TTS on a materialized run dataset (blocks until done)"
+    )
+    finetune_train.add_argument("--asset-root")
+    finetune_train.add_argument("--output-root", default="derived/finetune")
+    finetune_train.add_argument("--run-id", required=True)
+    _finetune_training_arguments(finetune_train)
+    finetune_train.set_defaults(handler=_finetune_train)
+
+    finetune_synthesize = finetune_commands.add_parser(
+        "synthesize", help="generate listening samples from a run's checkpoint or the base"
+    )
+    finetune_synthesize.add_argument("--asset-root")
+    finetune_synthesize.add_argument("--output-root", default="derived/finetune")
+    finetune_synthesize.add_argument("--run-id", required=True)
+    finetune_synthesize.add_argument("--runtime-root", required=True)
+    finetune_synthesize.add_argument(
+        "--checkpoint", default="last", help="'last', 'base', or a checkpoint path"
+    )
+    finetune_synthesize.add_argument("--label", default="finetuned")
+    _finetune_sample_arguments(finetune_synthesize)
+    finetune_synthesize.set_defaults(handler=_finetune_synthesize)
+
+    finetune_run = finetune_commands.add_parser(
+        "run", help="corpus → dataset → train → samples (fine-tuned and base) in one go"
+    )
+    _finetune_corpus_arguments(finetune_run)
+    _finetune_run_arguments(finetune_run)
+    _finetune_training_arguments(finetune_run)
+    _finetune_sample_arguments(finetune_run)
+    finetune_run.set_defaults(handler=_finetune_run)
+
+    finetune_provision = finetune_commands.add_parser(
+        "provision-runtime",
+        help="create the pinned F5-TTS runtime venv and fetch the pinned weights (plan by default)",
+    )
+    finetune_provision.add_argument("--runtime-root", required=True)
+    finetune_provision.add_argument(
+        "--python", help="interpreter for the venv; Homebrew 3.12 by default"
+    )
+    finetune_provision.add_argument(
+        "--requirements", help="pinned requirements; this checkout's by default"
+    )
+    finetune_provision.add_argument("--execute", action="store_true")
+    finetune_provision.add_argument("--allow-downloads", action="store_true")
+    finetune_provision.set_defaults(handler=_finetune_provision_runtime)
+
+    finetune_fetch = finetune_commands.add_parser(
+        "fetch-pretrained", help="fetch or verify the pinned pretrained weights and vocabulary"
+    )
+    finetune_fetch.add_argument("--runtime-root", required=True)
+    finetune_fetch.add_argument("--allow-downloads", action="store_true")
+    finetune_fetch.set_defaults(handler=_finetune_fetch_pretrained)
 
     capture = commands.add_parser("capture", help="foreground UMIK-1 capture on macOS")
     capture_commands = capture.add_subparsers(dest="capture_command", required=True)

@@ -62,6 +62,10 @@ opens the older browser controller; these legacy FFmpeg paths are not recommende
 for new training recordings while their input-loss issue remains. Finalize and complete a headphone review
 before planning transfer.
 
+`voice-lab finetune run` fine-tunes F5-TTS from the latest kept take of every
+spoken prompt in the recording library and writes listening samples next to the
+untouched base model; re-run it after any revision. See [docs/FINETUNE.md](docs/FINETUNE.md).
+
 `sync plan` prints a dry plan. A live transfer requires a separate `--live-plan`
 preview, copy/paste approval of its exact `plan_sha256`, and all execution gates:
 `--live-plan --execute --allow-network --approved-plan-sha256 <digest>`. The

@@ -1,0 +1,301 @@
+{
+  "$defs": {
+    "FineTuneCorpusEntry": {
+      "additionalProperties": false,
+      "description": "One spoken prompt's current recording: the latest retained take and where its audio is.",
+      "properties": {
+        "date_precision": {
+          "$ref": "#/$defs/FineTuneDatePrecision"
+        },
+        "frame_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingFrameRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "prompt": {
+          "$ref": "#/$defs/Prompt"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "prompt_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "recorded_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_frames": {
+          "minimum": 1,
+          "title": "Source Frames",
+          "type": "integer"
+        },
+        "source_kind": {
+          "$ref": "#/$defs/FineTuneSourceKind"
+        },
+        "source_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "source_sample_rate_hz": {
+          "maximum": 384000,
+          "minimum": 8000,
+          "title": "Source Sample Rate Hz",
+          "type": "integer"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "prompt_sha256",
+        "prompt",
+        "take_id",
+        "source_kind",
+        "source_path",
+        "source_sha256",
+        "source_frames",
+        "source_sample_rate_hz",
+        "recorded_at",
+        "date_precision"
+      ],
+      "title": "FineTuneCorpusEntry",
+      "type": "object"
+    },
+    "FineTuneDatePrecision": {
+      "enum": [
+        "take",
+        "session",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "FineTuneSourceKind": {
+      "enum": [
+        "native",
+        "legacy"
+      ],
+      "type": "string"
+    },
+    "FrameCount": {
+      "maximum": 28800000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference",
+            "procedure"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "RecordingFrameRange": {
+      "additionalProperties": false,
+      "description": "Source-frame recipe, independent from eventual derivative rendering.",
+      "properties": {
+        "end_frame": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "End Frame",
+          "type": "integer"
+        },
+        "source_frames": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "Source Frames",
+          "type": "integer"
+        },
+        "start_frame": {
+          "$ref": "#/$defs/FrameCount"
+        }
+      },
+      "required": [
+        "source_frames",
+        "start_frame",
+        "end_frame"
+      ],
+      "title": "RecordingFrameRange",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The live corpus for one subject and catalog: one entry per spoken prompt, catalog order.",
+  "properties": {
+    "catalog_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "catalog_suite_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/FineTuneCorpusEntry"
+      },
+      "maxItems": 10000,
+      "title": "Entries",
+      "type": "array"
+    },
+    "missing_prompt_ids": {
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "maxItems": 10000,
+      "title": "Missing Prompt Ids",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-corpus/v1",
+      "default": "cole-voice-lab.finetune-corpus/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selected_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "unknown_record_ids": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 10000,
+      "title": "Unknown Record Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "subject_id",
+    "catalog_suite_id",
+    "catalog_sha256",
+    "entries",
+    "missing_prompt_ids",
+    "unknown_record_ids",
+    "selected_at"
+  ],
+  "title": "FineTuneCorpus",
+  "type": "object"
+}

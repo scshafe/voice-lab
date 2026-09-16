@@ -1,0 +1,130 @@
+{
+  "$defs": {
+    "FineTuneSample": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "minimum": 1,
+          "title": "Index",
+          "type": "integer"
+        },
+        "relative_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Seconds",
+          "type": "number"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "text": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "relative_path",
+        "sha256",
+        "seconds",
+        "text"
+      ],
+      "title": "FineTuneSample",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Listening samples generated from one checkpoint with one reference clip; not accepted raw.",
+  "properties": {
+    "checkpoint_path": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Checkpoint Path",
+      "type": "string"
+    },
+    "checkpoint_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "device": {
+      "enum": [
+        "mps",
+        "cpu"
+      ],
+      "title": "Device",
+      "type": "string"
+    },
+    "label": {
+      "$ref": "#/$defs/StableId"
+    },
+    "nfe_steps": {
+      "maximum": 256,
+      "minimum": 1,
+      "title": "Nfe Steps",
+      "type": "integer"
+    },
+    "reference_audio_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "reference_prompt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "samples": {
+      "items": {
+        "$ref": "#/$defs/FineTuneSample"
+      },
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Samples",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-samples/v1",
+      "default": "cole-voice-lab.finetune-samples/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "use_ema": {
+      "title": "Use Ema",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "label",
+    "checkpoint_path",
+    "checkpoint_sha256",
+    "use_ema",
+    "nfe_steps",
+    "device",
+    "reference_prompt_id",
+    "reference_audio_sha256",
+    "samples",
+    "created_at"
+  ],
+  "title": "FineTuneSampleSet",
+  "type": "object"
+}

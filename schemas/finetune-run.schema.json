@@ -1,0 +1,297 @@
+{
+  "$defs": {
+    "FineTuneCheckpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "last",
+            "intermediate"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "relative_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "minimum": 1,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "update": {
+          "minimum": 0,
+          "title": "Update",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "relative_path",
+        "sha256",
+        "size_bytes",
+        "update",
+        "kind"
+      ],
+      "title": "FineTuneCheckpoint",
+      "type": "object"
+    },
+    "FineTuneHyperparameters": {
+      "additionalProperties": false,
+      "description": "Training settings passed verbatim to the F5-TTS fine-tune launcher.",
+      "properties": {
+        "batch_frames": {
+          "default": 3200,
+          "maximum": 200000,
+          "minimum": 256,
+          "title": "Batch Frames",
+          "type": "integer"
+        },
+        "dataloader_workers": {
+          "default": 2,
+          "maximum": 64,
+          "minimum": 1,
+          "title": "Dataloader Workers",
+          "type": "integer"
+        },
+        "epochs": {
+          "default": 120,
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Epochs",
+          "type": "integer"
+        },
+        "keep_last_n_checkpoints": {
+          "default": 1,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Keep Last N Checkpoints",
+          "type": "integer"
+        },
+        "last_per_updates": {
+          "default": 180,
+          "maximum": 10000000,
+          "minimum": 1,
+          "title": "Last Per Updates",
+          "type": "integer"
+        },
+        "learning_rate": {
+          "default": 1e-05,
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0,
+          "title": "Learning Rate",
+          "type": "number"
+        },
+        "light_checkpoints": {
+          "default": true,
+          "title": "Light Checkpoints",
+          "type": "boolean"
+        },
+        "max_grad_norm": {
+          "default": 1.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Max Grad Norm",
+          "type": "number"
+        },
+        "max_samples_per_batch": {
+          "default": 16,
+          "maximum": 1024,
+          "minimum": 1,
+          "title": "Max Samples Per Batch",
+          "type": "integer"
+        },
+        "model_name": {
+          "const": "F5TTS_v1_Base",
+          "default": "F5TTS_v1_Base",
+          "title": "Model Name",
+          "type": "string"
+        },
+        "save_per_updates": {
+          "default": 540,
+          "maximum": 10000000,
+          "minimum": 1,
+          "title": "Save Per Updates",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.finetune-hyperparameters/v1",
+          "default": "cole-voice-lab.finetune-hyperparameters/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "warmup_updates": {
+          "default": 50,
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Warmup Updates",
+          "type": "integer"
+        }
+      },
+      "title": "FineTuneHyperparameters",
+      "type": "object"
+    },
+    "FineTuneRuntimeIdentity": {
+      "additionalProperties": false,
+      "description": "The out-of-process trainer: a pinned F5-TTS environment and its pretrained weights.",
+      "properties": {
+        "f5_tts_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "F5 Tts Version",
+          "type": "string"
+        },
+        "pretrained_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Pretrained Path",
+          "type": "string"
+        },
+        "pretrained_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "python_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "runtime_root": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Runtime Root",
+          "type": "string"
+        },
+        "torch_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Torch Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime_root",
+        "python_sha256",
+        "f5_tts_version",
+        "torch_version",
+        "pretrained_path",
+        "pretrained_sha256"
+      ],
+      "title": "FineTuneRuntimeIdentity",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One training run: what it read, how it trained, what it produced.",
+  "properties": {
+    "catalog_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "checkpoints": {
+      "items": {
+        "$ref": "#/$defs/FineTuneCheckpoint"
+      },
+      "maxItems": 200,
+      "title": "Checkpoints",
+      "type": "array"
+    },
+    "corpus_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "dataset_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error"
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "hyperparameters": {
+      "$ref": "#/$defs/FineTuneHyperparameters"
+    },
+    "log_path": {
+      "$ref": "#/$defs/RelativePath"
+    },
+    "run_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_root": {
+      "$ref": "#/$defs/RelativePath"
+    },
+    "runtime": {
+      "$ref": "#/$defs/FineTuneRuntimeIdentity"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-run/v1",
+      "default": "cole-voice-lab.finetune-run/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "started_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "status": {
+      "enum": [
+        "running",
+        "finished",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "run_id",
+    "subject_id",
+    "catalog_sha256",
+    "corpus_sha256",
+    "dataset_sha256",
+    "hyperparameters",
+    "runtime",
+    "run_root",
+    "log_path",
+    "checkpoints",
+    "status",
+    "started_at"
+  ],
+  "title": "FineTuneRun",
+  "type": "object"
+}

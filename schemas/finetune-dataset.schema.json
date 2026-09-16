@@ -1,0 +1,124 @@
+{
+  "$defs": {
+    "FineTuneDatasetClip": {
+      "additionalProperties": false,
+      "properties": {
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "gain_db": {
+          "title": "Gain Db",
+          "type": "number"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "relative_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "sample_rate_hz": {
+          "const": 24000,
+          "default": 24000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "text": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "take_id",
+        "relative_path",
+        "sha256",
+        "frames",
+        "gain_db",
+        "text"
+      ],
+      "title": "FineTuneDatasetClip",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Materialized training copies (24 kHz mono 16-bit, level-normalized) bound to a corpus.",
+  "properties": {
+    "clips": {
+      "items": {
+        "$ref": "#/$defs/FineTuneDatasetClip"
+      },
+      "maxItems": 10000,
+      "minItems": 1,
+      "title": "Clips",
+      "type": "array"
+    },
+    "corpus_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "dataset_root": {
+      "$ref": "#/$defs/RelativePath"
+    },
+    "materialized_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "metadata_csv_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "normalization_rule": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Normalization Rule",
+      "type": "string"
+    },
+    "sample_rate_hz": {
+      "const": 24000,
+      "default": 24000,
+      "title": "Sample Rate Hz",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-dataset/v1",
+      "default": "cole-voice-lab.finetune-dataset/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "corpus_sha256",
+    "dataset_root",
+    "normalization_rule",
+    "clips",
+    "metadata_csv_sha256",
+    "materialized_at"
+  ],
+  "title": "FineTuneDataset",
+  "type": "object"
+}

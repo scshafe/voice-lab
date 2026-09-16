@@ -227,3 +227,24 @@ checks and quantization guards reduce false positives. These are review flags,
 not proof of the loss stage, missing duration, or perceptual quality. Live timestamp
 validation is the primary continuity gate for new native takes; headphone review
 remains the operator's final acceptance.
+
+## D-016 — The fine-tuning corpus is the library's latest kept take per prompt
+
+Cole stated on 2026-09-15 that the corpus is the set of catalog prompts, that the live
+corpus is the most recent recording of each prompt, that he will revise a few prompts
+at a time on an ongoing basis, and that he wants to re-tune after each revision.
+Recording and training happen on the same Mac.
+
+`voice-lab finetune` therefore reads the corpus straight from the recording library:
+the latest retained take of every spoken prompt, native and old-app alike, with the
+same retained predicate as Library coverage. Lab packages stay the transfer and
+acceptance unit; they are not the training unit, and a package's one-group rule does
+not limit the corpus. Training copies are level-normalized with a linear gain because
+raw UMIK-1 takes sit near -50 dBFS RMS and F5-TTS treats them as silence; originals are
+untouched. Training and synthesis run out of process in a pinned F5-TTS runtime, and
+every run records its corpus, dataset, hyperparameters, runtime and checkpoint digests
+under `derived/finetune/<run-id>/`.
+
+Fine-tuned checkpoints and listening samples are working artifacts, not accepted raw,
+references or dataset manifests; consent for rendering, transfer approval and promotion
+are unchanged. See docs/FINETUNE.md.

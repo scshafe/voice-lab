@@ -1,0 +1,83 @@
+"""Synthesize listening samples with an F5-TTS checkpoint (run by the F5 runtime's python).
+
+canonical: finetune synthesizer -- the only way the lab turns text into audio with a
+fine-tuned or base F5-TTS checkpoint. Input is one JSON job file:
+
+  {"checkpoint_path": "...", "vocab_path": "...", "use_ema": true, "device": "mps"|"cpu",
+   "nfe_steps": 32, "reference_audio_path": "...", "reference_text": "...",
+   "output_directory": "...", "texts": ["...", ...]}
+
+Writes ``sample-NN.wav`` (24 kHz mono) into ``output_directory`` and prints one JSON line
+per sample: {"index": N, "path": "...", "seconds": S}. Idempotent for the same job.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from importlib.resources import files
+from pathlib import Path
+from typing import Any
+
+os.environ.setdefault("WANDB_MODE", "disabled")
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    if len(arguments) != 1:
+        print("usage: f5_synthesize.py <job.json>", file=sys.stderr)
+        return 2
+    job: dict[str, Any] = json.loads(Path(arguments[0]).read_text(encoding="utf-8"))
+
+    import soundfile as sf  # type: ignore[import-not-found]
+    from f5_tts.infer.utils_infer import (  # type: ignore[import-not-found]
+        infer_process,
+        load_model,
+        load_vocoder,
+        preprocess_ref_audio_text,
+    )
+    from f5_tts.model import DiT  # type: ignore[import-not-found]
+    from omegaconf import OmegaConf  # type: ignore[import-not-found]
+
+    config = OmegaConf.load(str(files("f5_tts").joinpath("configs/F5TTS_v1_Base.yaml")))
+    device = job["device"]
+    vocoder = load_vocoder(vocoder_name="vocos", is_local=False, device=device)
+    model = load_model(
+        DiT,
+        config.model.arch,
+        job["checkpoint_path"],
+        mel_spec_type="vocos",
+        vocab_file=job["vocab_path"],
+        use_ema=bool(job["use_ema"]),
+        device=device,
+    )
+    output_directory = Path(job["output_directory"])
+    output_directory.mkdir(parents=True, exist_ok=True)
+    reference_audio, reference_text = preprocess_ref_audio_text(
+        job["reference_audio_path"], job["reference_text"], show_info=lambda *_: None
+    )
+    for index, text in enumerate(job["texts"], start=1):
+        wave, sample_rate, _ = infer_process(
+            reference_audio,
+            reference_text,
+            text,
+            model,
+            vocoder,
+            mel_spec_type="vocos",
+            nfe_step=int(job["nfe_steps"]),
+            device=device,
+            show_info=lambda *_: None,
+        )
+        path = output_directory / f"sample-{index:02d}.wav"
+        sf.write(str(path), wave, sample_rate)
+        print(
+            json.dumps({"index": index, "path": str(path), "seconds": len(wave) / sample_rate}),
+            flush=True,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

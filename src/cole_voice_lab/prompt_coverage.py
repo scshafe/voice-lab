@@ -99,7 +99,7 @@ class _CatalogCoverage:
     unknown_record_ids: tuple[str, ...]
 
 
-def _native_takes(store: RecordingTakeStore | None) -> Iterator[RecordingTake]:
+def iter_native_takes(store: RecordingTakeStore | None) -> Iterator[RecordingTake]:
     if store is None:
         return
     after = None
@@ -161,7 +161,7 @@ def prompt_coverage_report(
         )
         native = tuple(
             history_entry_for_take(take)
-            for take in _native_takes(store)
+            for take in iter_native_takes(store)
             if take.reservation.group.subject_id == subject_id
         )
         current = _coverage(layout, subject_id, catalog, native, store)
