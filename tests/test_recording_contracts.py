@@ -4,10 +4,11 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 import pickle
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from pydantic import ValidationError
@@ -20,6 +21,7 @@ from cole_voice_lab.canonical import (
 )
 from cole_voice_lab.capture import CaptureContinuityEvidence
 from cole_voice_lab.errors import ContractError
+from cole_voice_lab.finetune import FineTuneErrorCode
 from cole_voice_lab.models import (
     RESERVED_PROMPT_LABELS,
     AudioQcMetrics,
@@ -47,10 +49,13 @@ from cole_voice_lab.recording_contracts import (
     CatalogSnapshot,
     ContextEvent,
     ContinueLegacyRecordingCommand,
+    FineTuneEvent,
+    FineTuneProgressEvent,
+    FineTuneRunSummary,
+    FineTuneStatusEvent,
     NativeRecoveryReceipt,
     NavigationEvent,
     OpenContextCommand,
-    PackagePreparationEvent,
     PreparedCaptureGate,
     PromptAlias,
     RecorderRequest,
@@ -353,9 +358,6 @@ def synthetic_contracts() -> dict[str, Any]:
             analysis="pending",
             export="unprepared",
             state_revision=2,
-        ),
-        "recording-package-preparation-event": PackagePreparationEvent(
-            operation_id="prepare-synthetic", group_id=group.group_id, state="queued"
         ),
         "recording-recovery-page": RecordingRecoveryPage(
             entries=(
@@ -697,16 +699,6 @@ def synthetic_commands() -> list[tuple[str, type[RecorderRequest | ServiceReques
             reservation.take_id,
         ),
         (
-            "prepare-package",
-            {
-                "operation_id": "op-package",
-                "group_id": reservation.group.group_id,
-                "take_ids": (reservation.take_id,),
-                "room_tone_take_ids": (reservation.take_id,),
-            },
-            None,
-        ),
-        (
             "recover",
             {"operation_id": "op-recover", "take_id": reservation.take_id},
             reservation.take_id,
@@ -737,9 +729,21 @@ def synthetic_commands() -> list[tuple[str, type[RecorderRequest | ServiceReques
         ),
         (
             "cancel",
-            {"operation_id": "op-cancel", "cancelled_operation_id": "op-package"},
+            {"operation_id": "op-cancel", "cancelled_operation_id": "op-reserve"},
             None,
         ),
+        ("fine-tune", {"operation_id": "op-fine-tune", "allow_missing": True}, None),
+        (
+            "fine-tune",
+            {"operation_id": "op-fine-tune-short", "epochs": 12, "allow_missing": False},
+            None,
+        ),
+        (
+            "cancel-fine-tune",
+            {"operation_id": "op-cancel-fine-tune", "cancelled_operation_id": "op-fine-tune"},
+            None,
+        ),
+        ("fine-tune-status", {"operation_id": "op-fine-tune-status"}, None),
     ]
     result = []
     for number, (name, body, take_id) in enumerate(command_cases):
@@ -1224,7 +1228,6 @@ def generate_recording_conformance_fixtures(directory: Path) -> None:
     for case, valid, owner, payload in (
         reservation_event_cases()
         + history_event_cases()
-        + package_event_cases()
         + recovery_event_cases()
         + recovery_inventory_event_cases()
     ):
@@ -1241,14 +1244,16 @@ def generate_recording_conformance_fixtures(directory: Path) -> None:
     for case, name, valid, owner, payload in (
         navigation_event_cases()
         + review_event_cases()
+        + package_map_cases()
         + recovery_command_cases()
         + prompt_suite_v2_cases()
         + recording_group_v2_cases()
         + catalog_event_cases()
         + prompt_equality_cases()
+        + finetune_cases()
     ):
         filename = f"{'valid' if valid else 'invalid'}-{case}.json"
-        write_canonical_json(directory / filename, payload)
+        _write_fixture(directory / filename, payload)
         index.append({"file": filename, "model": name, "valid": valid, "validation_owner": owner})
     for name, model in RECORDING_SCHEMA_MODELS.items():
         write_canonical_json(directory / f"{name}.schema.json", model.model_json_schema())
@@ -1755,64 +1760,624 @@ def test_review_edit_decision_and_derivative_shared_contracts(case: Any) -> None
             RECORDING_SCHEMA_MODELS[name].model_validate_json(json.dumps(payload))
 
 
-def package_event_cases() -> list[tuple[str, bool, str, dict[str, Any]]]:
-    values = synthetic_contracts()
-    event = values["recording-package-preparation-event"].model_dump(mode="json")
-    base = {
-        "data": event,
-        "error": None,
-        "meta": values["recording-response"].meta.model_dump(mode="json") | {"take_id": None},
-    }
-    error = values["native-recovery"].error.model_dump(mode="json")
-    cases = []
-    for state in ("queued", "running", "blocked", "failed"):
-        payload = copy.deepcopy(base)
-        payload["data"]["state"] = state
-        payload["data"]["error"] = error if state in {"blocked", "failed"} else None
-        cases.append((f"package-preparation-{state}", True, "shared", payload))
-        broken = copy.deepcopy(payload)
-        broken["data"]["error"] = None if payload["data"]["error"] is not None else error
-        cases.append((f"package-preparation-{state}-error", False, "shared", broken))
-    package = values["recording-package-map"].model_dump(mode="json")
+def package_map_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
+    """Selected-suite rules of a v1 (embedded-catalog) package map, checked on the map itself."""
+    package = synthetic_contracts()["recording-package-map"].model_dump(mode="json")
     package["selected_suite"] = {
         "suite_id": "synthetic-export-subset",
         "purpose": package["group"]["catalog"]["purpose"],
         "prompts": [entry["prompt"] for entry in package["entries"]],
     }
-    selected = copy.deepcopy(base)
-    selected["data"] = {"event": "package", "package": package}
-    cases.append(("package-selected-suite", True, "shared", selected))
-    broken = copy.deepcopy(selected)
-    broken["data"]["package"]["selected_suite"]["purpose"] = "benchmark"
-    cases.append(("package-selected-purpose", False, "shared", broken))
-    broken = copy.deepcopy(selected)
-    broken["data"]["package"]["selected_suite"]["prompts"][0]["text"] = "Changed exact prompt"
-    cases.append(("package-selected-content", False, "shared", broken))
+    cases = [("package-selected-suite", "recording-package-map", True, "shared", package)]
+    broken = copy.deepcopy(package)
+    broken["selected_suite"]["purpose"] = "benchmark"
+    cases.append(("package-selected-purpose", "recording-package-map", False, "shared", broken))
+    broken = copy.deepcopy(package)
+    broken["selected_suite"]["prompts"][0]["text"] = "Changed exact prompt"
+    cases.append(("package-selected-content", "recording-package-map", False, "shared", broken))
     # The two cases above also fail other rules (the entry shares the edited prompt object;
     # "benchmark" is no purpose at all). These fail only the v1 selected-suite rule.
-    broken = copy.deepcopy(selected)
-    suite = broken["data"]["package"]["selected_suite"]
+    broken = copy.deepcopy(package)
+    suite = broken["selected_suite"]
     suite["prompts"] = copy.deepcopy(suite["prompts"])
     suite["prompts"][0]["text"] = "Changed exact prompt"
-    assert broken["data"]["package"]["entries"][0]["prompt"]["text"] != "Changed exact prompt"
-    cases.append(("package-selected-content-only", False, "shared", broken))
-    broken = copy.deepcopy(selected)
-    broken["data"]["package"]["selected_suite"]["purpose"] = "capture-corpus"
-    cases.append(("package-selected-other-purpose", False, "shared", broken))
+    assert broken["entries"][0]["prompt"]["text"] != "Changed exact prompt"
+    cases.append(
+        ("package-selected-content-only", "recording-package-map", False, "shared", broken)
+    )
+    broken = copy.deepcopy(package)
+    broken["selected_suite"]["purpose"] = "capture-corpus"
+    cases.append(
+        ("package-selected-other-purpose", "recording-package-map", False, "shared", broken)
+    )
     return cases
 
 
-@pytest.mark.parametrize("case", package_event_cases(), ids=lambda case: case[0])
-def test_package_events_bind_prerequisites_and_selected_content(case: Any) -> None:
-    _, valid, _, payload = case
+@pytest.mark.parametrize("case", package_map_cases(), ids=lambda case: case[0])
+def test_package_maps_bind_their_selected_content(case: Any) -> None:
+    _, name, valid, _, payload = case
     if valid:
-        assert RecordingResponse.model_validate_json(json.dumps(payload)).data.event in {
-            "package",
-            "package-preparation",
-        }
+        assert RecordingPackageMap.model_validate_json(json.dumps(payload)).selected_suite
     else:
         with pytest.raises(ValidationError):
-            RecordingResponse.model_validate_json(json.dumps(payload))
+            RECORDING_SCHEMA_MODELS[name].model_validate_json(json.dumps(payload))
+
+
+class NonCanonicalFixture(dict[str, Any]):
+    """A fixture canonical JSON cannot write: it holds a non-finite number.
+
+    Written as Python's json module writes it (``Infinity``), a token neither strict parser
+    accepts, so both sides must refuse the file.
+    """
+
+
+def _write_fixture(path: Path, payload: Any) -> None:
+    if not isinstance(payload, NonCanonicalFixture):
+        write_canonical_json(path, payload)
+        return
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    path.unlink(missing_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(data)
+
+
+FINETUNE_WIRE_CODES: tuple[str, ...] = get_args(FineTuneErrorCode.__value__)
+FINETUNE_RUN_ID = "finetune-20260916t080000z"
+FINETUNE_RUN_ROOT = f"derived/finetune/{FINETUNE_RUN_ID}"
+
+
+def synthetic_finetune_run(**changes: Any) -> FineTuneRunSummary:
+    """A finished synthetic run with one fine-tuned and one base sample."""
+    payload: dict[str, Any] = {
+        "run_id": FINETUNE_RUN_ID,
+        "run_root": FINETUNE_RUN_ROOT,
+        "status": "finished",
+        "started_at": datetime(2026, 9, 16, 8, 0, tzinfo=UTC),
+        "finished_at": datetime(2026, 9, 16, 10, 0, tzinfo=UTC),
+        "epochs": 120,
+        "prompt_count": 34,
+        "retained_seconds": 181.25,
+        "finetuned_sample_paths": (f"{FINETUNE_RUN_ROOT}/samples/finetuned/sample-01.wav",),
+        "base_sample_paths": (f"{FINETUNE_RUN_ROOT}/samples/base/sample-01.wav",),
+    }
+    return FineTuneRunSummary.model_validate(payload | changes)
+
+
+def synthetic_finetune_progress(**changes: Any) -> FineTuneProgressEvent:
+    """A synthetic job in its training stage, pass 30 of 120."""
+    payload: dict[str, Any] = {
+        "operation_id": "op-fine-tune",
+        "state": "running",
+        "stage": "training",
+        "run_id": FINETUNE_RUN_ID,
+        "epoch": 30,
+        "epochs": 120,
+        "update": 270,
+        "loss": 0.52,
+        "eta_seconds": 2520,
+    }
+    return FineTuneProgressEvent.model_validate(payload | changes)
+
+
+def finetune_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
+    """Fine-tune commands and events: take-less, with named states and relative run paths."""
+    values = synthetic_contracts()
+    response_meta = values["recording-response"].meta.model_copy(update={"take_id": None})
+    request_meta = values["recording-service-request"].meta.model_dump(mode="json")
+    failure = RecordingError(
+        code="FINETUNE.TRAINING_FAILED", message="Synthetic training failure", retryable=False
+    )
+
+    def response(data: Any = None, error: RecordingError | None = None) -> dict[str, Any]:
+        return RecordingResponse(data=data, error=error, meta=response_meta).model_dump(mode="json")
+
+    def request(**data: Any) -> dict[str, Any]:
+        return {"data": data, "error": None, "meta": request_meta | {"take_id": None}}
+
+    progress = synthetic_finetune_progress()
+    finished_run = synthetic_finetune_run()
+    valid: list[tuple[str, str, dict[str, Any]]] = [
+        (
+            "progress-queued",
+            "recording-response",
+            response(FineTuneProgressEvent(operation_id="op-fine-tune", state="queued")),
+        ),
+        (
+            "progress-selecting",
+            "recording-response",
+            response(
+                FineTuneProgressEvent(
+                    operation_id="op-fine-tune",
+                    state="running",
+                    stage="selecting",
+                    message="Preparing the recordings",
+                )
+            ),
+        ),
+        (
+            "progress-started",
+            "recording-response",
+            response(FineTuneProgressEvent(operation_id="op-fine-tune", state="running")),
+        ),
+        ("progress-training", "recording-response", response(progress)),
+        (
+            "progress-finished",
+            "recording-response",
+            response(
+                progress.model_copy(update={"state": "finished", "stage": None, "epoch": 120})
+            ),
+        ),
+        (
+            "progress-failed",
+            "recording-response",
+            response(synthetic_finetune_progress(state="failed", error=failure)),
+        ),
+        (
+            "progress-cancelled",
+            "recording-response",
+            response(synthetic_finetune_progress(state="cancelled")),
+        ),
+        (
+            "run-finished",
+            "recording-response",
+            response(FineTuneEvent(operation_id="op-fine-tune", run=finished_run)),
+        ),
+        (
+            "run-finished-unsampled",
+            "recording-response",
+            response(
+                FineTuneEvent(
+                    operation_id="op-fine-tune",
+                    run=synthetic_finetune_run(finetuned_sample_paths=(), base_sample_paths=()),
+                )
+            ),
+        ),
+        (
+            "run-running",
+            "recording-response",
+            response(
+                FineTuneEvent(
+                    operation_id="op-fine-tune",
+                    run=synthetic_finetune_run(
+                        status="running",
+                        finished_at=None,
+                        finetuned_sample_paths=(),
+                        base_sample_paths=(),
+                    ),
+                )
+            ),
+        ),
+        (
+            "run-failed",
+            "recording-response",
+            response(
+                FineTuneEvent(
+                    operation_id="op-fine-tune",
+                    run=synthetic_finetune_run(
+                        status="failed",
+                        error="training ended without model_last.pt",
+                        finetuned_sample_paths=(),
+                        base_sample_paths=(),
+                    ),
+                )
+            ),
+        ),
+        (
+            "status-unconfigured",
+            "recording-response",
+            response(
+                FineTuneStatusEvent(operation_id="op-fine-tune-status", runtime_configured=False)
+            ),
+        ),
+        (
+            "status-active",
+            "recording-response",
+            response(
+                FineTuneStatusEvent(
+                    operation_id="op-fine-tune-status",
+                    runtime_configured=True,
+                    active=progress,
+                    latest_run=finished_run,
+                )
+            ),
+        ),
+        (
+            "status-queued",
+            "recording-response",
+            response(
+                FineTuneStatusEvent(
+                    operation_id="op-fine-tune-status",
+                    runtime_configured=True,
+                    active=FineTuneProgressEvent(operation_id="op-fine-tune", state="queued"),
+                )
+            ),
+        ),
+        (
+            "command-maximum-epochs",
+            "recording-service-request",
+            request(
+                command="fine-tune", operation_id="op-fine-tune", epochs=10_000, allow_missing=True
+            ),
+        ),
+    ]
+    valid += [
+        (
+            f"error-{code.lower().replace('.', '-').replace('_', '-')}",
+            "recording-response",
+            response(error=RecordingError(code=code, message="Synthetic", retryable=False)),
+        )
+        for code in FINETUNE_WIRE_CODES
+    ]
+
+    absent = object()  # this runs at import, before the module's own _ABSENT exists
+
+    def changed(payload: dict[str, Any], path: tuple[Any, ...], value: Any) -> dict[str, Any]:
+        result = copy.deepcopy(payload)
+        target = result
+        for key in path[:-1]:
+            target = target[key]
+        if value is absent:
+            del target[path[-1]]
+        else:
+            target[path[-1]] = value
+        return result
+
+    def without_samples(payload: dict[str, Any], *run_path: str) -> dict[str, Any]:
+        cleared = changed(payload, (*run_path, "finetuned_sample_paths"), [])
+        return changed(cleared, (*run_path, "base_sample_paths"), [])
+
+    training = response(progress)
+    finished = response(FineTuneEvent(operation_id="op-fine-tune", run=finished_run))
+    status = next(payload for name, _, payload in valid if name == "status-active")
+    command = request(command="fine-tune", operation_id="op-fine-tune", allow_missing=True)
+    run = ("data", "run")
+    unsampled = without_samples(finished, *run)
+    invalid: list[tuple[str, str, dict[str, Any]]] = [
+        (
+            "progress-training-without-epoch",
+            "recording-response",
+            changed(training, ("data", "epoch"), None),
+        ),
+        (
+            "progress-epoch-without-total",
+            "recording-response",
+            changed(changed(training, ("data", "stage"), "sampling"), ("data", "epochs"), None),
+        ),
+        (
+            "progress-epoch-over-total",
+            "recording-response",
+            changed(training, ("data", "epoch"), 121),
+        ),
+        ("progress-epoch-zero", "recording-response", changed(training, ("data", "epoch"), 0)),
+        (
+            "progress-update-negative",
+            "recording-response",
+            changed(training, ("data", "update"), -1),
+        ),
+        (
+            "progress-finished-without-run",
+            "recording-response",
+            changed(changed(training, ("data", "state"), "finished"), ("data", "run_id"), None),
+        ),
+        (
+            "progress-failed-without-error",
+            "recording-response",
+            changed(training, ("data", "state"), "failed"),
+        ),
+        (
+            "progress-cancelled-with-error",
+            "recording-response",
+            changed(
+                changed(training, ("data", "state"), "cancelled"),
+                ("data", "error"),
+                failure.model_dump(mode="json"),
+            ),
+        ),
+        (
+            "progress-running-with-error",
+            "recording-response",
+            changed(training, ("data", "error"), failure.model_dump(mode="json")),
+        ),
+        (
+            "progress-queued-with-stage",
+            "recording-response",
+            changed(training, ("data", "state"), "queued"),
+        ),
+        (
+            "progress-unknown-state",
+            "recording-response",
+            changed(training, ("data", "state"), "paused"),
+        ),
+        (
+            "progress-unknown-stage",
+            "recording-response",
+            changed(training, ("data", "stage"), "packing"),
+        ),
+        ("progress-loss-text", "recording-response", changed(training, ("data", "loss"), "0.52")),
+        (
+            "progress-blank-message",
+            "recording-response",
+            changed(training, ("data", "message"), ""),
+        ),
+        (
+            "progress-take-bound",
+            "recording-response",
+            changed(training, ("meta", "take_id"), "take-a"),
+        ),
+        (
+            "run-absolute-root",
+            "recording-response",
+            changed(finished, (*run, "run_root"), "/Users/synthetic/" + FINETUNE_RUN_ROOT),
+        ),
+        (
+            "run-parent-root",
+            "recording-response",
+            changed(finished, (*run, "run_root"), "derived/../" + FINETUNE_RUN_ROOT),
+        ),
+        (
+            "run-absolute-sample",
+            "recording-response",
+            changed(
+                finished,
+                (*run, "finetuned_sample_paths", 0),
+                "/" + FINETUNE_RUN_ROOT + "/samples/finetuned/sample-01.wav",
+            ),
+        ),
+        (
+            "run-sample-outside-run",
+            "recording-response",
+            changed(
+                finished,
+                (*run, "base_sample_paths", 0),
+                "derived/finetune/another-run/samples/base/sample-01.wav",
+            ),
+        ),
+        (
+            "run-sample-parent",
+            "recording-response",
+            changed(
+                finished,
+                (*run, "base_sample_paths", 0),
+                FINETUNE_RUN_ROOT + "/../another-run/sample-01.wav",
+            ),
+        ),
+        (
+            "run-sample-is-root",
+            "recording-response",
+            changed(finished, (*run, "base_sample_paths", 0), FINETUNE_RUN_ROOT),
+        ),
+        (
+            "run-sample-in-sibling-run",
+            "recording-response",
+            changed(
+                finished, (*run, "base_sample_paths", 0), FINETUNE_RUN_ROOT + "-2/sample-01.wav"
+            ),
+        ),
+        (
+            "run-running-with-finish",
+            "recording-response",
+            changed(unsampled, (*run, "status"), "running"),
+        ),
+        (
+            "run-finished-without-finish",
+            "recording-response",
+            changed(finished, (*run, "finished_at"), None),
+        ),
+        (
+            "run-finished-before-start",
+            "recording-response",
+            changed(finished, (*run, "finished_at"), "2026-09-16T07:59:59Z"),
+        ),
+        (
+            "run-finished-with-error",
+            "recording-response",
+            changed(finished, (*run, "error"), "Synthetic"),
+        ),
+        (
+            "run-failed-without-error",
+            "recording-response",
+            changed(unsampled, (*run, "status"), "failed"),
+        ),
+        (
+            "run-failed-with-samples",
+            "recording-response",
+            changed(changed(finished, (*run, "status"), "failed"), (*run, "error"), "Synthetic"),
+        ),
+        (
+            "run-cancelled-status",
+            "recording-response",
+            changed(finished, (*run, "status"), "cancelled"),
+        ),
+        ("run-zero-prompts", "recording-response", changed(finished, (*run, "prompt_count"), 0)),
+        (
+            "run-negative-seconds",
+            "recording-response",
+            changed(finished, (*run, "retained_seconds"), -1.0),
+        ),
+        (
+            "run-runtime-path",
+            "recording-response",
+            changed(finished, (*run, "pretrained_path"), "models/pretrained.pt"),
+        ),
+        (
+            "status-active-finished",
+            "recording-response",
+            changed(status, ("data", "active", "state"), "finished"),
+        ),
+        (
+            "status-latest-failed",
+            "recording-response",
+            changed(
+                changed(
+                    without_samples(status, "data", "latest_run"),
+                    ("data", "latest_run", "status"),
+                    "failed",
+                ),
+                ("data", "latest_run", "error"),
+                "Synthetic",
+            ),
+        ),
+        (
+            "status-configuration-absent",
+            "recording-response",
+            changed(status, ("data", "runtime_configured"), absent),
+        ),
+        (
+            "error-unknown-finetune-code",
+            "recording-response",
+            response(error=failure)
+            | {"error": failure.model_dump(mode="json") | {"code": "FINETUNE.UNKNOWN"}},
+        ),
+        (
+            "package-preparation-retired",
+            "recording-response",
+            response(error=failure)
+            | {
+                "data": {
+                    "event": "package-preparation",
+                    "operation_id": "op-package",
+                    "group_id": values["recording-group"].group_id,
+                    "state": "queued",
+                    "error": None,
+                },
+                "error": None,
+            },
+        ),
+        (
+            "command-epochs-zero",
+            "recording-service-request",
+            changed(command, ("data", "epochs"), 0),
+        ),
+        (
+            "command-epochs-over",
+            "recording-service-request",
+            changed(command, ("data", "epochs"), 10_001),
+        ),
+        (
+            "command-epochs-float",
+            "recording-service-request",
+            changed(command, ("data", "epochs"), 12.0),
+        ),
+        (
+            "command-allow-missing-absent",
+            "recording-service-request",
+            changed(command, ("data", "allow_missing"), absent),
+        ),
+        (
+            "command-allow-missing-text",
+            "recording-service-request",
+            changed(command, ("data", "allow_missing"), "true"),
+        ),
+        (
+            "command-take-bound",
+            "recording-service-request",
+            changed(command, ("meta", "take_id"), "take-a"),
+        ),
+        (
+            "cancel-without-target",
+            "recording-service-request",
+            request(command="cancel-fine-tune", operation_id="op-cancel-fine-tune"),
+        ),
+        (
+            "status-with-arguments",
+            "recording-service-request",
+            request(command="fine-tune-status", operation_id="op-status", allow_missing=True),
+        ),
+        (
+            "prepare-package-retired",
+            "recording-service-request",
+            request(
+                command="prepare-package",
+                operation_id="op-package",
+                group_id=values["recording-group"].group_id,
+                take_ids=["synthetic-take"],
+                room_tone_take_ids=["synthetic-take"],
+            ),
+        ),
+    ]
+    nonfinite = NonCanonicalFixture(training)
+    nonfinite["data"] = training["data"] | {"loss": float("inf")}
+    return (
+        [(f"finetune-{name}", model, True, "shared", payload) for name, model, payload in valid]
+        + [
+            (f"finetune-{name}", model, False, "shared", payload)
+            for name, model, payload in invalid
+        ]
+        + [("finetune-progress-nonfinite-loss", "recording-response", False, "shared", nonfinite)]
+    )
+
+
+@pytest.mark.parametrize("case", finetune_cases(), ids=lambda case: case[0])
+def test_finetune_messages_bind_their_state_and_relative_run_paths(case: Any) -> None:
+    _, name, valid, _, payload = case
+    encoded = json.dumps(payload)
+    if valid:
+        message = RECORDING_SCHEMA_MODELS[name].model_validate_json(encoded)
+        assert message.meta.take_id is None
+    else:
+        with pytest.raises(ValidationError):
+            RECORDING_SCHEMA_MODELS[name].model_validate_json(encoded)
+
+
+def test_every_finetune_code_is_a_valid_wire_error() -> None:
+    names = {name for name, *_ in finetune_cases()}
+    assert len(FINETUNE_WIRE_CODES) == 21
+    for code in FINETUNE_WIRE_CODES:
+        assert f"finetune-error-{code.lower().replace('.', '-').replace('_', '-')}" in names
+    assert {
+        "FINETUNE.CORPUS_INCOMPLETE",
+        "FINETUNE.JOB_ACTIVE",
+        "FINETUNE.CANCELLED",
+        "FINETUNE.INTERRUPTED",
+        "FINETUNE.RUNTIME_UNAVAILABLE",
+    } <= set(FINETUNE_WIRE_CODES)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_finetune_numbers_must_be_finite(value: float) -> None:
+    with pytest.raises(ValidationError, match="finite"):
+        synthetic_finetune_progress(loss=value)
+    with pytest.raises(ValidationError, match="finite"):
+        synthetic_finetune_run(retained_seconds=value)
+
+
+def test_finetune_state_rules_name_what_is_missing() -> None:
+    failure = RecordingError(code="FINETUNE.CANCELLED", message="Synthetic", retryable=False)
+    for changes, message in (
+        ({"epoch": None}, "pass and total"),
+        ({"stage": "sampling", "epochs": None}, "counted against its total"),
+        ({"state": "finished", "run_id": None}, "names its run"),
+        ({"state": "failed"}, "names its error"),
+        ({"state": "cancelled", "error": failure}, "names its error"),
+        ({"state": "queued"}, "has not started a stage"),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            synthetic_finetune_progress(**changes)
+    no_samples = {"finetuned_sample_paths": (), "base_sample_paths": ()}
+    for changes, message in (
+        ({"status": "running"}, "finish time"),
+        ({"finished_at": datetime(2026, 9, 16, 7, 0, tzinfo=UTC)}, "before it started"),
+        ({"status": "failed"} | no_samples, "name their error"),
+        ({"status": "failed", "error": "Synthetic"}, "only a finished run has samples"),
+        ({"base_sample_paths": ("derived/finetune/other/a.wav",)}, "under the run's directory"),
+        ({"run_root": "/abs/" + FINETUNE_RUN_ROOT}, "absolute"),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            synthetic_finetune_run(**changes)
+    progress = synthetic_finetune_progress()
+    with pytest.raises(ValidationError, match="queued or running"):
+        FineTuneStatusEvent(
+            operation_id="op-status",
+            runtime_configured=True,
+            active=progress.model_copy(update={"state": "finished"}),
+        )
+    with pytest.raises(ValidationError, match="finished run"):
+        FineTuneStatusEvent(
+            operation_id="op-status",
+            runtime_configured=True,
+            latest_run=synthetic_finetune_run(status="failed", error="Synthetic", **no_samples),
+        )
 
 
 def recovery_event_cases() -> list[tuple[str, bool, str, dict[str, Any]]]:

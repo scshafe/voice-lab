@@ -740,7 +740,28 @@
         "RECORDING.CANCELLED",
         "CORPUS.NO_ACTIVE_CATALOG",
         "CORPUS.SNAPSHOT_MISMATCH",
-        "CORPUS.STORE_MISSING"
+        "CORPUS.STORE_MISSING",
+        "FINETUNE.CANCELLED",
+        "FINETUNE.CATALOG_HELD_OUT",
+        "FINETUNE.CHECKPOINT_MISSING",
+        "FINETUNE.CORPUS_INCOMPLETE",
+        "FINETUNE.CORPUS_PROJECTION_FAILED",
+        "FINETUNE.DOWNLOADS_NOT_ALLOWED",
+        "FINETUNE.DOWNLOAD_FAILED",
+        "FINETUNE.EMPTY_CORPUS",
+        "FINETUNE.FFMPEG_FAILED",
+        "FINETUNE.FFMPEG_UNAVAILABLE",
+        "FINETUNE.INTERRUPTED",
+        "FINETUNE.JOB_ACTIVE",
+        "FINETUNE.PRETRAINED_MISMATCH",
+        "FINETUNE.REFERENCE_MISSING",
+        "FINETUNE.REQUIREMENTS_MISSING",
+        "FINETUNE.RUNTIME_FAILED",
+        "FINETUNE.RUNTIME_UNAVAILABLE",
+        "FINETUNE.RUN_EXISTS",
+        "FINETUNE.SOURCE_CHANGED",
+        "FINETUNE.TRAINING_FAILED",
+        "FINETUNE.UNSUPPORTED_TEXT"
       ],
       "type": "string"
     },
@@ -753,6 +774,324 @@
         "failed"
       ],
       "type": "string"
+    },
+    "FineTuneEvent": {
+      "additionalProperties": false,
+      "description": "A fine-tune job's run record changed (written, finished or failed).",
+      "properties": {
+        "event": {
+          "const": "fine-tune",
+          "default": "fine-tune",
+          "title": "Event",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run": {
+          "$ref": "#/$defs/FineTuneRunSummary"
+        }
+      },
+      "required": [
+        "operation_id",
+        "run"
+      ],
+      "title": "FineTuneEvent",
+      "type": "object"
+    },
+    "FineTuneProgressEvent": {
+      "additionalProperties": false,
+      "description": "Where one fine-tune job stands; sent as it moves and repeated in status replies.\n\n``stage`` is the step a running job is in. Training progress (``epoch`` of ``epochs``,\n``update``, ``loss``, ``eta_seconds`` remaining) is parsed from the trainer's log.\n``error`` is present exactly when the job failed; a cancelled job carries none.",
+      "properties": {
+        "epoch": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Epoch"
+        },
+        "epochs": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Epochs"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "eta_seconds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Revision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "event": {
+          "const": "fine-tune-progress",
+          "default": "fine-tune-progress",
+          "title": "Event",
+          "type": "string"
+        },
+        "loss": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Loss"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FineTuneStage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "$ref": "#/$defs/FineTuneState"
+        },
+        "update": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Revision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "operation_id",
+        "state"
+      ],
+      "title": "FineTuneProgressEvent",
+      "type": "object"
+    },
+    "FineTuneRunSummary": {
+      "additionalProperties": false,
+      "description": "One training run as the app sees it: ``finetune.FineTuneRun`` without absolute paths.\n\nPaths are relative to the asset root, and every sample lies under ``run_root``. Only a\nfinished run has samples (``finetuned`` from the trained checkpoint, ``base`` from the\npretrained weights, for comparison).",
+      "properties": {
+        "base_sample_paths": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RelativePath"
+          },
+          "maxItems": 64,
+          "title": "Base Sample Paths",
+          "type": "array"
+        },
+        "epochs": {
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Epochs",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "finetuned_sample_paths": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RelativePath"
+          },
+          "maxItems": 64,
+          "title": "Finetuned Sample Paths",
+          "type": "array"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "prompt_count": {
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Prompt Count",
+          "type": "integer"
+        },
+        "retained_seconds": {
+          "minimum": 0.0,
+          "title": "Retained Seconds",
+          "type": "number"
+        },
+        "run_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_root": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "started_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "finished",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "run_root",
+        "status",
+        "started_at",
+        "epochs",
+        "prompt_count",
+        "retained_seconds"
+      ],
+      "title": "FineTuneRunSummary",
+      "type": "object"
+    },
+    "FineTuneStage": {
+      "enum": [
+        "selecting",
+        "dataset",
+        "training",
+        "sampling"
+      ],
+      "type": "string"
+    },
+    "FineTuneState": {
+      "enum": [
+        "queued",
+        "running",
+        "finished",
+        "failed",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "FineTuneStatusEvent": {
+      "additionalProperties": false,
+      "description": "Reply to ``fine-tune-status``: the runtime, the active job and the latest finished run.",
+      "properties": {
+        "active": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FineTuneProgressEvent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "event": {
+          "const": "fine-tune-status",
+          "default": "fine-tune-status",
+          "title": "Event",
+          "type": "string"
+        },
+        "latest_run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FineTuneRunSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "runtime_configured": {
+          "title": "Runtime Configured",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "operation_id",
+        "runtime_configured"
+      ],
+      "title": "FineTuneStatusEvent",
+      "type": "object"
     },
     "FrameCount": {
       "maximum": 28800000,
@@ -815,70 +1154,6 @@
         "result"
       ],
       "title": "NavigationEvent",
-      "type": "object"
-    },
-    "PackageEvent": {
-      "additionalProperties": false,
-      "properties": {
-        "event": {
-          "const": "package",
-          "default": "package",
-          "title": "Event",
-          "type": "string"
-        },
-        "package": {
-          "$ref": "#/$defs/RecordingPackageMap"
-        }
-      },
-      "required": [
-        "package"
-      ],
-      "title": "PackageEvent",
-      "type": "object"
-    },
-    "PackagePreparationEvent": {
-      "additionalProperties": false,
-      "properties": {
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RecordingError"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "event": {
-          "const": "package-preparation",
-          "default": "package-preparation",
-          "title": "Event",
-          "type": "string"
-        },
-        "group_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "operation_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "state": {
-          "enum": [
-            "queued",
-            "running",
-            "blocked",
-            "failed"
-          ],
-          "title": "State",
-          "type": "string"
-        }
-      },
-      "required": [
-        "operation_id",
-        "group_id",
-        "state"
-      ],
-      "title": "PackagePreparationEvent",
       "type": "object"
     },
     "PositiveRevision": {
@@ -1990,151 +2265,6 @@
       "title": "RecordingNavigationResult",
       "type": "object"
     },
-    "RecordingPackageEntry": {
-      "additionalProperties": false,
-      "properties": {
-        "analysis_sha256": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Sha256"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "catalog_sha256": {
-          "$ref": "#/$defs/Sha256"
-        },
-        "decision_revision": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Revision"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "edit_identity_sha256": {
-          "$ref": "#/$defs/Sha256"
-        },
-        "edit_revision": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Revision"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "frame_range": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RecordingFrameRange"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "group_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "original_sha256": {
-          "$ref": "#/$defs/Sha256"
-        },
-        "package_relative_path": {
-          "$ref": "#/$defs/RelativePath"
-        },
-        "prompt": {
-          "$ref": "#/$defs/Prompt"
-        },
-        "recorded_at": {
-          "$ref": "#/$defs/UtcTimestamp"
-        },
-        "subject_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "take_id": {
-          "$ref": "#/$defs/StableId"
-        }
-      },
-      "required": [
-        "take_id",
-        "group_id",
-        "subject_id",
-        "catalog_sha256",
-        "prompt",
-        "package_relative_path",
-        "original_sha256",
-        "recorded_at",
-        "edit_identity_sha256"
-      ],
-      "title": "RecordingPackageEntry",
-      "type": "object"
-    },
-    "RecordingPackageMap": {
-      "additionalProperties": false,
-      "properties": {
-        "entries": {
-          "items": {
-            "$ref": "#/$defs/RecordingPackageEntry"
-          },
-          "maxItems": 10000,
-          "minItems": 1,
-          "title": "Entries",
-          "type": "array"
-        },
-        "group": {
-          "$ref": "#/$defs/RecordingGroup"
-        },
-        "manifest_sha256": {
-          "$ref": "#/$defs/Sha256"
-        },
-        "package_path": {
-          "$ref": "#/$defs/RelativePath"
-        },
-        "registered_at": {
-          "$ref": "#/$defs/UtcTimestamp"
-        },
-        "schema_version": {
-          "const": "cole-voice-lab.recording-package-map/v1",
-          "default": "cole-voice-lab.recording-package-map/v1",
-          "title": "Schema Version",
-          "type": "string"
-        },
-        "selected_suite": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/PromptSuite"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "session_id": {
-          "$ref": "#/$defs/StableId"
-        }
-      },
-      "required": [
-        "session_id",
-        "manifest_sha256",
-        "package_path",
-        "group",
-        "entries",
-        "registered_at"
-      ],
-      "title": "RecordingPackageMap",
-      "type": "object"
-    },
     "RecordingPromptSummary": {
       "additionalProperties": false,
       "description": "Bounded row projection; the client already owns exact catalog text.",
@@ -2850,11 +2980,12 @@
           "decision": "#/$defs/DecisionEvent",
           "derivative": "#/$defs/DerivativeEvent",
           "edited": "#/$defs/EditEvent",
+          "fine-tune": "#/$defs/FineTuneEvent",
+          "fine-tune-progress": "#/$defs/FineTuneProgressEvent",
+          "fine-tune-status": "#/$defs/FineTuneStatusEvent",
           "handshake": "#/$defs/HandshakeEvent",
           "history": "#/$defs/RecordingHistoryPage",
           "navigation": "#/$defs/NavigationEvent",
-          "package": "#/$defs/PackageEvent",
-          "package-preparation": "#/$defs/PackagePreparationEvent",
           "recorder-state": "#/$defs/RecorderStateEvent",
           "recovery": "#/$defs/RecoveryEvent",
           "recovery-inventory": "#/$defs/RecoveryInventoryEvent",
@@ -2922,10 +3053,13 @@
           "$ref": "#/$defs/AnalysisEvent"
         },
         {
-          "$ref": "#/$defs/PackageEvent"
+          "$ref": "#/$defs/FineTuneProgressEvent"
         },
         {
-          "$ref": "#/$defs/PackagePreparationEvent"
+          "$ref": "#/$defs/FineTuneEvent"
+        },
+        {
+          "$ref": "#/$defs/FineTuneStatusEvent"
         },
         {
           "$ref": "#/$defs/RecoveryEvent"

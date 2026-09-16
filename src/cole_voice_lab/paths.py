@@ -39,6 +39,26 @@ def validate_relative_path(value: str) -> str:
     return canonical
 
 
+def validate_absolute_path(value: str) -> str:
+    """Return ``value`` when it is an absolute, already-normalized POSIX path.
+
+    Returns: ``value`` unchanged.
+    Raises: ``ValueError`` for an empty or relative path, a control character, a ``..``,
+    ``.`` or empty component, or a trailing ``/`` (anything ``os.path.normpath`` would change,
+    and a leading ``//``, which it keeps).
+    """
+    if any(ord(character) < 32 for character in value):
+        raise ValueError("paths cannot contain control characters")
+    if (
+        not PurePosixPath(value).is_absolute()
+        or ".." in PurePosixPath(value).parts
+        or value.startswith("//")
+        or os.path.normpath(value) != value
+    ):
+        raise ValueError("path must be absolute and normalized, without '..'")
+    return value
+
+
 def _reject_dangerously_broad_root(root: Path) -> None:
     home = Path.home().resolve()
     forbidden = {Path("/").resolve(), home}

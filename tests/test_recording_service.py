@@ -1291,6 +1291,42 @@ def test_a_workspace_service_refuses_a_launch_catalog_digest(
     assert not (layout.root / "provenance/recording-takes").exists()
 
 
+def test_a_workspace_service_takes_only_a_normalized_absolute_finetune_runtime_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The app's build settings name the F5 runtime; the service parses it before starting."""
+    from cole_voice_lab.recording_service import _finetune_runtime_root, main
+
+    root = tmp_path.resolve()
+    layout = AssetLayout.initialize(root / "assets")
+    # A foreign service build: a launch that gets past argparse stops at BUILD_MISMATCH.
+    write_canonical_json(root / "service-build.json", build_identity())
+    base = [
+        "--asset-root",
+        str(layout.root),
+        "--process-generation",
+        "generation-1",
+        "--build-identity",
+        str(root / "service-build.json"),
+        "--expected-client-build",
+        str(root / "client-build.json"),
+        "--native-workspace",
+        "--finetune-runtime-root",
+    ]
+    for refused in ("venv", "/runtimes/../venv", "/runtimes/venv/", "//runtimes/venv"):
+        with pytest.raises(SystemExit) as usage:
+            main([*base, refused])
+        assert usage.value.code == 2
+        error = capsys.readouterr().err
+        assert "argument --finetune-runtime-root: path must be absolute and normalized" in error
+    runtime_root = root / "fine tune" / "venv"
+    assert _finetune_runtime_root(str(runtime_root)) == runtime_root
+    assert main([*base, str(runtime_root)]) == 2
+    assert json.loads(capsys.readouterr().err)["error_code"] == "RECORDING.BUILD_MISMATCH"
+    assert not runtime_root.exists()
+    assert not (layout.root / "provenance/corpus").exists()
+
+
 def test_real_workspace_service_delivers_its_catalog_before_a_referenced_context(
     tmp_path: Path,
 ) -> None:

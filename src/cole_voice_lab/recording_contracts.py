@@ -101,6 +101,29 @@ type ErrorCode = Literal[
     "CORPUS.NO_ACTIVE_CATALOG",
     "CORPUS.SNAPSHOT_MISMATCH",
     "CORPUS.STORE_MISSING",
+    # Exactly finetune.FineTuneErrorCode (tests/test_finetune.py holds the two equal), so a
+    # fine-tune job can send any FineTuneError under its own code.
+    "FINETUNE.CANCELLED",
+    "FINETUNE.CATALOG_HELD_OUT",
+    "FINETUNE.CHECKPOINT_MISSING",
+    "FINETUNE.CORPUS_INCOMPLETE",
+    "FINETUNE.CORPUS_PROJECTION_FAILED",
+    "FINETUNE.DOWNLOADS_NOT_ALLOWED",
+    "FINETUNE.DOWNLOAD_FAILED",
+    "FINETUNE.EMPTY_CORPUS",
+    "FINETUNE.FFMPEG_FAILED",
+    "FINETUNE.FFMPEG_UNAVAILABLE",
+    "FINETUNE.INTERRUPTED",
+    "FINETUNE.JOB_ACTIVE",
+    "FINETUNE.PRETRAINED_MISMATCH",
+    "FINETUNE.REFERENCE_MISSING",
+    "FINETUNE.REQUIREMENTS_MISSING",
+    "FINETUNE.RUNTIME_FAILED",
+    "FINETUNE.RUNTIME_UNAVAILABLE",
+    "FINETUNE.RUN_EXISTS",
+    "FINETUNE.SOURCE_CHANGED",
+    "FINETUNE.TRAINING_FAILED",
+    "FINETUNE.UNSUPPORTED_TEXT",
 ]
 
 
@@ -1070,6 +1093,8 @@ class RetryAnalysisCommand(ContractModel):
     source_sha256: Sha256
 
 
+# An explicit package selection for recording_packages (plans, commits, the package queue).
+# Not a service command: the app no longer prepares packages (corpus-first pipeline plan).
 class PreparePackageCommand(ContractModel):
     command: Literal["prepare-package"] = "prepare-package"
     operation_id: StableId
@@ -1151,6 +1176,39 @@ class CancelCommand(ContractModel):
     cancelled_operation_id: StableId
 
 
+FINETUNE_MAX_EPOCHS: Final = 10_000
+
+
+class FineTuneCommand(ContractModel):
+    """Train the voice model on the latest kept take of every spoken prompt (one job at a time).
+
+    ``epochs`` overrides the default training length. ``allow_missing`` trains on the
+    prompts that have a kept take even when others have none; without it the job is refused
+    ``FINETUNE.CORPUS_INCOMPLETE`` unless every spoken prompt has one. The app always sends
+    ``true`` because the active catalog lists unrecorded standard sentence sets.
+    """
+
+    command: Literal["fine-tune"] = "fine-tune"
+    operation_id: StableId
+    epochs: int | None = Field(default=None, ge=1, le=FINETUNE_MAX_EPOCHS)
+    allow_missing: bool
+
+
+class CancelFineTuneCommand(ContractModel):
+    """Stop the fine-tune job ``cancelled_operation_id`` (a durable job, unlike ``cancel``)."""
+
+    command: Literal["cancel-fine-tune"] = "cancel-fine-tune"
+    operation_id: StableId
+    cancelled_operation_id: StableId
+
+
+class FineTuneStatusCommand(ContractModel):
+    """Ask whether fine-tuning is available, which job is active and which run is latest."""
+
+    command: Literal["fine-tune-status"] = "fine-tune-status"
+    operation_id: StableId
+
+
 type RecorderCommand = Annotated[
     HandshakeCommand
     | PrepareRecorderCommand
@@ -1174,11 +1232,13 @@ type ServiceCommand = Annotated[
     | RetakeCommand
     | DecisionCommand
     | RetryAnalysisCommand
-    | PreparePackageCommand
     | RecoverCommand
     | RecoverySnapshotCommand
     | ContinueLegacyRecordingCommand
     | CancelCommand
+    | FineTuneCommand
+    | CancelFineTuneCommand
+    | FineTuneStatusCommand
     | SnapshotCommand
     | ShutdownCommand,
     Field(discriminator="command"),
@@ -1683,6 +1743,7 @@ class AnalysisEvent(ContractModel):
     result: RecordingAnalysisResult
 
 
+# Package queue state (recording_package_jobs); not a service event since fine-tuning.
 class PackagePreparationEvent(ContractModel):
     event: Literal["package-preparation"] = "package-preparation"
     operation_id: StableId
@@ -1699,9 +1760,116 @@ class PackagePreparationEvent(ContractModel):
         return self
 
 
+# A prepared package map (recording_package_jobs); not a service event since fine-tuning.
 class PackageEvent(ContractModel):
     event: Literal["package"] = "package"
     package: RecordingPackageMap
+
+
+type FineTuneState = Literal["queued", "running", "finished", "failed", "cancelled"]
+type FineTuneStage = Literal["selecting", "dataset", "training", "sampling"]
+
+
+class FineTuneProgressEvent(ContractModel):
+    """Where one fine-tune job stands; sent as it moves and repeated in status replies.
+
+    ``stage`` is the step a running job is in. Training progress (``epoch`` of ``epochs``,
+    ``update``, ``loss``, ``eta_seconds`` remaining) is parsed from the trainer's log.
+    ``error`` is present exactly when the job failed; a cancelled job carries none.
+    """
+
+    event: Literal["fine-tune-progress"] = "fine-tune-progress"
+    operation_id: StableId
+    state: FineTuneState
+    stage: FineTuneStage | None = None
+    run_id: StableId | None = None
+    epoch: int | None = Field(default=None, ge=1, le=FINETUNE_MAX_EPOCHS)
+    epochs: int | None = Field(default=None, ge=1, le=FINETUNE_MAX_EPOCHS)
+    update: Revision | None = None
+    loss: float | None = Field(default=None, allow_inf_nan=False)
+    eta_seconds: Revision | None = None
+    message: str | None = Field(default=None, min_length=1, max_length=1024)
+    error: RecordingError | None = None
+
+    @model_validator(mode="after")
+    def _state_evidence(self) -> FineTuneProgressEvent:
+        if (self.state == "failed") != (self.error is not None):
+            raise ValueError("a failed fine-tune names its error; other states carry none")
+        if self.state == "finished" and self.run_id is None:
+            raise ValueError("a finished fine-tune names its run")
+        if self.state == "queued" and self.stage is not None:
+            raise ValueError("a queued fine-tune has not started a stage")
+        if (
+            self.state == "running"
+            and self.stage == "training"
+            and (self.epoch is None or self.epochs is None)
+        ):
+            raise ValueError("training progress requires its pass and total")
+        if self.epoch is not None and (self.epochs is None or self.epoch > self.epochs):
+            raise ValueError("a training pass is counted against its total")
+        return self
+
+
+class FineTuneRunSummary(ContractModel):
+    """One training run as the app sees it: ``finetune.FineTuneRun`` without absolute paths.
+
+    Paths are relative to the asset root, and every sample lies under ``run_root``. Only a
+    finished run has samples (``finetuned`` from the trained checkpoint, ``base`` from the
+    pretrained weights, for comparison).
+    """
+
+    run_id: StableId
+    run_root: RelativePath
+    status: Literal["running", "finished", "failed"]
+    started_at: UtcTimestamp
+    finished_at: UtcTimestamp | None = None
+    epochs: int = Field(ge=1, le=FINETUNE_MAX_EPOCHS)
+    prompt_count: int = Field(ge=1, le=10_000)
+    retained_seconds: float = Field(ge=0.0, allow_inf_nan=False)
+    finetuned_sample_paths: tuple[RelativePath, ...] = Field(default=(), max_length=64)
+    base_sample_paths: tuple[RelativePath, ...] = Field(default=(), max_length=64)
+    error: str | None = Field(default=None, min_length=1, max_length=4_096)
+
+    @model_validator(mode="after")
+    def _run_evidence(self) -> FineTuneRunSummary:
+        if (self.status == "running") == (self.finished_at is not None):
+            raise ValueError("a finished or failed run carries its finish time; a running one none")
+        if self.finished_at is not None and self.finished_at < self.started_at:
+            raise ValueError("a run cannot finish before it started")
+        if (self.status == "failed") != (self.error is not None):
+            raise ValueError("failed runs name their error; other runs carry none")
+        samples = self.finetuned_sample_paths + self.base_sample_paths
+        if samples and self.status != "finished":
+            raise ValueError("only a finished run has samples")
+        if not all(path.startswith(self.run_root + "/") for path in samples):
+            raise ValueError("run samples must lie under the run's directory")
+        return self
+
+
+class FineTuneEvent(ContractModel):
+    """A fine-tune job's run record changed (written, finished or failed)."""
+
+    event: Literal["fine-tune"] = "fine-tune"
+    operation_id: StableId
+    run: FineTuneRunSummary
+
+
+class FineTuneStatusEvent(ContractModel):
+    """Reply to ``fine-tune-status``: the runtime, the active job and the latest finished run."""
+
+    event: Literal["fine-tune-status"] = "fine-tune-status"
+    operation_id: StableId
+    runtime_configured: bool
+    active: FineTuneProgressEvent | None = None
+    latest_run: FineTuneRunSummary | None = None
+
+    @model_validator(mode="after")
+    def _current_jobs(self) -> FineTuneStatusEvent:
+        if self.active is not None and self.active.state not in {"queued", "running"}:
+            raise ValueError("the active fine-tune is queued or running")
+        if self.latest_run is not None and self.latest_run.status != "finished":
+            raise ValueError("the latest run is a finished run")
+        return self
 
 
 class RecordingRecoveryStatus(ContractModel):
@@ -1902,8 +2070,9 @@ type ReliableEvent = Annotated[
     | DerivativeEvent
     | RecordingHistoryPage
     | AnalysisEvent
-    | PackageEvent
-    | PackagePreparationEvent
+    | FineTuneProgressEvent
+    | FineTuneEvent
+    | FineTuneStatusEvent
     | RecoveryEvent
     | RecoveryInventoryEvent
     | RecoveryInventoryChangedEvent
@@ -2028,7 +2197,6 @@ RECORDING_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "recording-save": RecordingSaveOperation,
     "recording-analysis": RecordingAnalysisResult,
     "recording-package-map": RecordingPackageMap,
-    "recording-package-preparation-event": PackagePreparationEvent,
     "recording-recorder-request": RecorderRequest,
     "recording-service-request": ServiceRequest,
     "recording-response": RecordingResponse,

@@ -59,7 +59,9 @@ which stays reserved on both sides (`_RESERVED_ARGUMENTS` in Python, `peer()` in
 Swift) so a configuration can never name the catalog; a `--native-workspace`
 service also refuses `--catalog-sha256` itself (argparse, exit 2). The normal
 helper has no base arguments. Normal service base arguments are
-`-m cole_voice_lab.recording_service --native-workspace --subject-id SUBJECT`.
+`-m cole_voice_lab.recording_service --native-workspace --subject-id SUBJECT`,
+followed by `--finetune-runtime-root PATH` when the build settings name a
+fine-tune runtime (an ordinary, unreserved flag; the configuration has no key for it).
 Omit `--recording-group-id`; the typed context response owns the current group.
 
 Preserve the lexical virtual-environment launcher path in `service.executable`.
@@ -105,6 +107,7 @@ private yourself. It has these keys:
 | capture_host | yes | Capture host identity, 1–255 characters |
 | pilot_approval_path | no (default null) | Relative approved evidence path |
 | pilot_approval_sha256 | no (default null) | Its digest; set exactly when the path is set |
+| finetune_runtime_root | no (default null) | The F5-TTS virtual environment fine-tune jobs run in: an absolute, normalized path without `..` (write `~/.local/share/cole-voice-lab/finetune-f5-01/venv` out in full; `~` is not expanded); the build passes it to the service as `--finetune-runtime-root`. Without it the app cannot fine-tune |
 
 The settings name no catalog; the build records against whatever version the
 subject has active in the library's corpus store when the app launches. The

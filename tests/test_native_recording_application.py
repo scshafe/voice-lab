@@ -16,6 +16,7 @@ from cole_voice_lab.native_recording_application import (
     _install_frozen_wheel,
     _private_tree_copy,
     create_native_recording_application,
+    native_service_arguments,
 )
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.runtime import (
@@ -409,6 +410,67 @@ def test_settings_declare_a_purpose_and_embed_no_catalog(tmp_path: Path) -> None
             NativeRecordingPeerConfiguration.model_validate(peer("-m", "x", flag, "a" * 64))
 
 
+def test_settings_name_an_optional_finetune_runtime_that_the_service_is_launched_with(
+    tmp_path: Path,
+) -> None:
+    from test_recording_contracts import synthetic_contracts
+    from test_recording_takes import DEVICE
+
+    from cole_voice_lab.native_recording_application import NativeRecordingPeerConfiguration
+
+    base = {
+        "asset_root": str(tmp_path.resolve() / "assets"),
+        "purpose": "capture-pilot",
+        "subject_id": "synthetic",
+        "capture_device": DEVICE.model_dump(mode="json"),
+        "capture_host": "synthetic-host",
+    }
+    unconfigured = NativeRecordingApplicationSettings.model_validate(base)
+    assert unconfigured.finetune_runtime_root is None
+    service = (
+        "-I",
+        "-B",
+        "-m",
+        "cole_voice_lab.recording_service",
+        "--native-workspace",
+        "--subject-id",
+        "synthetic",
+    )
+    assert native_service_arguments(unconfigured) == service
+    runtime_root = str(tmp_path.resolve() / "finetune runtime" / "venv")
+    configured = NativeRecordingApplicationSettings.model_validate(
+        base | {"finetune_runtime_root": runtime_root}
+    )
+    assert configured.schema_version == "cole-voice-lab.native-application-settings/v2"
+    arguments = native_service_arguments(configured)
+    assert arguments == (*service, "--finetune-runtime-root", runtime_root)
+    # The flag is an ordinary configured argument, not one the app reserves for itself.
+    build = synthetic_contracts()["capture-seal"].recorder_build
+    NativeRecordingPeerConfiguration(
+        executable=str(tmp_path.resolve() / "runtime/python/bin/python"),
+        arguments=arguments,
+        environment=None,
+        build=build,
+        build_identity_path=str(tmp_path.resolve() / "runtime/service-build.json"),
+    )
+    for refused in (
+        "venv",
+        "~/.local/share/cole-voice-lab/finetune-f5-01/venv",
+        f"{runtime_root}/",
+        f"{runtime_root}/../venv",
+        f"{tmp_path.resolve()}/./venv",
+        f"{tmp_path.resolve()}//venv",
+        f"/{runtime_root}",
+        f"{runtime_root}\nother",
+        "",
+        "/" + "a" * 4096,
+    ):
+        with pytest.raises(ValueError):
+            NativeRecordingApplicationSettings.model_validate(
+                base | {"finetune_runtime_root": refused}
+            )
+
+
 def test_builder_and_verify_refuse_a_physical_test_purpose_before_release_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -662,6 +724,8 @@ def signed_native_release(native_release_catalog: Any) -> Any:
             backend="coreaudio", device_id="synthetic-device", display_name="Synthetic UMIK-1"
         ),
         capture_host="synthetic-host",
+        # Never created: the launched service only parses it (fine-tune jobs check it).
+        finetune_runtime_root=str(root / "finetune runtime" / "venv"),
     )
     release = create_native_recording_application(
         root / "Cole Voice Recorder Preview.app",
@@ -700,6 +764,12 @@ def test_actual_signed_preview_has_frozen_service_and_permissions(
     assert configuration["purpose"] == "capture-pilot"
     assert not {"catalog", "catalog_sha256"} & set(configuration)
     assert "--catalog-sha256" not in configuration["service"]["arguments"]
+    # The settings' fine-tune runtime reaches the service as a launch argument, not a key.
+    assert configuration["service"]["arguments"][-2:] == [
+        "--finetune-runtime-root",
+        str(Path(release.application).parent / "finetune runtime" / "venv"),
+    ]
+    assert "finetune_runtime_root" not in configuration
     result = subprocess.run(
         (
             str(runtime / "python/bin/python"),

@@ -16,15 +16,20 @@ import sys
 import zipfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import AfterValidator, Field, model_validator
 
 from .canonical import canonical_json_bytes, canonical_sha256, open_regular_no_follow, sha256_file
 from .diagnostic_roots import RootPurpose, require_root_purpose
 from .errors import ContractError, SecurityError, VoiceLabError
 from .models import CaptureDevice, ContractModel, PromptSuitePurpose, Sha256, StableId
-from .paths import AssetLayout, _reject_existing_symlink_components, validate_relative_path
+from .paths import (
+    AssetLayout,
+    _reject_existing_symlink_components,
+    validate_absolute_path,
+    validate_relative_path,
+)
 from .recording_contracts import (
     CatalogReference,
     OpenContextCommand,
@@ -90,7 +95,9 @@ class NativeRecordingApplicationSettings(ContractModel):
     ``purpose`` is the purpose of the catalog this build is meant to record; it has no
     default, so a physical-test build says so explicitly. It guards the build's asset root
     only: at runtime the purpose that counts is that of the catalog the service pins from
-    the corpus store.
+    the corpus store. ``finetune_runtime_root`` is the F5-TTS virtual environment the app's
+    fine-tune jobs run in (an absolute, normalized path); without it fine-tuning is
+    unavailable. The build passes it to the service as ``--finetune-runtime-root``.
     """
 
     schema_version: Literal["cole-voice-lab.native-application-settings/v2"] = (
@@ -103,6 +110,10 @@ class NativeRecordingApplicationSettings(ContractModel):
     capture_host: str = Field(min_length=1, max_length=255)
     pilot_approval_path: str | None = None
     pilot_approval_sha256: Sha256 | None = None
+    finetune_runtime_root: (
+        Annotated[str, Field(min_length=1, max_length=4096), AfterValidator(validate_absolute_path)]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def _context(self) -> NativeRecordingApplicationSettings:
@@ -368,6 +379,28 @@ def _native_build_environment() -> dict[str, object]:
         )[0],
         "kernel_build": os.uname().version,
     }
+
+
+def native_service_arguments(settings: NativeRecordingApplicationSettings) -> tuple[str, ...]:
+    """The configured service's base arguments (the app appends the reserved identity flags).
+
+    The service must own the same subject the app opens a context for; its own default
+    would otherwise reject every configured subject as a changed workspace. A configured
+    fine-tune runtime follows as ``--finetune-runtime-root PATH``.
+    Returns: the argument tuple.
+    """
+    arguments: tuple[str, ...] = (
+        "-I",
+        "-B",
+        "-m",
+        "cole_voice_lab.recording_service",
+        "--native-workspace",
+        "--subject-id",
+        settings.subject_id,
+    )
+    if settings.finetune_runtime_root is not None:
+        arguments += ("--finetune-runtime-root", settings.finetune_runtime_root)
+    return arguments
 
 
 def create_native_recording_application(
@@ -643,17 +676,7 @@ def create_native_recording_application(
         ),
         service=NativeRecordingPeerConfiguration(
             executable=str(service_python),
-            # The service must own the same subject the app opens a context for; its own
-            # default would otherwise reject every configured subject as a changed workspace.
-            arguments=(
-                "-I",
-                "-B",
-                "-m",
-                "cole_voice_lab.recording_service",
-                "--native-workspace",
-                "--subject-id",
-                settings.subject_id,
-            ),
+            arguments=native_service_arguments(settings),
             environment=_BUILD_ENVIRONMENT,
             build=service_build,
             build_identity_path=str(service_path),

@@ -6,11 +6,12 @@ import hashlib
 import io
 import json
 import math
+import re
 import wave
 from array import array
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from recording_fixtures import write_synthetic_wav
@@ -32,6 +33,7 @@ from test_recording_library import START
 from test_recording_packages import saved_take
 from test_recording_takes import Rig, publish_catalog, store_suite
 
+import cole_voice_lab.finetune as finetune_module
 from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256, sha256_file
 from cole_voice_lab.cli import main
 from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
@@ -41,6 +43,7 @@ from cole_voice_lab.finetune import (
     FineTuneDataset,
     FineTuneDownload,
     FineTuneError,
+    FineTuneErrorCode,
     FineTuneHyperparameters,
     FineTuneRun,
     FineTuneSampleSet,
@@ -62,6 +65,8 @@ from cole_voice_lab.recording_analysis import RecordingAnalysisQueue
 from cole_voice_lab.recording_contracts import (
     CatalogReference,
     CatalogSnapshot,
+    ErrorCode,
+    RecordingError,
     RecordingFrameRange,
     catalog_snapshot_path,
 )
@@ -69,6 +74,26 @@ from cole_voice_lab.recording_index import RecordingIndex
 from cole_voice_lab.recording_takes import RecordingTakeStore
 
 SPOKEN_PROMPT_COUNT = 34
+
+
+def test_every_finetune_error_code_is_exactly_the_wire_finetune_codes() -> None:
+    codes = set(get_args(FineTuneErrorCode.__value__))
+    wire = {code for code in get_args(ErrorCode.__value__) if code.startswith("FINETUNE.")}
+    assert codes == wire
+    # Every code the module names is in the closed set, and so are the job path's refusals.
+    source = Path(finetune_module.__file__).read_text(encoding="utf-8")
+    body = source.split("class FineTuneError(VoiceLabError):", 1)[1]
+    assert set(re.findall(r'"(FINETUNE\.[A-Z_]+)"', body)) <= codes
+    assert {
+        "FINETUNE.CANCELLED",
+        "FINETUNE.CORPUS_INCOMPLETE",
+        "FINETUNE.INTERRUPTED",
+        "FINETUNE.JOB_ACTIVE",
+    } <= codes
+    for code in codes:
+        error = FineTuneError(code, "Synthetic")
+        wired = RecordingError(code=error.code, message=str(error), retryable=False)
+        assert (wired.code, wired.message) == (code, "Synthetic")
 
 
 def _entry(corpus: FineTuneCorpus, prompt_id: str) -> FineTuneCorpusEntry:

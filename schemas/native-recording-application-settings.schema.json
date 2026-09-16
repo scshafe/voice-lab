@@ -68,7 +68,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Operator settings for one native preview build.\n\n``purpose`` is the purpose of the catalog this build is meant to record; it has no\ndefault, so a physical-test build says so explicitly. It guards the build's asset root\nonly: at runtime the purpose that counts is that of the catalog the service pins from\nthe corpus store.",
+  "description": "Operator settings for one native preview build.\n\n``purpose`` is the purpose of the catalog this build is meant to record; it has no\ndefault, so a physical-test build says so explicitly. It guards the build's asset root\nonly: at runtime the purpose that counts is that of the catalog the service pins from\nthe corpus store. ``finetune_runtime_root`` is the F5-TTS virtual environment the app's\nfine-tune jobs run in (an absolute, normalized path); without it fine-tuning is\nunavailable. The build passes it to the service as ``--finetune-runtime-root``.",
   "properties": {
     "asset_root": {
       "maxLength": 4096,
@@ -84,6 +84,20 @@
       "minLength": 1,
       "title": "Capture Host",
       "type": "string"
+    },
+    "finetune_runtime_root": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Finetune Runtime Root"
     },
     "pilot_approval_path": {
       "anyOf": [

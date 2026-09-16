@@ -78,6 +78,30 @@
       "title": "CancelCommand",
       "type": "object"
     },
+    "CancelFineTuneCommand": {
+      "additionalProperties": false,
+      "description": "Stop the fine-tune job ``cancelled_operation_id`` (a durable job, unlike ``cancel``).",
+      "properties": {
+        "cancelled_operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "command": {
+          "const": "cancel-fine-tune",
+          "default": "cancel-fine-tune",
+          "title": "Command",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "cancelled_operation_id"
+      ],
+      "title": "CancelFineTuneCommand",
+      "type": "object"
+    },
     "CaptureContinuityEvidence": {
       "additionalProperties": false,
       "description": "Successful native input continuity bound to one exact, privately saved WAV.",
@@ -488,6 +512,65 @@
       "title": "EditTakeCommand",
       "type": "object"
     },
+    "FineTuneCommand": {
+      "additionalProperties": false,
+      "description": "Train the voice model on the latest kept take of every spoken prompt (one job at a time).\n\n``epochs`` overrides the default training length. ``allow_missing`` trains on the\nprompts that have a kept take even when others have none; without it the job is refused\n``FINETUNE.CORPUS_INCOMPLETE`` unless every spoken prompt has one. The app always sends\n``true`` because the active catalog lists unrecorded standard sentence sets.",
+      "properties": {
+        "allow_missing": {
+          "title": "Allow Missing",
+          "type": "boolean"
+        },
+        "command": {
+          "const": "fine-tune",
+          "default": "fine-tune",
+          "title": "Command",
+          "type": "string"
+        },
+        "epochs": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Epochs"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "allow_missing"
+      ],
+      "title": "FineTuneCommand",
+      "type": "object"
+    },
+    "FineTuneStatusCommand": {
+      "additionalProperties": false,
+      "description": "Ask whether fine-tuning is available, which job is active and which run is latest.",
+      "properties": {
+        "command": {
+          "const": "fine-tune-status",
+          "default": "fine-tune-status",
+          "title": "Command",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "title": "FineTuneStatusCommand",
+      "type": "object"
+    },
     "FrameCount": {
       "maximum": 28800000,
       "minimum": 0,
@@ -755,49 +838,6 @@
       "maximum": 9223372036854775807,
       "minimum": 1,
       "type": "integer"
-    },
-    "PreparePackageCommand": {
-      "additionalProperties": false,
-      "properties": {
-        "command": {
-          "const": "prepare-package",
-          "default": "prepare-package",
-          "title": "Command",
-          "type": "string"
-        },
-        "group_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "operation_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "room_tone_take_ids": {
-          "items": {
-            "$ref": "#/$defs/StableId"
-          },
-          "maxItems": 32,
-          "minItems": 1,
-          "title": "Room Tone Take Ids",
-          "type": "array"
-        },
-        "take_ids": {
-          "items": {
-            "$ref": "#/$defs/StableId"
-          },
-          "maxItems": 10000,
-          "minItems": 1,
-          "title": "Take Ids",
-          "type": "array"
-        }
-      },
-      "required": [
-        "operation_id",
-        "group_id",
-        "take_ids",
-        "room_tone_take_ids"
-      ],
-      "title": "PreparePackageCommand",
-      "type": "object"
     },
     "Prompt": {
       "additionalProperties": false,
@@ -1344,15 +1384,17 @@
       "discriminator": {
         "mapping": {
           "cancel": "#/$defs/CancelCommand",
+          "cancel-fine-tune": "#/$defs/CancelFineTuneCommand",
           "catalog": "#/$defs/CatalogCommand",
           "continue-legacy-recording": "#/$defs/ContinueLegacyRecordingCommand",
           "decision": "#/$defs/DecisionCommand",
           "edit": "#/$defs/EditTakeCommand",
+          "fine-tune": "#/$defs/FineTuneCommand",
+          "fine-tune-status": "#/$defs/FineTuneStatusCommand",
           "handshake": "#/$defs/HandshakeCommand",
           "history": "#/$defs/HistoryCommand",
           "navigate": "#/$defs/NavigateCommand",
           "open-context": "#/$defs/OpenContextCommand",
-          "prepare-package": "#/$defs/PreparePackageCommand",
           "recover": "#/$defs/RecoverCommand",
           "recovery-snapshot": "#/$defs/RecoverySnapshotCommand",
           "register-seal": "#/$defs/RegisterSealCommand",
@@ -1407,9 +1449,6 @@
           "$ref": "#/$defs/RetryAnalysisCommand"
         },
         {
-          "$ref": "#/$defs/PreparePackageCommand"
-        },
-        {
           "$ref": "#/$defs/RecoverCommand"
         },
         {
@@ -1420,6 +1459,15 @@
         },
         {
           "$ref": "#/$defs/CancelCommand"
+        },
+        {
+          "$ref": "#/$defs/FineTuneCommand"
+        },
+        {
+          "$ref": "#/$defs/CancelFineTuneCommand"
+        },
+        {
+          "$ref": "#/$defs/FineTuneStatusCommand"
         },
         {
           "$ref": "#/$defs/SnapshotCommand"

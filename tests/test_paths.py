@@ -13,6 +13,7 @@ from cole_voice_lab.paths import (
     confined_path,
     ensure_private_directory,
     reject_symlink_components,
+    validate_absolute_path,
     validate_relative_path,
 )
 
@@ -33,6 +34,31 @@ def test_relative_path_preserves_canonical_posix_value() -> None:
 def test_relative_path_rejects_noncanonical_redundant_separators() -> None:
     with pytest.raises(ValueError, match="canonical"):
         validate_relative_path("audio//prompt-001.wav")
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "",
+        "relative/venv",
+        "~/venv",
+        "/runtimes/venv/",
+        "/runtimes/../venv",
+        "/runtimes/./venv",
+        "/runtimes//venv",
+        "//runtimes/venv",
+        "/runtimes/\x00venv",
+        "/runtimes/\nvenv",
+    ),
+)
+def test_absolute_path_rejects_relative_and_unnormalized_forms(value: str) -> None:
+    with pytest.raises(ValueError):
+        validate_absolute_path(value)
+
+
+def test_absolute_path_keeps_a_normalized_value_with_spaces() -> None:
+    assert validate_absolute_path("/") == "/"
+    assert validate_absolute_path("/Users/me/fine tune/venv") == "/Users/me/fine tune/venv"
 
 
 def test_asset_layout_is_private_and_complete(tmp_path: Path) -> None:

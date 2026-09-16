@@ -45,6 +45,7 @@ from .models import (
 from .paths import AssetLayout, confined_path
 from .prompt_coverage import coverage_catalog, subject_native_takes
 from .recording_contracts import (
+    FINETUNE_MAX_EPOCHS,
     CatalogReference,
     CatalogSnapshot,
     RecordingFrameRange,
@@ -81,13 +82,39 @@ FINETUNE_NORMALIZATION_RULE = (
 
 type FineTuneSourceKind = Literal["native", "legacy"]
 type FineTuneDatePrecision = Literal["take", "session", "unknown"]
+# Every fine-tune failure code. The recording service sends these under their own code, so
+# recording_contracts.ErrorCode lists exactly this set (tests/test_finetune.py checks it).
+# CORPUS_INCOMPLETE, JOB_ACTIVE, CANCELLED and INTERRUPTED belong to the service's job path.
+type FineTuneErrorCode = Literal[
+    "FINETUNE.CANCELLED",
+    "FINETUNE.CATALOG_HELD_OUT",
+    "FINETUNE.CHECKPOINT_MISSING",
+    "FINETUNE.CORPUS_INCOMPLETE",
+    "FINETUNE.CORPUS_PROJECTION_FAILED",
+    "FINETUNE.DOWNLOADS_NOT_ALLOWED",
+    "FINETUNE.DOWNLOAD_FAILED",
+    "FINETUNE.EMPTY_CORPUS",
+    "FINETUNE.FFMPEG_FAILED",
+    "FINETUNE.FFMPEG_UNAVAILABLE",
+    "FINETUNE.INTERRUPTED",
+    "FINETUNE.JOB_ACTIVE",
+    "FINETUNE.PRETRAINED_MISMATCH",
+    "FINETUNE.REFERENCE_MISSING",
+    "FINETUNE.REQUIREMENTS_MISSING",
+    "FINETUNE.RUNTIME_FAILED",
+    "FINETUNE.RUNTIME_UNAVAILABLE",
+    "FINETUNE.RUN_EXISTS",
+    "FINETUNE.SOURCE_CHANGED",
+    "FINETUNE.TRAINING_FAILED",
+    "FINETUNE.UNSUPPORTED_TEXT",
+]
 
 
 class FineTuneError(VoiceLabError):
-    """Named fine-tune failure; ``code`` is machine-readable (FINETUNE.<FAILURE>)."""
+    """Named fine-tune failure; ``code`` is one closed machine-readable ``FineTuneErrorCode``."""
 
-    def __init__(self, code: str, message: str) -> None:
-        self.code = code
+    def __init__(self, code: FineTuneErrorCode, message: str) -> None:
+        self.code: FineTuneErrorCode = code
         super().__init__(message)
 
 
@@ -201,7 +228,7 @@ class FineTuneHyperparameters(ContractModel):
         FINETUNE_HYPERPARAMETERS_SCHEMA
     )
     model_name: Literal["F5TTS_v1_Base"] = "F5TTS_v1_Base"
-    epochs: int = Field(default=120, ge=1, le=10_000)
+    epochs: int = Field(default=120, ge=1, le=FINETUNE_MAX_EPOCHS)
     learning_rate: float = Field(default=1e-5, gt=0.0, le=1.0, allow_inf_nan=False)
     batch_frames: int = Field(default=3200, ge=256, le=200_000)
     max_samples_per_batch: int = Field(default=16, ge=1, le=1024)
@@ -924,7 +951,7 @@ def run_f5_finetune(
     )
     write_canonical_json(run_directory / "run.json", run)
 
-    def fail(code: str, message: str) -> FineTuneError:
+    def fail(code: FineTuneErrorCode, message: str) -> FineTuneError:
         failed = run.model_copy(
             update={
                 "status": "failed",

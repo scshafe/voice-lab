@@ -39,7 +39,7 @@ from .corpus_store import (
 from .diagnostic_roots import require_catalog_root
 from .errors import ContractError, SecurityError, VoiceLabError
 from .models import PromptSuite, Sha256
-from .paths import AssetLayout, _reject_existing_symlink_components
+from .paths import AssetLayout, _reject_existing_symlink_components, validate_absolute_path
 from .recording_contracts import (
     MAX_CATALOG_SUITE_BYTES,
     MAX_CONTROL_FRAME_BYTES,
@@ -1530,6 +1530,19 @@ def _read_private_build_identity(path: Path) -> RecordingBuildIdentity:
         return RecordingBuildIdentity.model_validate_json(stream.read(4097))
 
 
+def _finetune_runtime_root(value: str) -> Path:
+    """Parse ``--finetune-runtime-root``: the F5 runtime's normalized absolute path.
+
+    Returns: the path (it need not exist yet; a fine-tune job checks it when submitted).
+    Raises: ``argparse.ArgumentTypeError`` (usage error, exit 2) for a relative or
+    unnormalized path or one with a ``..`` component.
+    """
+    try:
+        return Path(validate_absolute_path(value))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Launch only on inherited stdin/stdout pipes; no socket listener or audio input is opened.
 
@@ -1540,7 +1553,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     Returns: 0 after a clean shutdown, 2 after a failure (one JSON line on stderr naming the
     error code, e.g. ``RECORDING.INVALID_MESSAGE`` for a missing ``--catalog-sha256``).
     Raises: ``SystemExit`` (status 2, argparse usage on stderr) for unusable arguments,
-    ``--catalog-sha256`` together with ``--native-workspace`` included.
+    ``--catalog-sha256`` together with ``--native-workspace`` and a relative or
+    unnormalized ``--finetune-runtime-root`` included.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset-root", type=Path, required=True)
@@ -1554,6 +1568,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--build-identity", type=Path, required=True)
     parser.add_argument("--analysis-test-block-fd", type=int)
     parser.add_argument("--package-test-block-fd", type=int)
+    # The F5-TTS runtime (a virtual environment) fine-tune jobs run in; the app's build
+    # settings name it. Absent: fine-tuning is unavailable.
+    parser.add_argument("--finetune-runtime-root", type=_finetune_runtime_root)
     options = parser.parse_args(argv)
     from .recording_analysis import RecordingAnalysisQueue, RecordingAnalysisSupervisor
     from .recording_edit_jobs import RecordingEditCoordinator
@@ -1688,7 +1705,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if package_queue is not None:
             package_supervisor = RecordingPackageSupervisor(
                 package_queue,
-                on_event=session.publish_event,
+                # Package events are no longer service events (the app fine-tunes instead),
+                # so a job recovered from disk finishes without a reply. The corpus-first
+                # pipeline plan's Step 3 removes this supervisor.
+                on_event=None,
                 on_failure=lambda error: session.publish_error("package-supervisor", error),
                 block_fd=options.package_test_block_fd,
             )

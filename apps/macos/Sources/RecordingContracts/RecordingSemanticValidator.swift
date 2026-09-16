@@ -226,8 +226,6 @@ enum RecordingSemanticValidator {
             if string("state") == "ready" {
                 try require(present("derived_path") && present("derived_sha256") && !present("error") && string("derived_path") == "derived/recording-edits/native/\(string("recipe_sha256"))/\(string("derived_sha256")).wav", "Derivative output must bind its exact recipe and digest")
             } else { try require(present("error") && !present("derived_path") && !present("derived_sha256"), "Failed derivative cannot claim output") }
-        case "PackagePreparationEvent":
-            try require(["blocked", "failed"].contains(string("state")) == present("error"), "Blocked or failed package preparation requires its named prerequisite")
         case "RecordingPackageMap":
             let entries = field("entries").array ?? []
             try unique(.array(entries.map { lookup($0, "take_id") }), title: title)
@@ -283,10 +281,31 @@ enum RecordingSemanticValidator {
         case "DecisionCommand":
             try require(["reject", "remove"].contains(string("action")) == present("reason"), "Decision reason does not match action")
             if present("reason") { try require(!string("reason").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Decision reason must be nonblank") }
-        case "PreparePackageCommand":
-            try unique(field("take_ids"), title: title)
-            try unique(field("room_tone_take_ids"), title: title)
-            try require((field("room_tone_take_ids").array ?? []).allSatisfy { (field("take_ids").array ?? []).contains($0) }, "Room tone must belong to package selection")
+        case "FineTuneProgressEvent":
+            // Mirrors Python FineTuneProgressEvent; absent and null read alike.
+            let state = string("state")
+            try require((state == "failed") == present("error"), "A failed fine-tune names its error; other states carry none")
+            try require(state != "finished" || present("run_id"), "A finished fine-tune names its run")
+            try require(state != "queued" || !present("stage"), "A queued fine-tune has not started a stage")
+            try require(!(state == "running" && string("stage") == "training") || (present("epoch") && present("epochs")),
+                        "Training progress requires its pass and total")
+            try require(!present("epoch") || (present("epochs") && number("epoch") <= number("epochs")), "A training pass is counted against its total")
+        case "FineTuneRunSummary":
+            // Mirrors Python FineTuneRunSummary. Its paths do not end in `_path`, so the schema
+            // validator's relative-path rule does not reach them; they are checked here.
+            let status = string("status")
+            try require((status == "running") == !present("finished_at"), "A finished or failed run carries its finish time; a running one none")
+            try require(!present("finished_at") || ordered(["started_at", "finished_at"]), "A run cannot finish before it started")
+            try require((status == "failed") == present("error"), "Failed runs name their error; other runs carry none")
+            let root = string("run_root")
+            let samples = ["finetuned_sample_paths", "base_sample_paths"].flatMap { key in (field(key).array ?? []).map { $0.string ?? "" } }
+            try require(([root] + samples).allSatisfy { (try? relativePath($0)) != nil }, "Run paths must be confined and relative")
+            try require(samples.isEmpty || status == "finished", "Only a finished run has samples")
+            // Python str.startswith compares code points, never canonical equivalence.
+            try require(samples.allSatisfy { $0.unicodeScalars.starts(with: (root + "/").unicodeScalars) }, "Run samples must lie under the run's directory")
+        case "FineTuneStatusEvent":
+            try require(!present("active") || ["queued", "running"].contains(string("active.state")), "The active fine-tune is queued or running")
+            try require(!present("latest_run") || string("latest_run.status") == "finished", "The latest run is a finished run")
         case "RecorderRequest", "ServiceRequest":
             let command = string("data.command")
             let expected: RecordingJSON = switch command {
