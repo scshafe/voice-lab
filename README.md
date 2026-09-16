@@ -66,6 +66,12 @@ before planning transfer.
 spoken prompt in the recording library and writes listening samples next to the
 untouched base model; re-run it after any revision. See [docs/FINETUNE.md](docs/FINETUNE.md).
 
+`voice-lab catalog` edits the prompts the native app records against. Prompts and
+published catalog versions live in a database inside the library, the app loads the
+active version at launch, and adding or editing a prompt is a publish, an activate
+and a relaunch, never a rebuild. The Harvard and CMU ARCTIC sentence sets import
+with one command each. See [docs/CORPUS_STORE.md](docs/CORPUS_STORE.md).
+
 `sync plan` prints a dry plan. A live transfer requires a separate `--live-plan`
 preview, copy/paste approval of its exact `plan_sha256`, and all execution gates:
 `--live-plan --execute --allow-network --approved-plan-sha256 <digest>`. The

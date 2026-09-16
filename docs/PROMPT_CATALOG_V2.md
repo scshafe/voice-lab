@@ -1,6 +1,6 @@
 # Prompt catalog v2: labels, instructions, pilot-v2 and the physical-test suite
 
-- **Status:** draft, revision 2, 2026-09-14. Revised after adversarial review rounds 1 and 2 and after the operator decision in `operator-choices-05.json`, which removes supersession. Round 3 has not reviewed this revision. Appendix A maps every review finding to its resolution. Plan `.claude/plans/2026-09-14-prompt-labels-instructions-test-suite.md`, Step 1.
+- **Status:** draft, revision 3, 2026-09-16. Revision 2 (2026-09-14) was revised after adversarial review rounds 1 and 2 and after the operator decision in `operator-choices-05.json`, which removes supersession; Round 3 has not reviewed it. Appendix A maps every review finding to its resolution. Plan `.claude/plans/2026-09-14-prompt-labels-instructions-test-suite.md`, Step 1. Revision 3 records what the corpus store (`.claude/plans/2026-09-15-catalog-in-database-corpus-store.md`, D-017, `docs/CORPUS_STORE.md`) changes here: catalogs are published from a database, the app receives its catalog from the recording service, settings carry no catalog, and `--expect-catalog-sha256` no longer exists. §7.7 is new; §A.5 lists every revision-3 change. Revision 3 has not been adversarially reviewed.
 - **Roots named in this document:**
   - **R** is the private readiness root `…/20260912-defect-b-vch9e1h7/readiness-20260914-ihozooyb/`. It holds `operator-choices-04.json`, `operator-choices-05.json`, the code maps, and the reviews `R/catalog-v2-design/review-{integrity,trust,operator}.md` and `R/catalog-v2-design/round2-{sequencing,supersession,legacy-mapping-qt}.md`.
   - **B** is the defect root above R.
@@ -33,7 +33,7 @@ Notation:
 | G6 | No recording, raw package, sidecar, manifest, provenance record, consent or `resources/pilot-v1.json` is deleted, moved or rewritten | `operator-choices-05.json` `agent_interpretation`; `.claude/plans/2026-09-11-native-recording-ux.md:34-51` |
 
 Non-goals:
-- Supersession, or any other rule that lets a take count toward a prompt with a different hash. Coverage stays exact (§3.1).
+- Supersession, or any other rule that lets a take count toward a prompt with a different hash. Coverage stays exact (§3.1). Revision 3: database catalogs add one bounded exception, the keep-recordings alias (§3.1, §7.7); built-in catalogs have none.
 - Physical deletion of old room-tone takes. Any future deletion is a separate, irreversible operation that needs its own explicit operator confirmation. Nothing in this design performs or prepares it.
 - Theme (plan Step 8), except the scene-level constraint in §8.2.
 - Continue Missing placement (plan Step 7), except the filter interplay in §6.4.
@@ -141,6 +141,7 @@ The pilot-v2 values come from pilot-v1's prompt dumps, with each room tone's `te
   - **Closed names.** Settings generation, `prompts show`, the coverage report (§7.2) and the sidecar-less rule (§3.4) name built-ins through this loader. A working-directory file named like a suite never wins, unlike the path-first `load_prompt_suite` (`resources.py:17-19`).
   - **Integrity.** The sidecar-less rule attributes legacy files through pilot-v1's transcripts, so pilot-v1 must be the genuine resource. Resource JSON is not part of the build identity: `recording_service_build_identity` fingerprints `*.py` files and migrations only (`recording_service.py:1230-1239`), while the release copies `.json` resources (`native_recording_application.py:189-230`). The load-time pin is what detects an edited resource in a frozen runtime.
 - Each pin lands in the same commit as its resource. Step 3's table holds `pilot-v1.json` and `evaluation-v1.json`; Step 5 adds `pilot-v2.json` and `physical-test-v1.json`.
+- **Revision 3.** Built-ins are also the seeds of the corpus store (`voice-lab catalog init --from-builtin`, §7.7), which copies their prompts with unchanged digests. Settings generation no longer names a built-in, because settings carry no catalog. `prompts show`, the coverage report and `finetune` still resolve an exact built-in name before any published catalog name. The recording service build identity now also fingerprints the corpus store and prompt-alias migrations (`recording_service_build_identity`); resource JSON is still not part of it.
 
 ### 2.6 JSON schema generation
 
@@ -181,6 +182,19 @@ covered(p)   = ∃ t : covers(t, p) ∧ retained(t)
 - `t.prompt` is the exact prompt the audio was recorded against: the reservation prompt for native takes (`_entry`, `recording_index.py:333-350`), and for legacy rows the catalog prompt that the exact filters make equal to the source prompt (§3.4).
 - A take counts toward every catalog that contains its exact prompt, across groups. Removed, rejected and invalid takes never count (`NATIVE_RECORDING_UX.md:269-273`).
 - These tests pin the rule and stay green: `test_exact_prompt_style_change_does_not_reuse_coverage` (`tests/test_recording_index.py:198`) and `test_cross_group_exact_prompt_coverage_without_acoustic_reuse` (`tests/test_recording_navigation.py:210`).
+
+**Revision 3: keep-recordings aliases.** A catalog version published from the corpus store (§7.7) may accept earlier prompt digests: a revision made with `voice-lab catalog edit-prompt --keep-recordings` accepts the previous revision's digest and everything that revision accepted. The rule becomes:
+
+```text
+counts(t, p) = H(t.prompt) = H(p)
+             ∨ (H(t.prompt) ∈ aliases(C, p) ∧ identity(t.prompt) = identity(p))
+covers(t, p) = t.subject_id = S ∧ counts(t, p)
+identity(q)  = (q.prompt_id, q.holdout, spoken or the silent category)     (recording_contracts.keep_recordings_identity)
+```
+
+- `aliases(C, p)` comes from the version's `CatalogSnapshot.prompt_aliases`. The index stores it in the projection tables `recording_catalog_alias_sets` and `recording_prompt_aliases` (index schema version 4, `migrations/20260916110000_create_recording_prompt_alias_projection.sql`), and `next_missing`, history counts, prompt summaries, `latest_retained_take` and `review_aliases` count through it. The coverage report and the fine-tune corpus apply the same rule through `CatalogSnapshot.current_prompt_for`.
+- Built-in catalogs and every `recording-group/v1` catalog have no aliases, so for them coverage is exactly the revision-2 rule above.
+- An alias never counts across prompt ids, held-out flags, or spoken and silent behaviour, so held-out audio never reaches training and silence never covers speech.
 
 ### 3.2 What pilot-v2 means for existing evidence
 
@@ -303,7 +317,8 @@ A publication that deletes and reinserts the legacy rows of its own hashes there
 - No index migration, data backfill, `*_migration` module or `migrations/active/*.md` entry. Coverage semantics do not change, and nothing dual-writes or routes between old and new.
 - The sidecar-less rule and the source catalog of sidecar-less rows are permanent reader semantics.
 - The Step 2 refusal of physical-test catalogs (§5.3 #2, #3) is a guard, not routing. Step 4 adds its marked-root branch; no stored format is routed.
-- The operator's switch to pilot-v2 is a settings change.
+- ~~The operator's switch to pilot-v2 is a settings change.~~ Revision 3: settings carry no catalog. Switching catalogs is `voice-lab catalog activate` plus a relaunch of the app (§7.7).
+- Revision 3: the corpus store is a separate migration with its own manifest, `migrations/active/corpus-store.md`. It does not change this classification. Groups that embed their catalog (`recording-group/v1`) are permanent reader semantics in the same way as the sidecar-less rule (§3.4).
 
 ## 4. Suite identities and aliases
 
@@ -322,12 +337,12 @@ New suites get versioned names only; there is no unversioned `physical-test` ali
 | Entry point | v2 behavior |
 | --- | --- |
 | `load_prompt_suite` (`resources.py:16-29`) | adds the two new aliases in Step 5; the existing path-first rule is unchanged (pre-existing, F8) |
-| settings generation, `prompts coverage-report`, `prompts show`, the sidecar-less rule | `load_builtin_prompt_suite`, restricted to the pin table |
+| settings generation, `prompts coverage-report`, `prompts show`, the sidecar-less rule | `load_builtin_prompt_suite`, restricted to the pin table. Revision 3: settings name no catalog; `prompts coverage-report`, `prompts show` and `finetune` try an exact built-in name first and otherwise resolve `<catalog_id>[@<version>]` in the library's corpus store (§7.7) |
 | `capture run` (`cli.py:413-423` → `capture_prompt_suite`, `capture.py:853`) and `capture console` (`cli.py:452-468` → `TakeEngine`, `capture.py:1178-1218`) | choices stay v1 (`cli.py:1479`); both engines refuse v2 suites (guard #9, Step 2), which also covers Qt capture (`recording_library.py:300-317`) |
 | `prompts show` (`cli.py:1527`, `:383-393`) | Step 5 adds `pilot-v2` and `physical-test-v1`; v1 human and JSON output stays byte-identical; v2 output adds `instructions`, effective labels and `(no spoken prompt)` |
 | `desktop --suite` (`cli.py:1503-1513`), `run_desktop` (`desktop.py:31`), `create_desktop_application` (`desktop_application.py:40`) | refuse v2 catalogs ("prompt-suite/v2 catalogs require the native recording application", Step 2) and physical-test roots (Step 4) |
 | `audition plan --suite` (`cli.py:1762`) | unchanged |
-| native settings (`native_recording_application.py:49-75`) and builder `main` (`:728-755`) | the catalog stays inline and is generated from `load_builtin_prompt_suite`; builder and verify apply §5.3 #2; the builder gains `--expect-catalog-sha256` (Step 4) and refuses a mismatch |
+| native settings (`native_recording_application.py:49-75`) and builder `main` (`:728-755`) | ~~the catalog stays inline and is generated from `load_builtin_prompt_suite`; builder and verify apply §5.3 #2; the builder gains `--expect-catalog-sha256` (Step 4) and refuses a mismatch~~ Revision 3: settings and the app configuration carry no catalog (`native-application-settings/v2`, `recording-application/v2`) and declare a required `purpose`; builder and verify check the root against that purpose (§5.3 #2); `--expect-catalog-sha256` is removed and refused as an unknown argument; the app receives its catalog from the service (§7.7) |
 
 **`pilot-v2.json` authoring contract (Step 5)**
 - **Header.** v2, `suite_id` `cole-pilot-v2`, purpose `capture-pilot`. The same 36 IDs in the same order; 312 seconds in total.
@@ -337,7 +352,7 @@ New suites get versioned names only; there is no unversioned `physical-test` ali
   - set `instructions` to the v1 text verbatim;
   - keep `style` ("Silence; keep the recording position unchanged."), `expected_seconds` (15) and both flags.
   - Their `H(p)` changes (§2.5). That is the accepted cost recorded in `operator-choices-05.json`.
-- **Goldens.** `H(pilot-v2)` and both room-tone hashes equal §2.5. The Boundary-6 build passes `--expect-catalog-sha256` with `H(pilot-v2)`.
+- **Goldens.** `H(pilot-v2)` and both room-tone hashes equal §2.5. The Boundary-6 build passes `--expect-catalog-sha256` with `H(pilot-v2)`. Revision 3: that flag no longer exists; `voice-lab catalog init --from-builtin pilot-v2 --suite-id cole-pilot-v2` publishes a version whose `catalog_sha256` is `H(pilot-v2)`.
 - **Style.** Spoken `style` stays as delivery guidance and is shown in the Instructions section (§6.3). Moving it into `instructions` would change 34 hashes and drop their coverage.
 - **Labels.** None beyond the category. A label on a spoken prompt would change its hash and drop its coverage (§9 FYI).
 
@@ -412,8 +427,8 @@ New suites get versioned names only; there is no unversioned `physical-test` ali
 | # | Boundary | Check | Error | Step |
 | --- | --- | --- | --- | --- |
 | 1 | `PromptSuite` validator | S1, S4, S7 | `ValidationError` | 2 |
-| 2 | native builder and verify (`native_recording_application.py:324-346`, `:641-725`) | Step 2: refuse every physical-test catalog. Step 4: root purpose is `physical-test` iff catalog purpose is; in a marked root the marker subject equals the settings subject; `--expect-catalog-sha256` when given | `ContractError` | 2, 4 |
-| 3 | service `OpenContextCommand` and `ContinueLegacyRecordingCommand`: first statement of the block (`recording_service.py:544`), before `context_replay` (`:550-552`) and `prepare_corpus_gate` (`:553-563`); repeated in `RecordingTakeStore.open_group` (`recording_takes.py:817`), where every group is minted | same as #2 | `RECORDING.GATE_NOT_READY`, with a message naming the cause | 2, 4 |
+| 2 | native builder and verify (`native_recording_application.py:324-346`, `:641-725`) | Step 2: refuse every physical-test catalog. Step 4: root purpose is `physical-test` iff catalog purpose is; in a marked root the marker subject equals the settings subject; `--expect-catalog-sha256` when given. Revision 3: the settings' declared `purpose` replaces the catalog purpose (`_require_release_root`); there is no catalog and no `--expect-catalog-sha256` | `ContractError` | 2, 4 |
+| 3 | service `OpenContextCommand` and `ContinueLegacyRecordingCommand`: first statement of the block (`recording_service.py:544`), before `context_replay` (`:550-552`) and `prepare_corpus_gate` (`:553-563`); repeated in `RecordingTakeStore.open_group` (`recording_takes.py:817`), where every group is minted. Revision 3: also `CatalogCommand` and the pre-context `SnapshotCommand` without a launch digest, on the pinned catalog, before its content or digest is served; `voice-lab catalog init` and `activate` apply the same check and raise `ContractError` | same as #2 | `RECORDING.GATE_NOT_READY`, with a message naming the cause | 2, 4 |
 | 4 | `RecordingPackageStore.plan` (`recording_packages.py:433`) | group purpose matches root purpose; `procedure` refused | `RECORDING.PACKAGE_INCOMPLETE` | 4 |
 | 5 | `accept_capture_session` (`intake.py:577`, right after validation, before any raw write) | marked root: physical-test suite ID and marker subject; standard root: no physical-test suite ID | `ContractError` | 4 |
 | 6 | `load_accepted_utterance` (`references.py:270-337`), shared by datasets, headphone reviews (`cli.py:672`) and references (`references.py:477`, `:544`) | `require_corpus_eligible_package` | `ContractError` | 4 |
@@ -530,12 +545,13 @@ The `script` region frame is unchanged; only its internal layout changes, which 
 voice-lab prompts coverage-report --asset-root A --subject-id S --catalog pilot-v2 --baseline pilot-v1 --json > R/<run>/coverage-report.json
 ```
 
-- **Catalogs.** `--catalog` and the optional `--baseline` accept built-in names only and resolve through `load_builtin_prompt_suite`. The output includes `catalog_sha256` and `baseline_catalog_sha256`.
+- **Catalogs.** `--catalog` and the optional `--baseline` accept built-in names only and resolve through `load_builtin_prompt_suite`. The output includes `catalog_sha256` and `baseline_catalog_sha256`. Revision 3: an exact built-in name still resolves this way; any other name is a published `<catalog_id>[@<version>]` resolved in A's corpus store (§7.7), and the output adds `catalog_id`, `catalog_version`, `baseline_catalog_id` and `baseline_catalog_version` (`null` for built-ins).
 - **Implementation** (`prompt_coverage.py`, Step 3). The CLI resolves names and calls one function that takes suites, which tests call with synthetic suites. It reuses the canonical readers and predicates:
   - legacy rows from `legacy_projection_records(RecordingLibrary(A, C, S), collect)` (`recording_index_backfill.py:61`), with a collecting callback;
   - native takes from `RecordingTakeStore(A, read_only=True).iter_takes_for_projection` (`recording_takes.py:1968`), projected with `history_entry_for_take`;
   - coverage by §3.1: `H(entry.prompt) == H(p)`, `entry.subject_id == S` and `is_retained(entry.decision, entry.analysis)`. TD2 proves parity with `RecordingIndex.history`.
-  - It never constructs `RecordingIndex` and never writes or creates anything under A (TD1).
+  - It never constructs `RecordingIndex` and never writes or creates anything under A (TD1). Revision 3: this holds for built-in names. A published name opens A's corpus store (`create=False`) only to resolve the version. That open takes the store's lease and lock, opens its database, and may change the store's own files under `A/provenance/corpus/` (`docs/CORPUS_STORE.md`, "Where it lives"). The store is closed before any evidence is read, and no evidence is written.
+  - Revision 3: a native take in a `recording-group/v2` group is resolved through its sealed snapshot (`resolve_group_catalog`, files only). A missing or altered snapshot fails the report with `CorpusSnapshotSecurityError` (exit 2), never as a gap.
 - **Output.**
   - Per prompt of `--catalog`: `prompt_id`, `prompt_sha256`, `covered`, `retained_take_count` (distinct take IDs); with a baseline, also `changed` and `covered_in_baseline`.
   - Summary: `covered_prompt_count`, `total_prompt_count`, `missing_prompt_ids`, `changed_prompt_ids` (baseline prompt IDs that are absent or have another hash), `lost_prompt_ids` (covered in the baseline, not covered now), `unknown_record_ids` and `baseline_unknown_record_ids`.
@@ -557,6 +573,8 @@ voice-lab prompts coverage-report --asset-root A --subject-id S --catalog pilot-
 
 Any future transfer of diagnostic packages to another machine needs its own deployment-order line, because the destination build must include guard #5.
 
+Revision 3: items 5.4 and 5.5 describe the revision-2 build. A build from revision 3 takes settings without a catalog and has no `--expect-catalog-sha256`. The equivalent check is §7.7 seeding item 5: before `voice-lab catalog activate`, the published version's `reference.catalog_sha256` (`voice-lab catalog show --version N --json`) must equal the expected digest. The §7.2 baseline report cannot supply that digest, because it names pilot-v2's `catalog_sha256`, which a `cole-corpus` version never equals.
+
 ### 7.4 Physical testing (P10–P14)
 
 An ordered checklist. Ask before each presence step, as usual.
@@ -574,6 +592,11 @@ An ordered checklist. Ask before each presence step, as usual.
    3. Then P14 immediately. A package needs takes from one group (`recording_packages.py:452-455`), and Swift offers only current-group candidates (`RecordingPackagePreparation.swift:133-139`).
 9. **Evidence.** P01–P09 evidence stays readable in `…c65af236` with its own build and catalog; it is not mapped. P14 intake stays inside the marked root, and every standard root refuses that package (guard #5).
 
+Revision 3 replaces items 4 and 5 for any build from revision 3 on:
+- **Catalog.** `voice-lab catalog init --asset-root B/physical-<UTC>/assets --subject-id cole-physical-diagnostic-<date> --from-builtin physical-test-v1`. It publishes and activates a version whose `catalog_sha256` is `b17cc176ee36ac5aa053c949e7ff44ce6e1b0c13b95b4cf7184693c09e48750b`, the §2.5 `H` of `physical-test-v1.json`; confirm it with `voice-lab catalog show --asset-root … --json`.
+- **Settings.** Generate `native-application-settings/v2` settings with `purpose: "physical-test"` and `subject_id` equal to the marker subject. They carry no catalog.
+- **Build.** `scripts/build-native-recording-app --output 'B/physical-<UTC>/release/Cole Voice Recorder Physical PREVIEW.app' --settings … --source-root …`, then run `verify_native_recording_application` on its `release.json`. Both check the root against the declared purpose. The app's verification report names the `catalog_sha256` the service delivered.
+
 ### 7.5 Rollback
 
 - **Supported: rebuild the preview (same build) with pilot-v1 settings.** This opens a new group and resets the cursor. pilot-v1 coverage is exactly what it was before the switch, including the old room-tone takes, which were never deleted. Room tone recorded only under pilot-v2 does not count under pilot-v1.
@@ -582,6 +605,7 @@ An ordered checklist. Ask before each presence step, as usual.
   - No production quarantine command exists; the only callers of `RecordingIndex.quarantine_cache` (`recording_index.py:1851`) are tests. Nothing is lost; the forward build reads everything.
 - **Source rollback.** Once the configured root holds any prompt-suite/v2 package map, group or take, this checkout MUST NOT be rolled back below Step 2 while the Qt launcher points at it. The Qt library parses package maps during its scan (`recording_library.py:545` → `recording_packages.py:787`).
 - **Mixed builds.** Every build from Step 3 onward computes the same coverage and legacy rows for any catalog (§3.3, L1), so no build can strand another build's rows.
+- **Revision 3.** A build from revision 3 records only against published store versions, and the store publishes `prompt-suite/v2` suites only, so it can no longer record against pilot-v1 itself. Rollback between catalog versions is `voice-lab catalog activate --version N` plus a relaunch. pilot-v1 coverage, including the old room-tone takes, stays readable with `voice-lab prompts coverage-report --catalog pilot-v1` and in the Qt app. A native build older than the corpus store cannot open a version-4 recording index or read `recording-group/v2` groups. The new build's service upgrades the index to version 4 when it starts, before anything is recorded, so an older native build MUST NOT run on a root once the new build has launched there. No command rebuilds or downgrades the index (`RecordingIndex.quarantine_cache` has only test callers). The fallback after that launch is the Qt app (`migrations/active/corpus-store.md`, "Rollback").
 
 ### 7.6 Operator notice for the pilot-v2 switch
 
@@ -594,6 +618,33 @@ Send this before Boundary 6, with the numbers from the §7.2 report:
 > - The first time v2 opens, the library count shows —/36 while it checks your history. Save works during the check; Save & Next and Continue Missing wait until it finishes.
 > - Unfinished sessions from the current Cole Voice Lab app can still be continued there, but not in the v2 build.
 > - If we switch back to pilot-v1, your earlier room-tone takes count there again; room tone recorded in v2 does not.
+
+### 7.7 Database catalogs
+
+Added in revision 3. From the corpus store onward (D-017), the catalog the native app records against is a version published from the library's corpus store, `A/provenance/corpus/corpus.sqlite3`, backed by an immutable snapshot under `A/provenance/corpus/snapshots/`. `docs/CORPUS_STORE.md` is the full reference; this section states what changes for this design.
+
+**Rules.**
+- **Built-ins are seeds and pins.** `voice-lab catalog init --from-builtin <name>` copies a built-in's prompts into the store with unchanged prompt digests. The resources stay immutable and pinned (§2.5), and the `pilot` alias still MUST NOT move (§4). The store publishes `prompt-suite/v2` suites only, so a seed must form a valid v2 suite of the catalog's purpose; pilot-v1, whose room tones carry text (S2), seeds only with `--drop-room-tones`.
+- **The app receives its catalog.** Settings and the app configuration carry no catalog. After its handshake the app sends `CatalogCommand`; the service answers with `CatalogEvent`, the subject's active version as an exact `PromptSuite` plus its `CatalogReference`, pinned for the life of the service process. The app opens its context by that reference.
+- **Switching catalogs** is `voice-lab catalog activate --subject-id S --version N` plus a relaunch. Adding or editing a prompt is `add-prompt` or `edit-prompt`, then `publish`, `activate` and a relaunch. None of these needs a rebuild.
+- **Groups.** New contexts mint `recording-group/v2` groups that reference the version instead of embedding the catalog. A new version is a new catalog, so its first open creates a new group and resets the cursor, as in §3.7. `recording-group/v1` groups stay readable forever (§3.8). `continue-legacy-recording` still opens a v1 group on the session's frozen catalog (§3.7).
+- **Coverage** is §3.1 with keep-recordings aliases. A default edit gives the prompt a new digest, so its earlier takes stop counting in the new version and it shows Missing, as the room tones did in §3.2. An edit made with `--keep-recordings` keeps them counting, and the corrected text becomes their training transcript.
+- **The coverage report and `finetune`** accept `<catalog_id>[@<version>]` beside the built-in names (§7.2).
+
+**Seeding the configured root** (corpus-store plan Step 7), each item with operator approval:
+1. Baseline, read-only: `voice-lab prompts coverage-report --asset-root A --subject-id cole-self --catalog pilot-v2 --json > R/<run>/baseline.json`.
+2. `voice-lab catalog init --asset-root A --subject-id cole-self --from-builtin pilot-v2 --drop-room-tones`. This publishes and activates version 1 of `cole-corpus` (suite `cole-corpus`, purpose `capture-pilot`, 34 prompts, `catalog_sha256` `e234266eccb7b8a1c55e7454b32a2a61a99e72a3939bc4850a6951acc25fd7b6`).
+3. `voice-lab catalog import-harvard` and `import-arctic`, each with `--from-file`, `--fetched-at` and the saved copy's real `--source-url`.
+4. `voice-lab catalog publish --asset-root A`. With the 2026-09-16 copies this is version 2: 1,886 prompts, `catalog_sha256` `1ebd48cbc6f6a2b2ea0fe70d0cff8f1df1e91b3bbf2a5be52959ffba141ff90f`.
+5. Before activating, `voice-lab catalog show --asset-root A --version 2 --json`. Require `reference.catalog_version` equal to 2 and `reference.catalog_sha256` equal to `1ebd48cbc6f6a2b2ea0fe70d0cff8f1df1e91b3bbf2a5be52959ffba141ff90f`. On a mismatch, stop and activate nothing: the seed or the saved copies differ from the 2026-09-16 inputs.
+6. `voice-lab catalog activate --asset-root A --subject-id cole-self --version 2`.
+7. `voice-lab prompts coverage-report --asset-root A --subject-id cole-self --catalog cole-corpus --baseline pilot-v2 --json`. The plan requires 34 of 1,886 covered, `changed_prompt_ids` equal to {`room-tone-start`, `room-tone-end`}, and exit 0.
+8. `voice-lab finetune corpus --asset-root A --subject-id cole-self --catalog cole-corpus --allow-missing` selects the same takes as `--catalog pilot-v2`. Without `--allow-missing` it refuses, because the standard-set prompts have no take yet.
+9. Build from `native-application-settings/v2` settings (no catalog), verify, install, and launch by exact path. That first launch upgrades the recording index to version 4, after which the older native build cannot open the root (§7.5).
+
+**What the operator sees.** The first launch on the new version behaves like §7.1 items 1–2: a new group, then discovery at the cost of a first open. The Library lists the active version's prompts. The old room-tone takes stay on disk and count under pilot-v1 and pilot-v2 in the coverage report, but no prompt of `cole-corpus` lists them. Prepare for lab needs a room-tone take from the current group (§3.6), which a catalog without room-tone prompts cannot record.
+
+**Refusals the operator can meet.** No store, no active catalog, and a missing or altered snapshot each leave the app without a Library, showing the service's message (`docs/NATIVE_RECORDING_UX.md` §10). The fix is the command the message names (`voice-lab catalog init` or `voice-lab catalog activate`), or restoring `provenance/corpus/` from backup, followed by a relaunch.
 
 ## 8. Implementation sequencing and test plan
 
@@ -628,6 +679,22 @@ Rows group bindings that share a disposition; every binding number appears once.
 | 45 | `CaptureManifest` suite ID and transcripts (`models.py:98-168`; `capture.py:1807-1826`) | model unchanged; guard #10 and §5.4 |
 | 46, 48 | `DatasetEntry` bindings and suite mapping (`datasets.py:117-162`, `:498-560`; `cli.py:250-265`); reference source binding (`references.py:115-146`, `:270-337`) | models unchanged; guards #6 and #8; v2 capture suites allowed |
 | 49 | consent and intake bind no suite (`models.py:218-271`; `intake.py:539-600`) | guard #11 for consent approval; guard #5 for intake |
+
+Revision 3: the dispositions above are revision 2's and were executed as written. Where a row above says "unchanged" or "exact", read it together with this list. The corpus store later changed these bindings, among others (§7.7, `docs/CORPUS_STORE.md`):
+- **1, 5, 10:** new groups are `recording-group/v2` and carry a `CatalogReference`; reuse compares the reference.
+- **2, 4:** the contract's exact-membership check (`CaptureReservation`) applies to `recording-group/v1` groups only. A v2 group carries no prompts, so `RecordingTakeStore.reserve` looks the prompt up by id in the group's snapshot.
+- **11–16, 18, 21:** index schema version 4 adds the prompt-alias projection; coverage counts through keep-recordings aliases (§3.1).
+- **19:** `_invalidate_take` marks Unknown every catalog in which the take's digest is current or a counted alias.
+- **20:** `_audit` also audits the prompt-alias projection (`_audit_prompt_aliases`).
+- **22:** discovery resolves each group's catalog with `resolve_group_catalog`, so a v2 group is read through its sealed snapshot.
+- **23, 44:** `OpenContextCommand` names `catalog_reference`; its embedded form survives only inside `ContinueLegacyRecordingCommand` (row 37, unchanged).
+- **24:** settings and configuration carry no catalog and declare a purpose; `--expect-catalog-sha256` is removed.
+- **25:** the workspace service pins its catalog from the store; `--catalog-sha256` is optional in workspace mode.
+- **27:** exact containment, or containment through a keep-recordings alias (§3.1). Review resolves an alias-covered take to its current prompt (`CatalogSnapshot.require_current_prompt_for`). It refuses a take whose prompt no longer counts with `RecordingPromptNotCountedError`, which the service sends as `RECORDING.STALE_REVISION`.
+- **29, 30, 34:** the package plan resolves the group's catalog through the take store (`group_catalog`) instead of reading an embedded suite.
+- **38:** exact, or through a keep-recordings alias (§3.1): `RecordingLibrary.counts` also accepts a recorded prompt that the catalog's aliases accept.
+- **39:** `legacy_pilot_v1` also takes `aliases=`; an accepted digest equal to a pilot-v1 prompt digest counts as shared.
+- **40:** backfill registers the library's catalog snapshot, aliases included (`register_catalog(library.catalog)`).
 
 ### 8.2 Steps, deliverables and verification
 
@@ -803,7 +870,7 @@ Each "Mutation" is a deliberate source change that MUST make the preceding test 
 **Follow-ups that need no operator decision:**
 - **F2.** Amend the plan's Done criterion "existing diagnostic takes still show as Recorded where mapped". TC1–TC3 prove the pilot-v2 consequence with synthetic fixtures; the one-off diagnostic catalogs never switch.
 - **F3.** Update `B/physical-gate-procedure.md` so future diagnostic builds use the `physical-test` purpose, a marked root and the §7.4 order.
-- **F4.** Add `DECISIONS.md` D-016, "Prompt suites are versioned by new immutable resources". It says: built-in suites are immutable and hash-pinned; coverage is exact per prompt hash, so a changed prompt starts Missing; stored evidence is never rewritten or deleted; D-010's "never migrated" still holds. Also update `docs/NATIVE_RECORDING_APPLICATION.md` (settings from built-ins), `docs/DESKTOP.md` (Qt refuses v2) and `docs/RUNBOOK.md` (its `--suite pilot` examples at `:164`, `:210` and `:230` stay valid).
+- **F4.** Add `DECISIONS.md` D-016, "Prompt suites are versioned by new immutable resources". It says: built-in suites are immutable and hash-pinned; coverage is exact per prompt hash, so a changed prompt starts Missing; stored evidence is never rewritten or deleted; D-010's "never migrated" still holds. Also update `docs/NATIVE_RECORDING_APPLICATION.md` (settings from built-ins), `docs/DESKTOP.md` (Qt refuses v2) and `docs/RUNBOOK.md` (its `--suite pilot` examples at `:164`, `:210` and `:230` stay valid). Revision 3: D-016 was used for the fine-tune corpus decision. D-017 records that catalogs are data in the corpus store, with built-ins as immutable seeds and pins, and reconciles D-010. The `NATIVE_RECORDING_APPLICATION.md` item is moot, because settings carry no catalog. The `DESKTOP.md` (Qt refuses v2) and `RUNBOOK.md` items remain open.
 - **F5.** Parity for transferred full pilot-v2 packages (§3.4), together with any transfer work.
 - **F7.** Structure signal from the integrity review, recorded without acting on it: label assignments held outside `H(p)`, as a suite-level overlay. Without supersession it tips over at the first label added to a recorded spoken prompt.
 - **F8.** The pre-existing path-first rule in `load_prompt_suite` also affects the live launcher's `desktop --suite pilot`.
@@ -878,6 +945,23 @@ F1 and F6 are retired (Appendix A.4).
 - **F6 retired.** This design adds no "rebuild required" state.
 - **Step order.** Guards (Step 4) now precede resources (Step 5); Step 3 proves the coverage consequence.
 - **Citations.** `_capture_inputs` is at `cli.py:435`. `RecordingWorkspaceModel.swift` has drifted (catalog mapping at `:126`, `applyCursor` at `:602`), so it is cited by symbol. Both one-off diagnostic catalogs share no prompt hash with pilot-v1.
+
+### A.5 Changes in revision 3
+
+Revision 3 (2026-09-16) follows the corpus store (`.claude/plans/2026-09-15-catalog-in-database-corpus-store.md`, D-017, `docs/CORPUS_STORE.md`). It changes no revision-2 decision about labels, instructions, pilot-v2 or the physical-test purpose.
+
+- **Status line** names revision 3 and this appendix.
+- **§1 non-goals and §3.1:** keep-recordings aliases are the one bounded exception to exact coverage, for database catalogs only; the alias identity rule is stated.
+- **§2.5:** built-ins are also corpus-store seeds; settings no longer name a built-in; the service build identity also fingerprints the corpus store and prompt-alias migrations.
+- **§3.8:** the switch-by-settings sentence is struck; switching is `voice-lab catalog activate` plus a relaunch. The corpus store's own manifest is named, and `recording-group/v1` groups are permanent reader semantics like the sidecar-less rule, which §3.4 defines.
+- **§4:** the entry-point rows for settings, `prompts coverage-report` and `prompts show` describe settings without a catalog, the removed `--expect-catalog-sha256` and published catalog names. The pilot-v2 goldens note how the store reproduces `H(pilot-v2)`.
+- **§5.3 #2, #3:** the builder and verify check the declared purpose; the service guard also covers `CatalogCommand` and the pre-context snapshot; `catalog init` and `activate` apply it.
+- **§7.2:** published catalog names, the added report fields, the store opening for a published name, and the fail-closed snapshot rule.
+- **§7.3, §7.4, §7.5:** revision-3 notes replace the settings-with-catalog and `--expect-catalog-sha256` steps with the §7.7 digest check, state rollback between store versions, and state that the new build's first launch upgrades the recording index so the older native build can no longer open the root.
+- **§7.7** is new: database catalogs and the seeding sequence for the configured root, including the digest check before `catalog activate`.
+- **§8.1:** a note lists the bindings the corpus store changed, including the reservation, invalidation, audit, discovery, review, legacy-filter, sidecar-less and backfill rows.
+- **§9 F4:** its decision-record and settings items are resolved or moot; the `DESKTOP.md` and `RUNBOOK.md` items remain open.
+- **History left as written.** These lines still name `--expect-catalog-sha256` or an inline settings catalog because they record revision 2's plan steps as executed: §5.3 "Sequencing" (Step 4), §8.1 row 24, §8.2 Step 4, TP1 in §8.3, and Appendix A.3 (trust E4). They do not describe the current build.
 
 ## References
 

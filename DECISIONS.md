@@ -248,3 +248,54 @@ under `derived/finetune/<run-id>/`.
 Fine-tuned checkpoints and listening samples are working artifacts, not accepted raw,
 references or dataset manifests; consent for rendering, transfer approval and promotion
 are unchanged. See docs/FINETUNE.md.
+
+## D-017 — The prompt catalog is data in the corpus store
+
+Cole asked on 2026-09-15 that prompts be editable without rebuilding the app. Cole
+confirmed that an edit makes earlier recordings of the prompt stop counting by default,
+and that an edit made with `--keep-recordings` (typo fixes, punctuation, casing) keeps
+them counting, with the corrected text as their training transcript. Cole had also decided
+that the two room tones leave the catalog and that the Harvard (720) and CMU ARCTIC
+(1,132) sentence sets are added; both are carried out through this store. Before this, the
+catalog was a pinned resource frozen into the build's settings, and every take's group
+embedded the whole catalog, which would have added about 400 KB to each of a take's
+evidence files for the 1,886-prompt catalog.
+
+The catalog is now data. Prompts, their append-only revisions and published catalog
+versions live in the library's corpus store, `provenance/corpus/corpus.sqlite3`. Each
+version is pinned by the canonical digest of the `PromptSuite` it materializes and backed
+by an immutable, content-addressed snapshot under `provenance/corpus/snapshots/`, whose
+whole-file digest the version's reference also carries. New recording groups
+(`recording-group/v2`) reference a version instead of embedding the catalog. The app's
+settings carry no catalog: after its handshake the app asks the recording service, which
+pins the subject's active version for the life of the process. Adding, editing or
+switching prompts is therefore `voice-lab catalog` publish and activate plus a relaunch,
+never a rebuild, and `--expect-catalog-sha256` no longer exists. The store is authoritative
+and is never rebuilt, unlike the recording index.
+
+Several things do not change. Take metadata stays in files; the database holds prompts
+and catalogs only. The `Prompt` and `PromptSuite` contracts and their digests are
+unchanged, so every existing prompt digest and `catalog_sha256` keeps its meaning.
+Groups that embed their catalog (`recording-group/v1`) are immutable evidence and are
+read by that contract forever; this is a permanent reader rule, like the sidecar-less rule
+in docs/PROMPT_CATALOG_V2.md §3.4, not a migration step. The built-in resources stay
+immutable, hash-pinned resources; they now also serve as seeds (`voice-lab catalog init
+--from-builtin`), which copy their prompts into the store with identical digests. D-010's
+"Existing raw assets and prompt suites are never migrated" still holds: built-ins are
+seeded, not migrated, and no stored suite, group, take or raw file is rewritten.
+
+A keep-recordings revision accepts earlier prompt digests only when the prompt keeps its
+identity: the same prompt id, the same held-out flag, and the same behaviour (spoken, or
+the same silent category). The store refuses a keep-recordings edit that changes any of
+these, and every reader applies the same rule. The reason is that held-out evaluation
+audio must never reach training and silence must never count as speech. For the same
+reason the fine-tune corpus refuses a held-out catalog (`FINETUNE.CATALOG_HELD_OUT`) and
+never trains on held-out or silent recordings. The command additionally limits
+`--keep-recordings` to typo-class text changes unless `--allow-rewording` is given, so
+kept audio says the words it trains with. For store catalogs this is the one exception to
+the exact-digest coverage of docs/PROMPT_CATALOG_V2.md §3.1; built-in catalogs accept no
+aliases.
+
+The command line is the editor; an in-app editor is a separate change. The rollout is
+tracked in `migrations/active/corpus-store.md` until the real library is seeded and the
+new build is installed and confirmed. See docs/CORPUS_STORE.md.

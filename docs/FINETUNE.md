@@ -14,17 +14,45 @@ for one subject, across native (app) takes and old-app (Qt) takes alike:
 - the newest capture date wins; unknown dates sort oldest; a trim recipe on a native take is
   applied sample-exactly;
 - room-tone and procedure prompts never enter; a prompt with no retained take is reported as
-  missing, and the command refuses to continue unless `--allow-missing` is given.
+  missing, and the command refuses to continue unless `--allow-missing` is given;
+- a take recorded against an earlier revision of a prompt counts when a keep-recordings edit
+  accepts that revision (`docs/CORPUS_STORE.md`); the newest take wins across the current and
+  every accepted revision;
+- the training transcript is always the prompt's current text, even for a take recorded
+  against an earlier revision;
+- held-out and silent recordings never enter, and takes from held-out groups are skipped.
+
+`--catalog` names a released built-in (`pilot-v1`, `evaluation-v1`, `pilot-v2`,
+`physical-test-v1`) or a catalog published in the library's corpus store:
+`<catalog_id>` for its latest version, `<catalog_id>@<version>` for a fixed one. An exact
+built-in name wins. A held-out-evaluation catalog is refused with
+`FINETUNE.CATALOG_HELD_OUT`, because evaluation material never trains a voice. Refusals exit 2;
+a refusal with a code prints `voice-lab: <CODE>: <message>`.
 
 ```sh
 voice-lab finetune corpus --asset-root <library> --subject-id cole-self --catalog pilot-v2 [--json]
+voice-lab finetune corpus --asset-root <library> --subject-id cole-self --catalog cole-corpus --allow-missing [--json]
 ```
+
+A published catalog that includes the standard sentence sets has far more prompts than
+recordings, so it needs `--allow-missing`; the corpus is then the prompts that have a take, and
+the summary still lists every missing prompt.
+
+Each entry of `dataset/corpus.json` records `prompt` (the current prompt, whose text is the
+transcript), `prompt_sha256` (its digest) and `recorded_prompt_sha256` (the digest the audio
+was recorded against; equal to `prompt_sha256` unless a keep-recordings alias matched). The
+corpus records `catalog_reference`, the published version it was selected from (`null` for a
+built-in), and the command summaries print it. A `corpus.json` written before these fields
+existed still loads unchanged.
 
 ## The revision loop
 
 1. Record or re-record prompts in the app. Every saved take is a candidate; the newest wins.
+   Adding or editing a prompt is a `voice-lab catalog` change, published and activated for the
+   app (`docs/CORPUS_STORE.md`).
 2. `voice-lab finetune run --asset-root <library> --subject-id cole-self --catalog pilot-v2 \
-      --runtime-root <f5-runtime>` (about two hours on the M4 24 GB MacBook Air at the defaults).
+      --runtime-root <f5-runtime>` (about two hours on the M4 24 GB MacBook Air at the defaults),
+   or `--catalog cole-corpus --allow-missing` for the published catalog.
 3. Listen: `derived/finetune/<run-id>/samples/finetuned/sample-0N.wav` against
    `.../samples/base/sample-0N.wav` (the untouched base model, same reference, same sentences).
 
@@ -41,8 +69,13 @@ voice-lab finetune corpus --asset-root <library> --subject-id cole-self --catalo
 | `run.json` | hyperparameters, runtime identity, checkpoint digests, status (`finetune-run`) |
 | `samples/<label>/sample-NN.wav`, `samples.json` | listening samples (`finetune-samples`) |
 
-Nothing is written under `tmp/`, `raw/` or `provenance/`. The app may keep running; the
-command takes no library locks and only reads takes.
+Nothing is written under `tmp/` or `raw/`, and no evidence is written under `provenance/`. The
+app may keep running; the command takes no library locks and only reads takes. A published
+`--catalog` name is the one exception: it opens the corpus store under `provenance/corpus/`
+only to resolve the version and closes it before any take is read. That open takes the
+store's lease and lock and may change the store's own files there: it may create the two
+lock files and an empty `snapshots/` directory, change the SQLite WAL files, and remove a
+crashed publish's scratch files ([CORPUS_STORE.md](CORPUS_STORE.md), "Where it lives").
 
 ## Level normalization is required
 

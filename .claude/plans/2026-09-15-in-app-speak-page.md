@@ -35,13 +35,15 @@
   - Verify: `scripts/verify-native-recording --suite speak`
 
 - [ ] **Step 5: Docs and decision record**
-  - `docs/NATIVE_RECORDING_UX.md`: Speak page section (text bounds, model/reference choice, playback interlock, Save As, failure rows in the §10 matrix: runtime missing, synthesis deadline, no finished run yet). `docs/FINETUNE.md`: "Speak page". `DECISIONS.md` D-018: in-app synthesis is a listening tool; generated audio stays local and is not a reference, dataset or promotion artifact.
+  - `docs/NATIVE_RECORDING_UX.md`: Speak page section (text bounds, model/reference choice, playback interlock, Save As, failure rows in the §10 matrix: runtime missing, synthesis deadline, no finished run yet). `docs/FINETUNE.md`: "Speak page". ~~`DECISIONS.md` D-018:~~ `DECISIONS.md` D-019 (D-017 is the corpus store's and D-018 the corpus-first pipeline's): in-app synthesis is a listening tool; generated audio stays local and is not a reference, dataset or promotion artifact.
   - Verify: `.venv/bin/ruff format --check . && .venv/bin/ruff check . && .venv/bin/mypy src/cole_voice_lab`
 
 - [ ] **Step 6: Build, physical check, install**
-  - Build on top of the corpus-first pipeline release (same settings), release verification, `codesign --strict --deep`, full `scripts/verify`. Physical check with Cole: switch to Speak, type a sentence, hear it from the latest fine-tune and from Base, Save As to a folder, confirm Record still records. Install by copytree per the handoff procedure.
+  - Build on top of the corpus-first pipeline release (same settings, which carry no catalog: the app loads the active corpus-store catalog from the service), release verification, `codesign --strict --deep`, full `scripts/verify`. Physical check with Cole: switch to Speak, type a sentence, hear it from the latest fine-tune and from Base, Save As to a folder, confirm Record still records. Install by copytree per the handoff procedure.
   - Verify: Cole hears the fine-tuned voice from the Speak page in the installed app; `speech/<operation-id>/samples.json` validates
 
 ## Done criteria
 
 `scripts/verify` passes with the `speak` native suite; the installed app plays typed text in the fine-tuned voice from the Speak page and the Record page is byte-identical in geometry; committed on `capture-console` as `feat: in-app Speak page` after Cole's go-ahead.
+
+**Amended 2026-09-16:** the decision record is renumbered D-019, because the corpus store (`2026-09-15-catalog-in-database-corpus-store.md`) took D-017 and the corpus-first pipeline plan now takes D-018. Since corpus-store Step 4 the app settings carry no catalog (`native-application-settings/v2` with a required `purpose`); the prompt list, including the `reference_candidate` prompts Step 1 resolves references from, comes from the active corpus-store catalog the service pins, so a Speak build needs no catalog in its settings.

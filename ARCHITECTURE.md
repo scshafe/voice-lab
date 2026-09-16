@@ -10,7 +10,8 @@ private asset root (mode 0700)
   incoming/       resumable Tailnet landing zones
   raw/            verified, write-protected capture sessions
   derived/        trims, resamples, references, datasets
-  provenance/     consent and transfer approvals
+  provenance/     consent and transfer approvals; corpus/ prompt and catalog
+                  store (corpus.sqlite3 + immutable snapshots/)
   experiments/    plans, raw renders, normalized renders, run evidence
   evaluations/    blinded indices, listening scores, reveals, verdicts
   models/         shared model cache and immutable lock evidence

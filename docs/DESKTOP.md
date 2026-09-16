@@ -314,6 +314,12 @@ timestamps and pending review status.
 `--suite /absolute/prompts.json` displays an explicit strict `PromptSuite`.
 Prompt content and the catalog digest are part of recording identity: editing a
 transcript never makes an older recording appear to satisfy that changed prompt.
+The one exception is the native app's database catalog: an edit made with
+`voice-lab catalog edit-prompt --keep-recordings` (normally a typo-class fix, or a
+rewording confirmed with `--allow-rewording`; either way it keeps the prompt id, held-out
+flag and spoken or silent behaviour) keeps earlier recordings
+counting for the corrected text ([CORPUS_STORE.md](CORPUS_STORE.md)). The desktop's
+`--suite` catalogs never carry such edits.
 The full training corpus is still conditional on the existing pilot review.
 For a `capture-corpus` suite, pass the approved private `--pilot-gate-path` and
 `--pilot-gate-sha256` before capture; the gate and its accepted sources are checked.

@@ -7,6 +7,11 @@ weights, and recognizable synthetic outputs are biometric assets.
 
 - Asset roots and session staging directories use mode `0700`; regular private
   files use `0600` until raw intake makes them read-only.
+- The corpus store under `provenance/corpus/` keeps its directories at `0700` and
+  its database, lock files and snapshots at `0600`, owned by the operator, never
+  behind a symlink or hard link; snapshots are content-addressed, written once and
+  never overwritten, and every reader checks the whole-file SHA-256 its reference
+  names ([docs/CORPUS_STORE.md](docs/CORPUS_STORE.md)).
 - File names are relative POSIX paths. Absolute paths, `..`, empty components,
   control characters, alternate separators, symlinks, sockets, devices, and
   undeclared files are rejected.

@@ -437,8 +437,9 @@ Cross-language positive and negative fixture generators are part of the gate.
   request ID, take ID where relevant, state revision, process generation, and
   event sequence. Errors carry a stable code, message, details, and retryability.
 - Recorder commands: prepare resources, start, stop, state snapshot, shutdown.
-  Service commands cover indexed history, capture reservation/sealing, save,
-  next prompt, edits, removal/restore, analysis retry, package preparation, and
+  Service commands cover the catalog (`CatalogCommand`, answered by
+  `CatalogEvent`), indexed history, capture reservation/sealing, save, next
+  prompt, edits, removal/restore, analysis retry, package preparation, and
   recovery. The concrete schema enumerates operations; no arbitrary evaluation.
 - State transitions, saves, failures, and capture receipts are reliable messages.
   Waveform snapshots use a separate bounded/coalescing telemetry channel so a
@@ -455,6 +456,23 @@ Cross-language positive and negative fixture generators are part of the gate.
   have canonical byte order; Python validates it and writes canonical receipts.
   Native emergency receipts use a separately specified recovery contract, with
   byte-level conformance fixtures, rather than impersonating canonical lab JSON.
+
+**Amended 2026-09-16 — the catalog arrives from the service (`docs/CORPUS_STORE.md`,
+D-017):** The launch configuration carries no catalog. After both handshakes the
+app sends `CatalogCommand` with a 30-second deadline. The service resolves the
+subject's active version in the library's corpus store once per process, pins it,
+and answers with `CatalogEvent`: the exact `PromptSuite` and its
+`CatalogReference`. The app builds its prompt list and Library from that event and
+takes the catalog digest from the reference; Swift never computes it. Only then
+does the app request the durable snapshot and send open-context, which names the
+reference; the service refuses any other reference (`RECORDING.STALE_REVISION`)
+and an embedded catalog outside legacy continuation (`RECORDING.INVALID_MESSAGE`).
+New contexts mint `recording-group/v2` groups, which reference the published
+version instead of embedding the catalog; groups that embed one stay readable.
+Until the catalog arrives the header reads "Preparing catalog" and no history,
+cursor or Record is available. A catalog activated while the app runs takes
+effect at the next launch. Reconnect audio names the reference it already holds,
+or requests the catalog first when none arrived at launch.
 
 ### Native capture and waveform path
 
@@ -670,6 +688,9 @@ than weakening a latency target or calling an O(N) transaction constant-time.
 | Quit with a stopped unsaved take | Preserve draft for review on reopen; do not convert it into a kept take |
 | Quit with an unsaved trim | Existing explicit discard/save decision; no silent auto-application |
 | Corrupt/missing history evidence | Named affected records/Unknown status; never present corruption as new missing prompts |
+| No corpus store (`CORPUS.STORE_MISSING`) | Show the service message, which names `voice-lab catalog init`, as status and context reason; header reads Catalog unavailable; no Library, snapshot, open-context or Record; pin nothing, so a relaunch after `init` resolves again |
+| No active catalog for the subject (`CORPUS.NO_ACTIVE_CATALOG`) | Same as no corpus store; the message names `voice-lab catalog init` and `voice-lab catalog activate` |
+| Missing or altered catalog snapshot (`CORPUS.SNAPSHOT_MISMATCH`) | Refuse the catalog, context, reservation or review that depends on it; say missing or altered without file content; never fall back to another catalog or an embedded copy; history that needs the snapshot stays Unknown, never Missing; restore `provenance/corpus/snapshots/` from backup |
 
 Bound callback buffers, waveform snapshots, decoded preview memory, worker
 concurrency, and result delivery. Keep the durable work backlog outside memory;
