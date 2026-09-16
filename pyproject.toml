@@ -12,16 +12,22 @@ authors = [{ name = "Cole and Chloe" }]
 license = "LicenseRef-Proprietary"
 license-files = ["LICENSE"]
 dependencies = [
-  "pydantic>=2.11,<3",
+  "pydantic>=2.13.4,<3",
 ]
 
 [project.optional-dependencies]
+desktop = [
+  "PySide6-Essentials==6.11.2",
+]
 dev = [
   "build>=1.2,<2",
+  "setuptools==80.9.0",
+  "wheel==0.46.3",
   "mypy>=1.15,<2",
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
   "ruff>=0.11,<1",
+  "PySide6-Essentials==6.11.2",
 ]
 
 [project.scripts]

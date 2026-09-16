@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from runtime_fixtures import synthetic_python_runtime
 
 from cole_voice_lab.canonical import canonical_sha256, write_canonical_json
 from cole_voice_lab.errors import ContractError, RuntimeUnavailableError, SecurityError
@@ -50,7 +51,6 @@ from cole_voice_lab.runtime import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE_PYTHON = Path("/opt/homebrew/bin/python3.12")
 DISTUTILS_PTH = (
     b"import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = os.environ.get(var, 'local') "
     b"== 'local'; enabled and __import__('_distutils_hack').add_shim(); \n"
@@ -89,14 +89,11 @@ def reviewed_lab_wheel(tmp_path: Path) -> tuple[Path, str]:
     return wheel, hashlib.sha256(wheel.read_bytes()).hexdigest()
 
 
-def sealed_runtime_fixture(tmp_path: Path) -> tuple[RuntimeLock, Path, Path, str]:
-    locked = registry().runtime("mlx-audio-0.5.0")
+def sealed_runtime_fixture(tmp_path: Path, monkeypatch) -> tuple[RuntimeLock, Path, Path, str]:
+    host = synthetic_python_runtime(tmp_path, monkeypatch)
+    locked = host.registry.runtime("mlx-audio-0.5.0")
     environment = tmp_path / "environment"
-    subprocess.run(
-        (str(BASE_PYTHON), "-I", "-P", "-S", "-m", "venv", "--without-pip", str(environment)),
-        check=True,
-    )
-    site_packages = environment / "lib/python3.12/site-packages"
+    site_packages = host.create_environment(environment)
     artifact_versions = runtime_artifact_versions(locked, ROOT)
     installed_versions = {**artifact_versions, "cole-voice-lab": "0.1.0.dev0"}
     for name, version in installed_versions.items():
@@ -275,7 +272,9 @@ def test_model_snapshot_eviction_rejects_wrong_boundary_and_git(tmp_path: Path) 
         build_source_eviction_plan(git_source, snapshot, boundary=tmp_path)
 
 
-def test_download_and_runtime_plans_are_dry_until_explicitly_allowed(tmp_path: Path) -> None:
+def test_download_and_runtime_plans_are_dry_until_explicitly_allowed(
+    tmp_path: Path, monkeypatch
+) -> None:
     source = tiny_source()
     plan = build_source_provision_plan(
         source,
@@ -300,12 +299,12 @@ def test_download_and_runtime_plans_are_dry_until_explicitly_allowed(tmp_path: P
         execute_provision_plan(plan)
     assert not plan.destination.exists()
 
-    loaded = registry()
-    runtime = loaded.runtime("mlx-audio-0.5.0")
+    host = synthetic_python_runtime(tmp_path, monkeypatch)
+    runtime = host.registry.runtime("mlx-audio-0.5.0")
     install = build_runtime_install_plan(
         runtime,
         tmp_path / "runtime",
-        base_python=Path("/opt/homebrew/bin/python3.12"),
+        base_python=host.python,
         repository_root=ROOT,
     )
     assert install.commands[0][1:6] == ("-I", "-P", "-S", "-m", "venv")
@@ -422,12 +421,13 @@ def test_git_source_verification_is_revision_exact(tmp_path: Path) -> None:
 
 
 def test_runtime_install_execution_is_explicit_and_fail_closed(tmp_path: Path, monkeypatch) -> None:
-    locked = registry().runtime("mlx-audio-0.5.0")
+    host = synthetic_python_runtime(tmp_path, monkeypatch)
+    locked = host.registry.runtime("mlx-audio-0.5.0")
     lab_wheel, lab_sha256 = reviewed_lab_wheel(tmp_path)
     plan = build_runtime_install_plan(
         locked,
         tmp_path / "environment",
-        base_python=BASE_PYTHON,
+        base_python=host.python,
         repository_root=ROOT,
         lab_wheel=lab_wheel,
         lab_wheel_sha256=lab_sha256,
@@ -464,7 +464,7 @@ def test_runtime_install_execution_is_explicit_and_fail_closed(tmp_path: Path, m
     failed_plan = build_runtime_install_plan(
         locked,
         tmp_path / "failed-environment",
-        base_python=BASE_PYTHON,
+        base_python=host.python,
         repository_root=ROOT,
         lab_wheel=lab_wheel,
         lab_wheel_sha256=lab_sha256,
@@ -567,8 +567,12 @@ def test_reviewed_runtime_sanitizer_rejects_missing_and_rebound_pth(tmp_path: Pa
         _sanitize_reviewed_runtime_files(plan)
 
 
-def test_runtime_receipt_rejects_tree_pth_symlink_and_receipt_tamper(tmp_path: Path) -> None:
-    locked, environment, receipt_path, receipt_sha256 = sealed_runtime_fixture(tmp_path)
+def test_runtime_receipt_rejects_tree_pth_symlink_and_receipt_tamper(
+    tmp_path: Path, monkeypatch
+) -> None:
+    locked, environment, receipt_path, receipt_sha256 = sealed_runtime_fixture(
+        tmp_path, monkeypatch
+    )
     receipt, observed = verify_runtime_install_receipt(
         locked,
         environment,
@@ -625,8 +629,12 @@ def test_runtime_receipt_rejects_tree_pth_symlink_and_receipt_tamper(tmp_path: P
         )
 
 
-def test_python_runtime_closure_rejects_wrong_binary_tree_and_pth(tmp_path: Path) -> None:
-    locked, environment, _receipt_path, _receipt_sha256 = sealed_runtime_fixture(tmp_path)
+def test_python_runtime_closure_rejects_wrong_binary_tree_and_pth(
+    tmp_path: Path, monkeypatch
+) -> None:
+    locked, environment, _receipt_path, _receipt_sha256 = sealed_runtime_fixture(
+        tmp_path, monkeypatch
+    )
     runtime_lock = locked.python_runtime
     assert verify_python_runtime(
         runtime_lock,
@@ -641,7 +649,7 @@ def test_python_runtime_closure_rejects_wrong_binary_tree_and_pth(tmp_path: Path
 
     stale_tree = runtime_lock.model_copy(update={"prefix_tree_sha256": "f" * 64})
     with pytest.raises(SecurityError, match="prefix tree"):
-        verify_python_runtime(stale_tree, BASE_PYTHON)
+        verify_python_runtime(stale_tree, environment / "bin/python")
 
     site_packages = environment / "lib/python3.12/site-packages"
     external = tmp_path / "external-imports"
@@ -665,8 +673,22 @@ def test_python_runtime_closure_rejects_wrong_binary_tree_and_pth(tmp_path: Path
         )
 
 
-def test_repository_lock_rejects_a_self_consistent_forged_runtime_receipt(tmp_path: Path) -> None:
-    locked, environment, receipt_path, _receipt_sha256 = sealed_runtime_fixture(tmp_path)
+@pytest.mark.parametrize("changed_field", ("macos_product_version", "macos_build_version"))
+def test_python_runtime_closure_rejects_changed_macos_tcb(
+    tmp_path: Path, monkeypatch, changed_field: str
+) -> None:
+    host = synthetic_python_runtime(tmp_path, monkeypatch)
+    setattr(host, changed_field, "99.9" if changed_field == "macos_product_version" else "99Z999")
+    with pytest.raises(SecurityError, match="macOS runtime TCB differs"):
+        verify_python_runtime(host.lock, host.python)
+
+
+def test_repository_lock_rejects_a_self_consistent_forged_runtime_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    locked, environment, receipt_path, _receipt_sha256 = sealed_runtime_fixture(
+        tmp_path, monkeypatch
+    )
     receipt, _ = verify_runtime_install_receipt(
         locked,
         environment,
@@ -713,10 +735,11 @@ def test_failed_provision_and_runtime_install_remove_only_their_partial_paths(
     assert not source_plan.destination.exists()
 
     lab_wheel, lab_sha256 = reviewed_lab_wheel(tmp_path)
+    host = synthetic_python_runtime(tmp_path, monkeypatch)
     install_plan = build_runtime_install_plan(
-        registry().runtime("mlx-audio-0.5.0"),
+        host.registry.runtime("mlx-audio-0.5.0"),
         tmp_path / "partial-runtime",
-        base_python=BASE_PYTHON,
+        base_python=host.python,
         repository_root=ROOT,
         lab_wheel=lab_wheel,
         lab_wheel_sha256=lab_sha256,

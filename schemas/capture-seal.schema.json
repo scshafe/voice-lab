@@ -1,0 +1,263 @@
+{
+  "$defs": {
+    "AudioSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "encoding": {
+          "enum": [
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "maximum": 384000,
+          "minimum": 8000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sample_width_bytes": {
+          "enum": [
+            2,
+            3,
+            4
+          ],
+          "title": "Sample Width Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_rate_hz",
+        "channels",
+        "sample_width_bytes",
+        "encoding",
+        "frames",
+        "duration_seconds"
+      ],
+      "title": "AudioSpec",
+      "type": "object"
+    },
+    "CaptureContinuityEvidence": {
+      "additionalProperties": false,
+      "description": "Successful native input continuity bound to one exact, privately saved WAV.",
+      "properties": {
+        "backend": {
+          "const": "coreaudio-audioqueue",
+          "title": "Backend",
+          "type": "string"
+        },
+        "callback_count": {
+          "exclusiveMinimum": 0,
+          "title": "Callback Count",
+          "type": "integer"
+        },
+        "continuity_checked": {
+          "title": "Continuity Checked",
+          "type": "boolean"
+        },
+        "device_uid": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Device Uid",
+          "type": "string"
+        },
+        "first_sample_time": {
+          "title": "First Sample Time",
+          "type": "number"
+        },
+        "frames": {
+          "exclusiveMinimum": 0,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "last_sample_end": {
+          "title": "Last Sample End",
+          "type": "number"
+        },
+        "output_name": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Output Name",
+          "type": "string"
+        },
+        "received_frames": {
+          "exclusiveMinimum": 0,
+          "title": "Received Frames",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.capture-continuity/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stop_reason": {
+          "enum": [
+            "requested",
+            "maximum-duration"
+          ],
+          "title": "Stop Reason",
+          "type": "string"
+        },
+        "success": {
+          "title": "Success",
+          "type": "boolean"
+        },
+        "wav_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "wav_size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Wav Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "backend",
+        "device_uid",
+        "output_name",
+        "wav_sha256",
+        "wav_size_bytes",
+        "frames",
+        "received_frames",
+        "callback_count",
+        "first_sample_time",
+        "last_sample_end",
+        "success",
+        "continuity_checked",
+        "stop_reason"
+      ],
+      "title": "CaptureContinuityEvidence",
+      "type": "object"
+    },
+    "RecordingBuildIdentity": {
+      "additionalProperties": false,
+      "description": "Exact executable, source-tree and environment identities; mutable tags are insufficient.",
+      "properties": {
+        "build_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "environment_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "build_id",
+        "source_sha256",
+        "executable_sha256",
+        "environment_sha256"
+      ],
+      "title": "RecordingBuildIdentity",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "audio": {
+      "$ref": "#/$defs/AudioSpec"
+    },
+    "continuity": {
+      "$ref": "#/$defs/CaptureContinuityEvidence"
+    },
+    "first_sample_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "last_sample_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "original_path": {
+      "$ref": "#/$defs/RelativePath"
+    },
+    "original_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "original_size_bytes": {
+      "exclusiveMinimum": 44,
+      "title": "Original Size Bytes",
+      "type": "integer"
+    },
+    "process_generation": {
+      "$ref": "#/$defs/StableId"
+    },
+    "recorder_build": {
+      "$ref": "#/$defs/RecordingBuildIdentity"
+    },
+    "requested_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "reservation_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.capture-seal/v1",
+      "default": "cole-voice-lab.capture-seal/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sealed_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "take_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "take_id",
+    "reservation_sha256",
+    "process_generation",
+    "recorder_build",
+    "original_path",
+    "original_sha256",
+    "original_size_bytes",
+    "audio",
+    "requested_at",
+    "first_sample_at",
+    "last_sample_at",
+    "sealed_at",
+    "continuity"
+  ],
+  "title": "CaptureSealReceipt",
+  "type": "object"
+}

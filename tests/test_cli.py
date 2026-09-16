@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import stat
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from runtime_fixtures import synthetic_python_runtime
 
 import cole_voice_lab.cli as cli_module
 from cole_voice_lab.capture import AvfoundationDevice
@@ -60,6 +61,78 @@ def test_prompt_cli_prints_suite(capsys: object) -> None:
     assert main(["prompts", "show", "evaluation", "--json"]) == 0
     output = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert output["purpose"] == "held-out-evaluation"
+
+
+# SHA-256 of `prompts show` v1 output captured before Step 5 moved the command to the pinned
+# built-in loader and added v2 suites; v1 human and JSON output must stay byte-identical.
+V1_PROMPTS_SHOW_SHA256 = {
+    "pilot": "f6f07110afe7e3bd215fe7f8cad21579b61899b36562151839e1495e8a36a830",
+    "pilot --json": "f24f7b04ab25bff85a7c620898b63840e876e1012dba07b97ab717e53113e2f9",
+    "pilot-v1": "f6f07110afe7e3bd215fe7f8cad21579b61899b36562151839e1495e8a36a830",
+    "pilot-v1 --json": "f24f7b04ab25bff85a7c620898b63840e876e1012dba07b97ab717e53113e2f9",
+    "evaluation": "1a9a2c00d187ab61b163f3cbe2602afb13e7da0106bad08ff2cf5079ba9ea104",
+    "evaluation --json": "662cfbfd0e87c2a6ddd13b47ed916609513eff05c6e8f0c11da4a0bc0bfd2d77",
+    "evaluation-v1": "1a9a2c00d187ab61b163f3cbe2602afb13e7da0106bad08ff2cf5079ba9ea104",
+    "evaluation-v1 --json": "662cfbfd0e87c2a6ddd13b47ed916609513eff05c6e8f0c11da4a0bc0bfd2d77",
+}
+
+
+def test_prompts_show_v1_output_is_byte_identical_and_never_shadowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    impostor = load_prompt_suite("evaluation").model_dump_json()
+    for name in ("pilot", "pilot-v1", "pilot-v2", "physical-test-v1"):
+        (tmp_path / name).write_text(impostor, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    for arguments, expected in V1_PROMPTS_SHOW_SHA256.items():
+        assert main(["prompts", "show", *arguments.split()]) == 0
+        assert hashlib.sha256(capsys.readouterr().out.encode()).hexdigest() == expected, arguments
+
+
+def test_prompts_show_v2_adds_instructions_labels_and_no_spoken_prompt(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["prompts", "show", "pilot-v2"]) == 0
+    blocks = capsys.readouterr().out.split("\n\n")
+    assert blocks[0] == "cole-pilot-v2 · 36 prompts · 5.2 expected minutes"
+    assert blocks[1] == (
+        "room-tone-start · room-tone\n(no spoken prompt)\n"
+        "  Instructions: Remain still and silent while the room tone is recorded.\n"
+        "  Guidance: Silence; keep the recording position unchanged."
+    )
+    assert blocks[2] == (
+        "reference-neutral-01 · reference, reference-candidate\n"
+        "A quiet morning gives us room to notice small details: the click of a latch, the weight "
+        "of a book, and the soft rhythm of rain beyond the window.\n"
+        "  Guidance: Natural, steady, close conversation."
+    )
+
+    assert main(["prompts", "show", "physical-test-v1"]) == 0
+    blocks = capsys.readouterr().out.split("\n\n")
+    assert blocks[0] == "cole-physical-test-v1 · 16 prompts · 10.1 expected minutes"
+    step = next(block for block in blocks if block.startswith("p10-unplug-while-capturing"))
+    lines = step.split("\n")
+    assert lines[:2] == [
+        "p10-unplug-while-capturing · procedure, test, device-loss",
+        "(no spoken prompt)",
+    ]
+    assert lines[2].startswith("  Instructions: Press Record.")
+    assert lines[3:] == ["  Guidance: Follow the steps; speak only if a step says so."]
+    spoken = next(block for block in blocks if block.startswith("p05-spoken-sentence"))
+    assert spoken.split("\n")[:2] == [
+        "p05-spoken-sentence · neutral, test, waveform",
+        "This is a private microphone check. My voice should sound clear, natural, and free of "
+        "clicks.",
+    ]
+
+    assert main(["prompts", "show", "physical-test-v1", "--json"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["purpose"] == "physical-test"
+    assert output["prompts"][0]["labels"] == ["test", "setup"]
+    assert "text" not in output["prompts"][0]
+    with pytest.raises(SystemExit) as refused:
+        main(["prompts", "show", "physical-test"])
+    assert refused.value.code == 2 and "invalid choice" in capsys.readouterr().err
 
 
 def test_assets_and_pending_consent_flow(tmp_path: Path, capsys: object) -> None:
@@ -172,8 +245,10 @@ def test_models_cli_lists_and_verifies_pinned_registry(capsys: object) -> None:
 
 
 def test_models_prepare_uses_the_same_paths_as_audition_runtime(
-    tmp_path: Path, capsys: object
+    tmp_path: Path, capsys: object, monkeypatch
 ) -> None:
+    host = synthetic_python_runtime(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_module, "_registry", lambda _options: host.registry)
     root = tmp_path / "private" / "voice-assets"
     _initialize_assets(root, capsys)
 
@@ -183,6 +258,8 @@ def test_models_prepare_uses_the_same_paths_as_audition_runtime(
                 "models",
                 "prepare",
                 "seed-vc",
+                "--base-python",
+                str(host.python),
                 "--asset-root",
                 str(root),
                 "--profile",
@@ -214,6 +291,8 @@ def test_models_prepare_uses_the_same_paths_as_audition_runtime(
                 "models",
                 "prepare",
                 "qwen3-tts-base",
+                "--base-python",
+                str(host.python),
                 "--asset-root",
                 str(root),
                 "--profile",
@@ -236,8 +315,10 @@ def test_models_prepare_uses_the_same_paths_as_audition_runtime(
 def test_models_prepare_reuse_requires_and_reports_exact_runtime_receipt(
     tmp_path: Path,
     capsys: object,
-    monkeypatch: object,
+    monkeypatch,
 ) -> None:
+    host = synthetic_python_runtime(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_module, "_registry", lambda _options: host.registry)
     root = tmp_path / "private" / "voice-assets"
     _initialize_assets(root, capsys)
     runtime = root / "runtimes/mlx-audio-0.5.0"
@@ -253,7 +334,7 @@ def test_models_prepare_reuse_requires_and_reports_exact_runtime_receipt(
         "--profile",
         "smoke",
         "--base-python",
-        str(Path(sys.executable)),
+        str(host.python),
         "--execute",
         "--allow-downloads",
     ]
@@ -594,6 +675,7 @@ def test_dataset_pilot_gate_requires_explicit_attestations_and_revalidates_captu
         assert allow_intake_receipt is True
         validation_calls.append(path)
         return SimpleNamespace(
+            manifest=SimpleNamespace(prompt_suite_id="cole-pilot-v1", subject_id="cole-self"),
             manifest_sha256=manifest_sha256,
             qc_report=SimpleNamespace(status="pass"),
         )

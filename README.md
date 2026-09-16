@@ -38,8 +38,7 @@ version is:
 voice-lab doctor
 voice-lab assets init --asset-root /Users/cole/.local/share/cole-voice-lab
 voice-lab capture devices
-voice-lab capture console --asset-root <macbook-private-root> \
-  --session-id cole-pilot-001 --suite pilot --device '<UMIK-1 device>' --open
+voice-lab desktop --asset-root <macbook-private-root> --device UMIK-1
 voice-lab sync plan <session-directory>
 voice-lab intake validate <mini-private-root>/incoming/cole-pilot-001
 voice-lab intake accept --asset-root <mini-private-root> \
@@ -52,12 +51,16 @@ voice-lab blind --help
 voice-lab promotion --help
 ```
 
-The console is loopback-only and controls native FFmpeg; the browser never
-captures audio. After an interrupted, unfinalized session, rerun the same
-console command with `--resume --open`. The engine revalidates completed takes
-and continues at the first missing prompt. `voice-lab capture run` remains the
-terminal-only alternative. Finalize and complete a headphone review before
-planning transfer.
+The [native desktop recording library](docs/DESKTOP.md) opens its own window
+with all pilot prompts, recording dates, completion, and take history. Select
+a batch, record and review each take, and finalize. Refreshing an older prompt
+creates a new session and preserves the earlier recording. The desktop uses
+buffered native macOS capture with per-buffer continuity checks. Install its optional widgets using the pinned setup
+command in the desktop guide; a macOS application launcher is also available.
+`capture run` remains the terminal alternative and `capture console` explicitly
+opens the older browser controller; these legacy FFmpeg paths are not recommended
+for new training recordings while their input-loss issue remains. Finalize and complete a headphone review
+before planning transfer.
 
 `sync plan` prints a dry plan. A live transfer requires a separate `--live-plan`
 preview, copy/paste approval of its exact `plan_sha256`, and all execution gates:

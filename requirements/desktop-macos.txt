@@ -1,0 +1,4 @@
+# Native desktop widgets only. Reviewed PyPI macOS universal2 wheels, 2026-09-07.
+# No model runtime or capture-kit dependency is changed by this lock.
+PySide6-Essentials==6.11.2 --hash=sha256:77795c145202e65a78d88f7cd409d186e3ba23d159bdb3ba2dcd159ae5e5f0d9
+shiboken6==6.11.2 --hash=sha256:53659683b1f7a08e9f87eff9b1065f1ceb7110cd7a4bc09fdf5efe43d286604d

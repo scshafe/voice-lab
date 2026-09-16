@@ -1,0 +1,395 @@
+{
+  "$defs": {
+    "AnalysisState": {
+      "enum": [
+        "pending",
+        "running",
+        "verified",
+        "needs-review",
+        "invalid",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "DecisionState": {
+      "enum": [
+        "draft",
+        "kept",
+        "rejected",
+        "removed"
+      ],
+      "type": "string"
+    },
+    "ErrorCode": {
+      "enum": [
+        "RECORDING.INVALID_MESSAGE",
+        "RECORDING.VERSION_MISMATCH",
+        "RECORDING.BUILD_MISMATCH",
+        "RECORDING.STALE_REVISION",
+        "RECORDING.STALE_GENERATION",
+        "RECORDING.OWNERSHIP_CONFLICT",
+        "RECORDING.INVALID_TRANSITION",
+        "RECORDING.DEVICE_UNAVAILABLE",
+        "RECORDING.PERMISSION_DENIED",
+        "RECORDING.PLAYBACK_ACTIVE",
+        "RECORDING.DISK_SPACE",
+        "RECORDING.WRITE_FAILED",
+        "RECORDING.WAVEFORM_CACHE_UNAVAILABLE",
+        "RECORDING.CONTINUITY_FAILED",
+        "RECORDING.CAPTURE_OVERFLOW",
+        "RECORDING.PARENT_LOST",
+        "RECORDING.SOURCE_CHANGED",
+        "RECORDING.HISTORY_UNKNOWN",
+        "RECORDING.GATE_NOT_READY",
+        "RECORDING.ANALYSIS_FAILED",
+        "RECORDING.PLAYBACK_FAILED",
+        "RECORDING.EDIT_FAILED",
+        "RECORDING.PACKAGE_INCOMPLETE",
+        "RECORDING.CANCELLED"
+      ],
+      "type": "string"
+    },
+    "ExportState": {
+      "enum": [
+        "unprepared",
+        "preparing",
+        "prepared",
+        "accepted-raw",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "FrameCount": {
+      "maximum": 28800000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference",
+            "procedure"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "RecordingError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Details",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "RecordingError",
+      "type": "object"
+    },
+    "RecordingHistoryEntry": {
+      "additionalProperties": false,
+      "description": "Small indexed projection; history pages neither transmit catalogs nor read WAVs.",
+      "properties": {
+        "analysis": {
+          "$ref": "#/$defs/AnalysisState"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "date_precision": {
+          "enum": [
+            "take",
+            "session",
+            "unknown"
+          ],
+          "title": "Date Precision",
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/DecisionState"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "export": {
+          "$ref": "#/$defs/ExportState"
+        },
+        "group_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "legacy_session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt": {
+          "$ref": "#/$defs/Prompt"
+        },
+        "recorded_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_frames": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FrameCount"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "subject_id",
+        "group_id",
+        "legacy_session_id",
+        "catalog_sha256",
+        "prompt",
+        "recorded_at",
+        "date_precision",
+        "source_sha256",
+        "source_frames",
+        "decision",
+        "analysis",
+        "export",
+        "state_revision"
+      ],
+      "title": "RecordingHistoryEntry",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "aliases": {
+      "items": {
+        "maxItems": 3,
+        "minItems": 3,
+        "prefixItems": [
+          {
+            "$ref": "#/$defs/RelativePath"
+          },
+          {
+            "$ref": "#/$defs/Sha256"
+          },
+          {
+            "enum": [
+              "legacy-raw",
+              "legacy-tmp",
+              "rejected"
+            ],
+            "type": "string"
+          }
+        ],
+        "type": "array"
+      },
+      "maxItems": 32,
+      "title": "Aliases",
+      "type": "array"
+    },
+    "entry": {
+      "$ref": "#/$defs/RecordingHistoryEntry"
+    },
+    "kind": {
+      "const": "row",
+      "default": "row",
+      "title": "Kind",
+      "type": "string"
+    },
+    "opened_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "entry",
+    "opened_at",
+    "aliases"
+  ],
+  "title": "LegacyProjectionRow",
+  "type": "object"
+}

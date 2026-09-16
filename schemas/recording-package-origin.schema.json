@@ -1,0 +1,31 @@
+{
+  "$defs": {
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "root_id": {
+      "pattern": "^[0-9a-f]{32}$",
+      "title": "Root Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-package-origin/v1",
+      "default": "cole-voice-lab.recording-package-origin/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "root_id",
+    "created_at"
+  ],
+  "title": "RecordingPackageOrigin",
+  "type": "object"
+}

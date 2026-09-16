@@ -18,9 +18,13 @@ def load_prompt_suite(name_or_path: str | Path) -> PromptSuite:
     if requested.exists():
         path = requested
     else:
+        # `pilot` stays v1 permanently: the live Qt launcher runs `desktop --suite pilot`.
+        # New suites get versioned names only.
         aliases = {
             "pilot": "pilot-v1.json",
             "pilot-v1": "pilot-v1.json",
+            "pilot-v2": "pilot-v2.json",
+            "physical-test-v1": "physical-test-v1.json",
             "evaluation": "evaluation-v1.json",
             "evaluation-v1": "evaluation-v1.json",
         }

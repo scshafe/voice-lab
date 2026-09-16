@@ -4,6 +4,10 @@
 boundary after capture intake. They never edit accepted raw recordings and have
 no network or remote-execution behavior.
 
+For recording-content recommendations, proposed duration budgets, local-model
+feasibility caveats, and sources, see [corpus research](CORPUS_RESEARCH.md).
+Those notes do not replace the approval and evidence requirements below.
+
 ```text
 raw/<capture-manifest-sha256>/             immutable accepted source
 provenance/consents/*.json                 explicit purpose-bound consent

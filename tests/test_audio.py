@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import math
 import os
+import random
 import wave
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import cole_voice_lab.audio as audio_module
 from cole_voice_lab.audio import analyze_pcm_wav, inspect_canonical_wav, inspect_pcm_wav
 from cole_voice_lab.errors import ContractError, SecurityError
 
@@ -138,3 +141,234 @@ def test_empty_and_malformed_wav_files_fail(tmp_path: Path) -> None:
         inspect_pcm_wav(empty)
     with pytest.raises(ContractError, match="invalid PCM WAV"):
         inspect_pcm_wav(malformed)
+
+
+def _sine_samples(
+    frames: int = 96_000, *, frequency: float = 137.0, amplitude: float = 1_000_000.0
+) -> list[int]:
+    """Generate non-human PCM with a known uninterrupted sample clock."""
+    return [
+        round(amplitude * math.sin(2 * math.pi * frequency * frame / 48_000))
+        for frame in range(frames)
+    ]
+
+
+def _removed_chunk_samples(*, offset: int = 0) -> list[int]:
+    samples = _sine_samples()
+    removed = {8, 21, 35, 48, 61, 79, 99, 125, 141, 160}
+    return samples[:offset] + [
+        value for frame, value in enumerate(samples[offset:]) if frame // 512 not in removed
+    ]
+
+
+def _harmonic_samples() -> list[int]:
+    """Smooth, amplitude-modulated harmonics approximate benign voiced structure."""
+    samples = []
+    for frame in range(96_000):
+        seconds = frame / 48_000
+        envelope = (0.51 + 0.49 * math.cos(2 * math.pi * 2.3 * seconds)) ** 2
+        harmonics = sum(
+            math.sin(2 * math.pi * 107 * harmonic * seconds) / harmonic for harmonic in range(1, 6)
+        )
+        samples.append(round(500_000 * envelope * harmonics))
+    return samples
+
+
+def _quiet_noise_samples(*, filtered: bool) -> list[int]:
+    generator = random.Random(381)
+    previous = 0.0
+    samples = []
+    for _ in range(96_000):
+        noise = generator.gauss(0, 350)
+        previous = 0.92 * previous + 0.08 * noise if filtered else noise
+        samples.append(round(previous))
+    return samples
+
+
+def test_removed_whole_chunks_produce_repeated_grid_finding_without_editing_audio(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "generated-missing-chunks.wav"
+    samples = _removed_chunk_samples()
+    _write_wav(path, samples)
+    original = path.read_bytes()
+
+    inspection = inspect_canonical_wav(path)
+    metrics = inspection.qc_metrics(path.name)
+
+    assert inspection.boundary_discontinuity_count >= 4
+    assert inspection.interior_discontinuity_count == 0
+    assert "repeated-buffer-boundary-discontinuities" in metrics.findings
+    assert not metrics.passed
+    assert inspection.audio.frames == len(samples)
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("read_frames", [127, 512, 513, 65_536])
+def test_continuity_evidence_is_independent_of_decoder_read_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, read_frames: int
+) -> None:
+    path = tmp_path / "generated-read-boundaries.wav"
+    _write_wav(path, _removed_chunk_samples())
+    expected = inspect_canonical_wav(path)
+    monkeypatch.setattr(audio_module, "_READ_FRAMES", read_frames)
+
+    assert inspect_canonical_wav(path) == expected
+
+
+def test_midpoint_steps_are_not_misrepresented_as_buffer_boundary_faults(tmp_path: Path) -> None:
+    path = tmp_path / "generated-midpoint-joins.wav"
+    _write_wav(path, _removed_chunk_samples(offset=256))
+
+    inspection = inspect_canonical_wav(path)
+
+    assert inspection.interior_discontinuity_count >= 4
+    assert inspection.boundary_discontinuity_count == 0
+    assert (
+        "repeated-buffer-boundary-discontinuities" not in inspection.qc_metrics(path.name).findings
+    )
+
+
+@pytest.mark.parametrize(
+    ("boundary_count", "interior_count", "flagged"),
+    [(3, 0, False), (4, 0, True), (7, 2, False), (8, 2, True)],
+)
+def test_repeated_discontinuity_qc_requires_minimum_count_and_grid_enrichment(
+    tmp_path: Path, boundary_count: int, interior_count: int, flagged: bool
+) -> None:
+    path = tmp_path / "generated-qc-count-contract.wav"
+    _write_wav(path, _sine_samples(frames=100))
+    inspection = replace(
+        inspect_canonical_wav(path),
+        boundary_discontinuity_count=boundary_count,
+        interior_discontinuity_count=interior_count,
+    )
+
+    assert (
+        "repeated-buffer-boundary-discontinuities" in inspection.qc_metrics(path.name).findings
+    ) is flagged
+
+
+@pytest.mark.parametrize(
+    ("jump", "neighbor", "adjacent", "flagged"),
+    [(31, 1, 1, False), (32, 4, 4, True), (32, 5, 5, False), (32, 1, 9, False)],
+)
+def test_isolated_jump_thresholds_are_unrounded_and_reject_quantization_and_impulses(
+    jump: int, neighbor: int, adjacent: int, flagged: bool
+) -> None:
+    differences = [neighbor] * 481
+    differences[240] = jump
+    differences[241] = adjacent
+
+    assert audio_module._BoundaryContinuityScan._isolated_jump(differences, 240) is flagged
+
+
+@pytest.mark.parametrize("kind", ["sine", "harmonics", "white-noise", "room-tone", "impulses"])
+def test_benign_synthetic_signal_does_not_receive_continuity_findings(
+    tmp_path: Path, kind: str
+) -> None:
+    if kind == "sine":
+        samples = _sine_samples()
+    elif kind == "harmonics":
+        samples = _harmonic_samples()
+    else:
+        samples = _quiet_noise_samples(filtered=kind == "room-tone")
+        if kind == "impulses":
+            for frame in range(2_048, len(samples) - 512, 4_096):
+                samples[frame] = 1_000_000
+    path = tmp_path / f"generated-{kind}.wav"
+    _write_wav(path, samples)
+
+    metrics = analyze_pcm_wav(path, allow_quiet=True)
+
+    assert "repeated-buffer-boundary-discontinuities" not in metrics.findings
+    assert "short-digital-silence-or-dropout" not in metrics.findings
+
+
+@pytest.mark.parametrize("quantum", [1, 256])
+def test_near_silence_quantization_zero_runs_are_not_short_dropouts(
+    tmp_path: Path, quantum: int
+) -> None:
+    # Includes native 24-bit quantization and 16-bit-resolution PCM in a 24-bit
+    # container. Several naturally quantized zero crossings exceed 2 ms.
+    samples = [value * quantum for value in _sine_samples(frequency=23.0, amplitude=2.0)]
+    path = tmp_path / "generated-low-resolution-quiet.wav"
+    _write_wav(path, samples)
+
+    inspection = inspect_canonical_wav(path)
+
+    assert inspection.longest_zero_run_ms >= 2
+    assert inspection.short_zero_run_count == 0
+    assert (
+        "repeated-buffer-boundary-discontinuities"
+        not in inspection.qc_metrics(path.name, allow_quiet=True).findings
+    )
+
+
+@pytest.mark.parametrize(("zero_frames", "flagged"), [(95, False), (96, True), (512, True)])
+def test_short_internal_exact_zero_run_requires_two_ms_and_nontrivial_edge_levels(
+    tmp_path: Path, zero_frames: int, flagged: bool
+) -> None:
+    samples = _sine_samples()
+    samples[1_003:1_003] = [0] * zero_frames
+    path = tmp_path / "generated-interior-zeros.wav"
+    _write_wav(path, samples)
+
+    inspection = inspect_canonical_wav(path)
+
+    assert bool(inspection.short_zero_run_count) is flagged
+    assert (
+        "short-digital-silence-or-dropout" in inspection.qc_metrics(path.name).findings
+    ) is flagged
+
+
+@pytest.mark.parametrize("position", ["leading", "trailing", "quiet-fade"])
+def test_short_zero_run_ignores_edges_and_aperiodic_naturally_quiet_passage(
+    tmp_path: Path, position: str
+) -> None:
+    samples = _sine_samples()
+    if position == "leading":
+        samples[:0] = [0] * 512
+    elif position == "trailing":
+        samples.extend([0] * 512)
+    else:
+        # A non-grid-aligned quiet passage with smooth raised-cosine fades.
+        for frame in range(12_319, 13_519):
+            amount = (frame - 12_319) / 1_199
+            samples[frame] = round(samples[frame] * (0.5 + 0.5 * math.cos(math.pi * amount)))
+        samples[13_519:14_831] = [0] * (14_831 - 13_519)
+        for frame in range(14_831, 16_031):
+            amount = (frame - 14_831) / 1_199
+            samples[frame] = round(samples[frame] * (0.5 - 0.5 * math.cos(math.pi * amount)))
+    path = tmp_path / f"generated-{position}-silence.wav"
+    _write_wav(path, samples)
+
+    inspection = inspect_canonical_wav(path)
+
+    assert inspection.short_zero_run_count == 0
+    assert inspection.qc_metrics(path.name).passed
+
+
+def test_short_zero_run_is_counted_across_decoder_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    samples = _sine_samples()
+    samples[65_500:65_500] = [0] * 512
+    path = tmp_path / "generated-zero-run-read-boundary.wav"
+    _write_wav(path, samples)
+    expected = inspect_canonical_wav(path)
+    monkeypatch.setattr(audio_module, "_READ_FRAMES", 127)
+
+    assert expected.short_zero_run_count == 1
+    assert inspect_canonical_wav(path) == expected
+
+
+def test_continuity_grid_heuristic_does_not_claim_unsupported_formats(tmp_path: Path) -> None:
+    path = tmp_path / "generated-noncanonical.wav"
+    _write_wav(path, _removed_chunk_samples(), sample_rate=44_100)
+
+    inspection = inspect_pcm_wav(path)
+
+    assert inspection.boundary_discontinuity_count == 0
+    assert inspection.interior_discontinuity_count == 0
+    assert inspection.short_zero_run_count == 0

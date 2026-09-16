@@ -129,7 +129,14 @@ from the fresh root so macOS can display microphone permission.
 Do not install an always-listening LaunchAgent. The UMIK-1 session is explicitly
 started and stopped by Cole.
 
-## 3. Capture-console pilot
+## 3. Recording pilot
+
+The primary interface is now the standalone Python desktop recording library.
+Follow [DESKTOP.md](DESKTOP.md) for setup, the macOS application launcher, the
+complete prompt table, recording dates, and retake history. Use
+`voice-lab desktop --asset-root <private-assets> --device UMIK-1` from the
+environment with desktop dependencies installed. The older authenticated
+browser-console workflow below remains available as an explicit alternative.
 
 - Quiet absorptive room, HVAC/fans/notifications off.
 - UMIK-1 about 15–20 cm away and 20–30 degrees off axis, with a pop filter.

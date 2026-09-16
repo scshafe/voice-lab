@@ -42,6 +42,8 @@ from .capture import (
     TakeEngine,
     capture_prompt_suite,
     list_avfoundation_audio_devices,
+    require_legacy_capture_root,
+    require_legacy_capture_suite,
     select_umik1_device,
 )
 from .consent import (
@@ -61,10 +63,16 @@ from .datasets import (
     publish_transfer_plan,
     validate_published_dataset,
 )
+from .diagnostic_roots import (
+    DIAGNOSTIC_ROOT_MARKER,
+    initialize_diagnostic_root,
+    require_corpus_eligible_package,
+)
 from .doctor import run_doctor
 from .errors import VoiceLabError
 from .intake import accept_capture_session, validate_capture_package
 from .models import (
+    PROMPT_SUITE_V1,
     CaptureDevice,
     ConsentRecord,
     Prompt,
@@ -73,6 +81,7 @@ from .models import (
 )
 from .paths import ASSET_DIRECTORIES, AssetLayout
 from .promotion import PromotionManifest, build_chloespeech_handoff, validate_promotion
+from .prompt_catalogs import BUILTIN_PROMPT_SUITE_SHA256, load_builtin_prompt_suite
 from .references import (
     HeadphoneReviewEvidence,
     load_accepted_utterance,
@@ -104,6 +113,15 @@ from .sync import (
 
 Command = Callable[[argparse.Namespace], int]
 MAX_CLI_DATASET_JSON_BYTES = 16 * 1024 * 1024
+# `prompts show` names built-ins only; unversioned names stay v1 (docs/PROMPT_CATALOG_V2.md §4).
+PROMPT_SHOW_RESOURCES = {
+    "pilot": "pilot-v1.json",
+    "evaluation": "evaluation-v1.json",
+    "pilot-v1": "pilot-v1.json",
+    "evaluation-v1": "evaluation-v1.json",
+    "pilot-v2": "pilot-v2.json",
+    "physical-test-v1": "physical-test-v1.json",
+}
 
 
 def _repository_root() -> Path:
@@ -350,6 +368,24 @@ def _doctor(options: argparse.Namespace) -> int:
 
 
 def _assets_init(options: argparse.Namespace) -> int:
+    if options.diagnostic is not None:
+        if options.subject_id is None:
+            raise VoiceLabError("--diagnostic physical-test requires --subject-id")
+        diagnostic, marker = initialize_diagnostic_root(
+            _asset_root(options.asset_root), subject_id=options.subject_id
+        )
+        # A diagnostic subject never approves consent, so no pending record is installed.
+        _json_print(
+            {
+                "asset_root": str(diagnostic.root),
+                "directories": [str(diagnostic.directory(name)) for name in ASSET_DIRECTORIES],
+                "diagnostic_root": marker.model_dump(mode="json"),
+                "diagnostic_root_path": DIAGNOSTIC_ROOT_MARKER,
+            }
+        )
+        return 0
+    if options.subject_id is not None:
+        raise VoiceLabError("--subject-id is recorded only for --diagnostic asset roots")
     layout = AssetLayout.initialize(_asset_root(options.asset_root))
     consent_path, consent_sha256 = install_pending_consent(layout)
     _json_print(
@@ -380,17 +416,69 @@ def _assets_status(options: argparse.Namespace) -> int:
     return 0
 
 
+def _effective_labels(suite: PromptSuite, prompt: Prompt) -> list[str]:
+    """Presentation labels in docs/PROMPT_CATALOG_V2.md §6.1 order; behavior never reads them."""
+    return [
+        prompt.category,
+        *(["test"] if suite.purpose == "physical-test" else []),
+        *(label for label in prompt.labels if label != "test"),
+        *(["reference-candidate"] if prompt.reference_candidate else []),
+        *(["holdout"] if prompt.holdout else []),
+    ]
+
+
 def _prompts_show(options: argparse.Namespace) -> int:
-    suite = load_prompt_suite(options.suite)
+    suite = load_builtin_prompt_suite(PROMPT_SHOW_RESOURCES[options.suite])
     if options.json:
         _json_print(suite.model_dump(mode="json"))
         return 0
     total = sum(prompt.expected_seconds for prompt in suite.prompts)
     print(f"{suite.suite_id} · {len(suite.prompts)} prompts · {total / 60:.1f} expected minutes")
     for prompt in suite.prompts:
-        marker = " [reference]" if prompt.reference_candidate else ""
-        print(f"\n{prompt.prompt_id} · {prompt.category}{marker}\n{prompt.text}\n  {prompt.style}")
+        if suite.schema_version == PROMPT_SUITE_V1:
+            # v1 output stays byte-identical, room tone text included.
+            marker = " [reference]" if prompt.reference_candidate else ""
+            print(
+                f"\n{prompt.prompt_id} · {prompt.category}{marker}\n{prompt.text}\n  {prompt.style}"
+            )
+            continue
+        print(f"\n{prompt.prompt_id} · {', '.join(_effective_labels(suite, prompt))}")
+        print(prompt.text if prompt.spoken else "(no spoken prompt)")
+        if prompt.instructions is not None:
+            print(f"  Instructions: {prompt.instructions}")
+        print(f"  Guidance: {prompt.style}")
     return 0
+
+
+def _prompts_coverage_report(options: argparse.Namespace) -> int:
+    from .prompt_coverage import PromptCoverageProjectionError, prompt_coverage_report
+
+    layout = AssetLayout.validate(_asset_root(options.asset_root))
+    catalog = load_builtin_prompt_suite(f"{options.catalog}.json")
+    baseline = (
+        None if options.baseline is None else load_builtin_prompt_suite(f"{options.baseline}.json")
+    )
+    try:
+        report = prompt_coverage_report(layout, options.subject_id, catalog, baseline)
+    except PromptCoverageProjectionError as error:
+        print(f"voice-lab: {error}", file=sys.stderr)
+        return 1
+    if options.json:
+        _json_print(report.to_json())
+    else:
+        print(
+            f"{report.covered_prompt_count}/{report.total_prompt_count} prompts covered · "
+            f"catalog {report.catalog_sha256}"
+        )
+        for label, values in (
+            ("missing", report.missing_prompt_ids),
+            ("changed", report.changed_prompt_ids),
+            ("lost", report.lost_prompt_ids),
+            ("unknown", report.unknown_record_ids),
+            ("baseline unknown", report.baseline_unknown_record_ids),
+        ):
+            print(f"{label}: {', '.join(values) or '-'}")
+    return report.exit_status
 
 
 def _capture_devices(options: argparse.Namespace) -> int:
@@ -435,8 +523,8 @@ def _capture_run(options: argparse.Namespace) -> int:
 def _capture_inputs(
     options: argparse.Namespace,
 ) -> tuple[AssetLayout, PromptSuite, CaptureDevice]:
-    layout = AssetLayout.validate(_asset_root(options.asset_root))
-    suite = load_prompt_suite(options.suite)
+    layout = require_legacy_capture_root(AssetLayout.validate(_asset_root(options.asset_root)))
+    suite = require_legacy_capture_suite(load_prompt_suite(options.suite))
     selected = select_umik1_device(
         list_avfoundation_audio_devices(ffmpeg=options.ffmpeg),
         requested=options.device,
@@ -469,6 +557,120 @@ def _capture_console(options: argparse.Namespace) -> int:
     finally:
         sys.dont_write_bytecode = previous_dont_write_bytecode
     return 0
+
+
+def _desktop(options: argparse.Namespace) -> int:
+    previous_dont_write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        from .desktop import run_desktop
+
+        return run_desktop(
+            asset_root=_asset_root(options.asset_root),
+            suite=options.suite,
+            subject_id=options.subject_id,
+            device=options.device,
+            ffmpeg=options.ffmpeg,
+            pilot_gate_path=options.pilot_gate_path,
+            pilot_gate_sha256=options.pilot_gate_sha256,
+        )
+    finally:
+        sys.dont_write_bytecode = previous_dont_write_bytecode
+
+
+def _recording_continue_legacy(options: argparse.Namespace) -> int:
+    """Continue an unfinished desktop session in a new native context.
+
+    The old session's own frozen evidence supplies the subject and catalog, so the
+    operator names only the new acoustic setup. Original dates, devices and takes are
+    preserved; no legacy raw audio is rewritten and no engine is reopened.
+    """
+
+    import hashlib
+    import uuid
+
+    from .canonical import canonical_json_bytes
+    from .errors import ContractError
+    from .models import CaptureDevice
+    from .paths import AssetLayout, confined_path
+    from .recording_contracts import ContinueLegacyRecordingCommand, OpenContextCommand
+    from .recording_library import _read_sidecar
+    from .recording_recovery import RecordingRecovery
+    from .recording_takes import RecordingTakeStore
+
+    layout = AssetLayout.validate(_asset_root(options.asset_root))
+    sidecar = confined_path(
+        layout.root, f"provenance/capture-desktop/{options.session_id}.json", must_exist=True
+    )
+    evidence = _read_sidecar(sidecar)
+    if evidence.manifest_sha256 is not None:
+        raise ContractError("this desktop session is already finalized; nothing to continue")
+    digest = hashlib.sha256(canonical_json_bytes(evidence) + b"\n").hexdigest()
+    operation_id = f"continue-legacy-{uuid.uuid4().hex}"
+    command = ContinueLegacyRecordingCommand(
+        operation_id=operation_id,
+        session_id=evidence.session_id,
+        session_evidence_sha256=digest,
+        context=OpenContextCommand(
+            operation_id=operation_id,
+            subject_id=evidence.subject_id,
+            catalog=evidence.catalog_suite,
+            catalog_sha256=evidence.catalog_sha256,
+            capture_device=CaptureDevice(
+                backend="coreaudio",
+                device_id=options.device_id,
+                display_name=options.display_name,
+            ),
+            capture_host=options.capture_host,
+            new_setup=True,
+            setup_description=options.setup_description,
+        ),
+    )
+    store = RecordingTakeStore(layout)
+    event = RecordingRecovery(store, subject_id=evidence.subject_id).continue_legacy(command)
+    print(
+        json.dumps(
+            {
+                "continued_session_id": evidence.session_id,
+                "group_id": event.group.group_id,
+                "subject_id": event.group.subject_id,
+                "catalog_sha256": event.group.catalog_sha256,
+                "operation_id": operation_id,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _recording_service(options: argparse.Namespace) -> int:
+    from .recording_service import main as recording_service_main
+
+    return recording_service_main(
+        [
+            "--asset-root",
+            str(_asset_root(options.asset_root)),
+            "--catalog-sha256",
+            options.catalog_sha256,
+            "--process-generation",
+            options.process_generation,
+            "--build-identity",
+            options.build_identity,
+            "--expected-client-build",
+            options.expected_client_build,
+        ]
+        + (
+            ["--native-workspace", "--subject-id", options.subject_id]
+            if options.native_workspace
+            else []
+        )
+        + (
+            ["--recording-group-id", options.recording_group_id]
+            if options.recording_group_id is not None
+            else []
+        )
+    )
 
 
 def _intake_validate(options: argparse.Namespace) -> int:
@@ -657,6 +859,8 @@ def _dataset_pilot_gate(options: argparse.Namespace) -> int:
             raise VoiceLabError("pilot gate names a non-content-addressed raw session")
         if package.qc_report.status != "pass":
             raise VoiceLabError("pilot-gate source capture QC status must be pass")
+        # Refuse before the permanent approval below can be written.
+        require_corpus_eligible_package(layout, package.manifest)
 
     directory = layout.directory("provenance") / "pilot-gates"
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -1386,10 +1590,28 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--json", action="store_true")
     doctor.set_defaults(handler=_doctor)
 
+    desktop = commands.add_parser("desktop", help="open the native recording library window")
+    desktop.add_argument("--asset-root")
+    desktop.add_argument(
+        "--suite", default="pilot", help="bundled suite or explicit prompt-suite JSON"
+    )
+    desktop.add_argument("--subject-id", default="cole-self")
+    desktop.add_argument("--device", help="preferred UMIK-1 ID or display name")
+    desktop.add_argument("--ffmpeg", default="/opt/homebrew/bin/ffmpeg")
+    desktop.add_argument("--pilot-gate-path", help="reviewed private gate path for a full corpus")
+    desktop.add_argument("--pilot-gate-sha256", help="exact reviewed full-corpus gate digest")
+    desktop.set_defaults(handler=_desktop)
+
     assets = commands.add_parser("assets", help="manage the explicit private asset layout")
     asset_commands = assets.add_subparsers(dest="assets_command", required=True)
     assets_init = asset_commands.add_parser("init")
     assets_init.add_argument("--asset-root", required=True)
+    assets_init.add_argument(
+        "--diagnostic",
+        choices=("physical-test",),
+        help="create a new marked root for physical-test catalogs only",
+    )
+    assets_init.add_argument("--subject-id", help="diagnostic subject bound by the root marker")
     assets_init.set_defaults(handler=_assets_init)
     assets_status = asset_commands.add_parser("status")
     assets_status.add_argument("--asset-root")
@@ -1398,9 +1620,20 @@ def build_parser() -> argparse.ArgumentParser:
     prompts = commands.add_parser("prompts", help="inspect bundled prompt suites")
     prompt_commands = prompts.add_subparsers(dest="prompts_command", required=True)
     prompt_show = prompt_commands.add_parser("show")
-    prompt_show.add_argument("suite", choices=("pilot", "evaluation", "pilot-v1", "evaluation-v1"))
+    prompt_show.add_argument("suite", choices=tuple(PROMPT_SHOW_RESOURCES))
     prompt_show.add_argument("--json", action="store_true")
     prompt_show.set_defaults(handler=_prompts_show)
+    builtin_suites = tuple(name.removesuffix(".json") for name in BUILTIN_PROMPT_SUITE_SHA256)
+    coverage_report = prompt_commands.add_parser(
+        "coverage-report",
+        help="read-only exact coverage of a built-in catalog; exit 1 on unexplained losses",
+    )
+    coverage_report.add_argument("--asset-root")
+    coverage_report.add_argument("--subject-id", required=True)
+    coverage_report.add_argument("--catalog", required=True, choices=builtin_suites)
+    coverage_report.add_argument("--baseline", choices=builtin_suites)
+    coverage_report.add_argument("--json", action="store_true")
+    coverage_report.set_defaults(handler=_prompts_coverage_report)
 
     capture = commands.add_parser("capture", help="foreground UMIK-1 capture on macOS")
     capture_commands = capture.add_subparsers(dest="capture_command", required=True)
@@ -1417,6 +1650,32 @@ def build_parser() -> argparse.ArgumentParser:
     capture_console.add_argument("--resume", action="store_true")
     capture_console.add_argument("--open", action="store_true")
     capture_console.set_defaults(handler=_capture_console)
+
+    recording = commands.add_parser("recording", help="native recording metadata capabilities")
+    recording_commands = recording.add_subparsers(dest="recording_command", required=True)
+    recording_service = recording_commands.add_parser(
+        "service", help="serve strict control over inherited local stdin/stdout pipes"
+    )
+    recording_service.add_argument("--asset-root", required=True)
+    recording_service.add_argument("--catalog-sha256", required=True)
+    recording_service.add_argument("--recording-group-id")
+    recording_service.add_argument("--native-workspace", action="store_true")
+    recording_service.add_argument("--subject-id", default="cole-self")
+    recording_service.add_argument("--process-generation", required=True)
+    recording_service.add_argument("--build-identity", required=True)
+    recording_service.add_argument("--expected-client-build", required=True)
+    recording_service.set_defaults(handler=_recording_service)
+    recording_continue = recording_commands.add_parser(
+        "continue-legacy",
+        help="continue an unfinished desktop session in a new explicit native context",
+    )
+    recording_continue.add_argument("--asset-root")
+    recording_continue.add_argument("--session-id", required=True)
+    recording_continue.add_argument("--device-id", required=True)
+    recording_continue.add_argument("--display-name", required=True)
+    recording_continue.add_argument("--capture-host", required=True)
+    recording_continue.add_argument("--setup-description", default="")
+    recording_continue.set_defaults(handler=_recording_continue_legacy)
 
     intake = commands.add_parser("intake", help="validate and accept transferred sessions")
     intake_commands = intake.add_subparsers(dest="intake_command", required=True)

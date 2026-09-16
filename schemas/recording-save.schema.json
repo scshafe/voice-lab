@@ -1,0 +1,304 @@
+{
+  "$defs": {
+    "FrameCount": {
+      "maximum": 28800000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "PositiveRevision": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference",
+            "procedure"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "RecordingFrameRange": {
+      "additionalProperties": false,
+      "description": "Source-frame recipe, independent from eventual derivative rendering.",
+      "properties": {
+        "end_frame": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "End Frame",
+          "type": "integer"
+        },
+        "source_frames": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "Source Frames",
+          "type": "integer"
+        },
+        "start_frame": {
+          "$ref": "#/$defs/FrameCount"
+        }
+      },
+      "required": [
+        "source_frames",
+        "start_frame",
+        "end_frame"
+      ],
+      "title": "RecordingFrameRange",
+      "type": "object"
+    },
+    "RecordingNavigationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "index_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "next_prompt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Prompt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selected_take_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "catalog_sha256",
+        "index_revision",
+        "next_prompt",
+        "complete"
+      ],
+      "title": "RecordingNavigationResult",
+      "type": "object"
+    },
+    "RecordingSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "index_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selection_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "take_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "catalog_sha256",
+        "prompt_id",
+        "take_id",
+        "selection_revision",
+        "index_revision"
+      ],
+      "title": "RecordingSelection",
+      "type": "object"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "advance": {
+      "title": "Advance",
+      "type": "boolean"
+    },
+    "committed_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "decision": {
+      "const": "kept",
+      "default": "kept",
+      "title": "Decision",
+      "type": "string"
+    },
+    "decision_revision": {
+      "$ref": "#/$defs/PositiveRevision"
+    },
+    "edit_revision": {
+      "$ref": "#/$defs/Revision"
+    },
+    "frame_range": {
+      "$ref": "#/$defs/RecordingFrameRange"
+    },
+    "navigation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingNavigationResult"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "receipt_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-save/v1",
+      "default": "cole-voice-lab.recording-save/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selection": {
+      "$ref": "#/$defs/RecordingSelection"
+    },
+    "take_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "operation_id",
+    "take_id",
+    "receipt_sha256",
+    "selection",
+    "decision_revision",
+    "edit_revision",
+    "frame_range",
+    "advance",
+    "navigation",
+    "committed_at"
+  ],
+  "title": "RecordingSaveOperation",
+  "type": "object"
+}

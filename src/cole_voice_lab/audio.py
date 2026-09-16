@@ -1,4 +1,7 @@
-"""Portable inspection and quality checks for canonical PCM WAV recordings."""
+"""Portable inspection and quality checks for canonical PCM WAV recordings.
+
+@canonical audio_inspection -- stable WAV identity, PCM measurements, and local QC.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +27,16 @@ _SILENCE_FLOOR_DBFS = -300.0
 _QUIET_PEAK_DBFS = -35.0
 _MAX_ABS_DC_OFFSET = 0.02
 _MAX_ZERO_RUN_MS = 250.0
+_SHORT_ZERO_RUN_MS = 2.0
+_SHORT_ZERO_EDGE_DBFS = -80.0
+_CONTINUITY_GRID_FRAMES = 512
+_CONTINUITY_NEIGHBOR_FRAMES = 240
+_CONTINUITY_EXCLUDED_FRAMES = 8
+_CONTINUITY_MINIMUM_STEP = 32
+_CONTINUITY_LOCAL_RATIO = 8
+_CONTINUITY_IMMEDIATE_RATIO = 4
+_CONTINUITY_MINIMUM_COUNT = 4
+_CONTINUITY_CONTROL_RATIO = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +51,9 @@ class WavInspection:
     dc_offset: float
     clipped_samples: int
     longest_zero_run_ms: float
+    boundary_discontinuity_count: int = 0
+    interior_discontinuity_count: int = 0
+    short_zero_run_count: int = 0
 
     def qc_metrics(
         self,
@@ -55,6 +71,14 @@ class WavInspection:
             findings.append("dc-offset")
         if self.longest_zero_run_ms >= _MAX_ZERO_RUN_MS:
             findings.append("digital-silence-or-dropout")
+        if self.short_zero_run_count:
+            findings.append("short-digital-silence-or-dropout")
+        if (
+            self.boundary_discontinuity_count >= _CONTINUITY_MINIMUM_COUNT
+            and self.boundary_discontinuity_count
+            >= _CONTINUITY_CONTROL_RATIO * max(1, self.interior_discontinuity_count)
+        ):
+            findings.append("repeated-buffer-boundary-discontinuities")
         signal_to_noise_db = self.rms_dbfs - noise_rms_dbfs if noise_rms_dbfs is not None else None
         return AudioQcMetrics(
             path=path,
@@ -94,6 +118,62 @@ def _sample_values(payload: bytes, sample_width: int) -> list[int]:
     return values
 
 
+class _BoundaryContinuityScan:
+    """Bounded 512-frame-grid heuristic for canonical PCM, not a lost-frame counter.
+
+    Compare isolated steps with adjacent 5 ms derivative distributions and with
+    equally spaced midpoint controls. Midpoints exclude both neighboring grid
+    joins from their denominator. Requiring repeated grid enrichment avoids
+    treating every plosive or one unusually steep sample as a capture defect.
+    The minimum PCM step and immediate-neighbor dominance reject quantization
+    and paired impulse edges. Smooth coincident phase joins can remain undetected.
+    """
+
+    def __init__(self) -> None:
+        self.boundary_count = 0
+        self.interior_count = 0
+        self._next_boundary = _CONTINUITY_GRID_FRAMES
+        self._samples_seen = 0
+        self._tail: list[int] = []
+
+    @staticmethod
+    def _isolated_jump(differences: list[int], index: int) -> bool:
+        jump = differences[index]
+        if jump < _CONTINUITY_MINIMUM_STEP:
+            return False
+        gap = _CONTINUITY_EXCLUDED_FRAMES
+        immediate = differences[index - gap : index] + differences[index + 1 : index + gap + 1]
+        if jump < _CONTINUITY_IMMEDIATE_RATIO * max(immediate):
+            return False
+        radius = _CONTINUITY_NEIGHBOR_FRAMES
+        neighbors = (
+            differences[index - radius : index - gap]
+            + differences[index + gap + 1 : index + radius + 1]
+        )
+        # Keep the decision unrounded and floor the local RMS at one PCM unit.
+        return jump * jump * len(neighbors) >= _CONTINUITY_LOCAL_RATIO**2 * max(
+            sum(value * value for value in neighbors), len(neighbors)
+        )
+
+    def add(self, values: list[int]) -> None:
+        """Consume successive mono frames with fixed-size cross-read context."""
+        start = self._samples_seen - len(self._tail)
+        samples = self._tail + values
+        self._samples_seen += len(values)
+        differences = [
+            abs(after - before) for before, after in zip(samples, samples[1:], strict=False)
+        ]
+        midpoint = _CONTINUITY_GRID_FRAMES // 2
+        while self._next_boundary + midpoint + _CONTINUITY_NEIGHBOR_FRAMES < self._samples_seen:
+            index = self._next_boundary - start - 1
+            self.boundary_count += self._isolated_jump(differences, index)
+            self.interior_count += self._isolated_jump(differences, index + midpoint)
+            self._next_boundary += _CONTINUITY_GRID_FRAMES
+        # Retain the left context of the next unpaired boundary, independent of
+        # decoder read size. Incomplete leading/trailing windows are not scored.
+        self._tail = samples[-2 * _CONTINUITY_GRID_FRAMES :]
+
+
 def _inspect_open_wav(
     stream: BinaryIO, *, require_canonical: bool
 ) -> tuple[AudioSpec, dict[str, float | int]]:
@@ -126,13 +206,26 @@ def _inspect_open_wav(
             clipped = 0
             current_zero_run = 0
             longest_zero_run = 0
+            short_zero_run_count = 0
+            zero_start_edge = 0
+            previous_value = 0
             minimum = -(1 << (sample_width * 8 - 1))
             maximum = (1 << (sample_width * 8 - 1)) - 1
+            canonical = (
+                channels == CANONICAL_CHANNELS
+                and sample_rate == CANONICAL_SAMPLE_RATE_HZ
+                and sample_width == CANONICAL_SAMPLE_WIDTH_BYTES
+            )
+            continuity = _BoundaryContinuityScan() if canonical else None
+            short_zero_edge = -minimum * 10 ** (_SHORT_ZERO_EDGE_DBFS / 20.0)
 
             while payload := reader.readframes(_READ_FRAMES):
                 if len(payload) % (channels * sample_width):
                     raise ContractError("WAV data chunk ends inside a PCM frame")
-                for value in _sample_values(payload, sample_width):
+                values = _sample_values(payload, sample_width)
+                if continuity is not None:
+                    continuity.add(values)
+                for value in values:
                     count += 1
                     total += value
                     squares += value * value
@@ -140,10 +233,25 @@ def _inspect_open_wav(
                     if value in {minimum, maximum}:
                         clipped += 1
                     if value == 0:
+                        if not current_zero_run:
+                            zero_start_edge = previous_value
                         current_zero_run += 1
                         longest_zero_run = max(longest_zero_run, current_zero_run)
                     else:
+                        # Short exact zero runs alone can be a quantized quiet
+                        # passage. Require abrupt, nontrivial edges on both sides;
+                        # leading/trailing silence and gentle fades do not qualify.
+                        if (
+                            current_zero_run
+                            and canonical
+                            and _SHORT_ZERO_RUN_MS
+                            <= current_zero_run * 1_000.0 / sample_rate
+                            < _MAX_ZERO_RUN_MS
+                            and min(abs(zero_start_edge), abs(value)) >= short_zero_edge
+                        ):
+                            short_zero_run_count += 1
                         current_zero_run = 0
+                    previous_value = value
 
             expected_samples = frames * channels
             if count != expected_samples:
@@ -173,6 +281,9 @@ def _inspect_open_wav(
         "dc_offset": max(-1.0, min(1.0, (total / count) / full_scale)),
         "clipped_samples": clipped,
         "longest_zero_run_ms": longest_zero_run / (sample_rate * channels) * 1_000.0,
+        "boundary_discontinuity_count": continuity.boundary_count if continuity else 0,
+        "interior_discontinuity_count": continuity.interior_count if continuity else 0,
+        "short_zero_run_count": short_zero_run_count,
     }
     return spec, metrics
 
@@ -213,6 +324,9 @@ def inspect_pcm_wav(path: Path, *, require_canonical: bool = False) -> WavInspec
         dc_offset=float(values["dc_offset"]),
         clipped_samples=int(values["clipped_samples"]),
         longest_zero_run_ms=float(values["longest_zero_run_ms"]),
+        boundary_discontinuity_count=int(values["boundary_discontinuity_count"]),
+        interior_discontinuity_count=int(values["interior_discontinuity_count"]),
+        short_zero_run_count=int(values["short_zero_run_count"]),
     )
 
 

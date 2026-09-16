@@ -1,0 +1,115 @@
+{
+  "$defs": {
+    "ErrorCode": {
+      "enum": [
+        "RECORDING.INVALID_MESSAGE",
+        "RECORDING.VERSION_MISMATCH",
+        "RECORDING.BUILD_MISMATCH",
+        "RECORDING.STALE_REVISION",
+        "RECORDING.STALE_GENERATION",
+        "RECORDING.OWNERSHIP_CONFLICT",
+        "RECORDING.INVALID_TRANSITION",
+        "RECORDING.DEVICE_UNAVAILABLE",
+        "RECORDING.PERMISSION_DENIED",
+        "RECORDING.PLAYBACK_ACTIVE",
+        "RECORDING.DISK_SPACE",
+        "RECORDING.WRITE_FAILED",
+        "RECORDING.WAVEFORM_CACHE_UNAVAILABLE",
+        "RECORDING.CONTINUITY_FAILED",
+        "RECORDING.CAPTURE_OVERFLOW",
+        "RECORDING.PARENT_LOST",
+        "RECORDING.SOURCE_CHANGED",
+        "RECORDING.HISTORY_UNKNOWN",
+        "RECORDING.GATE_NOT_READY",
+        "RECORDING.ANALYSIS_FAILED",
+        "RECORDING.PLAYBACK_FAILED",
+        "RECORDING.EDIT_FAILED",
+        "RECORDING.PACKAGE_INCOMPLETE",
+        "RECORDING.CANCELLED"
+      ],
+      "type": "string"
+    },
+    "RecordingError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Details",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "RecordingError",
+      "type": "object"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "event": {
+      "const": "package-preparation",
+      "default": "package-preparation",
+      "title": "Event",
+      "type": "string"
+    },
+    "group_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "operation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "state": {
+      "enum": [
+        "queued",
+        "running",
+        "blocked",
+        "failed"
+      ],
+      "title": "State",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation_id",
+    "group_id",
+    "state"
+  ],
+  "title": "PackagePreparationEvent",
+  "type": "object"
+}

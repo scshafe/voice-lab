@@ -1,0 +1,366 @@
+{
+  "$defs": {
+    "CaptureDevice": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "default": "avfoundation",
+          "enum": [
+            "avfoundation",
+            "coreaudio"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "calibration_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "device_id": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Device Id",
+          "type": "string"
+        },
+        "display_name": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "microphone_serial": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Microphone Serial"
+        }
+      },
+      "required": [
+        "device_id",
+        "display_name"
+      ],
+      "title": "CaptureDevice",
+      "type": "object"
+    },
+    "PreparedCaptureGate": {
+      "additionalProperties": false,
+      "description": "Previously verified corpus approval identity, invalidated when its evidence changes.",
+      "properties": {
+        "approval_path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RelativePath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "approval_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "enum": [
+            "not-required",
+            "ready",
+            "unprepared",
+            "invalid"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "verified_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "PreparedCaptureGate",
+      "type": "object"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference",
+            "procedure"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "PromptSuite": {
+      "additionalProperties": false,
+      "properties": {
+        "prompts": {
+          "items": {
+            "$ref": "#/$defs/Prompt"
+          },
+          "minItems": 1,
+          "title": "Prompts",
+          "type": "array"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation",
+            "physical-test"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "cole-voice-lab.prompt-suite/v1",
+          "enum": [
+            "cole-voice-lab.prompt-suite/v1",
+            "cole-voice-lab.prompt-suite/v2"
+          ],
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "suite_id",
+        "purpose",
+        "prompts"
+      ],
+      "title": "PromptSuite",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "capture_device": {
+      "$ref": "#/$defs/CaptureDevice"
+    },
+    "capture_host": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Capture Host",
+      "type": "string"
+    },
+    "catalog": {
+      "$ref": "#/$defs/PromptSuite"
+    },
+    "catalog_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "context_revision": {
+      "$ref": "#/$defs/Revision"
+    },
+    "gate": {
+      "$ref": "#/$defs/PreparedCaptureGate"
+    },
+    "group_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "opened_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "reason": {
+      "enum": [
+        "app-start",
+        "device-change",
+        "configuration-change",
+        "new-setup"
+      ],
+      "title": "Reason",
+      "type": "string"
+    },
+    "room_tone_take_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "maxItems": 32,
+      "title": "Room Tone Take Ids",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-group/v1",
+      "default": "cole-voice-lab.recording-group/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "setup_description": {
+      "default": "",
+      "maxLength": 1024,
+      "title": "Setup Description",
+      "type": "string"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "group_id",
+    "context_revision",
+    "subject_id",
+    "catalog",
+    "catalog_sha256",
+    "capture_device",
+    "capture_host",
+    "opened_at",
+    "reason",
+    "gate"
+  ],
+  "title": "RecordingGroup",
+  "type": "object"
+}

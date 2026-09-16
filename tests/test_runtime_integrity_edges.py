@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from runtime_fixtures import synthetic_python_runtime
 
 from cole_voice_lab.canonical import canonical_sha256, write_canonical_json
 from cole_voice_lab.errors import (
@@ -66,7 +67,6 @@ from cole_voice_lab.runtime import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE_PYTHON = Path("/opt/homebrew/bin/python3.12")
 
 
 def registry():
@@ -101,14 +101,11 @@ def lab_wheel(tmp_path: Path, *, name: str = "cole-voice-lab") -> tuple[Path, st
     return path, hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def runtime_plan(tmp_path: Path) -> RuntimeInstallPlan:
-    runtime = registry().runtime("mlx-audio-0.5.0")
+def runtime_plan(tmp_path: Path, monkeypatch) -> RuntimeInstallPlan:
+    host = synthetic_python_runtime(tmp_path, monkeypatch)
+    runtime = host.registry.runtime("mlx-audio-0.5.0")
     environment = tmp_path / "environment"
-    subprocess.run(
-        (str(BASE_PYTHON), "-I", "-P", "-S", "-m", "venv", "--without-pip", str(environment)),
-        check=True,
-    )
-    site_packages = environment / "lib/python3.12/site-packages"
+    site_packages = host.create_environment(environment)
     for name, version in (("fixture", "1.0"), ("cole-voice-lab", "0.1.0.dev0")):
         metadata = site_packages / f"{name}-{version}.dist-info/METADATA"
         metadata.parent.mkdir()
@@ -376,9 +373,9 @@ def test_distribution_and_wheel_metadata_are_unambiguous(tmp_path: Path) -> None
 
 
 def test_runtime_tree_rejects_hardlinks_symlinks_and_divergent_python_alias(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
-    plan = runtime_plan(tmp_path)
+    plan = runtime_plan(tmp_path, monkeypatch)
     site_packages = plan.environment_path / "lib/python3.12/site-packages"
     metadata = next(site_packages.glob("fixture-*.dist-info/METADATA"))
     hardlink = site_packages / "metadata-hardlink"
@@ -403,14 +400,14 @@ def test_runtime_tree_rejects_hardlinks_symlinks_and_divergent_python_alias(
         write_runtime_install_receipt(plan)
 
 
-def test_distribution_graph_and_receipt_bindings_fail_closed(tmp_path: Path) -> None:
+def test_distribution_graph_and_receipt_bindings_fail_closed(tmp_path: Path, monkeypatch) -> None:
     empty = tmp_path / "empty-runtime"
     empty.mkdir()
     tree = _runtime_tree_entries(empty)
     with pytest.raises(ContractError, match="no distribution metadata"):
         _installed_distributions(empty, tree)
 
-    plan = runtime_plan(tmp_path / "valid")
+    plan = runtime_plan(tmp_path / "valid", monkeypatch)
     site_packages = plan.environment_path / "lib/python3.12/site-packages"
     duplicate = site_packages / "fixture-copy-1.0.dist-info/METADATA"
     duplicate.parent.mkdir()
@@ -464,8 +461,8 @@ def test_distribution_graph_and_receipt_bindings_fail_closed(tmp_path: Path) -> 
         _runtime_receipt(mismatch, _runtime_tree_entries(plan.environment_path))
 
 
-def test_runtime_receipt_canonical_identity_and_stale_binding(tmp_path: Path) -> None:
-    plan = runtime_plan(tmp_path)
+def test_runtime_receipt_canonical_identity_and_stale_binding(tmp_path: Path, monkeypatch) -> None:
+    plan = runtime_plan(tmp_path, monkeypatch)
     receipt_path, digest = write_runtime_install_receipt(plan)
     with pytest.raises(ContractError, match="trial binding"):
         load_persisted_runtime_receipt(
@@ -668,20 +665,21 @@ def test_runtime_install_plan_requires_paired_artifacts_and_clean_target(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    runtime = registry().runtime("mlx-audio-0.5.0")
+    host = synthetic_python_runtime(tmp_path, monkeypatch)
+    runtime = host.registry.runtime("mlx-audio-0.5.0")
     wheel, digest = lab_wheel(tmp_path)
     with pytest.raises(ContractError, match="supplied together"):
         build_runtime_install_plan(
             runtime,
             tmp_path / "runtime",
-            base_python=BASE_PYTHON,
+            base_python=host.python,
             repository_root=ROOT,
             lab_wheel=wheel,
         )
     plan = build_runtime_install_plan(
         runtime,
         tmp_path / "runtime",
-        base_python=BASE_PYTHON,
+        base_python=host.python,
         repository_root=ROOT,
         lab_wheel=wheel,
         lab_wheel_sha256=digest,
@@ -694,7 +692,7 @@ def test_runtime_install_plan_requires_paired_artifacts_and_clean_target(
     preview = build_runtime_install_plan(
         runtime,
         tmp_path / "preview",
-        base_python=BASE_PYTHON,
+        base_python=host.python,
         repository_root=ROOT,
     )
     monkeypatch.setattr("cole_voice_lab.runtime.assert_disk_floor", lambda *_a, **_k: 1)

@@ -22,6 +22,7 @@ from .canonical import (
     sha256_file,
     write_canonical_json,
 )
+from .diagnostic_roots import require_corpus_eligible_package
 from .errors import ContractError, SecurityError
 from .intake import validate_capture_package
 from .models import ContractModel, Prompt, PromptSuite, Sha256, StableId, utc_now
@@ -464,6 +465,7 @@ def load_pilot_gate(
         package = validate_capture_package(raw_session, allow_intake_receipt=True)
         if package.manifest_sha256 != manifest_sha256:
             raise SecurityError("pilot gate names a non-content-addressed raw session")
+        require_corpus_eligible_package(layout, package.manifest)
         if package.qc_report.status != "pass":
             raise ContractError("pilot-gate source capture QC status must be pass")
     return BoundPilotGate(file=binding, record=record)
@@ -535,6 +537,8 @@ def build_dataset_manifest(
             ) from error
         if suite.suite_id != accepted.binding.prompt_suite_id:
             raise ContractError("prompt-suite mapping key and suite ID disagree")
+        if suite.purpose == "physical-test":
+            raise ContractError("physical-test prompt suites cannot enter datasets")
         prompt = _prompt_for_source(suite, accepted.binding.prompt_id)
         if prompt.text != accepted.binding.transcript:
             raise ContractError("accepted transcript does not exactly match prompt-suite text")

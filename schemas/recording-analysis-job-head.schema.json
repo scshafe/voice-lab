@@ -1,0 +1,696 @@
+{
+  "$defs": {
+    "AnalysisPriority": {
+      "enum": [
+        "new",
+        "historical"
+      ],
+      "type": "string"
+    },
+    "AnalysisState": {
+      "enum": [
+        "pending",
+        "running",
+        "verified",
+        "needs-review",
+        "invalid",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "AudioQcMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "clipped_samples": {
+          "minimum": 0,
+          "title": "Clipped Samples",
+          "type": "integer"
+        },
+        "dc_offset": {
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Dc Offset",
+          "type": "number"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "findings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "longest_zero_run_ms": {
+          "minimum": 0.0,
+          "title": "Longest Zero Run Ms",
+          "type": "number"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "peak_dbfs": {
+          "maximum": 0.0,
+          "title": "Peak Dbfs",
+          "type": "number"
+        },
+        "rms_dbfs": {
+          "maximum": 0.0,
+          "title": "Rms Dbfs",
+          "type": "number"
+        },
+        "signal_to_noise_db": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signal To Noise Db"
+        }
+      },
+      "required": [
+        "path",
+        "duration_seconds",
+        "peak_dbfs",
+        "rms_dbfs",
+        "dc_offset",
+        "clipped_samples",
+        "longest_zero_run_ms",
+        "passed"
+      ],
+      "title": "AudioQcMetrics",
+      "type": "object"
+    },
+    "AudioSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "encoding": {
+          "enum": [
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "maximum": 384000,
+          "minimum": 8000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sample_width_bytes": {
+          "enum": [
+            2,
+            3,
+            4
+          ],
+          "title": "Sample Width Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_rate_hz",
+        "channels",
+        "sample_width_bytes",
+        "encoding",
+        "frames",
+        "duration_seconds"
+      ],
+      "title": "AudioSpec",
+      "type": "object"
+    },
+    "CaptureContinuityEvidence": {
+      "additionalProperties": false,
+      "description": "Successful native input continuity bound to one exact, privately saved WAV.",
+      "properties": {
+        "backend": {
+          "const": "coreaudio-audioqueue",
+          "title": "Backend",
+          "type": "string"
+        },
+        "callback_count": {
+          "exclusiveMinimum": 0,
+          "title": "Callback Count",
+          "type": "integer"
+        },
+        "continuity_checked": {
+          "title": "Continuity Checked",
+          "type": "boolean"
+        },
+        "device_uid": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Device Uid",
+          "type": "string"
+        },
+        "first_sample_time": {
+          "title": "First Sample Time",
+          "type": "number"
+        },
+        "frames": {
+          "exclusiveMinimum": 0,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "last_sample_end": {
+          "title": "Last Sample End",
+          "type": "number"
+        },
+        "output_name": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Output Name",
+          "type": "string"
+        },
+        "received_frames": {
+          "exclusiveMinimum": 0,
+          "title": "Received Frames",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.capture-continuity/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stop_reason": {
+          "enum": [
+            "requested",
+            "maximum-duration"
+          ],
+          "title": "Stop Reason",
+          "type": "string"
+        },
+        "success": {
+          "title": "Success",
+          "type": "boolean"
+        },
+        "wav_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "wav_size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Wav Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "backend",
+        "device_uid",
+        "output_name",
+        "wav_sha256",
+        "wav_size_bytes",
+        "frames",
+        "received_frames",
+        "callback_count",
+        "first_sample_time",
+        "last_sample_end",
+        "success",
+        "continuity_checked",
+        "stop_reason"
+      ],
+      "title": "CaptureContinuityEvidence",
+      "type": "object"
+    },
+    "CaptureSealReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioSpec"
+        },
+        "continuity": {
+          "$ref": "#/$defs/CaptureContinuityEvidence"
+        },
+        "first_sample_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "last_sample_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "original_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "original_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "original_size_bytes": {
+          "exclusiveMinimum": 44,
+          "title": "Original Size Bytes",
+          "type": "integer"
+        },
+        "process_generation": {
+          "$ref": "#/$defs/StableId"
+        },
+        "recorder_build": {
+          "$ref": "#/$defs/RecordingBuildIdentity"
+        },
+        "requested_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "reservation_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.capture-seal/v1",
+          "default": "cole-voice-lab.capture-seal/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sealed_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "reservation_sha256",
+        "process_generation",
+        "recorder_build",
+        "original_path",
+        "original_sha256",
+        "original_size_bytes",
+        "audio",
+        "requested_at",
+        "first_sample_at",
+        "last_sample_at",
+        "sealed_at",
+        "continuity"
+      ],
+      "title": "CaptureSealReceipt",
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "RECORDING.INVALID_MESSAGE",
+        "RECORDING.VERSION_MISMATCH",
+        "RECORDING.BUILD_MISMATCH",
+        "RECORDING.STALE_REVISION",
+        "RECORDING.STALE_GENERATION",
+        "RECORDING.OWNERSHIP_CONFLICT",
+        "RECORDING.INVALID_TRANSITION",
+        "RECORDING.DEVICE_UNAVAILABLE",
+        "RECORDING.PERMISSION_DENIED",
+        "RECORDING.PLAYBACK_ACTIVE",
+        "RECORDING.DISK_SPACE",
+        "RECORDING.WRITE_FAILED",
+        "RECORDING.WAVEFORM_CACHE_UNAVAILABLE",
+        "RECORDING.CONTINUITY_FAILED",
+        "RECORDING.CAPTURE_OVERFLOW",
+        "RECORDING.PARENT_LOST",
+        "RECORDING.SOURCE_CHANGED",
+        "RECORDING.HISTORY_UNKNOWN",
+        "RECORDING.GATE_NOT_READY",
+        "RECORDING.ANALYSIS_FAILED",
+        "RECORDING.PLAYBACK_FAILED",
+        "RECORDING.EDIT_FAILED",
+        "RECORDING.PACKAGE_INCOMPLETE",
+        "RECORDING.CANCELLED"
+      ],
+      "type": "string"
+    },
+    "JobStatus": {
+      "enum": [
+        "pending",
+        "running",
+        "verified",
+        "needs-review",
+        "invalid",
+        "failed",
+        "stale"
+      ],
+      "type": "string"
+    },
+    "RecordingAnalysisPublication": {
+      "additionalProperties": false,
+      "description": "Digest-bound worker result; the take journal owns its durable publication.",
+      "properties": {
+        "attempt": {
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "job_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "result": {
+          "$ref": "#/$defs/RecordingAnalysisResult"
+        },
+        "source_identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingFileIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "job_sha256",
+        "attempt",
+        "result"
+      ],
+      "title": "RecordingAnalysisPublication",
+      "type": "object"
+    },
+    "RecordingAnalysisResult": {
+      "additionalProperties": false,
+      "properties": {
+        "algorithm_version": {
+          "$ref": "#/$defs/StableId"
+        },
+        "analyzer_build": {
+          "$ref": "#/$defs/RecordingBuildIdentity"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "context_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "edit_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioQcMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "queued_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.recording-analysis/v1",
+          "default": "cole-voice-lab.recording-analysis/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "state": {
+          "$ref": "#/$defs/AnalysisState"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "source_sha256",
+        "algorithm_version",
+        "analyzer_build",
+        "edit_revision",
+        "context_revision",
+        "state",
+        "queued_at"
+      ],
+      "title": "RecordingAnalysisResult",
+      "type": "object"
+    },
+    "RecordingAnalysisTicket": {
+      "additionalProperties": false,
+      "properties": {
+        "algorithm_version": {
+          "$ref": "#/$defs/StableId",
+          "default": "canonical-pcm-qc-v1"
+        },
+        "allow_quiet": {
+          "title": "Allow Quiet",
+          "type": "boolean"
+        },
+        "analyzer_build": {
+          "$ref": "#/$defs/RecordingBuildIdentity"
+        },
+        "context_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "edit_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "queued_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.recording-analysis-job/v1",
+          "default": "cole-voice-lab.recording-analysis-job/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "seal": {
+          "$ref": "#/$defs/CaptureSealReceipt"
+        }
+      },
+      "required": [
+        "seal",
+        "analyzer_build",
+        "edit_revision",
+        "context_revision",
+        "allow_quiet",
+        "queued_at"
+      ],
+      "title": "RecordingAnalysisTicket",
+      "type": "object"
+    },
+    "RecordingBuildIdentity": {
+      "additionalProperties": false,
+      "description": "Exact executable, source-tree and environment identities; mutable tags are insufficient.",
+      "properties": {
+        "build_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "environment_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "build_id",
+        "source_sha256",
+        "executable_sha256",
+        "environment_sha256"
+      ],
+      "title": "RecordingBuildIdentity",
+      "type": "object"
+    },
+    "RecordingError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Details",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "RecordingError",
+      "type": "object"
+    },
+    "RecordingFileIdentity": {
+      "additionalProperties": false,
+      "description": "Prepared authorization identity, including ctime to detect preserved-mtime changes.",
+      "properties": {
+        "ctime_ns": {
+          "maximum": 9223372036854775807,
+          "minimum": -9223372036854775808,
+          "title": "Ctime Ns",
+          "type": "integer"
+        },
+        "device": {
+          "$ref": "#/$defs/Revision"
+        },
+        "inode": {
+          "$ref": "#/$defs/Revision"
+        },
+        "mode": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "title": "Mode",
+          "type": "integer"
+        },
+        "mtime_ns": {
+          "maximum": 9223372036854775807,
+          "minimum": -9223372036854775808,
+          "title": "Mtime Ns",
+          "type": "integer"
+        },
+        "relative_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/Revision"
+        }
+      },
+      "required": [
+        "relative_path",
+        "device",
+        "inode",
+        "size_bytes",
+        "mode",
+        "mtime_ns",
+        "ctime_ns"
+      ],
+      "title": "RecordingFileIdentity",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attempt": {
+      "maximum": 1000,
+      "minimum": 0,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "priority": {
+      "$ref": "#/$defs/AnalysisPriority"
+    },
+    "publication": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingAnalysisPublication"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-analysis-job-head/v1",
+      "default": "cole-voice-lab.recording-analysis-job-head/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "status": {
+      "$ref": "#/$defs/JobStatus",
+      "default": "pending"
+    },
+    "ticket": {
+      "$ref": "#/$defs/RecordingAnalysisTicket"
+    }
+  },
+  "required": [
+    "ticket",
+    "sequence",
+    "priority",
+    "attempt"
+  ],
+  "title": "RecordingAnalysisJob",
+  "type": "object"
+}

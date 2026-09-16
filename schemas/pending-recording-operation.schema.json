@@ -1,0 +1,34 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "operation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "request_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.pending-recording-operation/v1",
+      "default": "cole-voice-lab.pending-recording-operation/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation_id",
+    "request_sha256"
+  ],
+  "title": "PendingRecordingOperation",
+  "type": "object"
+}

@@ -21,7 +21,7 @@ from .blind import (
     ReviewPackageManifest,
     ScoreSheet,
 )
-from .capture import ReadyMarker, RejectedTakeLog
+from .capture import CaptureContinuityEvidence, ReadyMarker, RejectedTakeLog
 from .datasets import (
     DatasetManifest,
     DatasetSelectionDocument,
@@ -29,6 +29,7 @@ from .datasets import (
     HostedTransferApproval,
     PilotGateApproval,
 )
+from .diagnostic_roots import DiagnosticRootMarker
 from .intake import IntakeReceipt
 from .models import (
     CandidateSpec,
@@ -42,6 +43,7 @@ from .models import (
     QcReport,
     WorkerModelEvidence,
 )
+from .native_recording_application import NATIVE_RECORDING_APPLICATION_SCHEMA_MODELS
 from .promotion import (
     ChloeSpeechHandoff,
     HumanReferenceProvenanceRecord,
@@ -50,11 +52,50 @@ from .promotion import (
     PromotionManifest,
     WinningRunRecord,
 )
+from .recording_analysis import RECORDING_ANALYSIS_SCHEMA_MODELS
+from .recording_contracts import RECORDING_SCHEMA_MODELS
+from .recording_discovery import RecordingDiscoveryCheckpoint
+from .recording_discovery_contracts import (
+    DiscoveryAck,
+    DiscoveryEnvelope,
+    DiscoveryRequest,
+    DiscoveryWorkerStart,
+    LegacyProjectionGroup,
+    LegacyProjectionHeader,
+    LegacyProjectionRow,
+    LegacyProjectionUnknown,
+)
+from .recording_edit_jobs import RECORDING_EDIT_JOB_SCHEMA_MODELS
+from .recording_edits import RECORDING_EDIT_SCHEMA_MODELS
+from .recording_library import DesktopSessionEvidence
+from .recording_package_jobs import RECORDING_PACKAGE_JOB_SCHEMA_MODELS
+from .recording_packages import RECORDING_PACKAGE_SCHEMA_MODELS
+from .recording_recovery import RecordingLegacyContinuation
+from .recording_takes import RECORDING_TAKE_SCHEMA_MODELS
 from .references import HeadphoneReviewEvidence, ReferenceManifest
 from .registry import CandidateConfiguration, ModelSourcesLock
-from .runtime import LocalSourceManifest, RuntimeInstallReceipt
+from .runtime import LocalSourceManifest, RecordingPythonRuntimeReceipt, RuntimeInstallReceipt
 
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
+    **NATIVE_RECORDING_APPLICATION_SCHEMA_MODELS,
+    "recording-python-runtime-receipt": RecordingPythonRuntimeReceipt,
+    **RECORDING_SCHEMA_MODELS,
+    **RECORDING_ANALYSIS_SCHEMA_MODELS,
+    **RECORDING_TAKE_SCHEMA_MODELS,
+    **RECORDING_PACKAGE_SCHEMA_MODELS,
+    **RECORDING_PACKAGE_JOB_SCHEMA_MODELS,
+    **RECORDING_EDIT_SCHEMA_MODELS,
+    **RECORDING_EDIT_JOB_SCHEMA_MODELS,
+    "recording-discovery-checkpoint": RecordingDiscoveryCheckpoint,
+    "recording-discovery-request": DiscoveryRequest,
+    "recording-discovery-worker-start": DiscoveryWorkerStart,
+    "recording-discovery-envelope": DiscoveryEnvelope,
+    "recording-discovery-ack": DiscoveryAck,
+    "recording-discovery-legacy-row": LegacyProjectionRow,
+    "recording-discovery-legacy-header": LegacyProjectionHeader,
+    "recording-discovery-legacy-group": LegacyProjectionGroup,
+    "recording-discovery-legacy-unknown": LegacyProjectionUnknown,
+    "recording-legacy-continuation": RecordingLegacyContinuation,
     "audition-plan": AuditionPlan,
     "audition-run": AuditionRunManifest,
     "audition-trial-result": PersistedTrialResult,
@@ -67,12 +108,15 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "candidate-configuration": CandidateConfiguration,
     "candidate-spec": CandidateSpec,
     "capture-manifest": CaptureManifest,
+    "capture-continuity": CaptureContinuityEvidence,
     "capture-ready": ReadyMarker,
     "capture-rejected-takes": RejectedTakeLog,
+    "capture-desktop-session": DesktopSessionEvidence,
     "chloe-speech-handoff": ChloeSpeechHandoff,
     "consent": ConsentRecord,
     "dataset-manifest": DatasetManifest,
     "dataset-selection": DatasetSelectionDocument,
+    "diagnostic-root": DiagnosticRootMarker,
     "experiment-request": ExperimentRequest,
     "experiment-result": ExperimentResult,
     "executed-code-evidence": ExecutedCodeEvidence,

@@ -1,0 +1,115 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One exact source's effective frame selection and recoverable removal state.",
+  "properties": {
+    "derived_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Derived Path"
+    },
+    "derived_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "end_frame": {
+      "exclusiveMinimum": 0,
+      "title": "End Frame",
+      "type": "integer"
+    },
+    "prompt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "removal_reason": {
+      "anyOf": [
+        {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Removal Reason"
+    },
+    "removed": {
+      "default": false,
+      "title": "Removed",
+      "type": "boolean"
+    },
+    "sample_rate": {
+      "const": 48000,
+      "default": 48000,
+      "title": "Sample Rate",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-edit/v1",
+      "default": "cole-voice-lab.recording-edit/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_frames": {
+      "exclusiveMinimum": 0,
+      "title": "Source Frames",
+      "type": "integer"
+    },
+    "source_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "start_frame": {
+      "minimum": 0,
+      "title": "Start Frame",
+      "type": "integer"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "subject_id",
+    "session_id",
+    "prompt_id",
+    "source_sha256",
+    "source_frames",
+    "start_frame",
+    "end_frame",
+    "updated_at"
+  ],
+  "title": "RecordingEdit",
+  "type": "object"
+}

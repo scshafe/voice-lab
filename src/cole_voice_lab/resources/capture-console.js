@@ -122,7 +122,9 @@
       complete: 'Complete',
       finalized: 'READY published',
       ready: 'Ready',
-      recording: `Recording · ${elapsedLabel(captureState.elapsed_seconds)}`,
+      recording: captureState.elapsed_seconds > 0
+        ? `Recording · ${elapsedLabel(captureState.elapsed_seconds)}`
+        : 'Starting microphone — wait',
       review: 'Review',
     };
     return labels[captureState.status] || 'Unavailable';

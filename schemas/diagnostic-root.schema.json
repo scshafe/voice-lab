@@ -1,0 +1,39 @@
+{
+  "$defs": {
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Immutable private evidence that an asset root holds physical-test material only.",
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "purpose": {
+      "const": "physical-test",
+      "title": "Purpose",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.diagnostic-root/v1",
+      "default": "cole-voice-lab.diagnostic-root/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "purpose",
+    "subject_id",
+    "created_at"
+  ],
+  "title": "DiagnosticRootMarker",
+  "type": "object"
+}

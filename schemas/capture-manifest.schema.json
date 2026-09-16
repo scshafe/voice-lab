@@ -131,8 +131,11 @@
       "additionalProperties": false,
       "properties": {
         "backend": {
-          "const": "avfoundation",
           "default": "avfoundation",
+          "enum": [
+            "avfoundation",
+            "coreaudio"
+          ],
           "title": "Backend",
           "type": "string"
         },

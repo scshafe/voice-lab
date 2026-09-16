@@ -1,0 +1,109 @@
+{
+  "$defs": {
+    "RecordingBuildIdentity": {
+      "additionalProperties": false,
+      "description": "Exact executable, source-tree and environment identities; mutable tags are insufficient.",
+      "properties": {
+        "build_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "environment_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "build_id",
+        "source_sha256",
+        "executable_sha256",
+        "environment_sha256"
+      ],
+      "title": "RecordingBuildIdentity",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "application": {
+      "title": "Application",
+      "type": "string"
+    },
+    "client_build": {
+      "$ref": "#/$defs/RecordingBuildIdentity"
+    },
+    "configuration": {
+      "title": "Configuration",
+      "type": "string"
+    },
+    "configuration_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "minimum_macos": {
+      "title": "Minimum Macos",
+      "type": "string"
+    },
+    "portable": {
+      "const": false,
+      "default": false,
+      "title": "Portable",
+      "type": "boolean"
+    },
+    "recorder_build": {
+      "$ref": "#/$defs/RecordingBuildIdentity"
+    },
+    "runtime_directory": {
+      "title": "Runtime Directory",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.native-application-release/v1",
+      "default": "cole-voice-lab.native-application-release/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "service_build": {
+      "$ref": "#/$defs/RecordingBuildIdentity"
+    },
+    "service_wheel_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "signature": {
+      "const": "local-ad-hoc-hardened",
+      "default": "local-ad-hoc-hardened",
+      "title": "Signature",
+      "type": "string"
+    },
+    "synthetic_only": {
+      "title": "Synthetic Only",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "application",
+    "runtime_directory",
+    "configuration",
+    "configuration_sha256",
+    "minimum_macos",
+    "service_wheel_sha256",
+    "client_build",
+    "recorder_build",
+    "service_build",
+    "synthetic_only"
+  ],
+  "title": "NativeRecordingApplicationRelease",
+  "type": "object"
+}

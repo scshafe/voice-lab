@@ -1,0 +1,276 @@
+{
+  "$defs": {
+    "AnalysisState": {
+      "enum": [
+        "pending",
+        "running",
+        "verified",
+        "needs-review",
+        "invalid",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "AudioQcMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "clipped_samples": {
+          "minimum": 0,
+          "title": "Clipped Samples",
+          "type": "integer"
+        },
+        "dc_offset": {
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Dc Offset",
+          "type": "number"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "findings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "longest_zero_run_ms": {
+          "minimum": 0.0,
+          "title": "Longest Zero Run Ms",
+          "type": "number"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "peak_dbfs": {
+          "maximum": 0.0,
+          "title": "Peak Dbfs",
+          "type": "number"
+        },
+        "rms_dbfs": {
+          "maximum": 0.0,
+          "title": "Rms Dbfs",
+          "type": "number"
+        },
+        "signal_to_noise_db": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signal To Noise Db"
+        }
+      },
+      "required": [
+        "path",
+        "duration_seconds",
+        "peak_dbfs",
+        "rms_dbfs",
+        "dc_offset",
+        "clipped_samples",
+        "longest_zero_run_ms",
+        "passed"
+      ],
+      "title": "AudioQcMetrics",
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "RECORDING.INVALID_MESSAGE",
+        "RECORDING.VERSION_MISMATCH",
+        "RECORDING.BUILD_MISMATCH",
+        "RECORDING.STALE_REVISION",
+        "RECORDING.STALE_GENERATION",
+        "RECORDING.OWNERSHIP_CONFLICT",
+        "RECORDING.INVALID_TRANSITION",
+        "RECORDING.DEVICE_UNAVAILABLE",
+        "RECORDING.PERMISSION_DENIED",
+        "RECORDING.PLAYBACK_ACTIVE",
+        "RECORDING.DISK_SPACE",
+        "RECORDING.WRITE_FAILED",
+        "RECORDING.WAVEFORM_CACHE_UNAVAILABLE",
+        "RECORDING.CONTINUITY_FAILED",
+        "RECORDING.CAPTURE_OVERFLOW",
+        "RECORDING.PARENT_LOST",
+        "RECORDING.SOURCE_CHANGED",
+        "RECORDING.HISTORY_UNKNOWN",
+        "RECORDING.GATE_NOT_READY",
+        "RECORDING.ANALYSIS_FAILED",
+        "RECORDING.PLAYBACK_FAILED",
+        "RECORDING.EDIT_FAILED",
+        "RECORDING.PACKAGE_INCOMPLETE",
+        "RECORDING.CANCELLED"
+      ],
+      "type": "string"
+    },
+    "RecordingBuildIdentity": {
+      "additionalProperties": false,
+      "description": "Exact executable, source-tree and environment identities; mutable tags are insufficient.",
+      "properties": {
+        "build_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "environment_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "build_id",
+        "source_sha256",
+        "executable_sha256",
+        "environment_sha256"
+      ],
+      "title": "RecordingBuildIdentity",
+      "type": "object"
+    },
+    "RecordingError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Details",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "RecordingError",
+      "type": "object"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "algorithm_version": {
+      "$ref": "#/$defs/StableId"
+    },
+    "analyzer_build": {
+      "$ref": "#/$defs/RecordingBuildIdentity"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "context_revision": {
+      "$ref": "#/$defs/Revision"
+    },
+    "edit_revision": {
+      "$ref": "#/$defs/Revision"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "metrics": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AudioQcMetrics"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "queued_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-analysis/v1",
+      "default": "cole-voice-lab.recording-analysis/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "state": {
+      "$ref": "#/$defs/AnalysisState"
+    },
+    "take_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "take_id",
+    "source_sha256",
+    "algorithm_version",
+    "analyzer_build",
+    "edit_revision",
+    "context_revision",
+    "state",
+    "queued_at"
+  ],
+  "title": "RecordingAnalysisResult",
+  "type": "object"
+}

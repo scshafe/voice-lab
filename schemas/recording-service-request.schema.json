@@ -1,0 +1,1391 @@
+{
+  "$defs": {
+    "AudioSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "encoding": {
+          "enum": [
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "maximum": 384000,
+          "minimum": 8000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sample_width_bytes": {
+          "enum": [
+            2,
+            3,
+            4
+          ],
+          "title": "Sample Width Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_rate_hz",
+        "channels",
+        "sample_width_bytes",
+        "encoding",
+        "frames",
+        "duration_seconds"
+      ],
+      "title": "AudioSpec",
+      "type": "object"
+    },
+    "CancelCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "cancelled_operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "command": {
+          "const": "cancel",
+          "default": "cancel",
+          "title": "Command",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "cancelled_operation_id"
+      ],
+      "title": "CancelCommand",
+      "type": "object"
+    },
+    "CaptureContinuityEvidence": {
+      "additionalProperties": false,
+      "description": "Successful native input continuity bound to one exact, privately saved WAV.",
+      "properties": {
+        "backend": {
+          "const": "coreaudio-audioqueue",
+          "title": "Backend",
+          "type": "string"
+        },
+        "callback_count": {
+          "exclusiveMinimum": 0,
+          "title": "Callback Count",
+          "type": "integer"
+        },
+        "continuity_checked": {
+          "title": "Continuity Checked",
+          "type": "boolean"
+        },
+        "device_uid": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Device Uid",
+          "type": "string"
+        },
+        "first_sample_time": {
+          "title": "First Sample Time",
+          "type": "number"
+        },
+        "frames": {
+          "exclusiveMinimum": 0,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "last_sample_end": {
+          "title": "Last Sample End",
+          "type": "number"
+        },
+        "output_name": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Output Name",
+          "type": "string"
+        },
+        "received_frames": {
+          "exclusiveMinimum": 0,
+          "title": "Received Frames",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.capture-continuity/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stop_reason": {
+          "enum": [
+            "requested",
+            "maximum-duration"
+          ],
+          "title": "Stop Reason",
+          "type": "string"
+        },
+        "success": {
+          "title": "Success",
+          "type": "boolean"
+        },
+        "wav_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "wav_size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Wav Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "backend",
+        "device_uid",
+        "output_name",
+        "wav_sha256",
+        "wav_size_bytes",
+        "frames",
+        "received_frames",
+        "callback_count",
+        "first_sample_time",
+        "last_sample_end",
+        "success",
+        "continuity_checked",
+        "stop_reason"
+      ],
+      "title": "CaptureContinuityEvidence",
+      "type": "object"
+    },
+    "CaptureDevice": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "default": "avfoundation",
+          "enum": [
+            "avfoundation",
+            "coreaudio"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "calibration_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "device_id": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Device Id",
+          "type": "string"
+        },
+        "display_name": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "microphone_serial": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Microphone Serial"
+        }
+      },
+      "required": [
+        "device_id",
+        "display_name"
+      ],
+      "title": "CaptureDevice",
+      "type": "object"
+    },
+    "CaptureSealReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioSpec"
+        },
+        "continuity": {
+          "$ref": "#/$defs/CaptureContinuityEvidence"
+        },
+        "first_sample_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "last_sample_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "original_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "original_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "original_size_bytes": {
+          "exclusiveMinimum": 44,
+          "title": "Original Size Bytes",
+          "type": "integer"
+        },
+        "process_generation": {
+          "$ref": "#/$defs/StableId"
+        },
+        "recorder_build": {
+          "$ref": "#/$defs/RecordingBuildIdentity"
+        },
+        "requested_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "reservation_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.capture-seal/v1",
+          "default": "cole-voice-lab.capture-seal/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sealed_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "reservation_sha256",
+        "process_generation",
+        "recorder_build",
+        "original_path",
+        "original_sha256",
+        "original_size_bytes",
+        "audio",
+        "requested_at",
+        "first_sample_at",
+        "last_sample_at",
+        "sealed_at",
+        "continuity"
+      ],
+      "title": "CaptureSealReceipt",
+      "type": "object"
+    },
+    "ContinueLegacyRecordingCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "continue-legacy-recording",
+          "default": "continue-legacy-recording",
+          "title": "Command",
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/OpenContextCommand"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "session_evidence_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "session_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "session_id",
+        "session_evidence_sha256",
+        "context"
+      ],
+      "title": "ContinueLegacyRecordingCommand",
+      "type": "object"
+    },
+    "DecisionCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "reject",
+            "remove",
+            "restore"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "command": {
+          "const": "decision",
+          "default": "decision",
+          "title": "Command",
+          "type": "string"
+        },
+        "expected_decision_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "selection": {
+          "$ref": "#/$defs/RecordingSelection"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "selection",
+        "operation_id",
+        "take_id",
+        "expected_decision_revision",
+        "action"
+      ],
+      "title": "DecisionCommand",
+      "type": "object"
+    },
+    "EditTakeCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "edit",
+          "default": "edit",
+          "title": "Command",
+          "type": "string"
+        },
+        "expected_edit_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "frame_range": {
+          "$ref": "#/$defs/RecordingFrameRange"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selection": {
+          "$ref": "#/$defs/RecordingSelection"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "selection",
+        "operation_id",
+        "take_id",
+        "source_sha256",
+        "expected_edit_revision",
+        "frame_range"
+      ],
+      "title": "EditTakeCommand",
+      "type": "object"
+    },
+    "FrameCount": {
+      "maximum": 28800000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "HandshakeCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "build": {
+          "$ref": "#/$defs/RecordingBuildIdentity"
+        },
+        "command": {
+          "const": "handshake",
+          "default": "handshake",
+          "title": "Command",
+          "type": "string"
+        },
+        "expected_peer_build": {
+          "$ref": "#/$defs/RecordingBuildIdentity"
+        },
+        "role": {
+          "enum": [
+            "ui",
+            "recorder",
+            "service"
+          ],
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "build",
+        "expected_peer_build"
+      ],
+      "title": "HandshakeCommand",
+      "type": "object"
+    },
+    "HistoryCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "command": {
+          "const": "history",
+          "default": "history",
+          "title": "Command",
+          "type": "string"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "group_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "page_size": {
+          "default": 50,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Page Size",
+          "type": "integer"
+        },
+        "prompt_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "prompt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "catalog_sha256"
+      ],
+      "title": "HistoryCommand",
+      "type": "object"
+    },
+    "NavigateCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "navigate",
+          "default": "navigate",
+          "title": "Command",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "selected-prompt",
+            "continue-missing"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selection": {
+          "$ref": "#/$defs/RecordingSelection"
+        },
+        "target_prompt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "operation_id",
+        "selection",
+        "mode"
+      ],
+      "title": "NavigateCommand",
+      "type": "object"
+    },
+    "OpenContextCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "capture_device": {
+          "$ref": "#/$defs/CaptureDevice"
+        },
+        "capture_host": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Capture Host",
+          "type": "string"
+        },
+        "catalog": {
+          "$ref": "#/$defs/PromptSuite"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "command": {
+          "const": "open-context",
+          "default": "open-context",
+          "title": "Command",
+          "type": "string"
+        },
+        "expected_selection_revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Revision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "new_setup": {
+          "default": false,
+          "title": "New Setup",
+          "type": "boolean"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "pilot_approval_path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RelativePath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pilot_approval_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "setup_description": {
+          "default": "",
+          "maxLength": 1024,
+          "title": "Setup Description",
+          "type": "string"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "subject_id",
+        "catalog",
+        "catalog_sha256",
+        "capture_device",
+        "capture_host"
+      ],
+      "title": "OpenContextCommand",
+      "type": "object"
+    },
+    "PreparePackageCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "prepare-package",
+          "default": "prepare-package",
+          "title": "Command",
+          "type": "string"
+        },
+        "group_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "room_tone_take_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Room Tone Take Ids",
+          "type": "array"
+        },
+        "take_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 10000,
+          "minItems": 1,
+          "title": "Take Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "operation_id",
+        "group_id",
+        "take_ids",
+        "room_tone_take_ids"
+      ],
+      "title": "PreparePackageCommand",
+      "type": "object"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference",
+            "procedure"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "PromptSuite": {
+      "additionalProperties": false,
+      "properties": {
+        "prompts": {
+          "items": {
+            "$ref": "#/$defs/Prompt"
+          },
+          "minItems": 1,
+          "title": "Prompts",
+          "type": "array"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation",
+            "physical-test"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "cole-voice-lab.prompt-suite/v1",
+          "enum": [
+            "cole-voice-lab.prompt-suite/v1",
+            "cole-voice-lab.prompt-suite/v2"
+          ],
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "suite_id",
+        "purpose",
+        "prompts"
+      ],
+      "title": "PromptSuite",
+      "type": "object"
+    },
+    "RecordingBuildIdentity": {
+      "additionalProperties": false,
+      "description": "Exact executable, source-tree and environment identities; mutable tags are insufficient.",
+      "properties": {
+        "build_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "environment_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "build_id",
+        "source_sha256",
+        "executable_sha256",
+        "environment_sha256"
+      ],
+      "title": "RecordingBuildIdentity",
+      "type": "object"
+    },
+    "RecordingFrameRange": {
+      "additionalProperties": false,
+      "description": "Source-frame recipe, independent from eventual derivative rendering.",
+      "properties": {
+        "end_frame": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "End Frame",
+          "type": "integer"
+        },
+        "source_frames": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "Source Frames",
+          "type": "integer"
+        },
+        "start_frame": {
+          "$ref": "#/$defs/FrameCount"
+        }
+      },
+      "required": [
+        "source_frames",
+        "start_frame",
+        "end_frame"
+      ],
+      "title": "RecordingFrameRange",
+      "type": "object"
+    },
+    "RecordingMessageMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "event_sequence": {
+          "$ref": "#/$defs/Revision"
+        },
+        "process_generation": {
+          "$ref": "#/$defs/StableId"
+        },
+        "protocol_version": {
+          "const": "cole-voice-lab.recording/v1",
+          "default": "cole-voice-lab.recording/v1",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "state_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "take_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "request_id",
+        "process_generation",
+        "state_revision",
+        "event_sequence"
+      ],
+      "title": "RecordingMessageMeta",
+      "type": "object"
+    },
+    "RecordingSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "index_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selection_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "take_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "catalog_sha256",
+        "prompt_id",
+        "take_id",
+        "selection_revision",
+        "index_revision"
+      ],
+      "title": "RecordingSelection",
+      "type": "object"
+    },
+    "RecoverCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "after_take_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "command": {
+          "const": "recover",
+          "default": "recover",
+          "title": "Command",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "page_size": {
+          "default": 50,
+          "maximum": 50,
+          "minimum": 1,
+          "title": "Page Size",
+          "type": "integer"
+        },
+        "take_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "title": "RecoverCommand",
+      "type": "object"
+    },
+    "RecoverySnapshotCommand": {
+      "additionalProperties": false,
+      "description": "Read a bounded recovery inventory page without performing recovery.",
+      "properties": {
+        "command": {
+          "const": "recovery-snapshot",
+          "default": "recovery-snapshot",
+          "title": "Command",
+          "type": "string"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cursor"
+        },
+        "page_size": {
+          "default": 50,
+          "maximum": 50,
+          "minimum": 1,
+          "title": "Page Size",
+          "type": "integer"
+        }
+      },
+      "title": "RecoverySnapshotCommand",
+      "type": "object"
+    },
+    "RegisterSealCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "register-seal",
+          "default": "register-seal",
+          "title": "Command",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "receipt": {
+          "$ref": "#/$defs/CaptureSealReceipt"
+        }
+      },
+      "required": [
+        "operation_id",
+        "receipt"
+      ],
+      "title": "RegisterSealCommand",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "ReserveTakeCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "reserve",
+          "default": "reserve",
+          "title": "Command",
+          "type": "string"
+        },
+        "group_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "recorder_generation": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selection": {
+          "$ref": "#/$defs/RecordingSelection"
+        }
+      },
+      "required": [
+        "recorder_generation",
+        "operation_id",
+        "group_id",
+        "selection"
+      ],
+      "title": "ReserveTakeCommand",
+      "type": "object"
+    },
+    "RetakeCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "retake",
+          "default": "retake",
+          "title": "Command",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selection": {
+          "$ref": "#/$defs/RecordingSelection"
+        }
+      },
+      "required": [
+        "operation_id",
+        "selection"
+      ],
+      "title": "RetakeCommand",
+      "type": "object"
+    },
+    "RetryAnalysisCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "retry-analysis",
+          "default": "retry-analysis",
+          "title": "Command",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "take_id",
+        "source_sha256"
+      ],
+      "title": "RetryAnalysisCommand",
+      "type": "object"
+    },
+    "ReviewTakeCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "review-take",
+          "default": "review-take",
+          "title": "Command",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selection": {
+          "$ref": "#/$defs/RecordingSelection"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "take_id",
+        "selection"
+      ],
+      "title": "ReviewTakeCommand",
+      "type": "object"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "SaveTakeCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "advance": {
+          "title": "Advance",
+          "type": "boolean"
+        },
+        "command": {
+          "const": "save",
+          "default": "save",
+          "title": "Command",
+          "type": "string"
+        },
+        "expected_decision_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "expected_edit_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "frame_range": {
+          "$ref": "#/$defs/RecordingFrameRange"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selection": {
+          "$ref": "#/$defs/RecordingSelection"
+        },
+        "waveform_ready": {
+          "const": true,
+          "title": "Waveform Ready",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "operation_id",
+        "selection",
+        "expected_decision_revision",
+        "expected_edit_revision",
+        "frame_range",
+        "advance",
+        "waveform_ready"
+      ],
+      "title": "SaveTakeCommand",
+      "type": "object"
+    },
+    "ServiceCommand": {
+      "discriminator": {
+        "mapping": {
+          "cancel": "#/$defs/CancelCommand",
+          "continue-legacy-recording": "#/$defs/ContinueLegacyRecordingCommand",
+          "decision": "#/$defs/DecisionCommand",
+          "edit": "#/$defs/EditTakeCommand",
+          "handshake": "#/$defs/HandshakeCommand",
+          "history": "#/$defs/HistoryCommand",
+          "navigate": "#/$defs/NavigateCommand",
+          "open-context": "#/$defs/OpenContextCommand",
+          "prepare-package": "#/$defs/PreparePackageCommand",
+          "recover": "#/$defs/RecoverCommand",
+          "recovery-snapshot": "#/$defs/RecoverySnapshotCommand",
+          "register-seal": "#/$defs/RegisterSealCommand",
+          "reserve": "#/$defs/ReserveTakeCommand",
+          "retake": "#/$defs/RetakeCommand",
+          "retry-analysis": "#/$defs/RetryAnalysisCommand",
+          "review-take": "#/$defs/ReviewTakeCommand",
+          "save": "#/$defs/SaveTakeCommand",
+          "shutdown": "#/$defs/ShutdownCommand",
+          "snapshot": "#/$defs/SnapshotCommand"
+        },
+        "propertyName": "command"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HandshakeCommand"
+        },
+        {
+          "$ref": "#/$defs/OpenContextCommand"
+        },
+        {
+          "$ref": "#/$defs/ReserveTakeCommand"
+        },
+        {
+          "$ref": "#/$defs/RegisterSealCommand"
+        },
+        {
+          "$ref": "#/$defs/SaveTakeCommand"
+        },
+        {
+          "$ref": "#/$defs/HistoryCommand"
+        },
+        {
+          "$ref": "#/$defs/NavigateCommand"
+        },
+        {
+          "$ref": "#/$defs/EditTakeCommand"
+        },
+        {
+          "$ref": "#/$defs/ReviewTakeCommand"
+        },
+        {
+          "$ref": "#/$defs/RetakeCommand"
+        },
+        {
+          "$ref": "#/$defs/DecisionCommand"
+        },
+        {
+          "$ref": "#/$defs/RetryAnalysisCommand"
+        },
+        {
+          "$ref": "#/$defs/PreparePackageCommand"
+        },
+        {
+          "$ref": "#/$defs/RecoverCommand"
+        },
+        {
+          "$ref": "#/$defs/RecoverySnapshotCommand"
+        },
+        {
+          "$ref": "#/$defs/ContinueLegacyRecordingCommand"
+        },
+        {
+          "$ref": "#/$defs/CancelCommand"
+        },
+        {
+          "$ref": "#/$defs/SnapshotCommand"
+        },
+        {
+          "$ref": "#/$defs/ShutdownCommand"
+        }
+      ]
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "ShutdownCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "shutdown",
+          "default": "shutdown",
+          "title": "Command",
+          "type": "string"
+        }
+      },
+      "title": "ShutdownCommand",
+      "type": "object"
+    },
+    "SnapshotCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "snapshot",
+          "default": "snapshot",
+          "title": "Command",
+          "type": "string"
+        }
+      },
+      "title": "SnapshotCommand",
+      "type": "object"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "data": {
+      "$ref": "#/$defs/ServiceCommand"
+    },
+    "error": {
+      "default": null,
+      "title": "Error",
+      "type": "null"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordingMessageMeta"
+    }
+  },
+  "required": [
+    "data",
+    "meta"
+  ],
+  "title": "ServiceRequest",
+  "type": "object"
+}

@@ -1,0 +1,115 @@
+{
+  "$defs": {
+    "PreparePackageCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "prepare-package",
+          "default": "prepare-package",
+          "title": "Command",
+          "type": "string"
+        },
+        "group_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "room_tone_take_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Room Tone Take Ids",
+          "type": "array"
+        },
+        "take_ids": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 10000,
+          "minItems": 1,
+          "title": "Take Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "operation_id",
+        "group_id",
+        "take_ids",
+        "room_tone_take_ids"
+      ],
+      "title": "PreparePackageCommand",
+      "type": "object"
+    },
+    "RecordingBuildIdentity": {
+      "additionalProperties": false,
+      "description": "Exact executable, source-tree and environment identities; mutable tags are insufficient.",
+      "properties": {
+        "build_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "environment_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "build_id",
+        "source_sha256",
+        "executable_sha256",
+        "environment_sha256"
+      ],
+      "title": "RecordingBuildIdentity",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "analyzer_build": {
+      "$ref": "#/$defs/RecordingBuildIdentity"
+    },
+    "command": {
+      "$ref": "#/$defs/PreparePackageCommand"
+    },
+    "queued_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "request_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-package-intent/v1",
+      "default": "cole-voice-lab.recording-package-intent/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "command",
+    "request_sha256",
+    "analyzer_build",
+    "queued_at"
+  ],
+  "title": "RecordingPackageIntent",
+  "type": "object"
+}

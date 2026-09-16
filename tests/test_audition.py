@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from runtime_fixtures import synthetic_python_runtime
 
 from cole_voice_lab.audio import inspect_pcm_wav
 from cole_voice_lab.audition import (
@@ -529,16 +530,17 @@ def test_plan_persistence_confines_all_worker_paths(tmp_path: Path) -> None:
         )
 
 
-def test_standard_paths_and_preparation_are_pure(tmp_path: Path) -> None:
+def test_standard_paths_and_preparation_are_pure(tmp_path: Path, monkeypatch) -> None:
     assets = layout(tmp_path)
-    loaded = registry()
+    host = synthetic_python_runtime(tmp_path, monkeypatch)
+    loaded = host.registry
     preparation = build_candidate_preparation_plan(
         loaded,
         assets,
         candidate_id="chatterbox-turbo",
         profile="smoke",
         repository_root=ROOT,
-        base_python=Path("/opt/homebrew/bin/python3.12"),
+        base_python=host.python,
     )
     assert preparation.runtime_path == str(runtime_path(assets, "mlx-audio-0.5.0"))
     assert preparation.model_path == str(source_path(assets, "chatterbox-turbo-8bit"))
@@ -557,7 +559,7 @@ def test_standard_paths_and_preparation_are_pure(tmp_path: Path) -> None:
         candidate_ids=("qwen3-tts-base", "seed-vc"),
         profile="smoke",
         repository_root=ROOT,
-        base_python=Path("/opt/homebrew/bin/python3.12"),
+        base_python=host.python,
     )
     assert [item.candidate_id for item in plans] == ["qwen3-tts-base", "seed-vc"]
     assert plans[0].code_checkout_path is None
@@ -569,7 +571,7 @@ def test_standard_paths_and_preparation_are_pure(tmp_path: Path) -> None:
             candidate_ids=("seed-vc", "seed-vc"),
             profile="smoke",
             repository_root=ROOT,
-            base_python=Path("/opt/homebrew/bin/python3.12"),
+            base_python=host.python,
         )
 
 

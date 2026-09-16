@@ -1,0 +1,83 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "catalog_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "generation": {
+      "$ref": "#/$defs/StableId"
+    },
+    "group_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "index_instance": {
+      "$ref": "#/$defs/StableId"
+    },
+    "legacy_fingerprint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "legacy_token": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Legacy Token",
+      "type": "array"
+    },
+    "native_fingerprint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.discovery-worker/v1",
+      "default": "cole-voice-lab.discovery-worker/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "generation",
+    "group_id",
+    "subject_id",
+    "catalog_sha256",
+    "index_instance",
+    "legacy_token"
+  ],
+  "title": "DiscoveryRequest",
+  "type": "object"
+}

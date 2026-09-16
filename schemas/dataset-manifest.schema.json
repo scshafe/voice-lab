@@ -482,6 +482,7 @@
     },
     "Prompt": {
       "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
       "properties": {
         "category": {
           "enum": [
@@ -492,7 +493,8 @@
             "technical",
             "numbers",
             "expressive",
-            "reference"
+            "reference",
+            "procedure"
           ],
           "title": "Category",
           "type": "string"
@@ -507,6 +509,29 @@
           "default": false,
           "title": "Holdout",
           "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
         },
         "prompt_id": {
           "$ref": "#/$defs/StableId"
@@ -523,21 +548,34 @@
           "type": "string"
         },
         "text": {
-          "maxLength": 2000,
-          "minLength": 1,
-          "title": "Text",
-          "type": "string"
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
         }
       },
       "required": [
         "prompt_id",
-        "text",
         "category",
         "style",
         "expected_seconds"
       ],
       "title": "Prompt",
       "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
     },
     "PromptSuite": {
       "additionalProperties": false,
@@ -554,14 +592,18 @@
           "enum": [
             "capture-pilot",
             "capture-corpus",
-            "held-out-evaluation"
+            "held-out-evaluation",
+            "physical-test"
           ],
           "title": "Purpose",
           "type": "string"
         },
         "schema_version": {
-          "const": "cole-voice-lab.prompt-suite/v1",
           "default": "cole-voice-lab.prompt-suite/v1",
+          "enum": [
+            "cole-voice-lab.prompt-suite/v1",
+            "cole-voice-lab.prompt-suite/v2"
+          ],
           "title": "Schema Version",
           "type": "string"
         },

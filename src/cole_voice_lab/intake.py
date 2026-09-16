@@ -25,6 +25,11 @@ from .canonical import (
     write_canonical_json,
 )
 from .capture import MANIFEST_NAME, QC_REPORT_NAME, READY_NAME, ReadyMarker
+from .diagnostic_roots import (
+    DIAGNOSTIC_SUBJECT_REFUSAL,
+    is_physical_test_suite_id,
+    read_diagnostic_root_marker,
+)
 from .errors import ContractError, SecurityError
 from .models import CaptureManifest, ContractModel, QcReport, Sha256, StableId, utc_now
 from .paths import AssetLayout, confined_path, validate_relative_path
@@ -536,6 +541,24 @@ def _discard_verified_duplicate(stage: Path, tmp_root: Path) -> None:
     shutil.rmtree(stage)
 
 
+def _require_intake_root(layout: AssetLayout, manifest: CaptureManifest) -> None:
+    """Guard #5: physical-test packages enter only their own marked diagnostic root."""
+    marker = read_diagnostic_root_marker(layout)
+    physical_test = is_physical_test_suite_id(manifest.prompt_suite_id)
+    if marker is None:
+        if physical_test:
+            raise ContractError(
+                "physical-test capture packages are accepted only by their marked diagnostic root"
+            )
+        return
+    if not physical_test:
+        raise ContractError(
+            "this asset root is marked for physical tests; it accepts no other packages"
+        )
+    if manifest.subject_id != marker.subject_id:
+        raise ContractError(DIAGNOSTIC_SUBJECT_REFUSAL)
+
+
 def accept_capture_session(
     layout: AssetLayout,
     incoming_session: Path,
@@ -575,6 +598,7 @@ def accept_capture_session(
     publish_stage: Path | None = None
     try:
         package = validate_capture_package(stage)
+        _require_intake_root(layout, package.manifest)
         if source.name != package.manifest.session_id:
             raise ContractError(
                 "incoming directory name must exactly match the manifest session ID"

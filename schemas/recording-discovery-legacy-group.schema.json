@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "RecordingGroupSummary": {
+      "additionalProperties": false,
+      "description": "Bounded context summary, never a repeated catalog or complete take list.",
+      "properties": {
+        "date_precision": {
+          "enum": [
+            "take",
+            "session",
+            "unknown"
+          ],
+          "title": "Date Precision",
+          "type": "string"
+        },
+        "group_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kept_count": {
+          "$ref": "#/$defs/Revision"
+        },
+        "legacy_session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "opened_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "take_count": {
+          "$ref": "#/$defs/Revision"
+        }
+      },
+      "required": [
+        "group_id",
+        "legacy_session_id",
+        "opened_at",
+        "date_precision",
+        "take_count",
+        "kept_count"
+      ],
+      "title": "RecordingGroupSummary",
+      "type": "object"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "group": {
+      "$ref": "#/$defs/RecordingGroupSummary"
+    },
+    "kind": {
+      "const": "group",
+      "default": "group",
+      "title": "Kind",
+      "type": "string"
+    }
+  },
+  "required": [
+    "group"
+  ],
+  "title": "LegacyProjectionGroup",
+  "type": "object"
+}

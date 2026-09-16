@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+# Synthetic-only latency evidence in a private temporary directory outside Git.
+# Non-idempotent: each invocation creates a new report/fixture directory.
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export PYTHONDONTWRITEBYTECODE=1
+exec "$repo_dir/.venv/bin/python" "$repo_dir/tests/recording_latency_benchmark.py" "$@"

@@ -369,6 +369,78 @@ def test_dataset_builder_rejects_invalid_threshold_empty_input_and_duplicate_sui
         )
 
 
+def test_dataset_builder_refuses_physical_test_suites_before_any_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cole_voice_lab.datasets as datasets_module
+    import cole_voice_lab.intake as intake_module
+    import cole_voice_lab.references as references_module
+
+    # Guards #5 (intake) and #6 (accepted-utterance loader) refuse this evidence first;
+    # they are disabled here so guard #8 is proven as an independent last layer.
+    monkeypatch.setattr(intake_module, "_require_intake_root", lambda *_: None)
+    monkeypatch.setattr(references_module, "require_corpus_eligible_package", lambda *_: None)
+    layout = AssetLayout.initialize(tmp_path / "private" / "voice-assets")
+    suite = PromptSuite(
+        schema_version="cole-voice-lab.prompt-suite/v2",
+        suite_id="cole-physical-test-synthetic",
+        purpose="physical-test",
+        prompts=(
+            Prompt(
+                prompt_id="room-physical",
+                instructions="Remain silent.",
+                category="room-tone",
+                style="Silent room tone.",
+                labels=("test",),
+                expected_seconds=1.0,
+            ),
+            Prompt(
+                prompt_id="spoken-physical",
+                text="A synthetic physical-test sentence.",
+                category="neutral",
+                style="Exact delivery.",
+                labels=("test",),
+                expected_seconds=1.0,
+            ),
+        ),
+    )
+    receipt = _accept(layout, session_id="native-synthetic-physical", suite=suite)
+    review_path, review_sha256 = _review(layout, receipt, "spoken-physical")
+    selection = DatasetSelection.model_validate(
+        {
+            "raw_manifest_sha256": receipt.manifest_sha256,
+            "prompt_id": "spoken-physical",
+            "split": "train",
+            "headphone_review_path": review_path,
+            "headphone_review_sha256": review_sha256,
+        }
+    )
+    monkeypatch.setattr(
+        datasets_module,
+        "DatasetEntry",
+        lambda **_: pytest.fail("physical-test refusal must precede DatasetEntry"),
+    )
+
+    def build() -> None:
+        build_dataset_manifest(
+            layout,
+            dataset_id="physical-test-leak",
+            corpus_stage="pilot",
+            selections=(selection,),
+            prompt_suites={suite.suite_id: suite},
+            consent_path="provenance/consent/missing.json",
+            consent_sha256="0" * 64,
+            created_by="cole",
+            clock=lambda: NOW + timedelta(seconds=2),
+        )
+
+    with pytest.raises(ContractError, match="physical-test prompt suites"):
+        build()
+    monkeypatch.undo()
+    with pytest.raises(ContractError, match="physical-test capture packages"):
+        build()
+
+
 def test_full_corpus_requires_separate_pilot_gate(tmp_path: Path) -> None:
     fixture = _corpus(tmp_path)
     with pytest.raises(SecurityError, match="prohibited before the pilot gate"):

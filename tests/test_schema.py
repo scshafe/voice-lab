@@ -84,3 +84,49 @@ def test_schema_main_reports_success_and_drift(tmp_path: Path, capsys: object) -
 
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     assert f"schema drift: {changed}" in captured.out
+
+
+def _schema_keywords(schema: object, keywords: set[str]) -> set[str]:
+    """Collect keywords from schema positions only; default/const/enum values are data."""
+    if not isinstance(schema, dict):
+        return keywords
+    keywords.update(schema)
+    for key in ("$defs", "properties"):
+        for child in schema.get(key, {}).values():
+            _schema_keywords(child, keywords)
+    for key in ("items", "additionalProperties"):
+        _schema_keywords(schema.get(key), keywords)
+    for key in ("anyOf", "oneOf", "allOf"):
+        for child in schema.get(key, ()):
+            _schema_keywords(child, keywords)
+    return keywords
+
+
+def test_prompt_contracts_emit_only_keywords_the_native_validator_supports() -> None:
+    """TM4: Swift fails closed on unknown keywords, so tuples must never become sets."""
+    import re
+
+    from cole_voice_lab.recording_contracts import RECORDING_SCHEMA_MODELS
+
+    swift = (
+        Path(__file__).resolve().parents[1]
+        / "apps/macos/Sources/RecordingContracts/RecordingSchemaValidator.swift"
+    ).read_text(encoding="utf-8")
+    declaration = re.search(r"let supported: Set<String> = \[([^\]]*)\]", swift)
+    assert declaration is not None
+    supported = set(re.findall(r'"([^"]+)"', declaration.group(1)))
+    prompt_definitions: dict[str, object] = {}
+    for name, model in SCHEMA_MODELS.items():
+        definitions = model.model_json_schema().get("$defs", {})
+        if "Prompt" not in definitions:
+            continue
+        for shared in ("Prompt", "PromptLabel", "PromptSuite"):
+            if shared in definitions:
+                assert (
+                    prompt_definitions.setdefault(shared, definitions[shared])
+                    == (definitions[shared])
+                ), name
+                assert _schema_keywords(definitions[shared], set()) <= supported, name
+    assert set(prompt_definitions) == {"Prompt", "PromptLabel", "PromptSuite"}
+    for name, model in RECORDING_SCHEMA_MODELS.items():
+        assert _schema_keywords(model.model_json_schema(), set()) <= supported, name

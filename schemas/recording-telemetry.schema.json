@@ -1,0 +1,190 @@
+{
+  "$defs": {
+    "FrameCount": {
+      "maximum": 28800000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "RecordingMessageMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "event_sequence": {
+          "$ref": "#/$defs/Revision"
+        },
+        "process_generation": {
+          "$ref": "#/$defs/StableId"
+        },
+        "protocol_version": {
+          "const": "cole-voice-lab.recording/v1",
+          "default": "cole-voice-lab.recording/v1",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "request_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "state_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "take_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "request_id",
+        "process_generation",
+        "state_revision",
+        "event_sequence"
+      ],
+      "title": "RecordingMessageMeta",
+      "type": "object"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "WaveformBucket": {
+      "additionalProperties": false,
+      "properties": {
+        "maximum": {
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Maximum",
+          "type": "number"
+        },
+        "minimum": {
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Minimum",
+          "type": "number"
+        }
+      },
+      "required": [
+        "minimum",
+        "maximum"
+      ],
+      "title": "WaveformBucket",
+      "type": "object"
+    },
+    "WaveformSampleClock": {
+      "additionalProperties": false,
+      "description": "Current-generation captured frame binding to the same-boot native host clock.",
+      "properties": {
+        "anchor_frame": {
+          "$ref": "#/$defs/FrameCount"
+        },
+        "host_time_ticks": {
+          "$ref": "#/$defs/Revision"
+        },
+        "seconds_per_tick": {
+          "exclusiveMinimum": 0,
+          "title": "Seconds Per Tick",
+          "type": "number"
+        }
+      },
+      "required": [
+        "anchor_frame",
+        "host_time_ticks",
+        "seconds_per_tick"
+      ],
+      "title": "WaveformSampleClock",
+      "type": "object"
+    },
+    "WaveformSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "bucket_width_frames": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "Bucket Width Frames",
+          "type": "integer"
+        },
+        "buckets": {
+          "items": {
+            "$ref": "#/$defs/WaveformBucket"
+          },
+          "maxItems": 4096,
+          "title": "Buckets",
+          "type": "array"
+        },
+        "end_frame": {
+          "$ref": "#/$defs/FrameCount"
+        },
+        "event": {
+          "const": "waveform",
+          "default": "waveform",
+          "title": "Event",
+          "type": "string"
+        },
+        "first_frame": {
+          "$ref": "#/$defs/FrameCount"
+        },
+        "process_generation": {
+          "$ref": "#/$defs/StableId"
+        },
+        "sample_clock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaveformSampleClock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "written_frames": {
+          "$ref": "#/$defs/FrameCount"
+        }
+      },
+      "required": [
+        "take_id",
+        "process_generation",
+        "first_frame",
+        "end_frame",
+        "written_frames",
+        "bucket_width_frames",
+        "buckets",
+        "sample_clock"
+      ],
+      "title": "WaveformSnapshot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "data": {
+      "$ref": "#/$defs/WaveformSnapshot"
+    },
+    "error": {
+      "default": null,
+      "title": "Error",
+      "type": "null"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordingMessageMeta"
+    }
+  },
+  "required": [
+    "data",
+    "meta"
+  ],
+  "title": "RecordingTelemetry",
+  "type": "object"
+}

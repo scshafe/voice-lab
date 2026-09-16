@@ -1,0 +1,5 @@
+#!/bin/sh
+# Build a new signed native preview plus private frozen runtime; no installation or launch.
+set -eu
+COLE_VOICE_SOURCE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "$COLE_VOICE_SOURCE_ROOT/.venv/bin/python" -I -B -m cole_voice_lab.native_recording_application "$@"

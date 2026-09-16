@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import TypeAdapter
 
 from .canonical import open_regular_no_follow, sha256_file, write_canonical_json
+from .diagnostic_roots import is_diagnostic_subject, root_purpose
 from .errors import SecurityError
 from .models import ConsentRecord, StableId, utc_now
 from .paths import AssetLayout
@@ -117,6 +118,10 @@ def approve_self_consent(
 ) -> tuple[Path, str]:
     """Create the explicit machine-readable authorization; never infer the attestation."""
 
+    if is_diagnostic_subject(subject_id) or root_purpose(layout) != "standard":
+        raise SecurityError(
+            "diagnostic subjects and physical-test asset roots cannot approve consent"
+        )
     if not acknowledgement:
         raise SecurityError(
             "self-consent requires the explicit --i-am-the-subject-and-authorize flag"

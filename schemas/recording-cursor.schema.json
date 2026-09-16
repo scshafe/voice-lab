@@ -1,0 +1,97 @@
+{
+  "$defs": {
+    "RecordingSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "index_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selection_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "take_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "catalog_sha256",
+        "prompt_id",
+        "take_id",
+        "selection_revision",
+        "index_revision"
+      ],
+      "title": "RecordingSelection",
+      "type": "object"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "complete": {
+      "title": "Complete",
+      "type": "boolean"
+    },
+    "group_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "mode": {
+      "enum": [
+        "selected-prompt",
+        "continue-missing"
+      ],
+      "title": "Mode",
+      "type": "string"
+    },
+    "operation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-cursor/v1",
+      "default": "cole-voice-lab.recording-cursor/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selection": {
+      "$ref": "#/$defs/RecordingSelection"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "subject_id",
+    "group_id",
+    "selection",
+    "mode",
+    "complete",
+    "operation_id"
+  ],
+  "title": "RecordingCursor",
+  "type": "object"
+}

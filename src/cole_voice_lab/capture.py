@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
+from uuid import uuid4
 
 from pydantic import Field, ValidationError, field_validator, model_validator
 
@@ -25,8 +26,10 @@ from .canonical import (
     sha256_file,
     write_canonical_json,
 )
+from .diagnostic_roots import is_physical_test_suite_id, require_root_purpose
 from .errors import ContractError, ExternalToolError, SecurityError, VoiceLabError
 from .models import (
+    PROMPT_SUITE_V1,
     AudioFileEvidence,
     AudioQcMetrics,
     CaptureDevice,
@@ -39,7 +42,18 @@ from .models import (
     StableId,
     utc_now,
 )
-from .paths import AssetLayout, confined_path, ensure_private_directory, validate_relative_path
+from .paths import (
+    AssetLayout,
+    _reject_existing_symlink_components,
+    confined_path,
+    ensure_private_directory,
+    validate_relative_path,
+)
+from .recording_ownership import (
+    acquire_capture_ownership,
+    capture_ownership,
+    validate_capture_ownership,
+)
 
 DEFAULT_FFMPEG = "/opt/homebrew/bin/ffmpeg"
 MANIFEST_NAME = "manifest.json"
@@ -47,8 +61,44 @@ QC_REPORT_NAME = "qc.json"
 READY_NAME = "READY"
 REJECTED_LOG_NAME = "rejected-takes.json"
 MAX_TAKE_SECONDS = 600.0
+CAPTURE_SAMPLE_RATE = 48_000
+CAPTURE_FRAME_BYTES = 3
+MAX_PROGRESS_LINE_BYTES = 32
+PROGRESS_READER_JOIN_SECONDS = 2.0
+MAX_CAPTURE_DIAGNOSTIC_BYTES = 16_384
 
 _STABLE_ID = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$")
+
+
+class CaptureContinuityEvidence(ContractModel):
+    """Successful native input continuity bound to one exact, privately saved WAV."""
+
+    schema_version: Literal["cole-voice-lab.capture-continuity/v1"]
+    backend: Literal["coreaudio-audioqueue"]
+    device_uid: str = Field(min_length=1, max_length=500)
+    output_name: str = Field(min_length=1, max_length=500)
+    wav_sha256: Sha256
+    wav_size_bytes: int = Field(gt=0)
+    frames: int = Field(gt=0)
+    received_frames: int = Field(gt=0)
+    callback_count: int = Field(gt=0)
+    first_sample_time: float = Field(allow_inf_nan=False)
+    last_sample_end: float = Field(allow_inf_nan=False)
+    success: bool
+    continuity_checked: bool
+    stop_reason: Literal["requested", "maximum-duration"]
+
+    @model_validator(mode="after")
+    def _continuous_success(self) -> CaptureContinuityEvidence:
+        if not self.success or not self.continuity_checked:
+            raise ValueError("capture continuity evidence must attest checked successful capture")
+        if self.frames != self.received_frames:
+            raise ValueError("received and written native frame counts must agree")
+        if abs(self.last_sample_end - self.first_sample_time - self.frames) > 0.000001:
+            raise ValueError("native input timestamp span must equal written frame count")
+        if Path(self.output_name).name != self.output_name:
+            raise ValueError("native output name must be a direct filename")
+        return self
 
 
 class ReadyMarker(ContractModel):
@@ -186,6 +236,11 @@ class CaptureState:
 
 
 class CaptureProcess(Protocol):
+    @property
+    def captured_frames(self) -> int | None:
+        """Confirmed encoded PCM frames; None until the first valid audio packet."""
+        ...
+
     def wait(self, timeout: float | None = None) -> int: ...
 
     def poll(self) -> int | None: ...
@@ -224,20 +279,221 @@ class CaptureInterrupted(VoiceLabError):
         self.partial_path = partial_path
 
 
-class _PopenCaptureProcess:
-    """Small typed adapter around Popen, with an optional FFmpeg control pipe."""
+class CaptureProgressError(ExternalToolError):
+    """Capture media-clock evidence is unavailable or malformed, never wall-time fallback."""
 
-    def __init__(self, command: Sequence[str], *, controlled: bool) -> None:
-        self._process = subprocess.Popen(
-            tuple(command),
-            stdin=subprocess.PIPE if controlled else None,
+
+class _PopenCaptureProcess:
+    """Child-process control and exact PCM progress, with no audio on its pipes."""
+
+    def __init__(self, command: Sequence[str], *, controlled: bool, native: bool = False) -> None:
+        self._clock_lock = threading.Lock()
+        self._native = native
+        self._captured_frames: int | None = None
+        self._progress_error: CaptureProgressError | None = None
+        self._progress_thread: threading.Thread | None = None
+        self._diagnostic_thread: threading.Thread | None = None
+        self._diagnostic_bytes = bytearray()
+        arguments = tuple(command)
+        self._native_output_path = Path(arguments[-1]) if native else None
+        self._native_diagnostics_path = (
+            Path(arguments[arguments.index("--diagnostics-path") + 1])
+            if native and "--diagnostics-path" in arguments
+            else None
         )
+        self._native_device_uid = (
+            arguments[arguments.index("--device-uid") + 1]
+            if native and "--device-uid" in arguments
+            else None
+        )
+        if controlled and not native:
+            # Packet sizes count PCM samples independently of startup latency,
+            # input timestamps, WAV container headers and output-file buffering.
+            arguments = (
+                *arguments[:-1],
+                "-stats_mux_pre:a:0",
+                "pipe:1",
+                "-stats_mux_pre_fmt:a:0",
+                "{size}",
+                arguments[-1],
+            )
+        if native:
+            self._process = subprocess.Popen(
+                arguments,
+                stdin=subprocess.PIPE if controlled else None,
+                stdout=subprocess.PIPE if controlled else None,
+                stderr=subprocess.PIPE,
+            )
+        else:
+            self._process = subprocess.Popen(
+                arguments,
+                stdin=subprocess.PIPE if controlled else None,
+                stdout=subprocess.PIPE if controlled else None,
+            )
+        if controlled:
+            try:
+                self._progress_thread = threading.Thread(
+                    target=self._read_progress, name="capture-pcm-progress", daemon=True
+                )
+                self._progress_thread.start()
+                if native:
+                    self._diagnostic_thread = threading.Thread(
+                        target=self._read_diagnostics, name="capture-diagnostics", daemon=True
+                    )
+                    self._diagnostic_thread.start()
+            except BaseException as startup_error:
+                # No engine owns this process until construction succeeds. Stop
+                # microphone access even when starting the metadata reader fails.
+                cleanup_failures: list[str] = []
+                cleanup_operations: list[tuple[str, Callable[[], object]]] = [
+                    ("kill capture", self._process.kill),
+                    ("reap capture", lambda: self._process.wait(timeout=3.0)),
+                ]
+                cleanup_streams = [
+                    ("control", self._process.stdin),
+                    ("progress", self._process.stdout),
+                ]
+                if native:
+                    cleanup_streams.append(("diagnostics", self._process.stderr))
+                for label, stream in cleanup_streams:
+                    if stream is not None:
+                        cleanup_operations.append((f"close {label} pipe", stream.close))
+                for label, cleanup in cleanup_operations:
+                    try:
+                        cleanup()
+                    except Exception as cleanup_error:
+                        cleanup_failures.append(f"{label}: {cleanup_error}")
+                message = "Cannot start FFmpeg PCM progress reader"
+                if cleanup_failures:
+                    message += "; startup cleanup also failed: " + "; ".join(cleanup_failures)
+                    startup_error.add_note(message)
+                if isinstance(startup_error, Exception):
+                    raise CaptureProgressError(message) from startup_error
+                raise
+
+    def _read_diagnostics(self) -> None:
+        """Drain native diagnostics without blocking capture or retaining unbounded output."""
+        stream = self._process.stderr
+        if stream is None:
+            with self._clock_lock:
+                self._progress_error = CaptureProgressError("Native diagnostics pipe is missing")
+            return
+        try:
+            with stream:
+                while chunk := stream.read(4096):
+                    with self._clock_lock:
+                        self._diagnostic_bytes.extend(chunk)
+                        del self._diagnostic_bytes[:-MAX_CAPTURE_DIAGNOSTIC_BYTES]
+        except (OSError, ValueError) as error:
+            with self._clock_lock:
+                self._progress_error = CaptureProgressError(
+                    f"Cannot read native microphone diagnostics: {error}"
+                )
+
+    def _read_progress(self) -> None:
+        stream = self._process.stdout
+        if stream is None:
+            with self._clock_lock:
+                self._progress_error = CaptureProgressError("FFmpeg progress pipe is unavailable")
+            return
+        try:
+            with stream:
+                while line := stream.readline(MAX_PROGRESS_LINE_BYTES + 1):
+                    if (
+                        len(line) > MAX_PROGRESS_LINE_BYTES
+                        or re.fullmatch(rb"[1-9][0-9]*\n", line) is None
+                    ):
+                        raise CaptureProgressError("FFmpeg emitted malformed PCM packet progress")
+                    size = int(line)
+                    if size % CAPTURE_FRAME_BYTES:
+                        raise CaptureProgressError(
+                            "FFmpeg progress contains an incomplete PCM frame"
+                        )
+                    with self._clock_lock:
+                        self._captured_frames = (
+                            self._captured_frames or 0
+                        ) + size // CAPTURE_FRAME_BYTES
+        except (OSError, ValueError, CaptureProgressError) as error:
+            failure = (
+                error
+                if isinstance(error, CaptureProgressError)
+                else CaptureProgressError(f"Cannot read FFmpeg PCM progress: {error}")
+            )
+            with self._clock_lock:
+                self._progress_error = failure
+
+    @property
+    def captured_frames(self) -> int | None:
+        """Return exact packet-derived frames; absent startup progress never implies duration."""
+        with self._clock_lock:
+            if self._progress_error is not None:
+                raise self._progress_error
+            return self._captured_frames
 
     def wait(self, timeout: float | None = None) -> int:
-        return self._process.wait(timeout=timeout)
+        result = self._process.wait(timeout=timeout)
+        if self._diagnostic_thread is not None:
+            self._diagnostic_thread.join(timeout=PROGRESS_READER_JOIN_SECONDS)
+            if self._diagnostic_thread.is_alive():
+                raise CaptureProgressError("Native capture diagnostics reader did not finish")
+        if self._progress_thread is not None:
+            self._progress_thread.join(timeout=PROGRESS_READER_JOIN_SECONDS)
+            if self._progress_thread.is_alive():
+                raise CaptureProgressError(
+                    "FFmpeg progress reader did not finish after capture stopped"
+                )
+            if self._native and result != 0:
+                detail = bytes(self._diagnostic_bytes).decode("utf-8", errors="replace").strip()
+                raise CaptureProgressError(
+                    f"Native microphone capture failed (exit {result}): {detail}"
+                )
+            frames = self.captured_frames
+            if result == 0 and frames is None:
+                raise CaptureProgressError(
+                    "FFmpeg stopped without reporting any captured PCM frames"
+                )
+        return result
 
     def poll(self) -> int | None:
         return self._process.poll()
+
+    def validate_completed(self, inspection: WavInspection) -> None:
+        """Re-read private native evidence before publishing its exact WAV bytes."""
+        if not self._native:
+            return
+        path = self._native_diagnostics_path
+        if path is None or self._native_output_path is None:
+            raise SecurityError("Native capture is missing its bound continuity evidence")
+        path = _reject_existing_symlink_components(path)
+        try:
+            with open_regular_no_follow(path) as stream:
+                before = os.fstat(stream.fileno())
+                if stat.S_IMODE(before.st_mode) & 0o077 or before.st_nlink != 1:
+                    raise SecurityError(
+                        "Native continuity evidence is not one private regular file"
+                    )
+                payload = stream.read(MAX_CAPTURE_DIAGNOSTIC_BYTES + 1)
+                after = os.fstat(stream.fileno())
+        except OSError as error:
+            raise SecurityError(
+                f"Cannot read native capture continuity evidence: {error}"
+            ) from error
+        if len(payload) > MAX_CAPTURE_DIAGNOSTIC_BYTES or _file_identity(before) != _file_identity(
+            after
+        ):
+            raise SecurityError("Native continuity evidence changed or exceeds its byte bound")
+        try:
+            evidence = CaptureContinuityEvidence.model_validate_json(payload)
+        except ValidationError as error:
+            raise SecurityError(f"Invalid native capture continuity evidence: {error}") from error
+        if (
+            evidence.device_uid != self._native_device_uid
+            or evidence.output_name != self._native_output_path.name
+            or evidence.wav_sha256 != inspection.sha256
+            or evidence.wav_size_bytes != inspection.size_bytes
+            or evidence.frames != inspection.audio.frames
+        ):
+            raise SecurityError("Native capture continuity evidence does not bind this WAV/device")
 
     def signal_quit(self) -> None:
         if self._process.stdin is None:
@@ -256,7 +512,8 @@ class _PopenCaptureProcess:
 
 
 def _default_process_factory(command: Sequence[str]) -> CaptureProcess:
-    return _PopenCaptureProcess(command, controlled=True)
+    native = tuple(command[1:5]) == ("-I", "-B", "-m", "cole_voice_lab.capture_native")
+    return _PopenCaptureProcess(command, controlled=True, native=native)
 
 
 def _foreground_process_factory(command: Sequence[str]) -> CaptureProcess:
@@ -436,6 +693,31 @@ def ffmpeg_capture_command(
     )
 
 
+def require_legacy_capture_suite(prompt_suite: PromptSuite) -> PromptSuite:
+    """Terminal, console and Qt capture predate prompt-suite/v2; only native capture reads it."""
+    if prompt_suite.schema_version != PROMPT_SUITE_V1:
+        raise ContractError("prompt-suite/v2 catalogs require the native recording application")
+    return prompt_suite
+
+
+def require_legacy_capture_root(layout: AssetLayout) -> AssetLayout:
+    """Physical-test roots hold native diagnostic evidence only; legacy capture never opens one."""
+    require_root_purpose(layout, "standard")
+    return layout
+
+
+def _require_manifest_suite(prompt_suite: PromptSuite, session_id: str) -> None:
+    """Every CaptureManifest is minted after this check, so its suite ID states its purpose."""
+    if is_physical_test_suite_id(prompt_suite.suite_id) != (
+        prompt_suite.purpose == "physical-test"
+    ):
+        raise ContractError("physical-test suite ID prefix and purpose must agree")
+    if prompt_suite.schema_version != PROMPT_SUITE_V1 and not session_id.startswith("native-"):
+        raise ContractError("prompt-suite/v2 capture manifests require a native session")
+    if any(prompt.category == "procedure" for prompt in prompt_suite.prompts):
+        raise ContractError("test steps without spoken text cannot become capture evidence")
+
+
 def _recording_entries(
     prompt_suite: PromptSuite,
 ) -> tuple[tuple[Prompt, RecordingKind, str], ...]:
@@ -460,19 +742,28 @@ def _start_capture(
     device_id: str,
     ffmpeg: str,
     process_factory: ProcessFactory,
+    backend: Literal["avfoundation", "coreaudio"] = "avfoundation",
+    diagnostics_path: Path | None = None,
 ) -> CaptureProcess:
     partial = destination.with_suffix(".partial.wav")
     if os.path.lexists(partial) or os.path.lexists(destination):
         raise SecurityError(f"refusing to overwrite an existing recording: {destination}")
-    return process_factory(
-        ffmpeg_capture_command(output_path=partial, device_id=device_id, ffmpeg=ffmpeg)
-    )
+    if backend == "coreaudio":
+        from .capture_native import native_capture_command
+
+        command = native_capture_command(
+            output_path=partial, device_id=device_id, diagnostics_path=diagnostics_path
+        )
+    else:
+        command = ffmpeg_capture_command(output_path=partial, device_id=device_id, ffmpeg=ffmpeg)
+    return process_factory(command)
 
 
 def _interrupt_process(process: CaptureProcess) -> int:
     return_code = process.poll()
     if return_code is not None:
-        return return_code
+        # Even an exited process must drain and validate its metadata reader.
+        return process.wait()
     process.send_signal(signal.SIGINT)
     try:
         return process.wait(timeout=10.0)
@@ -485,13 +776,25 @@ def _interrupt_process(process: CaptureProcess) -> int:
             return process.wait()
 
 
-def _publish_completed_capture(*, partial: Path, destination: Path) -> WavInspection:
+def _publish_completed_capture(
+    *,
+    partial: Path,
+    destination: Path,
+    captured_frames: int | None = None,
+    validate_evidence: Callable[[WavInspection], None] | None = None,
+) -> WavInspection:
     identity = _secure_capture_file(partial)
     if identity is None:
         raise ContractError(f"FFmpeg did not produce a capture partial: {partial}")
     inspection = inspect_canonical_wav(partial)
     if _file_identity(partial.lstat()) != identity:
         raise SecurityError(f"capture partial changed after inspection: {partial}")
+    if captured_frames is not None and captured_frames != inspection.audio.frames:
+        raise CaptureProgressError(
+            "FFmpeg PCM progress disagrees with the completed WAV frame count"
+        )
+    if validate_evidence is not None:
+        validate_evidence(inspection)
     if os.path.lexists(destination):
         raise SecurityError(f"refusing to overwrite an existing recording: {destination}")
     os.replace(partial, destination)
@@ -523,12 +826,27 @@ def _stop_capture(*, process: CaptureProcess, destination: Path) -> WavInspectio
     try:
         process.signal_quit()
         return_code = process.wait(timeout=10.0)
+    except CaptureProgressError:
+        _secure_capture_file(partial)
+        raise
     except (BrokenPipeError, ExternalToolError, OSError, ValueError, subprocess.TimeoutExpired):
-        return_code = _interrupt_process(process)
+        try:
+            return_code = _interrupt_process(process)
+        except CaptureProgressError:
+            _secure_capture_file(partial)
+            raise
     if return_code != 0:
         _secure_capture_file(partial)
         raise ExternalToolError(f"FFmpeg capture failed with exit code {return_code}: {partial}")
-    return _publish_completed_capture(partial=partial, destination=destination)
+    frames = process.captured_frames
+    return _publish_completed_capture(
+        partial=partial,
+        destination=destination,
+        captured_frames=frames,
+        validate_evidence=(
+            process.validate_completed if isinstance(process, _PopenCaptureProcess) else None
+        ),
+    )
 
 
 def _capture_one(
@@ -575,41 +893,44 @@ def capture_prompt_suite(
 ) -> CaptureResult:
     """Interactively record every exact prompt and finalize only the complete suite."""
 
-    _require_stable_id(session_id, "session ID")
-    _require_stable_id(subject_id, "subject ID")
-    if "umik-1" not in device.display_name.casefold():
-        raise ContractError("production capture requires the selected UMIK-1 microphone")
-    captured_at = clock()
-    session_directory = layout.directory("tmp") / f"capture-{session_id}"
-    session_directory.mkdir(mode=0o700, exist_ok=False)
-    audio_directory = session_directory / "audio"
-    audio_directory.mkdir(mode=0o700)
-    for index, (prompt, kind, relative) in enumerate(_recording_entries(prompt_suite), start=1):
-        emit(f"\n[{index}/{len(prompt_suite.prompts)}] {prompt.category}: {prompt.style}")
-        emit(prompt.text)
-        if kind == "room-tone":
-            emit("Remain silent and still for the complete room-tone recording.")
-        else:
-            emit("Read the prompt exactly as printed; do not improvise or correct it.")
-        read_line("Press Return to start recording. ")
-        emit("Recording in the foreground. Press q in FFmpeg when finished; Ctrl-C aborts.")
-        _capture_one(
-            session_directory=session_directory,
-            destination=confined_path(session_directory, relative),
-            device_id=device.device_id,
-            ffmpeg=ffmpeg,
-            process_factory=process_factory,
+    require_legacy_capture_suite(prompt_suite)
+    require_legacy_capture_root(layout)
+    with capture_ownership(layout):
+        _require_stable_id(session_id, "session ID")
+        _require_stable_id(subject_id, "subject ID")
+        if "umik-1" not in device.display_name.casefold():
+            raise ContractError("production capture requires the selected UMIK-1 microphone")
+        captured_at = clock()
+        session_directory = layout.directory("tmp") / f"capture-{session_id}"
+        session_directory.mkdir(mode=0o700, exist_ok=False)
+        audio_directory = session_directory / "audio"
+        audio_directory.mkdir(mode=0o700)
+        for index, (prompt, kind, relative) in enumerate(_recording_entries(prompt_suite), start=1):
+            emit(f"\n[{index}/{len(prompt_suite.prompts)}] {prompt.category}: {prompt.style}")
+            emit(prompt.require_text())
+            if kind == "room-tone":
+                emit("Remain silent and still for the complete room-tone recording.")
+            else:
+                emit("Read the prompt exactly as printed; do not improvise or correct it.")
+            read_line("Press Return to start recording. ")
+            emit("Recording in the foreground. Press q in FFmpeg when finished; Ctrl-C aborts.")
+            _capture_one(
+                session_directory=session_directory,
+                destination=confined_path(session_directory, relative),
+                device_id=device.device_id,
+                ffmpeg=ffmpeg,
+                process_factory=process_factory,
+            )
+        return finalize_capture_session(
+            session_directory,
+            session_id=session_id,
+            subject_id=subject_id,
+            prompt_suite=prompt_suite,
+            device=device,
+            captured_at=captured_at,
+            finalized_at=clock(),
+            capture_host=capture_host or socket.gethostname(),
         )
-    return finalize_capture_session(
-        session_directory,
-        session_id=session_id,
-        subject_id=subject_id,
-        prompt_suite=prompt_suite,
-        device=device,
-        captured_at=captured_at,
-        finalized_at=clock(),
-        capture_host=capture_host or socket.gethostname(),
-    )
 
 
 def _regular_file_paths(session_directory: Path) -> set[str]:
@@ -729,6 +1050,16 @@ def _read_rejected_log(layout: AssetLayout, session_id: str) -> RejectedTakeLog:
     return log
 
 
+def validate_rejected_takes(layout: AssetLayout, session_id: str) -> RejectedTakeLog:
+    """Read the canonical rejected ledger and revalidate retained audio evidence.
+
+    Capture-history drivers use this public boundary when recovering an
+    interrupted retry. Raises a domain error on unsafe or inconsistent evidence.
+    """
+    _require_stable_id(session_id, "session ID")
+    return _read_rejected_log(layout, session_id)
+
+
 def _reject_recording(
     *,
     layout: AssetLayout,
@@ -813,6 +1144,7 @@ def open_session(
     *,
     resume: bool = False,
     clock: Callable[[], datetime] = utc_now,
+    allow_prompt_selection: bool = False,
 ) -> Path:
     """Create a fresh capture session or fail-closed while reopening one."""
 
@@ -854,7 +1186,7 @@ def open_session(
             _require_private_recording(canonical)
             inspect_canonical_wav(canonical)
             canonical_indices.append(index)
-    if canonical_indices != list(range(len(canonical_indices))):
+    if not allow_prompt_selection and canonical_indices != list(range(len(canonical_indices))):
         raise ContractError("completed resumed takes must form a contiguous prompt prefix")
     for _, _, relative in entries:
         canonical = confined_path(session_directory, relative)
@@ -890,12 +1222,20 @@ class TakeEngine:
         timer_factory: TimerFactory = _default_timer_factory,
         capture_host: str | None = None,
         resume: bool = False,
+        allow_prompt_selection: bool = False,
+        capture_ownership_descriptor: int | None = None,
     ) -> None:
+        require_legacy_capture_suite(prompt_suite)
+        require_legacy_capture_root(layout)
         _require_stable_id(subject_id, "subject ID")
         if "umik-1" not in device.display_name.casefold():
             raise ContractError("production capture requires the selected UMIK-1 microphone")
         self._lock = threading.RLock()
         self.layout = layout
+        self._borrowed_capture_ownership = capture_ownership_descriptor
+        self._owned_capture_ownership: int | None = None
+        if capture_ownership_descriptor is not None:
+            validate_capture_ownership(layout, capture_ownership_descriptor)
         self.prompt_suite = prompt_suite
         self.subject_id = subject_id
         self.device = device
@@ -907,12 +1247,14 @@ class TakeEngine:
         self.timer_factory = timer_factory
         self.capture_host = capture_host or socket.gethostname()
         self.entries = _recording_entries(prompt_suite)
+        self.allow_prompt_selection = allow_prompt_selection
         self.session_directory = open_session(
             layout,
             prompt_suite,
             session_id,
             resume=resume,
             clock=clock,
+            allow_prompt_selection=allow_prompt_selection,
         )
         self.captured_at = clock()
         self._live_process: CaptureProcess | None = None
@@ -920,6 +1262,7 @@ class TakeEngine:
         self._started_monotonic: float | None = None
         self._timer: CaptureTimer | None = None
         self._review_index: int | None = None
+        self._selected_index: int | None = None
         self._take_findings: dict[int, tuple[str, ...]] = {}
         self._background_error: VoiceLabError | None = None
         self._final_result: CaptureResult | None = None
@@ -957,7 +1300,7 @@ class TakeEngine:
                 inspections[index] = inspect_canonical_wav(canonical)
             if partial.exists():
                 partial_indices.append(index)
-        if sorted(inspections) != list(range(len(inspections))):
+        if not self.allow_prompt_selection and sorted(inspections) != list(range(len(inspections))):
             raise ContractError("completed takes must form a contiguous prompt prefix")
         allowed_partial = {self._live_index} if self._live_index is not None else set()
         if set(partial_indices) - allowed_partial:
@@ -1100,6 +1443,28 @@ class TakeEngine:
             raise self._background_error
         if self._final_result is not None:
             return self._finalized_state(self._validated_final_result())
+        if self._live_process is not None and self._live_process.poll() is not None:
+            # Drain failure diagnostics instead of showing a frozen healthy timer
+            # after the microphone worker has already exited.
+            partial = (
+                self._recording_path(self._live_index).with_suffix(".partial.wav")
+                if self._live_index is not None
+                else None
+            )
+            try:
+                result = self._live_process.wait()
+                self._background_error = CaptureProgressError(
+                    f"Microphone capture stopped unexpectedly (exit {result}); "
+                    "the partial take is preserved and must not be kept"
+                )
+            except VoiceLabError as error:
+                self._background_error = error
+            finally:
+                self._clear_live()
+                if partial is not None:
+                    _secure_capture_file(partial)
+                    _fsync_directory(partial.parent)
+            raise self._background_error
         inspections = self._inspections()
         if self._live_index is not None:
             status: CapturePhase = "recording"
@@ -1114,7 +1479,11 @@ class TakeEngine:
             index = None
         else:
             status = "ready"
-            index = len(inspections)
+            index = (
+                self._selected_index
+                if self._selected_index is not None and self._selected_index not in inspections
+                else next(i for i in range(len(self.entries)) if i not in inspections)
+            )
 
         views: list[TakeView] = []
         for take_index, (prompt, kind, relative) in enumerate(self.entries):
@@ -1155,8 +1524,9 @@ class TakeEngine:
             current_metrics = views[index].metrics
             current_findings = views[index].findings
         elapsed: float | None = None
-        if status == "recording" and self._started_monotonic is not None:
-            elapsed = max(0.0, self.monotonic() - self._started_monotonic)
+        if status == "recording" and self._live_process is not None:
+            frames = self._live_process.captured_frames
+            elapsed = frames / CAPTURE_SAMPLE_RATE if frames is not None else None
         return CaptureState(
             session_directory=self.session_directory,
             session_id=self.session_id,
@@ -1198,23 +1568,82 @@ class TakeEngine:
             if state.status != "ready" or state.index is None:
                 raise ContractError(f"cannot start a take while capture is {state.status}")
             index = state.index
-            process = _start_capture(
-                destination=self._recording_path(index),
-                device_id=self.device.device_id,
-                ffmpeg=self.ffmpeg,
-                process_factory=self.process_factory,
-            )
+            diagnostics_path = None
+            if self.device.backend == "coreaudio":
+                diagnostic_root = ensure_private_directory(
+                    confined_path(self.layout.root, "provenance/capture-continuity")
+                )
+                diagnostic_directory = ensure_private_directory(
+                    confined_path(diagnostic_root, self.session_id)
+                )
+                diagnostics_path = diagnostic_directory / f"{uuid4().hex}.json"
+            if self._borrowed_capture_ownership is not None:
+                validate_capture_ownership(self.layout, self._borrowed_capture_ownership)
+            else:
+                self._owned_capture_ownership = acquire_capture_ownership(self.layout)
+            try:
+                process = _start_capture(
+                    destination=self._recording_path(index),
+                    device_id=self.device.device_id,
+                    ffmpeg=self.ffmpeg,
+                    process_factory=self.process_factory,
+                    backend=self.device.backend,
+                    diagnostics_path=diagnostics_path,
+                )
+            except BaseException:
+                self._release_capture_ownership()
+                raise
             self._live_process = process
             self._live_index = index
-            self._started_monotonic = self.monotonic()
-            self._take_findings.pop(index, None)
-            timer = self.timer_factory(
-                MAX_TAKE_SECONDS,
-                lambda: self._auto_stop(index, process),
-            )
-            self._timer = timer
-            timer.start()
+            try:
+                self._started_monotonic = self.monotonic()
+                self._take_findings.pop(index, None)
+                timer = self.timer_factory(
+                    MAX_TAKE_SECONDS,
+                    lambda: self._auto_stop(index, process),
+                )
+                self._timer = timer
+                timer.start()
+                return self._state()
+            except BaseException as startup_error:
+                # Until the first recording state is returned, the caller cannot
+                # expose Stop. Roll back microphone ownership on every failure.
+                try:
+                    self.abort()
+                except CaptureInterrupted as interruption:
+                    startup_error.add_note(f"Failed capture start was aborted: {interruption}")
+                except Exception as cleanup_error:
+                    message = (
+                        f"Capture start failed: {startup_error}; "
+                        f"cleanup also failed: {cleanup_error}"
+                    )
+                    if isinstance(startup_error, Exception):
+                        raise CaptureProgressError(message) from startup_error
+                    startup_error.add_note(message)
+                raise
+
+    def select_take(self, index: int) -> CaptureState:
+        """Select a desktop take without discarding captured bytes or opening the mic.
+
+        The desktop driver owns durable Keep decisions. Console engines retain
+        sequential-only semantics and cannot use this selection boundary.
+        """
+        with self._lock:
+            state = self._state()
+            if not self.allow_prompt_selection:
+                raise ContractError("prompt selection is not enabled for this capture session")
+            if state.status in {"recording", "finalized"}:
+                raise ContractError(f"cannot select a prompt while capture is {state.status}")
+            if not 0 <= index < len(self.entries):
+                raise ContractError(f"take index is out of range: {index}")
+            self._selected_index = index
+            self._review_index = index if index in self._inspections() else None
             return self._state()
+
+    def _release_capture_ownership(self) -> None:
+        if self._owned_capture_ownership is not None:
+            os.close(self._owned_capture_ownership)
+            self._owned_capture_ownership = None
 
     def _clear_live(self) -> None:
         if self._timer is not None:
@@ -1223,6 +1652,7 @@ class TakeEngine:
         self._live_process = None
         self._live_index = None
         self._started_monotonic = None
+        self._release_capture_ownership()
 
     def _stop_take_locked(self, *, automatic: bool) -> CaptureState:
         process = self._live_process
@@ -1258,6 +1688,27 @@ class TakeEngine:
             index = self._review_index
             self._metrics_from(self._inspections(), index)
             self._review_index = None
+            self._selected_index = None
+            return self._state()
+
+    def restore_review(self, index: int) -> CaptureState:
+        """Restore review of the last staged take from a driver's durable evidence.
+
+        Drivers that persist review decisions use this after resume, before
+        recording another take. Sequential drivers may restore only the last
+        staged take; selectable drivers may restore any staged take. Finalized
+        sessions never reopen. Raises ContractError for an invalid transition.
+        """
+        with self._lock:
+            state = self._state()
+            if state.status not in {"ready", "complete"}:
+                raise ContractError(f"cannot restore take review while capture is {state.status}")
+            inspections = self._inspections()
+            if index not in inspections or (
+                not self.allow_prompt_selection and index != max(inspections)
+            ):
+                raise ContractError("only the last staged take can be restored for review")
+            self._review_index = index
             return self._state()
 
     def reject_take(self, reason: str) -> CaptureState:
@@ -1356,6 +1807,7 @@ def finalize_capture_session(
         raise SecurityError(f"capture session must be a real directory: {session_directory}")
     _require_stable_id(session_id, "session ID")
     _require_stable_id(subject_id, "subject ID")
+    _require_manifest_suite(prompt_suite, session_id)
     session_directory = ensure_private_directory(session_directory)
     if (session_directory / READY_NAME).exists():
         return _read_existing_result(session_directory)

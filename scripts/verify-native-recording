@@ -1,0 +1,5 @@
+#!/bin/sh
+# Synthetic native build/tests only; retained evidence is private and external.
+set -eu
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "$repo_dir/.venv/bin/python" "$repo_dir/scripts/verify_native_recording.py" "$@"

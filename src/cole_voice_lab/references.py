@@ -29,6 +29,7 @@ from .canonical import (
     write_canonical_json,
 )
 from .consent import load_valid_consent
+from .diagnostic_roots import require_corpus_eligible_package
 from .errors import ContractError, SecurityError
 from .intake import ValidatedPackage, validate_capture_package
 from .models import (
@@ -42,6 +43,7 @@ from .models import (
     utc_now,
 )
 from .paths import AssetLayout, confined_path, validate_relative_path
+from .recording_edits import assert_recording_not_removed
 
 REFERENCE_MANIFEST_NAME = "manifest.json"
 REFERENCE_AUDIO_NAME = "reference.wav"
@@ -280,6 +282,7 @@ def load_accepted_utterance(
     package = validate_capture_package(raw_session, allow_intake_receipt=True)
     if package.manifest_sha256 != raw_manifest_sha256:
         raise SecurityError("raw directory name does not match its canonical manifest digest")
+    require_corpus_eligible_package(layout, package.manifest)
     if package.qc_report.status != "pass":
         raise ContractError("source capture QC status must be pass")
 
@@ -291,6 +294,14 @@ def load_accepted_utterance(
     if len(matches) != 1:
         raise ContractError(f"accepted session must contain prompt {prompt_id!r} exactly once")
     evidence = matches[0]
+    assert_recording_not_removed(
+        layout,
+        subject_id=package.manifest.subject_id,
+        session_id=package.manifest.session_id,
+        prompt_id=prompt_id,
+        source_sha256=evidence.sha256,
+        manifest_sha256=package.manifest_sha256,
+    )
     metrics = [metric for metric in package.qc_report.metrics if metric.path == evidence.path]
     if len(metrics) != 1 or not metrics[0].passed:
         raise ContractError("selected utterance requires one passing source QC metric")

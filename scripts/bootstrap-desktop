@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Plan or explicitly install hash-pinned native desktop dependencies on macOS.
+
+Use the repository's existing development interpreter. The default is a JSON
+preview; --execute --allow-downloads installs the two listed GUI wheels.
+--with-build-tools also installs the exact repository build backend for verification.
+Model runtimes, capture-kit installs, and private media are never modified.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--python", type=Path, default=Path(sys.executable))
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--allow-downloads", action="store_true")
+    parser.add_argument("--with-build-tools", action="store_true")
+    options = parser.parse_args()
+    if options.execute and not options.allow_downloads:
+        parser.error("installation requires --execute --allow-downloads")
+    if sys.platform != "darwin":
+        parser.error("this artifact lock is for macOS; use the desktop extra on other hosts")
+    interpreter = options.python.expanduser().absolute()
+    if not interpreter.is_file():
+        parser.error(f"Python interpreter does not exist: {interpreter}")
+    lock = Path(__file__).resolve().parents[1] / "requirements/desktop-macos.txt"
+    command = [
+        str(interpreter),
+        "-B",
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--only-binary=:all:",
+        "--no-deps",
+        "--require-hashes",
+        "--requirement",
+        str(lock),
+    ]
+    if options.with_build_tools:
+        command.extend(("--requirement", str(lock.parent / "development-build.txt")))
+    print(json.dumps({"command": command, "execution_requested": options.execute}, indent=2))
+    if options.execute:
+        environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        subprocess.run(command, check=True, env=environment)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

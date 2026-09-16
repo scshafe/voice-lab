@@ -1,0 +1,42 @@
+{
+  "$defs": {
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "operation_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "revision": {
+      "$ref": "#/$defs/Revision"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-store-head/v1",
+      "default": "cole-voice-lab.recording-store-head/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "revision"
+  ],
+  "title": "RecordingStoreHead",
+  "type": "object"
+}

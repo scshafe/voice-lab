@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import (
     BaseModel,
@@ -16,6 +17,7 @@ from pydantic import (
     model_validator,
 )
 
+from .errors import ContractError
 from .paths import validate_relative_path
 
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -52,9 +54,63 @@ class AudioSpec(ContractModel):
         return self
 
 
+type PromptLabel = Annotated[
+    str,
+    StringConstraints(pattern=r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$", min_length=2, max_length=32),
+]
+
+PROMPT_SUITE_V1: Final = "cole-voice-lab.prompt-suite/v1"
+PROMPT_SUITE_V2: Final = "cole-voice-lab.prompt-suite/v2"
+PHYSICAL_TEST_SUITE_PREFIX: Final = "cole-physical-test-"
+SILENT_PROMPT_CATEGORIES: Final = frozenset({"room-tone", "procedure"})
+# Labels are presentation and filter tokens only; none may impersonate a
+# category, a derived flag, a status/filter word or a script section heading.
+RESERVED_PROMPT_LABELS: Final = frozenset(
+    {
+        "room-tone",
+        "neutral",
+        "conversational",
+        "warm-narration",
+        "technical",
+        "numbers",
+        "expressive",
+        "reference",
+        "procedure",
+        "reference-candidate",
+        "holdout",
+        "all",
+        "attention",
+        "missing",
+        "recorded",
+        "verified",
+        "draft",
+        "needs-review",
+        "saved-checking",
+        "pending",
+        "running",
+        "invalid",
+        "failed",
+        "unknown",
+        "removed",
+        "rejected",
+        "kept",
+        "prompt",
+        "instructions",
+        "guidance",
+        "read-aloud",
+        "silent",
+        "do-not-speak",
+    }
+)
+
+
 class Prompt(ContractModel):
+    """One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change."""
+
     prompt_id: StableId
-    text: str = Field(min_length=1, max_length=2_000)
+    text: str | None = Field(
+        default=None, min_length=1, max_length=2_000, exclude_if=lambda value: value is None
+    )
     category: Literal[
         "room-tone",
         "neutral",
@@ -64,24 +120,75 @@ class Prompt(ContractModel):
         "numbers",
         "expressive",
         "reference",
+        "procedure",
     ]
     style: str = Field(min_length=1, max_length=160)
     reference_candidate: bool = False
     holdout: bool = False
     expected_seconds: float = Field(gt=0.0, le=120.0, allow_inf_nan=False)
+    labels: tuple[PromptLabel, ...] = Field(
+        default=(), max_length=8, exclude_if=lambda value: not value
+    )
+    instructions: str | None = Field(
+        default=None, min_length=1, max_length=2_000, exclude_if=lambda value: value is None
+    )
 
-    @field_validator("text", "style")
+    @field_validator("text", "style", "instructions")
     @classmethod
-    def _non_whitespace(cls, value: str) -> str:
-        if not value.strip():
+    def _non_whitespace(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
             raise ValueError("text fields must contain a non-whitespace character")
         return value
 
+    @model_validator(mode="after")
+    def _silent_content_and_labels(self) -> Prompt:
+        if self.text is None and self.category not in SILENT_PROMPT_CATEGORIES:
+            raise ValueError("only room tone and procedure prompts may omit spoken text")
+        if self.category == "procedure" and (self.text is not None or self.instructions is None):
+            raise ValueError("procedure prompts require instructions and no spoken text")
+        if len(self.labels) != len(set(self.labels)):
+            raise ValueError("prompt labels must be unique")
+        if RESERVED_PROMPT_LABELS.intersection(self.labels):
+            raise ValueError("prompt labels cannot use reserved category, status or section words")
+        return self
+
+    @property
+    def spoken(self) -> bool:
+        """Behavior keys on category only (D-013); a v1 room tone has text but is silent."""
+        return self.category not in SILENT_PROMPT_CATEGORIES
+
+    @property
+    def allows_quiet(self) -> bool:
+        return not self.spoken
+
+    @property
+    def content(self) -> str:
+        value = self.text if self.spoken else (self.instructions or self.text)
+        if value is None:
+            raise ContractError(f"prompt {self.prompt_id} has no content")
+        return value
+
+    def require_text(self) -> str:
+        """Return spoken text for consumers that cannot represent a text-less prompt."""
+        if self.text is None:
+            raise ContractError(f"prompt {self.prompt_id} has no spoken text")
+        return self.text
+
+
+def _has_hidden_control(value: str) -> bool:
+    return any(
+        (category := unicodedata.category(character)) == "Cf"
+        or (category == "Cc" and character != "\n")
+        for character in value
+    )
+
 
 class PromptSuite(ContractModel):
-    schema_version: Literal["cole-voice-lab.prompt-suite/v1"] = "cole-voice-lab.prompt-suite/v1"
+    schema_version: Literal["cole-voice-lab.prompt-suite/v1", "cole-voice-lab.prompt-suite/v2"] = (
+        PROMPT_SUITE_V1
+    )
     suite_id: StableId
-    purpose: Literal["capture-pilot", "capture-corpus", "held-out-evaluation"]
+    purpose: Literal["capture-pilot", "capture-corpus", "held-out-evaluation", "physical-test"]
     prompts: tuple[Prompt, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -92,7 +199,41 @@ class PromptSuite(ContractModel):
         expected_holdout = self.purpose == "held-out-evaluation"
         if any(prompt.holdout != expected_holdout for prompt in self.prompts):
             raise ValueError("prompt holdout flags must agree with suite purpose")
+        if self.schema_version == PROMPT_SUITE_V1:
+            self._v1_exactness()
+        else:
+            self._v2_rules()
         return self
+
+    def _v1_exactness(self) -> None:
+        if self.purpose == "physical-test":
+            raise ValueError("prompt-suite/v1 catalogs cannot declare the physical-test purpose")
+        for prompt in self.prompts:
+            if prompt.text is None or prompt.labels or prompt.instructions is not None:
+                raise ValueError("prompt-suite/v1 prompts require text and forbid v2 fields")
+            if prompt.category == "procedure":
+                raise ValueError("prompt-suite/v1 catalogs cannot contain procedure prompts")
+
+    def _v2_rules(self) -> None:
+        physical_test = self.purpose == "physical-test"
+        if physical_test != self.suite_id.startswith(PHYSICAL_TEST_SUITE_PREFIX):
+            raise ValueError("physical-test purpose and suite ID prefix must agree")
+        for prompt in self.prompts:
+            if prompt.category == "room-tone" and (
+                prompt.text is not None or prompt.instructions is None
+            ):
+                raise ValueError("prompt-suite/v2 room tone requires instructions and no text")
+            if prompt.category not in SILENT_PROMPT_CATEGORIES and prompt.text is None:
+                raise ValueError("prompt-suite/v2 spoken prompts require text")
+            if physical_test and ("test" not in prompt.labels or prompt.reference_candidate):
+                raise ValueError("physical-test prompts require the test label and no references")
+            if not physical_test and ("test" in prompt.labels or prompt.category == "procedure"):
+                raise ValueError("only physical-test catalogs may use the test label or procedures")
+            if any(
+                value is not None and _has_hidden_control(value)
+                for value in (prompt.text, prompt.instructions, prompt.style)
+            ):
+                raise ValueError("prompt-suite/v2 text cannot contain format or control characters")
 
 
 class AudioFileEvidence(ContractModel):
@@ -121,7 +262,8 @@ class AudioFileEvidence(ContractModel):
 
 
 class CaptureDevice(ContractModel):
-    backend: Literal["avfoundation"] = "avfoundation"
+    # Preserve historical evidence defaults; native capture opts in explicitly.
+    backend: Literal["avfoundation", "coreaudio"] = "avfoundation"
     device_id: str = Field(min_length=1, max_length=500)
     display_name: str = Field(min_length=1, max_length=500)
     microphone_serial: str | None = Field(default=None, min_length=1, max_length=500)

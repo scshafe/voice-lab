@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import importlib
+import importlib.metadata
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
+import struct
 import subprocess
+import sys
+import sysconfig
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -18,7 +24,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
 
 from . import __version__
 from .canonical import (
@@ -30,7 +36,12 @@ from .canonical import (
 )
 from .errors import ContractError, ExternalToolError, RuntimeUnavailableError, SecurityError
 from .models import ContractModel, ExperimentRequest, ExperimentResult
-from .paths import confined_path, reject_symlink_components, validate_relative_path
+from .paths import (
+    _reject_existing_symlink_components,
+    confined_path,
+    reject_symlink_components,
+    validate_relative_path,
+)
 from .registry import (
     PythonRuntimeLock,
     ResolvedCandidate,
@@ -811,12 +822,27 @@ def _confined_symlink_resolution(
     return root.joinpath(*resolved_parts)
 
 
-def _immutable_tree_sha256(path: Path, *, label: str) -> str:
+def _immutable_tree_sha256(
+    path: Path, *, label: str, excluded_relative_entries: tuple[str, ...] = ()
+) -> str:
     """Hash one complete directory tree without following symlinks."""
 
     root = _normalized_real_directory(path, label=label)
+    for relative in excluded_relative_entries:
+        validate_relative_path(relative)
     entries: list[dict[str, object]] = []
     for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        parent = Path(directory)
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if (parent / name).relative_to(root).as_posix() not in excluded_relative_entries
+        ]
+        file_names[:] = [
+            name
+            for name in file_names
+            if (parent / name).relative_to(root).as_posix() not in excluded_relative_entries
+        ]
         directory_names.sort()
         file_names.sort()
         parent = Path(directory)
@@ -850,6 +876,473 @@ def _immutable_tree_sha256(path: Path, *, label: str) -> str:
             if len(entries) > 100_000:
                 raise SecurityError(f"{label} exceeds its closure entry bound")
     return canonical_sha256(entries)
+
+
+RECORDING_PYTHON_DISTRIBUTIONS = (
+    "annotated-types",
+    "pydantic",
+    "pydantic-core",
+    "typing-extensions",
+    "typing-inspection",
+)
+
+
+@dataclass(frozen=True)
+class MachOLoadCommands:
+    """Bounded native loader evidence, read without invoking the executable."""
+
+    minimum_macos: tuple[int, int, int] | None
+    architectures: tuple[int, ...]
+    dependencies: tuple[str, ...]
+    install_names: tuple[str, ...]
+    rpaths: tuple[str, ...]
+
+
+def inspect_macho_load_commands(path: Path) -> MachOLoadCommands:
+    """Read thin/fat 32/64-bit Mach-O deployment and dependency commands.
+
+    @canonical native executable probe -- version/dependency evidence for release
+    packaging and runtime closure. Reject malformed ranges and unbounded headers.
+    """
+    dependencies: set[str] = set()
+    install_names: set[str] = set()
+    rpaths: set[str] = set()
+    versions: list[tuple[int, int, int]] = []
+    architectures: set[int] = set()
+    with open_regular_no_follow(path) as stream:
+        initial = os.fstat(stream.fileno())
+        magic = stream.read(4)
+        fat = {
+            b"\xca\xfe\xba\xbe": (">", False),
+            b"\xbe\xba\xfe\xca": ("<", False),
+            b"\xca\xfe\xba\xbf": (">", True),
+            b"\xbf\xba\xfe\xca": ("<", True),
+        }
+        slices: list[tuple[int, int]] = []
+        if magic in fat:
+            endian, wide = fat[magic]
+            raw = stream.read(4)
+            if len(raw) != 4:
+                raise SecurityError("Mach-O universal header is truncated")
+            count = struct.unpack(endian + "I", raw)[0]
+            if not 1 <= count <= 32:
+                raise SecurityError("Mach-O architecture count exceeds its bound")
+            size = 32 if wide else 20
+            for _ in range(count):
+                raw = stream.read(size)
+                if len(raw) != size:
+                    raise SecurityError("Mach-O architecture header is truncated")
+                offset, length = struct.unpack_from(endian + ("QQ" if wide else "II"), raw, 8)
+                if offset < 8 + count * size or length < 28 or offset + length > initial.st_size:
+                    raise SecurityError("Mach-O architecture range is invalid")
+                slices.append((offset, length))
+        else:
+            slices.append((0, initial.st_size))
+        thin = {
+            b"\xce\xfa\xed\xfe": ("<", False),
+            b"\xfe\xed\xfa\xce": (">", False),
+            b"\xcf\xfa\xed\xfe": ("<", True),
+            b"\xfe\xed\xfa\xcf": (">", True),
+        }
+        for offset, length in slices:
+            stream.seek(offset)
+            raw = stream.read(32)
+            if len(raw) < 28 or raw[:4] not in thin:
+                raise SecurityError("native executable is not a supported Mach-O image")
+            endian, wide = thin[raw[:4]]
+            header_size = 32 if wide else 28
+            cpu, _, _, count, command_bytes, _ = struct.unpack_from(endian + "IIIIII", raw, 4)
+            if count > 4096 or command_bytes > 8 * 1024**2 or header_size + command_bytes > length:
+                raise SecurityError("Mach-O load command range exceeds its bound")
+            architectures.add(cpu)
+            stream.seek(offset + header_size)
+            commands = stream.read(command_bytes)
+            cursor = 0
+            for _ in range(count):
+                if cursor + 8 > len(commands):
+                    raise SecurityError("Mach-O load command is truncated")
+                kind, size = struct.unpack_from(endian + "II", commands, cursor)
+                if size < 8 or cursor + size > len(commands) or size % 4:
+                    raise SecurityError("Mach-O load command size is invalid")
+                command = commands[cursor : cursor + size]
+                if kind in {
+                    0xC,
+                    0xD,
+                    0x18,
+                    0x80000018,
+                    0x1F,
+                    0x8000001F,
+                    0x20,
+                    0x23,
+                    0x80000023,
+                    0x8000001C,
+                }:
+                    minimum = 12 if kind == 0x8000001C else 24
+                    if size < minimum:
+                        raise SecurityError("Mach-O library command is truncated")
+                    start = struct.unpack_from(endian + "I", command, 8)[0]
+                    if start < minimum or start >= size or b"\0" not in command[start:]:
+                        raise SecurityError("Mach-O library path is invalid")
+                    try:
+                        value = command[start:].split(b"\0", 1)[0].decode("utf-8")
+                    except UnicodeDecodeError as error:
+                        raise SecurityError("Mach-O library path is not UTF-8") from error
+                    if not value or len(value) > 16_384:
+                        raise SecurityError("Mach-O library path exceeds its bound")
+                    target = (
+                        rpaths
+                        if kind == 0x8000001C
+                        else install_names
+                        if kind == 0xD
+                        else dependencies
+                    )
+                    target.add(value)
+                if kind in {0x24, 0x32}:
+                    if size < (24 if kind == 0x32 else 16):
+                        raise SecurityError("Mach-O deployment command is truncated")
+                    if kind == 0x24 or struct.unpack_from(endian + "I", command, 8)[0] == 1:
+                        version = struct.unpack_from(
+                            endian + "I", command, 12 if kind == 0x32 else 8
+                        )[0]
+                        versions.append((version >> 16, (version >> 8) & 255, version & 255))
+                cursor += size
+            if cursor != len(commands):
+                raise SecurityError("Mach-O load command byte count differs from its header")
+        final = os.fstat(stream.fileno())
+        if (initial.st_ino, initial.st_size, initial.st_mtime_ns, initial.st_ctime_ns) != (
+            final.st_ino,
+            final.st_size,
+            final.st_mtime_ns,
+            final.st_ctime_ns,
+        ):
+            raise SecurityError("Mach-O executable changed during its identity probe")
+    return MachOLoadCommands(
+        max(versions) if versions else None,
+        tuple(sorted(architectures)),
+        tuple(sorted(dependencies)),
+        tuple(sorted(install_names)),
+        tuple(sorted(rpaths)),
+    )
+
+
+def _python_distribution_identity(name: str) -> tuple[dict[str, object], tuple[Path, ...]]:
+    distribution = importlib.metadata.distribution(name)
+    for requirement in distribution.requires or ():
+        # This service intentionally installs no extras. Unknown base dependencies
+        # need an explicit closure update rather than an incomplete fingerprint.
+        if re.search(r";.*\bextra\s*==", requirement):
+            continue
+        package = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement)
+        if (
+            package is None
+            or canonical_package_name(package[0]) not in RECORDING_PYTHON_DISTRIBUTIONS
+        ):
+            raise SecurityError(f"Python service dependency closure changed: {name}: {requirement}")
+    root = Path(str(distribution.locate_file(""))).resolve(strict=True)
+    declared = distribution.files
+    if declared is None or len(declared) > 100_000:
+        raise SecurityError(f"Python dependency has no bounded installed file evidence: {name}")
+    entries: list[tuple[str, str, int]] = []
+    macho: list[Path] = []
+    for item in sorted(declared, key=str):
+        relative = str(item)
+        validate_relative_path(relative)
+        candidate = root / relative
+        # pip may record caches which were deliberately omitted by a bytecode-free
+        # frozen release. Any present bytecode is executable and must be hashed.
+        if candidate.suffix == ".pyc" and not candidate.exists():
+            continue
+        reject_symlink_components(root, candidate)
+        with open_regular_no_follow(candidate) as stream:
+            if os.fstat(stream.fileno()).st_nlink != 1:
+                raise SecurityError(f"Python dependency contains a hard link: {candidate}")
+            magic = stream.read(4)
+        digest, size = sha256_file(candidate)
+        entries.append((relative, digest, size))
+        if magic in _MACHO_MAGICS:
+            macho.append(candidate)
+    if len({entry[0] for entry in entries}) != len(entries):
+        raise SecurityError(f"Python dependency contains duplicate file declarations: {name}")
+    imported = importlib.import_module(name.replace("-", "_"))
+    source = Path(str(imported.__file__)).resolve(strict=True)
+    if not source.is_relative_to(root) or source.relative_to(root).as_posix() not in {
+        entry[0] for entry in entries
+    }:
+        raise SecurityError(f"Python dependency import differs from its installed files: {name}")
+    return {
+        "name": canonical_package_name(name),
+        "version": distribution.version,
+        "files_sha256": canonical_sha256(entries),
+        "file_count": len(entries),
+    }, tuple(macho)
+
+
+def _python_linked_library_identity(candidates: Sequence[Path]) -> dict[str, object]:
+    pending = list(candidates)
+    seen: set[Path] = set()
+    libraries: list[tuple[str, str, int]] = []
+    system: set[str] = set()
+    while pending:
+        candidate = pending.pop().resolve(strict=True)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if len(seen) > 2048:
+            raise SecurityError("Python linked library closure exceeds its bound")
+        digest, size = sha256_file(candidate)
+        libraries.append((str(candidate), digest, size))
+        commands = inspect_macho_load_commands(candidate)
+        for dependency in commands.dependencies:
+            if dependency.startswith(("/usr/lib/", "/System/Library/")):
+                system.add(dependency)
+            elif dependency:
+                pending.extend(
+                    _resolve_macho_dependency(dependency, candidate, rpaths=commands.rpaths)
+                )
+    return {"files": sorted(libraries), "system_library_references": sorted(system)}
+
+
+def _current_recording_python_environment_identity() -> dict[str, object]:
+    """Bind actual service dependency/base/library bytes and the exact macOS system TCB.
+
+    @canonical recording Python environment -- used at process startup and release
+    preparation. No model/Qt imports, installs, version-only cache, or audio work.
+    The base site-packages path is excluded because the isolated venv cannot
+    import it; installed service distributions are independently byte-bound.
+    """
+    if sys.platform != "darwin":
+        raise RuntimeUnavailableError("native recording service runtime identity requires macOS")
+    base = Path(sys.base_prefix).resolve(strict=True)
+    stdlib = Path(sysconfig.get_path("stdlib")).resolve(strict=True)
+    excluded = stdlib / "site-packages"
+    active_roots = tuple(Path(item).resolve() for item in sys.path if item)
+    if any(
+        item == excluded.resolve() or item.is_relative_to(excluded.resolve())
+        for item in active_roots
+    ):
+        raise SecurityError("native recording requires an isolated Python environment")
+    dependencies: list[dict[str, object]] = []
+    macho: list[Path] = [Path(sys.executable).resolve(strict=True)]
+    for name in RECORDING_PYTHON_DISTRIBUTIONS:
+        identity, extensions = _python_distribution_identity(name)
+        dependencies.append(identity)
+        macho.extend(extensions)
+    # The complete stdlib tree digest includes source and existing bytecode; the
+    # extension roots also seed recursive non-system dynamic-library evidence.
+    dynamic = stdlib / "lib-dynload"
+    for path in sorted(dynamic.glob("*.so")):
+        reject_symlink_components(stdlib, path)
+        macho.append(path)
+    system_version = Path("/System/Library/CoreServices/SystemVersion.plist")
+    system_sha, system_size = sha256_file(system_version)
+    return {
+        "schema_version": "cole-voice-lab.recording-python-environment/v1",
+        "python_version": sys.version,
+        "implementation": sys.implementation.name,
+        "base_prefix": str(Path(sys.base_prefix).resolve()),
+        "stdlib_root": str(stdlib),
+        "base_runtime_sha256": _immutable_tree_sha256(
+            base,
+            label="Python base runtime",
+            excluded_relative_entries=(excluded.relative_to(base).as_posix(),),
+        ),
+        "excluded_base_site_packages": {
+            "path": str(excluded),
+            "link_target": os.readlink(excluded) if excluded.is_symlink() else None,
+        },
+        "dependencies": dependencies,
+        "linked_libraries": _python_linked_library_identity(macho),
+        "system_version_plist_sha256": system_sha,
+        "system_version_plist_size_bytes": system_size,
+        "kernel_build": os.uname().version,
+    }
+
+
+RECORDING_PYTHON_RUNTIME_RECEIPT = ".cole-voice-lab-recording-python-runtime.json"
+
+
+class RecordingPythonFileStat(ContractModel):
+    path: str = Field(min_length=1, max_length=4096)
+    device: int = Field(ge=0)
+    inode: int = Field(ge=0)
+    mode: int = Field(ge=0)
+    size_bytes: int = Field(ge=0)
+    mtime_ns: int = Field(ge=0)
+    ctime_ns: int = Field(ge=0)
+    link_target: str | None = Field(default=None, max_length=4096)
+
+
+class RecordingPythonRuntimeReceipt(ContractModel):
+    schema_version: Literal["cole-voice-lab.recording-python-runtime-receipt/v1"] = (
+        "cole-voice-lab.recording-python-runtime-receipt/v1"
+    )
+    environment_prefix: str
+    environment: dict[str, JsonValue]
+    environment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    entries: tuple[RecordingPythonFileStat, ...] = Field(min_length=1, max_length=50_000)
+
+    @model_validator(mode="after")
+    def _bound_identity(self) -> RecordingPythonRuntimeReceipt:
+        if self.environment_sha256 != canonical_sha256(self.environment):
+            raise ValueError("runtime receipt environment digest changed")
+        paths = tuple(entry.path for entry in self.entries)
+        if paths != tuple(sorted(set(paths))):
+            raise ValueError("runtime receipt entries must be unique and ordered")
+        return self
+
+
+def _recording_runtime_stat(path: Path) -> RecordingPythonFileStat:
+    metadata = path.lstat()
+    if not (
+        stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+    ):
+        raise SecurityError(f"runtime evidence includes an unsupported entry: {path}")
+    if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink != 1:
+        raise SecurityError(f"runtime evidence includes a hard link: {path}")
+    return RecordingPythonFileStat(
+        path=str(path),
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        mode=metadata.st_mode,
+        size_bytes=metadata.st_size,
+        mtime_ns=metadata.st_mtime_ns,
+        ctime_ns=metadata.st_ctime_ns,
+        link_target=os.readlink(path) if stat.S_ISLNK(metadata.st_mode) else None,
+    )
+
+
+def _recording_runtime_entries(
+    environment: dict[str, object],
+) -> tuple[RecordingPythonFileStat, ...]:
+    base = Path(sys.base_prefix).resolve(strict=True)
+    excluded = Path(sysconfig.get_path("stdlib")).resolve(strict=True) / "site-packages"
+    paths: set[Path] = {
+        base,
+        Path(sys.prefix),
+        Path(sys.prefix) / "pyvenv.cfg",
+        Path(os.path.abspath(sys.executable)),
+        Path("/System/Library/CoreServices/SystemVersion.plist"),
+    }
+    for directory, directories, files in os.walk(base, followlinks=False):
+        parent = Path(directory)
+        paths.update(parent / name for name in (*directories, *files))
+        directories[:] = [name for name in directories if parent / name != excluded]
+    for name in RECORDING_PYTHON_DISTRIBUTIONS:
+        distribution = importlib.metadata.distribution(name)
+        root = Path(str(distribution.locate_file(""))).resolve(strict=True)
+        paths.add(root)
+        for item in distribution.files or ():
+            candidate = root / str(item)
+            if candidate.suffix == ".pyc" and not candidate.exists():
+                continue
+            paths.add(candidate)
+            paths.update(parent for parent in candidate.parents if parent.is_relative_to(root))
+    # The service's own installed package belongs to the trusted base. Only its source
+    # files and packaged SQL are digested elsewhere, and Python resolves an extension
+    # module before a source module, so an added .so or .pyc beside a service module
+    # would shadow it while every recorded identity still matched. Binding the tree's
+    # directory and file identities closes that. A development checkout is never
+    # inside the environment prefix and is deliberately untouched.
+    package = Path(__file__).resolve().parent
+    if package.is_relative_to(Path(sys.prefix).resolve()):
+        paths.add(package)
+        for directory, directories, files in os.walk(package, followlinks=False):
+            parent = Path(directory)
+            paths.update(parent / name for name in (*directories, *files))
+    linked = environment["linked_libraries"]
+    if not isinstance(linked, dict) or not isinstance(linked.get("files"), list):
+        raise SecurityError("runtime closure has no declared linked library evidence")
+    for item in linked["files"]:
+        if not isinstance(item, (tuple, list)) or not isinstance(item[0], str):
+            raise SecurityError("runtime linked library evidence is malformed")
+        paths.add(Path(item[0]))
+    if len(paths) > 50_000:
+        raise SecurityError("runtime stat evidence exceeds its bound")
+    return tuple(_recording_runtime_stat(path) for path in sorted(paths, key=str))
+
+
+def freeze_recording_python_runtime_receipt() -> Path:
+    """Write one immutable release receipt after two stable full byte verifications.
+
+    The receipt is adjacent to the venv, so creating it cannot invalidate tracked
+    import directory identities. This is a build operation, never an interactive
+    service mutation. Existing receipts are not replaced.
+    """
+    prefix = _reject_existing_symlink_components(Path(sys.prefix))
+    path = prefix.parent / RECORDING_PYTHON_RUNTIME_RECEIPT
+    if os.path.lexists(path):
+        raise SecurityError("runtime receipt already exists; rebuild in a new release directory")
+    first = _current_recording_python_environment_identity()
+    before = _recording_runtime_entries(first)
+    second = _current_recording_python_environment_identity()
+    after = _recording_runtime_entries(second)
+    if first != second or before != after:
+        raise SecurityError("Python runtime changed while freezing its byte identity")
+    receipt = RecordingPythonRuntimeReceipt.model_validate_json(
+        canonical_json_bytes(
+            {
+                "schema_version": "cole-voice-lab.recording-python-runtime-receipt/v1",
+                "environment_prefix": str(prefix),
+                "environment": second,
+                "environment_sha256": canonical_sha256(second),
+                "entries": [entry.model_dump(mode="json") for entry in after],
+            }
+        )
+    )
+    data = canonical_json_bytes(receipt)
+    if len(data) > 32 * 1024**2:
+        raise SecurityError("Python runtime receipt exceeds its byte bound")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    parent = os.open(path.parent, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+    return path
+
+
+def recording_python_environment_identity() -> dict[str, object]:
+    """Validate a release's previously verified bytes by exact filesystem identity.
+
+    Any changed inode, ctime, mtime, mode, size, link target or import-directory
+    identity fails closed. Development without a release receipt hashes all
+    current bytes. Source and SQL identity remain independently recomputed.
+    """
+    prefix = Path(sys.prefix)
+    path = prefix.parent / RECORDING_PYTHON_RUNTIME_RECEIPT
+    if not os.path.lexists(path):
+        return _current_recording_python_environment_identity()
+    path = _reject_existing_symlink_components(path)
+    with open_regular_no_follow(path) as stream:
+        metadata = os.fstat(stream.fileno())
+        if (
+            metadata.st_uid != os.getuid()
+            or metadata.st_nlink != 1
+            or metadata.st_mode & 0o077
+            or metadata.st_size > 32 * 1024**2
+        ):
+            raise SecurityError("Python runtime receipt must remain owned, private and bounded")
+        raw = stream.read(32 * 1024**2 + 1)
+    receipt = RecordingPythonRuntimeReceipt.model_validate_json(raw)
+    if raw != canonical_json_bytes(receipt) or receipt.environment_prefix != str(prefix):
+        raise SecurityError("Python runtime receipt does not bind this canonical environment")
+    for entry in receipt.entries:
+        candidate = Path(entry.path)
+        if not candidate.is_absolute() or os.path.normpath(entry.path) != entry.path:
+            raise SecurityError("runtime evidence path is not normalized and absolute")
+        if _recording_runtime_stat(candidate) != entry:
+            raise SecurityError(
+                f"verified Python runtime changed; rebuild the preview: {entry.path}"
+            )
+    if receipt.environment.get("kernel_build") != os.uname().version:
+        raise SecurityError("verified macOS kernel build changed; rebuild the preview")
+    return {**receipt.environment, "verified_runtime_receipt_sha256": canonical_sha256(receipt)}
 
 
 def _verify_opt_alias(alias: str, expected_target: str, expected_prefix: Path) -> None:
@@ -900,11 +1393,13 @@ def _expand_loader_reference(value: str, candidate: Path) -> Path:
     return Path(value)
 
 
-def _resolve_macho_dependency(dependency: str, candidate: Path) -> tuple[Path, ...]:
+def _resolve_macho_dependency(
+    dependency: str, candidate: Path, *, rpaths: tuple[str, ...] | None = None
+) -> tuple[Path, ...]:
     if dependency.startswith("@rpath/"):
         suffix = dependency.removeprefix("@rpath/")
         resolved: list[Path] = []
-        for raw_rpath in _macho_rpaths(candidate):
+        for raw_rpath in _macho_rpaths(candidate) if rpaths is None else rpaths:
             expanded = _expand_loader_reference(raw_rpath, candidate)
             target = expanded / suffix
             if target.exists():

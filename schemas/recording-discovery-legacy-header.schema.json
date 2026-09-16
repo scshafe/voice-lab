@@ -1,0 +1,25 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "catalog_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "kind": {
+      "const": "header",
+      "default": "header",
+      "title": "Kind",
+      "type": "string"
+    }
+  },
+  "required": [
+    "catalog_sha256"
+  ],
+  "title": "LegacyProjectionHeader",
+  "type": "object"
+}

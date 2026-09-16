@@ -1,0 +1,220 @@
+{
+  "schema_version": "cole-voice-lab.prompt-suite/v2",
+  "suite_id": "cole-physical-test-v1",
+  "purpose": "physical-test",
+  "prompts": [
+    {
+      "prompt_id": "p01-setup-identity",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 120.0,
+      "labels": [
+        "test",
+        "setup"
+      ],
+      "instructions": "Sit at the Mac with the UMIK-1 connected and your headphones on. Nothing is recorded in this step. Set a comfortable headphone volume and keep the microphone where it will stay for every take. Tell the agent when you are ready."
+    },
+    {
+      "prompt_id": "p02-microphone-denial",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 120.0,
+      "labels": [
+        "test",
+        "permission"
+      ],
+      "instructions": "Press Record once. When macOS asks whether this preview may use the microphone, choose Don't Allow. Look for a named permission message, no moving waveform, and no saved take. Press Record again and check that the preview still does not record. If macOS never asks, tell the agent before going on."
+    },
+    {
+      "prompt_id": "p02a-permission-reset",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 120.0,
+      "labels": [
+        "test",
+        "permission"
+      ],
+      "instructions": "The agent performs this step outside the app; selecting it is optional. It is needed only when this preview already has a microphone decision. Quit the preview when the agent asks, reopen it when the agent says so, then continue with P02."
+    },
+    {
+      "prompt_id": "p03-grant-and-immediate-stop",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 2.0,
+      "labels": [
+        "test",
+        "permission",
+        "transport"
+      ],
+      "instructions": "Allow this preview to use the microphone, either in the macOS prompt or in System Settings under Privacy & Security, then Microphone; back in the preview, use Check again. Press Record once, then press Stop while the preview shows Starting, or within two seconds. Look for exactly one attempt, a red Stop control until the take ends, and no change to the selected step."
+    },
+    {
+      "prompt_id": "p04-room-tone",
+      "category": "room-tone",
+      "style": "Quiet room; no speech.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 10.0,
+      "labels": [
+        "test",
+        "waveform"
+      ],
+      "instructions": "Remain quiet for ten seconds while the microphone records the room."
+    },
+    {
+      "prompt_id": "p05-spoken-sentence",
+      "text": "This is a private microphone check. My voice should sound clear, natural, and free of clicks.",
+      "category": "neutral",
+      "style": "Comfortable speaking level and distance.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 10.0,
+      "labels": [
+        "test",
+        "waveform"
+      ],
+      "instructions": "Press Record, read the prompt once at your normal level, and press Stop at about ten seconds. Watch the waveform: it should rise with your speech and settle in the pauses. Review the stopped take, then Save."
+    },
+    {
+      "prompt_id": "p06-native-playback",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 10.0,
+      "labels": [
+        "test",
+        "playback"
+      ],
+      "instructions": "Keep your headphones on and make sure nothing is recording. Select the saved P05 take and press Play for at most ten seconds; pause, move the playhead once and resume within the same ten seconds. Listen for clipping, dropouts, wrong speed or unexpected loudness, and check that playback never starts a recording."
+    },
+    {
+      "prompt_id": "p07-independent-playback",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 10.0,
+      "labels": [
+        "test",
+        "playback"
+      ],
+      "instructions": "Stop playback in the preview first. The agent then plays the same take once through another player for at most ten seconds, using the same headphones and volume. Listen, and tell the agent whether it sounds the same as the preview's playback."
+    },
+    {
+      "prompt_id": "p08-continuous-capture",
+      "text": "This is a continuous recording check. I am speaking at a comfortable pace, with the microphone in the same position throughout the take. The purpose is to hear whether the sound stays steady from beginning to end. I will keep my voice natural and leave brief pauses between sentences. A good recording should preserve the quiet sounds as well as the louder words. There should be no sudden gaps, repeated fragments, sharp clicks, or unexplained changes in level. As I continue, I can describe the room around me without moving closer to the microphone. The recording will remain private on this computer. Near the end, I will leave a little silence and then stop when the agreed minute is complete.",
+      "category": "conversational",
+      "style": "Speak steadily for the bounded one-minute diagnostic; leave a short quiet tail.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 60.0,
+      "labels": [
+        "test",
+        "continuity"
+      ],
+      "instructions": "Press Record once and read the prompt steadily, with short quiet pauses between sentences. Stay at the Mac and press Stop at sixty seconds. Watch the timer and waveform; both should keep moving without gaps. Save only if the stopped take is ready."
+    },
+    {
+      "prompt_id": "p09-rapid-cycles",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 3.0,
+      "labels": [
+        "test",
+        "transport"
+      ],
+      "instructions": "Make five short takes: press Record, press Stop within three seconds, then Save. In one cycle, double-click Record and check that only one recording starts. Stop should respond promptly and every take should stay separate. After each Save, select this step again before the next take."
+    },
+    {
+      "prompt_id": "p10-unplug-while-capturing",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 10.0,
+      "labels": [
+        "test",
+        "device-loss"
+      ],
+      "instructions": "Press Record. When the agent says unplug, at about three seconds, unplug the UMIK-1 and leave it unplugged. Look for a named device message, the recording ending by itself, no switch to another microphone and no way to save the incomplete take. The attempt ends within ten seconds."
+    },
+    {
+      "prompt_id": "p11-reconnect-and-recover",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 3.0,
+      "labels": [
+        "test",
+        "device-loss",
+        "recovery"
+      ],
+      "instructions": "Plug the same UMIK-1 back in. Recording should not resume by itself. Use Reconnect audio in the preview, then press Record for one new take and press Stop within three seconds. If Reconnect audio does not work, tell the agent instead of quitting the preview."
+    },
+    {
+      "prompt_id": "p12-sleep-wake",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 3.0,
+      "labels": [
+        "test",
+        "recovery",
+        "continuity"
+      ],
+      "instructions": "Press Record, and within three seconds put the Mac to sleep from the Apple menu. Wake the Mac yourself. Check that recording stayed stopped, the earlier take is still there, and Record waits for Reconnect audio. When the agent asks, use Reconnect audio and make one take of at most three seconds. After each Save, select this step again before the next take."
+    },
+    {
+      "prompt_id": "p13-draft-reopen",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 3.0,
+      "labels": [
+        "test",
+        "recovery"
+      ],
+      "instructions": "Make one take of at most three seconds and press Stop, but do not Save it. Quit the preview normally when the agent asks, then reopen it. Check that the same take is still there as a draft and was not saved or kept on its own. Choose Save or discard only when the agent asks."
+    },
+    {
+      "prompt_id": "p13a-interrupted-control",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 3.0,
+      "labels": [
+        "test",
+        "recovery"
+      ],
+      "instructions": "The agent performs this step outside the app; selecting it is optional. When the agent asks, press Record for a take of at most three seconds; the agent then ends the preview while it records. Reopen the preview only when the agent asks, and look at the recovered take without starting another recording."
+    },
+    {
+      "prompt_id": "p14-package-and-intake",
+      "category": "procedure",
+      "style": "Follow the steps; speak only if a step says so.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 120.0,
+      "labels": [
+        "test",
+        "package"
+      ],
+      "instructions": "Record fresh P04 then P05 first, in this app session, then prepare the package. Choose Prepare for lab, select the fresh spoken take and the fresh room tone, and submit. Look for a clear result or a named problem, and never change a take to make it pass. The agent checks the package afterwards."
+    }
+  ]
+}

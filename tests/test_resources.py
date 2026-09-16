@@ -5,7 +5,59 @@ from pathlib import Path
 
 import pytest
 
+from cole_voice_lab.canonical import canonical_sha256
+from cole_voice_lab.models import Prompt
+from cole_voice_lab.prompt_catalogs import PILOT_V1_SHA256, load_builtin_prompt_suite
 from cole_voice_lab.resources import load_prompt_suite, resource_path
+
+# docs/PROMPT_CATALOG_V2.md §2.5 goldens.
+PILOT_V2_SHA256 = "0f1f399de63a6c3c0e424b10bf27532b0e316c318a398877dea178ffd969a028"
+PILOT_V2_ROOM_TONE_SHA256 = {
+    "room-tone-start": "0377c02d0dd8bfbee08367edc73e016b0d156a9fc112aa7dc099a4f116eb90fb",
+    "room-tone-end": "105b37fa88783ade0bb9fb995ae528ca814a54e935759b8978008507fb1f60d1",
+}
+# docs/PROMPT_CATALOG_V2.md §4: one prompt per physical-gate procedure step, in order.
+PHYSICAL_TEST_STEPS = (
+    ("p01-setup-identity", "procedure", 120.0),
+    ("p02-microphone-denial", "procedure", 120.0),
+    ("p02a-permission-reset", "procedure", 120.0),
+    ("p03-grant-and-immediate-stop", "procedure", 2.0),
+    ("p04-room-tone", "room-tone", 10.0),
+    ("p05-spoken-sentence", "neutral", 10.0),
+    ("p06-native-playback", "procedure", 10.0),
+    ("p07-independent-playback", "procedure", 10.0),
+    ("p08-continuous-capture", "conversational", 60.0),
+    ("p09-rapid-cycles", "procedure", 3.0),
+    ("p10-unplug-while-capturing", "procedure", 10.0),
+    ("p11-reconnect-and-recover", "procedure", 3.0),
+    ("p12-sleep-wake", "procedure", 3.0),
+    ("p13-draft-reopen", "procedure", 3.0),
+    ("p13a-interrupted-control", "procedure", 3.0),
+    ("p14-package-and-intake", "procedure", 120.0),
+)
+PHYSICAL_TEST_EXTRA_LABELS = frozenset(
+    {
+        "setup",
+        "permission",
+        "transport",
+        "waveform",
+        "playback",
+        "continuity",
+        "device-loss",
+        "recovery",
+        "package",
+    }
+)
+# Built-in text ships in the wheel and the app bundle, and the script view is selectable.
+FORBIDDEN_SUBSTRINGS = ("/Users/", "~/", "<GATE>", "`", "sudo", "rm ", "private.cole.")
+AGENT_ONLY_SUBSTRINGS = ("tccutil", "afplay", "intake validate", "intake accept", "exact output")
+# Canonical hashes of the v1 prompts in the one-off catalog cole-physical-diagnostic-20260914
+# (read-only from its settings.json); P04, P05 and P08 copy their content verbatim.
+DIAGNOSTIC_PROMPT_SHA256 = {
+    "diagnostic-room-tone": "05b57bfd05a56aa357e676c176969842772e43ddfed1934b1455ed73e5bfe81e",
+    "diagnostic-spoken": "b3145ca87b620ab2e82a5fdd15d0334090de3a3c959bafc09aa00a4c03ca2a89",
+    "diagnostic-continuous": "e0c6edcaaba5fc3054beba0ae444b77ace1468a35c116f43f024118463f44f23",
+}
 
 
 class _CaptureConsoleHtmlParser(HTMLParser):
@@ -55,6 +107,104 @@ def test_evaluation_suite_is_held_out() -> None:
     assert not (
         {prompt.text for prompt in suite.prompts}
         & {prompt.text for prompt in load_prompt_suite("pilot").prompts}
+    )
+
+
+def test_versioned_aliases_load_released_resources_and_pilot_stays_v1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TR1: `pilot` never moves off v1; TQ1 separately proves the live launcher path."""
+    monkeypatch.chdir(tmp_path)
+    for name in ("pilot", "pilot-v1"):
+        assert canonical_sha256(load_prompt_suite(name)) == PILOT_V1_SHA256
+    assert load_prompt_suite("pilot-v2") == load_builtin_prompt_suite("pilot-v2.json")
+    assert load_prompt_suite("physical-test-v1") == load_builtin_prompt_suite(
+        "physical-test-v1.json"
+    )
+    with pytest.raises(FileNotFoundError):
+        load_prompt_suite("physical-test")
+
+
+def test_pilot_v2_resource_follows_its_authoring_contract() -> None:
+    """TR1: only the room tones change form, so 34 spoken prompt hashes keep their coverage."""
+    pilot, pilot_v2 = load_builtin_prompt_suite("pilot-v1.json"), load_prompt_suite("pilot-v2")
+
+    assert canonical_sha256(pilot_v2) == PILOT_V2_SHA256
+    assert pilot_v2.schema_version == "cole-voice-lab.prompt-suite/v2"
+    assert (pilot_v2.suite_id, pilot_v2.purpose) == ("cole-pilot-v2", "capture-pilot")
+    assert [p.prompt_id for p in pilot_v2.prompts] == [p.prompt_id for p in pilot.prompts]
+    assert sum(prompt.expected_seconds for prompt in pilot_v2.prompts) == 312.0
+    spoken = 0
+    for before, after in zip(pilot.prompts, pilot_v2.prompts, strict=True):
+        if before.category != "room-tone":
+            assert after == before and not after.labels and after.instructions is None
+            assert canonical_sha256(after) == canonical_sha256(before)
+            spoken += 1
+            continue
+        assert after.text is None and after.instructions == before.text and not after.labels
+        assert after.model_dump(exclude={"instructions"}) == before.model_dump(exclude={"text"})
+        assert canonical_sha256(after) == PILOT_V2_ROOM_TONE_SHA256[after.prompt_id]
+    assert spoken == 34
+
+
+def test_physical_test_resource_follows_its_authoring_contract() -> None:
+    """TR1: procedure steps, labels, verbatim diagnostic content and operator-only wording."""
+    suite = load_prompt_suite("physical-test-v1")
+    prompts = {prompt.prompt_id: prompt for prompt in suite.prompts}
+
+    assert suite.schema_version == "cole-voice-lab.prompt-suite/v2"
+    assert (suite.suite_id, suite.purpose) == ("cole-physical-test-v1", "physical-test")
+    assert [(p.prompt_id, p.category, p.expected_seconds) for p in suite.prompts] == list(
+        PHYSICAL_TEST_STEPS
+    )
+    for prompt in suite.prompts:
+        assert not prompt.holdout and not prompt.reference_candidate
+        assert prompt.labels[0] == "test" and len(prompt.labels) <= 3
+        assert set(prompt.labels[1:]) <= PHYSICAL_TEST_EXTRA_LABELS
+        assert prompt.instructions is not None
+        if prompt.category == "procedure":
+            assert prompt.style == "Follow the steps; speak only if a step says so."
+        for value in (prompt.text, prompt.instructions, prompt.style):
+            for forbidden in (*FORBIDDEN_SUBSTRINGS, *AGENT_ONLY_SUBSTRINGS):
+                assert forbidden not in (value or ""), (prompt.prompt_id, forbidden)
+
+    sources = {
+        "diagnostic-room-tone": Prompt(
+            prompt_id="diagnostic-room-tone",
+            text=prompts["p04-room-tone"].instructions,
+            category="room-tone",
+            style=prompts["p04-room-tone"].style,
+            expected_seconds=10.0,
+        ),
+        "diagnostic-spoken": Prompt(
+            prompt_id="diagnostic-spoken",
+            text=prompts["p05-spoken-sentence"].text,
+            category="neutral",
+            style=prompts["p05-spoken-sentence"].style,
+            expected_seconds=10.0,
+        ),
+        "diagnostic-continuous": Prompt(
+            prompt_id="diagnostic-continuous",
+            text=prompts["p08-continuous-capture"].text,
+            category="conversational",
+            style=prompts["p08-continuous-capture"].style,
+            expected_seconds=60.0,
+        ),
+    }
+    assert {name: canonical_sha256(p) for name, p in sources.items()} == DIAGNOSTIC_PROMPT_SHA256
+
+    def instructions(prompt_id: str) -> str:
+        return prompts[prompt_id].instructions or ""
+
+    agent_step = "The agent performs this step outside the app; selecting it is optional."
+    reselect = "After each Save, select this step again before the next take."
+    assert all(
+        agent_step in instructions(i) for i in ("p02a-permission-reset", "p13a-interrupted-control")
+    )
+    assert all(reselect in instructions(i) for i in ("p09-rapid-cycles", "p12-sleep-wake"))
+    assert (
+        "Record fresh P04 then P05 first, in this app session, then prepare the package."
+        in instructions("p14-package-and-intake")
     )
 
 
@@ -145,3 +295,5 @@ def test_capture_console_script_handles_automatic_stop_and_manual_preview_playba
     assert "Preview loaded. Press Play in the audio control to listen." in script
     assert "if (manualPlayback) {\n        elements.preview.focus();" in script
     assert "captureState.kind !== 'room-tone'\n      || !['ready', 'recording']" in script
+    assert "recording: captureState.elapsed_seconds > 0" in script
+    assert "Starting microphone — wait" in script

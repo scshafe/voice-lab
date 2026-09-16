@@ -1,0 +1,892 @@
+{
+  "$defs": {
+    "AnalysisState": {
+      "enum": [
+        "pending",
+        "running",
+        "verified",
+        "needs-review",
+        "invalid",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "AudioSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "encoding": {
+          "enum": [
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "maximum": 384000,
+          "minimum": 8000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sample_width_bytes": {
+          "enum": [
+            2,
+            3,
+            4
+          ],
+          "title": "Sample Width Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_rate_hz",
+        "channels",
+        "sample_width_bytes",
+        "encoding",
+        "frames",
+        "duration_seconds"
+      ],
+      "title": "AudioSpec",
+      "type": "object"
+    },
+    "CaptureContinuityEvidence": {
+      "additionalProperties": false,
+      "description": "Successful native input continuity bound to one exact, privately saved WAV.",
+      "properties": {
+        "backend": {
+          "const": "coreaudio-audioqueue",
+          "title": "Backend",
+          "type": "string"
+        },
+        "callback_count": {
+          "exclusiveMinimum": 0,
+          "title": "Callback Count",
+          "type": "integer"
+        },
+        "continuity_checked": {
+          "title": "Continuity Checked",
+          "type": "boolean"
+        },
+        "device_uid": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Device Uid",
+          "type": "string"
+        },
+        "first_sample_time": {
+          "title": "First Sample Time",
+          "type": "number"
+        },
+        "frames": {
+          "exclusiveMinimum": 0,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "last_sample_end": {
+          "title": "Last Sample End",
+          "type": "number"
+        },
+        "output_name": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Output Name",
+          "type": "string"
+        },
+        "received_frames": {
+          "exclusiveMinimum": 0,
+          "title": "Received Frames",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.capture-continuity/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stop_reason": {
+          "enum": [
+            "requested",
+            "maximum-duration"
+          ],
+          "title": "Stop Reason",
+          "type": "string"
+        },
+        "success": {
+          "title": "Success",
+          "type": "boolean"
+        },
+        "wav_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "wav_size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Wav Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "backend",
+        "device_uid",
+        "output_name",
+        "wav_sha256",
+        "wav_size_bytes",
+        "frames",
+        "received_frames",
+        "callback_count",
+        "first_sample_time",
+        "last_sample_end",
+        "success",
+        "continuity_checked",
+        "stop_reason"
+      ],
+      "title": "CaptureContinuityEvidence",
+      "type": "object"
+    },
+    "CaptureDevice": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "default": "avfoundation",
+          "enum": [
+            "avfoundation",
+            "coreaudio"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "calibration_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "device_id": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Device Id",
+          "type": "string"
+        },
+        "display_name": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "microphone_serial": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Microphone Serial"
+        }
+      },
+      "required": [
+        "device_id",
+        "display_name"
+      ],
+      "title": "CaptureDevice",
+      "type": "object"
+    },
+    "CaptureReservation": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "$ref": "#/$defs/RecordingGroup"
+        },
+        "maximum_frames": {
+          "default": 28800000,
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "Maximum Frames",
+          "type": "integer"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "original_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "partial_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "process_generation": {
+          "$ref": "#/$defs/StableId"
+        },
+        "prompt": {
+          "$ref": "#/$defs/Prompt"
+        },
+        "requested_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.capture-reservation/v1",
+          "default": "cole-voice-lab.capture-reservation/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "operation_id",
+        "process_generation",
+        "group",
+        "prompt",
+        "requested_at",
+        "partial_path",
+        "original_path"
+      ],
+      "title": "CaptureReservation",
+      "type": "object"
+    },
+    "CaptureSealReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioSpec"
+        },
+        "continuity": {
+          "$ref": "#/$defs/CaptureContinuityEvidence"
+        },
+        "first_sample_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "last_sample_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "original_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "original_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "original_size_bytes": {
+          "exclusiveMinimum": 44,
+          "title": "Original Size Bytes",
+          "type": "integer"
+        },
+        "process_generation": {
+          "$ref": "#/$defs/StableId"
+        },
+        "recorder_build": {
+          "$ref": "#/$defs/RecordingBuildIdentity"
+        },
+        "requested_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "reservation_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.capture-seal/v1",
+          "default": "cole-voice-lab.capture-seal/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sealed_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "reservation_sha256",
+        "process_generation",
+        "recorder_build",
+        "original_path",
+        "original_sha256",
+        "original_size_bytes",
+        "audio",
+        "requested_at",
+        "first_sample_at",
+        "last_sample_at",
+        "sealed_at",
+        "continuity"
+      ],
+      "title": "CaptureSealReceipt",
+      "type": "object"
+    },
+    "DecisionState": {
+      "enum": [
+        "draft",
+        "kept",
+        "rejected",
+        "removed"
+      ],
+      "type": "string"
+    },
+    "ExportState": {
+      "enum": [
+        "unprepared",
+        "preparing",
+        "prepared",
+        "accepted-raw",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "FrameCount": {
+      "maximum": 28800000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "PositiveRevision": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "PreparedCaptureGate": {
+      "additionalProperties": false,
+      "description": "Previously verified corpus approval identity, invalidated when its evidence changes.",
+      "properties": {
+        "approval_path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RelativePath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "approval_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "enum": [
+            "not-required",
+            "ready",
+            "unprepared",
+            "invalid"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "verified_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "PreparedCaptureGate",
+      "type": "object"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference",
+            "procedure"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "PromptSuite": {
+      "additionalProperties": false,
+      "properties": {
+        "prompts": {
+          "items": {
+            "$ref": "#/$defs/Prompt"
+          },
+          "minItems": 1,
+          "title": "Prompts",
+          "type": "array"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation",
+            "physical-test"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "cole-voice-lab.prompt-suite/v1",
+          "enum": [
+            "cole-voice-lab.prompt-suite/v1",
+            "cole-voice-lab.prompt-suite/v2"
+          ],
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "suite_id",
+        "purpose",
+        "prompts"
+      ],
+      "title": "PromptSuite",
+      "type": "object"
+    },
+    "RecordingBuildIdentity": {
+      "additionalProperties": false,
+      "description": "Exact executable, source-tree and environment identities; mutable tags are insufficient.",
+      "properties": {
+        "build_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "environment_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "build_id",
+        "source_sha256",
+        "executable_sha256",
+        "environment_sha256"
+      ],
+      "title": "RecordingBuildIdentity",
+      "type": "object"
+    },
+    "RecordingDecisionEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "reject",
+            "remove",
+            "restore"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "committed_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "current": {
+          "$ref": "#/$defs/DecisionState"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "previous": {
+          "$ref": "#/$defs/DecisionState"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "restore_decision": {
+          "anyOf": [
+            {
+              "enum": [
+                "draft",
+                "kept"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Restore Decision"
+        },
+        "revision": {
+          "$ref": "#/$defs/PositiveRevision"
+        }
+      },
+      "required": [
+        "operation_id",
+        "revision",
+        "action",
+        "previous",
+        "current",
+        "restore_decision",
+        "committed_at"
+      ],
+      "title": "RecordingDecisionEvidence",
+      "type": "object"
+    },
+    "RecordingFrameRange": {
+      "additionalProperties": false,
+      "description": "Source-frame recipe, independent from eventual derivative rendering.",
+      "properties": {
+        "end_frame": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "End Frame",
+          "type": "integer"
+        },
+        "source_frames": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "Source Frames",
+          "type": "integer"
+        },
+        "start_frame": {
+          "$ref": "#/$defs/FrameCount"
+        }
+      },
+      "required": [
+        "source_frames",
+        "start_frame",
+        "end_frame"
+      ],
+      "title": "RecordingFrameRange",
+      "type": "object"
+    },
+    "RecordingGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "capture_device": {
+          "$ref": "#/$defs/CaptureDevice"
+        },
+        "capture_host": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Capture Host",
+          "type": "string"
+        },
+        "catalog": {
+          "$ref": "#/$defs/PromptSuite"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "context_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "gate": {
+          "$ref": "#/$defs/PreparedCaptureGate"
+        },
+        "group_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "opened_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "reason": {
+          "enum": [
+            "app-start",
+            "device-change",
+            "configuration-change",
+            "new-setup"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "room_tone_take_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 32,
+          "title": "Room Tone Take Ids",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.recording-group/v1",
+          "default": "cole-voice-lab.recording-group/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "setup_description": {
+          "default": "",
+          "maxLength": 1024,
+          "title": "Setup Description",
+          "type": "string"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "group_id",
+        "context_revision",
+        "subject_id",
+        "catalog",
+        "catalog_sha256",
+        "capture_device",
+        "capture_host",
+        "opened_at",
+        "reason",
+        "gate"
+      ],
+      "title": "RecordingGroup",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "TransportPhase": {
+      "enum": [
+        "ready",
+        "starting",
+        "recording",
+        "stopping",
+        "draft",
+        "saving",
+        "error"
+      ],
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "analysis": {
+      "$ref": "#/$defs/AnalysisState"
+    },
+    "decision": {
+      "$ref": "#/$defs/DecisionState"
+    },
+    "decision_evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingDecisionEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "decision_revision": {
+      "$ref": "#/$defs/Revision"
+    },
+    "edit_revision": {
+      "$ref": "#/$defs/Revision"
+    },
+    "export": {
+      "$ref": "#/$defs/ExportState"
+    },
+    "frame_range": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingFrameRange"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "reservation": {
+      "$ref": "#/$defs/CaptureReservation"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-take/v1",
+      "default": "cole-voice-lab.recording-take/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "seal": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CaptureSealReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "state_revision": {
+      "$ref": "#/$defs/Revision"
+    },
+    "transport": {
+      "$ref": "#/$defs/TransportPhase"
+    }
+  },
+  "required": [
+    "reservation",
+    "transport",
+    "decision",
+    "decision_revision",
+    "analysis",
+    "export",
+    "edit_revision",
+    "state_revision"
+  ],
+  "title": "RecordingTake",
+  "type": "object"
+}

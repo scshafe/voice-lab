@@ -1,0 +1,2 @@
+# Include the one maintained migration source in source distributions.
+include migrations/*.sql

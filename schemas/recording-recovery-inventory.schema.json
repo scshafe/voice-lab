@@ -1,0 +1,263 @@
+{
+  "$defs": {
+    "ErrorCode": {
+      "enum": [
+        "RECORDING.INVALID_MESSAGE",
+        "RECORDING.VERSION_MISMATCH",
+        "RECORDING.BUILD_MISMATCH",
+        "RECORDING.STALE_REVISION",
+        "RECORDING.STALE_GENERATION",
+        "RECORDING.OWNERSHIP_CONFLICT",
+        "RECORDING.INVALID_TRANSITION",
+        "RECORDING.DEVICE_UNAVAILABLE",
+        "RECORDING.PERMISSION_DENIED",
+        "RECORDING.PLAYBACK_ACTIVE",
+        "RECORDING.DISK_SPACE",
+        "RECORDING.WRITE_FAILED",
+        "RECORDING.WAVEFORM_CACHE_UNAVAILABLE",
+        "RECORDING.CONTINUITY_FAILED",
+        "RECORDING.CAPTURE_OVERFLOW",
+        "RECORDING.PARENT_LOST",
+        "RECORDING.SOURCE_CHANGED",
+        "RECORDING.HISTORY_UNKNOWN",
+        "RECORDING.GATE_NOT_READY",
+        "RECORDING.ANALYSIS_FAILED",
+        "RECORDING.PLAYBACK_FAILED",
+        "RECORDING.EDIT_FAILED",
+        "RECORDING.PACKAGE_INCOMPLETE",
+        "RECORDING.CANCELLED"
+      ],
+      "type": "string"
+    },
+    "RecordingError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Details",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "RecordingError",
+      "type": "object"
+    },
+    "RecordingRecoveryFinding": {
+      "additionalProperties": false,
+      "description": "One observed result; pending results remain explicitly awaiting recheck.",
+      "properties": {
+        "observed_take_revision": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observed Take Revision"
+        },
+        "pending": {
+          "title": "Pending",
+          "type": "boolean"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingRecoveryStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "pending"
+      ],
+      "title": "RecordingRecoveryFinding",
+      "type": "object"
+    },
+    "RecordingRecoveryStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "recovered_seal": {
+          "default": false,
+          "title": "Recovered Seal",
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "kept",
+            "rejected",
+            "removed",
+            "partial",
+            "empty",
+            "busy",
+            "unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "status"
+      ],
+      "title": "RecordingRecoveryStatus",
+      "type": "object"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Disposable inventory coverage, independent of canonical history completeness.",
+  "properties": {
+    "covered_store_revision": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Covered Store Revision"
+    },
+    "entries": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RecordingRecoveryFinding"
+      },
+      "maxItems": 50,
+      "title": "Entries",
+      "type": "array"
+    },
+    "enumeration_complete": {
+      "title": "Enumeration Complete",
+      "type": "boolean"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "finding_count": {
+      "minimum": 0,
+      "title": "Finding Count",
+      "type": "integer"
+    },
+    "inventory_revision": {
+      "minimum": 0,
+      "title": "Inventory Revision",
+      "type": "integer"
+    },
+    "next_cursor": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Cursor"
+    },
+    "pending_count": {
+      "minimum": 0,
+      "title": "Pending Count",
+      "type": "integer"
+    },
+    "recovered_seal_count": {
+      "minimum": 0,
+      "title": "Recovered Seal Count",
+      "type": "integer"
+    },
+    "scan_generation": {
+      "$ref": "#/$defs/StableId"
+    },
+    "scan_state": {
+      "enum": [
+        "scanning",
+        "complete",
+        "error"
+      ],
+      "title": "Scan State",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-recovery-inventory/v1",
+      "default": "cole-voice-lab.recording-recovery-inventory/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "scan_generation",
+    "inventory_revision",
+    "scan_state",
+    "enumeration_complete",
+    "pending_count",
+    "finding_count",
+    "recovered_seal_count"
+  ],
+  "title": "RecordingRecoveryInventoryPage",
+  "type": "object"
+}

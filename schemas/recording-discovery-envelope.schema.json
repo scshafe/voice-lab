@@ -1,0 +1,361 @@
+{
+  "$defs": {
+    "DiscoveryAlias": {
+      "additionalProperties": false,
+      "properties": {
+        "alias_kind": {
+          "enum": [
+            "package-raw",
+            "package-tmp"
+          ],
+          "title": "Alias Kind",
+          "type": "string"
+        },
+        "kind": {
+          "const": "alias",
+          "default": "alias",
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "path",
+        "sha256",
+        "alias_kind"
+      ],
+      "title": "DiscoveryAlias",
+      "type": "object"
+    },
+    "DiscoveryBegin": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "begin",
+          "default": "begin",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "DiscoveryBegin",
+      "type": "object"
+    },
+    "DiscoveryFinished": {
+      "additionalProperties": false,
+      "properties": {
+        "deferred": {
+          "default": false,
+          "title": "Deferred",
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "const": "finished",
+          "default": "finished",
+          "title": "Kind",
+          "type": "string"
+        },
+        "legacy_backfilled": {
+          "default": false,
+          "title": "Legacy Backfilled",
+          "type": "boolean"
+        },
+        "legacy_fingerprint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "native_fingerprint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "native_reconciled": {
+          "default": false,
+          "title": "Native Reconciled",
+          "type": "boolean"
+        }
+      },
+      "title": "DiscoveryFinished",
+      "type": "object"
+    },
+    "DiscoveryInvalid": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/RecordingError"
+        },
+        "expected_state_revision": {
+          "minimum": 0,
+          "title": "Expected State Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "invalid",
+          "default": "invalid",
+          "title": "Kind",
+          "type": "string"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "expected_state_revision",
+        "error"
+      ],
+      "title": "DiscoveryInvalid",
+      "type": "object"
+    },
+    "DiscoveryLegacy": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_token": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Expected Token",
+          "type": "array"
+        },
+        "kind": {
+          "const": "legacy",
+          "default": "legacy",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/DiscoverySpoolRef"
+        }
+      },
+      "required": [
+        "source",
+        "expected_token"
+      ],
+      "title": "DiscoveryLegacy",
+      "type": "object"
+    },
+    "DiscoveryNative": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "native",
+          "default": "native",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/DiscoverySpoolRef"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "DiscoveryNative",
+      "type": "object"
+    },
+    "DiscoveryPublication": {
+      "discriminator": {
+        "mapping": {
+          "alias": "#/$defs/DiscoveryAlias",
+          "begin": "#/$defs/DiscoveryBegin",
+          "finished": "#/$defs/DiscoveryFinished",
+          "invalid": "#/$defs/DiscoveryInvalid",
+          "legacy": "#/$defs/DiscoveryLegacy",
+          "native": "#/$defs/DiscoveryNative"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/DiscoveryBegin"
+        },
+        {
+          "$ref": "#/$defs/DiscoveryNative"
+        },
+        {
+          "$ref": "#/$defs/DiscoveryAlias"
+        },
+        {
+          "$ref": "#/$defs/DiscoveryInvalid"
+        },
+        {
+          "$ref": "#/$defs/DiscoveryLegacy"
+        },
+        {
+          "$ref": "#/$defs/DiscoveryFinished"
+        }
+      ]
+    },
+    "DiscoverySpoolRef": {
+      "additionalProperties": false,
+      "properties": {
+        "offset": {
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "record_count": {
+          "maximum": 200000,
+          "minimum": 1,
+          "title": "Record Count",
+          "type": "integer"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "maximum": 209716000000,
+          "minimum": 1,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "offset",
+        "size_bytes",
+        "sha256",
+        "record_count"
+      ],
+      "title": "DiscoverySpoolRef",
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "RECORDING.INVALID_MESSAGE",
+        "RECORDING.VERSION_MISMATCH",
+        "RECORDING.BUILD_MISMATCH",
+        "RECORDING.STALE_REVISION",
+        "RECORDING.STALE_GENERATION",
+        "RECORDING.OWNERSHIP_CONFLICT",
+        "RECORDING.INVALID_TRANSITION",
+        "RECORDING.DEVICE_UNAVAILABLE",
+        "RECORDING.PERMISSION_DENIED",
+        "RECORDING.PLAYBACK_ACTIVE",
+        "RECORDING.DISK_SPACE",
+        "RECORDING.WRITE_FAILED",
+        "RECORDING.WAVEFORM_CACHE_UNAVAILABLE",
+        "RECORDING.CONTINUITY_FAILED",
+        "RECORDING.CAPTURE_OVERFLOW",
+        "RECORDING.PARENT_LOST",
+        "RECORDING.SOURCE_CHANGED",
+        "RECORDING.HISTORY_UNKNOWN",
+        "RECORDING.GATE_NOT_READY",
+        "RECORDING.ANALYSIS_FAILED",
+        "RECORDING.PLAYBACK_FAILED",
+        "RECORDING.EDIT_FAILED",
+        "RECORDING.PACKAGE_INCOMPLETE",
+        "RECORDING.CANCELLED"
+      ],
+      "type": "string"
+    },
+    "RecordingError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Details",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "RecordingError",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "generation": {
+      "$ref": "#/$defs/StableId"
+    },
+    "publication": {
+      "$ref": "#/$defs/DiscoveryPublication"
+    },
+    "sequence": {
+      "maximum": 200000,
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "generation",
+    "sequence",
+    "publication"
+  ],
+  "title": "DiscoveryEnvelope",
+  "type": "object"
+}

@@ -1,0 +1,140 @@
+{
+  "$defs": {
+    "DiscoveryRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "generation": {
+          "$ref": "#/$defs/StableId"
+        },
+        "group_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "index_instance": {
+          "$ref": "#/$defs/StableId"
+        },
+        "legacy_fingerprint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "legacy_token": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Legacy Token",
+          "type": "array"
+        },
+        "native_fingerprint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.discovery-worker/v1",
+          "default": "cole-voice-lab.discovery-worker/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "generation",
+        "group_id",
+        "subject_id",
+        "catalog_sha256",
+        "index_instance",
+        "legacy_token"
+      ],
+      "title": "DiscoveryRequest",
+      "type": "object"
+    },
+    "DiscoverySpoolRef": {
+      "additionalProperties": false,
+      "properties": {
+        "offset": {
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "record_count": {
+          "maximum": 200000,
+          "minimum": 1,
+          "title": "Record Count",
+          "type": "integer"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "maximum": 209716000000,
+          "minimum": 1,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "offset",
+        "size_bytes",
+        "sha256",
+        "record_count"
+      ],
+      "title": "DiscoverySpoolRef",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "inventory": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DiscoverySpoolRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "request": {
+      "$ref": "#/$defs/DiscoveryRequest"
+    }
+  },
+  "required": [
+    "request",
+    "inventory"
+  ],
+  "title": "DiscoveryWorkerStart",
+  "type": "object"
+}

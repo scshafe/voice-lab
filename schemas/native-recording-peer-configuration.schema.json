@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "RecordingBuildIdentity": {
+      "additionalProperties": false,
+      "description": "Exact executable, source-tree and environment identities; mutable tags are insufficient.",
+      "properties": {
+        "build_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "environment_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "build_id",
+        "source_sha256",
+        "executable_sha256",
+        "environment_sha256"
+      ],
+      "title": "RecordingBuildIdentity",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "arguments": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 32,
+      "title": "Arguments",
+      "type": "array"
+    },
+    "build": {
+      "$ref": "#/$defs/RecordingBuildIdentity"
+    },
+    "build_identity_path": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Build Identity Path",
+      "type": "string"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Environment"
+    },
+    "executable": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Executable",
+      "type": "string"
+    }
+  },
+  "required": [
+    "executable",
+    "arguments",
+    "environment",
+    "build",
+    "build_identity_path"
+  ],
+  "title": "NativeRecordingPeerConfiguration",
+  "type": "object"
+}

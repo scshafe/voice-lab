@@ -148,7 +148,7 @@ def _make_trial(
         trial_id=trial_id,
         candidate_id=candidate_id,
         track=track,
-        text=prompt.text,
+        text=prompt.require_text(),
         language="en",
         output_path=str(native),
         reference=reference,

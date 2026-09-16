@@ -1,0 +1,908 @@
+{
+  "$defs": {
+    "AnalysisState": {
+      "enum": [
+        "pending",
+        "running",
+        "verified",
+        "needs-review",
+        "invalid",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "DecisionCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "reject",
+            "remove",
+            "restore"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "command": {
+          "const": "decision",
+          "default": "decision",
+          "title": "Command",
+          "type": "string"
+        },
+        "expected_decision_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "selection": {
+          "$ref": "#/$defs/RecordingSelection"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "selection",
+        "operation_id",
+        "take_id",
+        "expected_decision_revision",
+        "action"
+      ],
+      "title": "DecisionCommand",
+      "type": "object"
+    },
+    "DecisionState": {
+      "enum": [
+        "draft",
+        "kept",
+        "rejected",
+        "removed"
+      ],
+      "type": "string"
+    },
+    "EditTakeCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "const": "edit",
+          "default": "edit",
+          "title": "Command",
+          "type": "string"
+        },
+        "expected_edit_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "frame_range": {
+          "$ref": "#/$defs/RecordingFrameRange"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selection": {
+          "$ref": "#/$defs/RecordingSelection"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "selection",
+        "operation_id",
+        "take_id",
+        "source_sha256",
+        "expected_edit_revision",
+        "frame_range"
+      ],
+      "title": "EditTakeCommand",
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "RECORDING.INVALID_MESSAGE",
+        "RECORDING.VERSION_MISMATCH",
+        "RECORDING.BUILD_MISMATCH",
+        "RECORDING.STALE_REVISION",
+        "RECORDING.STALE_GENERATION",
+        "RECORDING.OWNERSHIP_CONFLICT",
+        "RECORDING.INVALID_TRANSITION",
+        "RECORDING.DEVICE_UNAVAILABLE",
+        "RECORDING.PERMISSION_DENIED",
+        "RECORDING.PLAYBACK_ACTIVE",
+        "RECORDING.DISK_SPACE",
+        "RECORDING.WRITE_FAILED",
+        "RECORDING.WAVEFORM_CACHE_UNAVAILABLE",
+        "RECORDING.CONTINUITY_FAILED",
+        "RECORDING.CAPTURE_OVERFLOW",
+        "RECORDING.PARENT_LOST",
+        "RECORDING.SOURCE_CHANGED",
+        "RECORDING.HISTORY_UNKNOWN",
+        "RECORDING.GATE_NOT_READY",
+        "RECORDING.ANALYSIS_FAILED",
+        "RECORDING.PLAYBACK_FAILED",
+        "RECORDING.EDIT_FAILED",
+        "RECORDING.PACKAGE_INCOMPLETE",
+        "RECORDING.CANCELLED"
+      ],
+      "type": "string"
+    },
+    "ExportState": {
+      "enum": [
+        "unprepared",
+        "preparing",
+        "prepared",
+        "accepted-raw",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "FrameCount": {
+      "maximum": 28800000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference",
+            "procedure"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "RecordingCursor": {
+      "additionalProperties": false,
+      "properties": {
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "group_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "mode": {
+          "enum": [
+            "selected-prompt",
+            "continue-missing"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.recording-cursor/v1",
+          "default": "cole-voice-lab.recording-cursor/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "selection": {
+          "$ref": "#/$defs/RecordingSelection"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "subject_id",
+        "group_id",
+        "selection",
+        "mode",
+        "complete",
+        "operation_id"
+      ],
+      "title": "RecordingCursor",
+      "type": "object"
+    },
+    "RecordingEdit": {
+      "additionalProperties": false,
+      "description": "One exact source's effective frame selection and recoverable removal state.",
+      "properties": {
+        "derived_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Derived Path"
+        },
+        "derived_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "end_frame": {
+          "exclusiveMinimum": 0,
+          "title": "End Frame",
+          "type": "integer"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "removal_reason": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Removal Reason"
+        },
+        "removed": {
+          "default": false,
+          "title": "Removed",
+          "type": "boolean"
+        },
+        "sample_rate": {
+          "const": 48000,
+          "default": 48000,
+          "title": "Sample Rate",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.recording-edit/v1",
+          "default": "cole-voice-lab.recording-edit/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "session_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_frames": {
+          "exclusiveMinimum": 0,
+          "title": "Source Frames",
+          "type": "integer"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "start_frame": {
+          "minimum": 0,
+          "title": "Start Frame",
+          "type": "integer"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject_id",
+        "session_id",
+        "prompt_id",
+        "source_sha256",
+        "source_frames",
+        "start_frame",
+        "end_frame",
+        "updated_at"
+      ],
+      "title": "RecordingEdit",
+      "type": "object"
+    },
+    "RecordingError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Details",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "RecordingError",
+      "type": "object"
+    },
+    "RecordingFileIdentity": {
+      "additionalProperties": false,
+      "description": "Prepared authorization identity, including ctime to detect preserved-mtime changes.",
+      "properties": {
+        "ctime_ns": {
+          "maximum": 9223372036854775807,
+          "minimum": -9223372036854775808,
+          "title": "Ctime Ns",
+          "type": "integer"
+        },
+        "device": {
+          "$ref": "#/$defs/Revision"
+        },
+        "inode": {
+          "$ref": "#/$defs/Revision"
+        },
+        "mode": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "title": "Mode",
+          "type": "integer"
+        },
+        "mtime_ns": {
+          "maximum": 9223372036854775807,
+          "minimum": -9223372036854775808,
+          "title": "Mtime Ns",
+          "type": "integer"
+        },
+        "relative_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/Revision"
+        }
+      },
+      "required": [
+        "relative_path",
+        "device",
+        "inode",
+        "size_bytes",
+        "mode",
+        "mtime_ns",
+        "ctime_ns"
+      ],
+      "title": "RecordingFileIdentity",
+      "type": "object"
+    },
+    "RecordingFrameRange": {
+      "additionalProperties": false,
+      "description": "Source-frame recipe, independent from eventual derivative rendering.",
+      "properties": {
+        "end_frame": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "End Frame",
+          "type": "integer"
+        },
+        "source_frames": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "Source Frames",
+          "type": "integer"
+        },
+        "start_frame": {
+          "$ref": "#/$defs/FrameCount"
+        }
+      },
+      "required": [
+        "source_frames",
+        "start_frame",
+        "end_frame"
+      ],
+      "title": "RecordingFrameRange",
+      "type": "object"
+    },
+    "RecordingHistoryEntry": {
+      "additionalProperties": false,
+      "description": "Small indexed projection; history pages neither transmit catalogs nor read WAVs.",
+      "properties": {
+        "analysis": {
+          "$ref": "#/$defs/AnalysisState"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "date_precision": {
+          "enum": [
+            "take",
+            "session",
+            "unknown"
+          ],
+          "title": "Date Precision",
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/DecisionState"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "export": {
+          "$ref": "#/$defs/ExportState"
+        },
+        "group_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "legacy_session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt": {
+          "$ref": "#/$defs/Prompt"
+        },
+        "recorded_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_frames": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FrameCount"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "subject_id",
+        "group_id",
+        "legacy_session_id",
+        "catalog_sha256",
+        "prompt",
+        "recorded_at",
+        "date_precision",
+        "source_sha256",
+        "source_frames",
+        "decision",
+        "analysis",
+        "export",
+        "state_revision"
+      ],
+      "title": "RecordingHistoryEntry",
+      "type": "object"
+    },
+    "RecordingLegacyEditIntent": {
+      "additionalProperties": false,
+      "description": "Durable legacy intent precedes its compatible v1 derivative and edit pointer.",
+      "properties": {
+        "before": {
+          "$ref": "#/$defs/RecordingReviewSource"
+        },
+        "committed_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "cursor": {
+          "$ref": "#/$defs/RecordingCursor"
+        },
+        "original_edit": {
+          "$ref": "#/$defs/RecordingEdit"
+        },
+        "projection": {
+          "$ref": "#/$defs/RecordingHistoryEntry"
+        },
+        "request": {
+          "discriminator": {
+            "mapping": {
+              "decision": "#/$defs/DecisionCommand",
+              "edit": "#/$defs/EditTakeCommand"
+            },
+            "propertyName": "command"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/EditTakeCommand"
+            },
+            {
+              "$ref": "#/$defs/DecisionCommand"
+            }
+          ],
+          "title": "Request"
+        },
+        "request_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "restore_decision": {
+          "enum": [
+            "draft",
+            "kept"
+          ],
+          "title": "Restore Decision",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.recording-legacy-edit-intent/v1",
+          "default": "cole-voice-lab.recording-legacy-edit-intent/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "session_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source": {
+          "$ref": "#/$defs/RecordingReviewSource"
+        }
+      },
+      "required": [
+        "request",
+        "request_sha256",
+        "session_id",
+        "before",
+        "source",
+        "cursor",
+        "original_edit",
+        "projection",
+        "restore_decision",
+        "committed_at"
+      ],
+      "title": "RecordingLegacyEditIntent",
+      "type": "object"
+    },
+    "RecordingReviewSource": {
+      "additionalProperties": false,
+      "description": "Authorization for one original; native playback verifies this exact descriptor/digest.",
+      "properties": {
+        "analysis": {
+          "$ref": "#/$defs/AnalysisState"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "date_precision": {
+          "enum": [
+            "take",
+            "session",
+            "unknown"
+          ],
+          "title": "Date Precision",
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/DecisionState"
+        },
+        "decision_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "edit_recipe_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "edit_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "eligibility_messages": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Eligibility Messages",
+          "type": "array"
+        },
+        "export": {
+          "$ref": "#/$defs/ExportState"
+        },
+        "frame_range": {
+          "$ref": "#/$defs/RecordingFrameRange"
+        },
+        "original_kind": {
+          "enum": [
+            "native-original",
+            "legacy-staged",
+            "accepted-raw"
+          ],
+          "title": "Original Kind",
+          "type": "string"
+        },
+        "prompt": {
+          "$ref": "#/$defs/Prompt"
+        },
+        "recorded_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_frames": {
+          "$ref": "#/$defs/FrameCount"
+        },
+        "source_identity": {
+          "$ref": "#/$defs/RecordingFileIdentity"
+        },
+        "source_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "take_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "take_id",
+        "subject_id",
+        "catalog_sha256",
+        "prompt",
+        "source_path",
+        "source_sha256",
+        "source_frames",
+        "source_identity",
+        "frame_range",
+        "decision",
+        "decision_revision",
+        "edit_revision",
+        "analysis",
+        "export",
+        "recorded_at",
+        "date_precision",
+        "original_kind"
+      ],
+      "title": "RecordingReviewSource",
+      "type": "object"
+    },
+    "RecordingSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "index_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "selection_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "take_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "catalog_sha256",
+        "prompt_id",
+        "take_id",
+        "selection_revision",
+        "index_revision"
+      ],
+      "title": "RecordingSelection",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "intent": {
+      "$ref": "#/$defs/RecordingLegacyEditIntent"
+    },
+    "recipe_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-legacy-edit-job/v1",
+      "default": "cole-voice-lab.recording-legacy-edit-job/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "intent",
+    "recipe_sha256"
+  ],
+  "title": "RecordingLegacyEditJob",
+  "type": "object"
+}

@@ -453,8 +453,8 @@ def serve_capture_console(
         if open_browser:
             browser_open(server.url)
         server.serve_forever(poll_interval=0.1)
-    except KeyboardInterrupt:
-        engine.abort()
-        raise
     finally:
-        server.server_close()
+        try:
+            engine.abort()
+        finally:
+            server.server_close()

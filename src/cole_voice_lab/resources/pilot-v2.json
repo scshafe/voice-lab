@@ -1,0 +1,331 @@
+{
+  "schema_version": "cole-voice-lab.prompt-suite/v2",
+  "suite_id": "cole-pilot-v2",
+  "purpose": "capture-pilot",
+  "prompts": [
+    {
+      "prompt_id": "room-tone-start",
+      "category": "room-tone",
+      "style": "Silence; keep the recording position unchanged.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 15.0,
+      "instructions": "Remain still and silent while the room tone is recorded."
+    },
+    {
+      "prompt_id": "reference-neutral-01",
+      "text": "A quiet morning gives us room to notice small details: the click of a latch, the weight of a book, and the soft rhythm of rain beyond the window.",
+      "category": "reference",
+      "style": "Natural, steady, close conversation.",
+      "reference_candidate": true,
+      "holdout": false,
+      "expected_seconds": 13.0
+    },
+    {
+      "prompt_id": "reference-warm-01",
+      "text": "We can take this one step at a time, test what matters, and keep the parts that genuinely feel useful. There is no need to rush the interesting work.",
+      "category": "reference",
+      "style": "Warm, reassuring, and unforced.",
+      "reference_candidate": true,
+      "holdout": false,
+      "expected_seconds": 13.0
+    },
+    {
+      "prompt_id": "reference-conversational-01",
+      "text": "So, what happens if we change only one variable, run the same example again, and listen before we look at the score? That should tell us quite a lot.",
+      "category": "reference",
+      "style": "Curious, conversational, lightly animated.",
+      "reference_candidate": true,
+      "holdout": false,
+      "expected_seconds": 13.0
+    },
+    {
+      "prompt_id": "reference-narration-01",
+      "text": "Beyond the cedar fence, a narrow path curved toward the water. Blue shadows crossed the stones, while a bright-winged bird waited in the reeds.",
+      "category": "reference",
+      "style": "Calm audiobook narration.",
+      "reference_candidate": true,
+      "holdout": false,
+      "expected_seconds": 13.0
+    },
+    {
+      "prompt_id": "neutral-01",
+      "text": "Please place the yellow folder beside the green ceramic bowl.",
+      "category": "neutral",
+      "style": "Natural neutral speech.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 6.0
+    },
+    {
+      "prompt_id": "neutral-02",
+      "text": "Fresh coffee cooled on the desk while the last train crossed the bridge.",
+      "category": "neutral",
+      "style": "Natural neutral speech.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 7.0
+    },
+    {
+      "prompt_id": "neutral-03",
+      "text": "The package arrived early, although nobody heard the bell.",
+      "category": "neutral",
+      "style": "Natural neutral speech.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 6.0
+    },
+    {
+      "prompt_id": "neutral-04",
+      "text": "Seven bright leaves drifted across the porch and gathered near the steps.",
+      "category": "neutral",
+      "style": "Natural neutral speech.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 7.0
+    },
+    {
+      "prompt_id": "neutral-05",
+      "text": "A careful answer can be brief without leaving out the important part.",
+      "category": "neutral",
+      "style": "Natural neutral speech.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 7.0
+    },
+    {
+      "prompt_id": "neutral-06",
+      "text": "Clouds moved east, but the afternoon stayed unexpectedly warm.",
+      "category": "neutral",
+      "style": "Natural neutral speech.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 6.0
+    },
+    {
+      "prompt_id": "neutral-07",
+      "text": "The old clock lost a minute whenever the weather turned cold.",
+      "category": "neutral",
+      "style": "Natural neutral speech.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 6.0
+    },
+    {
+      "prompt_id": "neutral-08",
+      "text": "Keep the original file, and write every transformed version somewhere else.",
+      "category": "neutral",
+      "style": "Natural neutral speech.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 7.0
+    },
+    {
+      "prompt_id": "neutral-09",
+      "text": "Small choices become easier to compare when the evidence is consistent.",
+      "category": "neutral",
+      "style": "Natural neutral speech.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 7.0
+    },
+    {
+      "prompt_id": "conversational-01",
+      "text": "Did you hear that tiny buzz, or was it just the refrigerator turning on?",
+      "category": "conversational",
+      "style": "Casual question to a nearby friend.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 7.0
+    },
+    {
+      "prompt_id": "conversational-02",
+      "text": "I thought the first version was fine, but the second one has a much better rhythm.",
+      "category": "conversational",
+      "style": "Casual, mildly opinionated.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "conversational-03",
+      "text": "Wait, are we measuring the model, the microphone, or a little bit of both?",
+      "category": "conversational",
+      "style": "Curious with a light pause after wait.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 7.0
+    },
+    {
+      "prompt_id": "conversational-04",
+      "text": "Honestly, I would rather fix the setup now than wonder about it after an hour of recording.",
+      "category": "conversational",
+      "style": "Frank but relaxed.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 9.0
+    },
+    {
+      "prompt_id": "conversational-05",
+      "text": "That result is strange in a useful way; let's save it and figure out why.",
+      "category": "conversational",
+      "style": "Interested and lightly amused.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 7.0
+    },
+    {
+      "prompt_id": "conversational-06",
+      "text": "Would you try the longer paragraph once more, with the same pace as before?",
+      "category": "conversational",
+      "style": "Polite request, natural upward inflection.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "warm-01",
+      "text": "You have already done the hard part by beginning; now we can make the next step clear and manageable.",
+      "category": "warm-narration",
+      "style": "Warm and encouraging, not theatrical.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 9.0
+    },
+    {
+      "prompt_id": "warm-02",
+      "text": "The kitchen light was still on, and someone had left a note beneath the blue glass vase.",
+      "category": "warm-narration",
+      "style": "Gentle story narration.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "warm-03",
+      "text": "For a few quiet minutes, the whole house seemed to breathe with the wind in the trees.",
+      "category": "warm-narration",
+      "style": "Reflective and calm.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "warm-04",
+      "text": "Every useful tool begins as a rough idea, then grows through patient tests and honest revisions.",
+      "category": "warm-narration",
+      "style": "Thoughtful explanatory narration.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 9.0
+    },
+    {
+      "prompt_id": "technical-01",
+      "text": "The SHA two fifty-six digest binds the reference waveform to the experiment manifest.",
+      "category": "technical",
+      "style": "Clear technical explanation.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "technical-02",
+      "text": "A content-addressed artifact is reused only after every input binding has been verified.",
+      "category": "technical",
+      "style": "Clear technical explanation.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "technical-03",
+      "text": "The worker protocol isolates conflicting Python packages behind a strict JSON contract.",
+      "category": "technical",
+      "style": "Clear technical explanation.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "technical-04",
+      "text": "Quantization reduces memory pressure, although it may also change subtle speaker characteristics.",
+      "category": "technical",
+      "style": "Clear technical explanation.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 9.0
+    },
+    {
+      "prompt_id": "technical-05",
+      "text": "The M four processor shares sixteen gigabytes of unified memory between the central and graphics cores.",
+      "category": "technical",
+      "style": "Clear technical explanation.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 9.0
+    },
+    {
+      "prompt_id": "numbers-01",
+      "text": "The first run took twelve point eight seconds, while the second finished in nine point four.",
+      "category": "numbers",
+      "style": "Matter-of-fact measurement report.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "numbers-02",
+      "text": "At forty-eight thousand samples per second, ten seconds contains four hundred eighty thousand frames.",
+      "category": "numbers",
+      "style": "Clear technical measurement.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 9.0
+    },
+    {
+      "prompt_id": "numbers-03",
+      "text": "Version three point one arrived on Thursday, August seventeenth, at six thirty in the evening.",
+      "category": "numbers",
+      "style": "Natural date and version reading.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 9.0
+    },
+    {
+      "prompt_id": "expressive-01",
+      "text": "No, that cannot be right. We changed one setting, and the entire pattern disappeared!",
+      "category": "expressive",
+      "style": "Surprised, then emphatic; remain natural.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "expressive-02",
+      "text": "Well, that was unexpectedly delightful; I may have listened to it three times.",
+      "category": "expressive",
+      "style": "Amused and pleased.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 7.0
+    },
+    {
+      "prompt_id": "expressive-03",
+      "text": "I am not worried, but I do want to understand exactly what happened before we continue.",
+      "category": "expressive",
+      "style": "Serious, measured concern.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 8.0
+    },
+    {
+      "prompt_id": "room-tone-end",
+      "category": "room-tone",
+      "style": "Silence; keep the recording position unchanged.",
+      "reference_candidate": false,
+      "holdout": false,
+      "expected_seconds": 15.0,
+      "instructions": "Remain still and silent while the final room tone is recorded."
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "RecordingPythonFileStat": {
+      "additionalProperties": false,
+      "properties": {
+        "ctime_ns": {
+          "minimum": 0,
+          "title": "Ctime Ns",
+          "type": "integer"
+        },
+        "device": {
+          "minimum": 0,
+          "title": "Device",
+          "type": "integer"
+        },
+        "inode": {
+          "minimum": 0,
+          "title": "Inode",
+          "type": "integer"
+        },
+        "link_target": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Link Target"
+        },
+        "mode": {
+          "minimum": 0,
+          "title": "Mode",
+          "type": "integer"
+        },
+        "mtime_ns": {
+          "minimum": 0,
+          "title": "Mtime Ns",
+          "type": "integer"
+        },
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "device",
+        "inode",
+        "mode",
+        "size_bytes",
+        "mtime_ns",
+        "ctime_ns"
+      ],
+      "title": "RecordingPythonFileStat",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/RecordingPythonFileStat"
+      },
+      "maxItems": 50000,
+      "minItems": 1,
+      "title": "Entries",
+      "type": "array"
+    },
+    "environment": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Environment",
+      "type": "object"
+    },
+    "environment_prefix": {
+      "title": "Environment Prefix",
+      "type": "string"
+    },
+    "environment_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Environment Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-python-runtime-receipt/v1",
+      "default": "cole-voice-lab.recording-python-runtime-receipt/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "environment_prefix",
+    "environment",
+    "environment_sha256",
+    "entries"
+  ],
+  "title": "RecordingPythonRuntimeReceipt",
+  "type": "object"
+}

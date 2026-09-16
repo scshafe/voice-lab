@@ -1,0 +1,47 @@
+{
+  "$defs": {
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "TransportPhase": {
+      "enum": [
+        "ready",
+        "starting",
+        "recording",
+        "stopping",
+        "draft",
+        "saving",
+        "error"
+      ],
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Reliable legal transport edge; repeated commands return the existing result.",
+  "properties": {
+    "current": {
+      "$ref": "#/$defs/TransportPhase"
+    },
+    "event": {
+      "const": "transition",
+      "default": "transition",
+      "title": "Event",
+      "type": "string"
+    },
+    "previous": {
+      "$ref": "#/$defs/TransportPhase"
+    },
+    "take_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "take_id",
+    "previous",
+    "current"
+  ],
+  "title": "RecordingTransition",
+  "type": "object"
+}

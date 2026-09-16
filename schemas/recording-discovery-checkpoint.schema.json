@@ -1,0 +1,53 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "catalog_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "index_instance": {
+      "$ref": "#/$defs/StableId"
+    },
+    "legacy_fingerprint": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "native_fingerprint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.recording-discovery-checkpoint/v1",
+      "default": "cole-voice-lab.recording-discovery-checkpoint/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "subject_id",
+    "catalog_sha256",
+    "index_instance",
+    "legacy_fingerprint"
+  ],
+  "title": "RecordingDiscoveryCheckpoint",
+  "type": "object"
+}
