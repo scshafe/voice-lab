@@ -30,16 +30,23 @@ from cole_voice_lab.models import (
 )
 from cole_voice_lab.prompt_catalogs import load_builtin_prompt_suite
 from cole_voice_lab.recording_contracts import (
+    CATALOG_EVENT_RESERVE_BYTES,
     CORPUS_SCHEMA_MODELS,
+    FRAME_PREFIX_BYTES,
+    MAX_CATALOG_SUITE_BYTES,
     MAX_CONTROL_FRAME_BYTES,
     MAX_RECORDING_FRAMES,
+    MAX_RECORDING_REVISION,
     MAX_TELEMETRY_FRAME_BYTES,
     RECORDING_SCHEMA_MODELS,
     CaptureReservation,
     CaptureSealReceipt,
+    CatalogCommand,
+    CatalogEvent,
     CatalogReference,
     CatalogSnapshot,
     ContextEvent,
+    ContinueLegacyRecordingCommand,
     NativeRecoveryReceipt,
     NavigationEvent,
     OpenContextCommand,
@@ -597,6 +604,18 @@ def synthetic_commands() -> list[tuple[str, type[RecorderRequest | ServiceReques
         ),
         ("snapshot", {}, None),
         ("shutdown", {}, None),
+        ("catalog", {"operation_id": "op-catalog"}, None),
+        (
+            "open-context",
+            {
+                "operation_id": "op-open-context",
+                "subject_id": reservation.group.subject_id,
+                "catalog_reference": _catalog_reference(reservation.group.catalog),
+                "capture_device": reservation.group.capture_device,
+                "capture_host": reservation.group.capture_host,
+            },
+            None,
+        ),
         (
             "reserve",
             {
@@ -1225,6 +1244,7 @@ def generate_recording_conformance_fixtures(directory: Path) -> None:
         + recovery_command_cases()
         + prompt_suite_v2_cases()
         + recording_group_v2_cases()
+        + catalog_event_cases()
         + prompt_equality_cases()
     ):
         filename = f"{'valid' if valid else 'invalid'}-{case}.json"
@@ -2328,6 +2348,381 @@ def test_recording_group_v2_conformance_cases(case: Any) -> None:
     else:
         with pytest.raises(ValidationError):
             RECORDING_SCHEMA_MODELS[name].model_validate_json(json.dumps(payload))
+
+
+CORPUS_SHAPED_PROMPT_COUNT = 2_000
+
+
+def corpus_shaped_catalog(count: int = CORPUS_SHAPED_PROMPT_COUNT) -> PromptSuite:
+    """A synthetic catalog shaped like the real corpus (1,886 prompts), a little larger.
+
+    Every prompt is longer than the imported Harvard/ARCTIC sentences (at most 91
+    characters), so a frame that fits this catalog fits the real one.
+    """
+    return PromptSuite(
+        schema_version="cole-voice-lab.prompt-suite/v2",
+        suite_id="synthetic-corpus-shape",
+        purpose="capture-corpus",
+        prompts=tuple(
+            Prompt(
+                prompt_id=f"shape-{number:04d}",
+                text=f"Synthetic corpus sentence {number:04d} keeps a realistic length so the "
+                "whole catalog is measured honestly.",
+                category="neutral",
+                style="Plain reading, natural pace.",
+                expected_seconds=6.3,
+                labels=("synthetic-set",),
+            )
+            for number in range(count)
+        ),
+    )
+
+
+def catalog_event_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
+    """The catalog request/reply and the reference form of open-context, shared with Swift.
+
+    Python alone recomputes canonical digests, so a catalog event whose suite does not hash
+    to its reference is python-evidence; every other rule is checked on both sides.
+    """
+    values = synthetic_contracts()
+    group = values["recording-group"]
+    suite = group.catalog
+    meta = values["recording-response"].meta.model_copy(update={"take_id": None})
+    reference = _catalog_reference(suite)
+    corpus_suite = PromptSuite.model_validate(suite.model_dump() | {"purpose": "capture-corpus"})
+    corpus_reference = _catalog_reference(corpus_suite)
+    large = corpus_shaped_catalog()
+
+    def dump(model: Any) -> dict[str, Any]:
+        return copy.deepcopy(model.model_dump(mode="json"))
+
+    def command(data: dict[str, Any]) -> dict[str, Any]:
+        return {"data": data, "error": None, "meta": meta.model_dump(mode="json")}
+
+    def reply(catalog: PromptSuite, named: CatalogReference) -> dict[str, Any]:
+        return dump(
+            RecordingResponse(
+                data=CatalogEvent(operation_id="op-catalog", catalog=catalog, reference=named),
+                error=None,
+                meta=meta,
+            )
+        )
+
+    catalog_command = command({"command": "catalog", "operation_id": "op-catalog"})
+    event = reply(suite, reference)
+    referenced = dump(
+        OpenContextCommand(
+            operation_id="context-referenced",
+            subject_id=group.subject_id,
+            catalog_reference=reference,
+            capture_device=group.capture_device,
+            capture_host=group.capture_host,
+        )
+    )
+    approved = referenced | {
+        "catalog_reference": corpus_reference.model_dump(mode="json"),
+        "pilot_approval_path": "provenance/pilot-gate.json",
+        "pilot_approval_sha256": "a" * 64,
+    }
+    embedded = {
+        "catalog": suite.model_dump(mode="json"),
+        "catalog_sha256": canonical_sha256(suite),
+    }
+    without_reference = {
+        key: value for key, value in referenced.items() if key != "catalog_reference"
+    }
+    legacy = next(
+        dump(ServiceRequest.model_validate(payload))
+        for name, _, payload in synthetic_commands()
+        if name.startswith("service-continue-legacy-recording")
+    )
+    legacy_referenced = copy.deepcopy(legacy)
+    legacy_context = legacy_referenced["data"]["context"]
+    del legacy_context["catalog"], legacy_context["catalog_sha256"]
+    legacy_context["catalog_reference"] = reference.model_dump(mode="json")
+    other_digest = "0" * 64
+    unbound = copy.deepcopy(event)
+    unbound["data"]["reference"] |= {
+        "catalog_sha256": other_digest,
+        "snapshot_path": catalog_snapshot_path(other_digest),
+    }
+    changed_suite = copy.deepcopy(event)
+    changed_suite["data"]["reference"]["suite_id"] = "another-suite"
+    changed_purpose = copy.deepcopy(event)
+    changed_purpose["data"]["reference"]["purpose"] = "capture-corpus"
+    missing_reference = copy.deepcopy(event)
+    del missing_reference["data"]["reference"]
+    unknown_field = copy.deepcopy(event)
+    unknown_field["data"]["native_extra"] = True
+    event_with_take = copy.deepcopy(event)
+    event_with_take["meta"]["take_id"] = "synthetic-take"
+    unbound_path = copy.deepcopy(event)
+    unbound_path["data"]["reference"]["snapshot_path"] = "provenance/corpus/snapshots/other.json"
+    command_with_take = copy.deepcopy(catalog_command)
+    command_with_take["meta"]["take_id"] = "synthetic-take"
+    command_without_operation = command({"command": "catalog"})
+    valid: list[tuple[str, str, dict[str, Any]]] = [
+        ("command", "recording-service-request", catalog_command),
+        ("event", "recording-response", event),
+        ("event-corpus-shaped", "recording-response", reply(large, _catalog_reference(large))),
+        ("open-context-referenced", "recording-service-request", command(referenced)),
+        ("open-context-referenced-approval", "recording-service-request", command(approved)),
+        (
+            "open-context-referenced-explicit-null-embedding",
+            "recording-service-request",
+            command(referenced | {"catalog": None, "catalog_sha256": None}),
+        ),
+    ]
+    invalid: list[tuple[str, str, str, dict[str, Any]]] = [
+        ("event-digest-mismatch", "recording-response", "python-evidence", unbound),
+        ("event-suite-id", "recording-response", "shared", changed_suite),
+        ("event-purpose", "recording-response", "shared", changed_purpose),
+        ("event-missing-reference", "recording-response", "shared", missing_reference),
+        ("event-unknown-field", "recording-response", "shared", unknown_field),
+        ("event-meta-take", "recording-response", "shared", event_with_take),
+        ("event-snapshot-path", "recording-response", "shared", unbound_path),
+        ("command-meta-take", "recording-service-request", "shared", command_with_take),
+        ("command-operation", "recording-service-request", "shared", command_without_operation),
+        (
+            "open-context-both-forms",
+            "recording-service-request",
+            "shared",
+            command(referenced | embedded),
+        ),
+        (
+            "open-context-reference-and-digest",
+            "recording-service-request",
+            "shared",
+            command(referenced | {"catalog_sha256": embedded["catalog_sha256"]}),
+        ),
+        (
+            "open-context-reference-and-catalog",
+            "recording-service-request",
+            "shared",
+            command(referenced | {"catalog": embedded["catalog"]}),
+        ),
+        ("open-context-neither", "recording-service-request", "shared", command(without_reference)),
+        (
+            "open-context-catalog-without-digest",
+            "recording-service-request",
+            "shared",
+            command(without_reference | {"catalog": embedded["catalog"]}),
+        ),
+        (
+            "open-context-referenced-approval-pilot",
+            "recording-service-request",
+            "shared",
+            command(approved | {"catalog_reference": reference.model_dump(mode="json")}),
+        ),
+        (
+            "open-context-reference-unknown-key",
+            "recording-service-request",
+            "shared",
+            command(
+                referenced
+                | {"catalog_reference": reference.model_dump(mode="json") | {"native_extra": 1}}
+            ),
+        ),
+        ("continue-legacy-referenced", "recording-service-request", "shared", legacy_referenced),
+    ]
+    return [
+        (f"catalog-{name}", model, True, "shared", payload) for name, model, payload in valid
+    ] + [
+        (f"catalog-{name}", model, False, owner, payload) for name, model, owner, payload in invalid
+    ]
+
+
+@pytest.mark.parametrize("case", catalog_event_cases(), ids=lambda case: case[0])
+def test_catalog_event_and_referenced_context_conformance_cases(case: Any) -> None:
+    _, name, valid, _, payload = case
+    if valid:
+        RECORDING_SCHEMA_MODELS[name].model_validate_json(json.dumps(payload))
+    else:
+        with pytest.raises(ValidationError):
+            RECORDING_SCHEMA_MODELS[name].model_validate_json(json.dumps(payload))
+
+
+def test_catalog_event_binds_its_exact_suite_and_reference() -> None:
+    suite = synthetic_contracts()["recording-group"].catalog
+    reference = _catalog_reference(suite)
+    event = CatalogEvent(operation_id="op-catalog", catalog=suite, reference=reference)
+    assert CatalogEvent.model_validate_json(canonical_json_bytes(event)) == event
+    other = PromptSuite.model_validate(suite.model_dump() | {"suite_id": "another-suite"})
+    for catalog, named, message in (
+        (other, reference, "exact suite its reference names"),
+        (other, _catalog_reference(other, suite_id=suite.suite_id), "suite id and purpose"),
+        (
+            suite,
+            reference.model_copy(update={"purpose": "capture-corpus"}),
+            "suite id and purpose",
+        ),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            CatalogEvent.model_validate(
+                {"operation_id": "op-catalog", "catalog": catalog, "reference": named}
+            )
+    command = CatalogCommand(operation_id="op-catalog")
+    assert canonical_json_bytes(command) == b'{"command":"catalog","operation_id":"op-catalog"}'
+
+
+def test_a_corpus_sized_catalog_event_fits_one_control_frame() -> None:
+    suite = corpus_shaped_catalog()
+    assert len(suite.prompts) >= 1_886
+    meta = synthetic_contracts()["recording-response"].meta.model_copy(update={"take_id": None})
+    response = RecordingResponse(
+        data=CatalogEvent(
+            operation_id="op-catalog", catalog=suite, reference=_catalog_reference(suite)
+        ),
+        error=None,
+        meta=meta,
+    )
+    frame = recording_frame_bytes(response)
+    # A quarter of the cap stays free for longer real prompts (pilot prompts run to about
+    # 350 bytes each), so the reply never becomes the frame that closes the session.
+    assert len(frame) <= MAX_CONTROL_FRAME_BYTES * 3 // 4
+    assert RecordingResponse.model_validate_json(frame[4:]) == response
+
+
+def catalog_of_exactly(size: int, *, suite_id: str = "synthetic-corpus-shape") -> PromptSuite:
+    """A corpus-shaped catalog whose canonical suite bytes are exactly ``size``.
+
+    Its last prompt, ``shape-pad``, carries filler text sized to land on ``size``; the
+    other prompts are ``corpus_shaped_catalog``'s.
+    """
+
+    def build(count: int, pad: int) -> PromptSuite:
+        filler = Prompt(
+            prompt_id="shape-pad",
+            text="p" * pad,
+            category="neutral",
+            style="Plain reading, natural pace.",
+            expected_seconds=6.3,
+        )
+        return PromptSuite(
+            schema_version="cole-voice-lab.prompt-suite/v2",
+            suite_id=suite_id,
+            purpose="capture-corpus",
+            prompts=(*corpus_shaped_catalog(count).prompts, filler),
+        )
+
+    one = len(canonical_json_bytes(build(1, 1)))
+    per_prompt = len(canonical_json_bytes(build(2, 1))) - one
+    shaped = 1 + (size - one) // per_prompt
+    suite = build(shaped, size - one - (shaped - 1) * per_prompt + 1)
+    assert len(canonical_json_bytes(suite)) == size
+    return suite
+
+
+def test_a_catalog_at_the_suite_budget_fits_one_frame_with_the_largest_envelope() -> None:
+    longest = "a" * 128
+    suite = catalog_of_exactly(MAX_CATALOG_SUITE_BYTES, suite_id="s" * 128)
+    response = RecordingResponse(
+        data=CatalogEvent(
+            operation_id=longest,
+            catalog=suite,
+            reference=_catalog_reference(
+                suite, catalog_id="c" * 128, catalog_version=MAX_RECORDING_REVISION
+            ),
+        ),
+        error=None,
+        meta=RecordingMessageMeta(
+            request_id=longest,
+            process_generation=longest,
+            state_revision=MAX_RECORDING_REVISION,
+            event_sequence=MAX_RECORDING_REVISION,
+        ),
+    )
+    frame = recording_frame_bytes(response)
+    envelope = len(frame) - FRAME_PREFIX_BYTES - MAX_CATALOG_SUITE_BYTES
+    # The reserve covers the largest envelope with room to spare.
+    assert envelope * 3 <= CATALOG_EVENT_RESERVE_BYTES
+    assert MAX_CATALOG_SUITE_BYTES + CATALOG_EVENT_RESERVE_BYTES == MAX_CONTROL_FRAME_BYTES
+
+
+def test_open_context_names_exactly_one_catalog_form() -> None:
+    values = synthetic_contracts()
+    group = values["recording-group"]
+    suite = group.catalog
+    reference = _catalog_reference(suite)
+    common: dict[str, Any] = {
+        "operation_id": "context-open",
+        "subject_id": group.subject_id,
+        "capture_device": group.capture_device,
+        "capture_host": group.capture_host,
+    }
+    referenced = OpenContextCommand(**common, catalog_reference=reference)
+    assert referenced.catalog_purpose == "capture-pilot"
+    assert referenced.catalog is None and referenced.catalog_sha256 is None
+    encoded = canonical_json_bytes(referenced)
+    assert {"catalog", "catalog_sha256"}.isdisjoint(json.loads(encoded))
+    assert OpenContextCommand.model_validate_json(encoded) == referenced
+    embedded = OpenContextCommand(**common, catalog=suite, catalog_sha256=canonical_sha256(suite))
+    assert embedded.catalog_purpose == "capture-pilot"
+    # The embedded form serializes exactly as the contract before the corpus store did, so
+    # durable legacy-continuation intents and replay digests are unchanged.
+    assert canonical_json_bytes(embedded) == canonical_json_bytes(
+        {
+            "command": "open-context",
+            **common,
+            "capture_device": group.capture_device.model_dump(mode="json"),
+            "catalog": suite.model_dump(mode="json"),
+            "catalog_sha256": canonical_sha256(suite),
+            "expected_selection_revision": None,
+            "new_setup": False,
+            "setup_description": "",
+            "pilot_approval_path": None,
+            "pilot_approval_sha256": None,
+        }
+    )
+    corpus = _catalog_reference(
+        PromptSuite.model_validate(suite.model_dump() | {"purpose": "capture-corpus"})
+    )
+    approval = {
+        "pilot_approval_path": "provenance/pilot-gate.json",
+        "pilot_approval_sha256": "a" * 64,
+    }
+    assert OpenContextCommand(**common, catalog_reference=corpus, **approval).catalog_purpose == (
+        "capture-corpus"
+    )
+    for changes, message in (
+        ({"catalog_reference": reference, "catalog": suite}, "not both"),
+        ({"catalog_reference": reference, "catalog_sha256": "0" * 64}, "not both"),
+        ({}, "requires a catalog reference"),
+        ({"catalog": suite}, "requires a catalog reference"),
+        ({"catalog_sha256": canonical_sha256(suite)}, "requires a catalog reference"),
+        ({"catalog": suite, "catalog_sha256": "0" * 64}, "exact canonical catalog"),
+        ({"catalog_reference": reference, **approval}, "only to the corpus catalog"),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            OpenContextCommand.model_validate(common | changes)
+    with pytest.raises(ContractError, match="names no catalog"):
+        _ = OpenContextCommand.model_construct(**common).catalog_purpose
+
+
+def test_legacy_continuation_requires_the_embedded_context() -> None:
+    legacy = next(
+        ServiceRequest.model_validate(payload).data
+        for name, _, payload in synthetic_commands()
+        if name.startswith("service-continue-legacy-recording")
+    )
+    assert isinstance(legacy, ContinueLegacyRecordingCommand)
+    assert legacy.legacy_catalog == legacy.context.catalog
+    referenced = legacy.context.model_copy(
+        update={
+            "catalog": None,
+            "catalog_sha256": None,
+            "catalog_reference": _catalog_reference(legacy.legacy_catalog),
+        }
+    )
+    with pytest.raises(ValidationError, match="embedded catalog, not a catalog reference"):
+        ContinueLegacyRecordingCommand.model_validate(
+            legacy.model_dump() | {"context": referenced.model_dump()}
+        )
+    unchecked = ContinueLegacyRecordingCommand.model_construct(
+        **(legacy.model_dump() | {"context": referenced})
+    )
+    with pytest.raises(ContractError, match="embedded catalog"):
+        _ = unchecked.legacy_catalog
 
 
 def prompt_equality_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:

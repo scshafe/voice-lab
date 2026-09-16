@@ -26,25 +26,22 @@ final class RecordingApplicationSession: ObservableObject {
     }
 
     /// The verification entry uses the same configured session after rejecting any real-input configuration.
+    /// Connection and catalog failures surface in the connected model itself.
     func start(configuration: RecordingApplicationConfiguration) async {
-        do {
-            let synthetic = configuration.recorder.arguments.contains("--synthetic-pcm")
-            let connected = try RecordingWorkspaceModel(configuration: configuration,
-                permissionStatus: { synthetic ? .granted : RecordingMicrophonePermission.current() },
-                permissionRequest: { if synthetic { return false }; return await RecordingMicrophonePermission.request() },
-                reviewBackend: AVFoundationRecordingPlaybackBackend(mode: synthetic ? .offline : .device))
-            model = connected
-            connected.observeSystemLifecycle(center: NSWorkspace.shared.notificationCenter)
-            // Automated synthetic fixtures never post announcements or invoke VoiceOver.
-            if !configuration.recorder.arguments.contains("--synthetic-pcm") {
-                announcements = connected.$state.map(\.status).removeDuplicates().dropFirst().sink { [weak connected] _ in
-                    guard let connected, let window = NSApp.mainWindow else { return }
-                    NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [.announcement: connected.state.status, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
-                }
+        let synthetic = configuration.recorder.arguments.contains("--synthetic-pcm")
+        let connected = RecordingWorkspaceModel(configuration: configuration,
+            permissionStatus: { synthetic ? .granted : RecordingMicrophonePermission.current() },
+            permissionRequest: { if synthetic { return false }; return await RecordingMicrophonePermission.request() },
+            reviewBackend: AVFoundationRecordingPlaybackBackend(mode: synthetic ? .offline : .device))
+        model = connected
+        connected.observeSystemLifecycle(center: NSWorkspace.shared.notificationCenter)
+        // Automated synthetic fixtures never post announcements or invoke VoiceOver.
+        if !synthetic {
+            announcements = connected.$state.map(\.status).removeDuplicates().dropFirst().sink { [weak connected] _ in
+                guard let connected, let window = NSApp.mainWindow else { return }
+                NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [.announcement: connected.state.status, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
             }
-            await connected.connect()
-        } catch {
-            model = RecordingWorkspaceModel(unavailable: (error as? RecordingContractError)?.message ?? "Application configuration could not be loaded")
         }
+        await connected.connect()
     }
 }

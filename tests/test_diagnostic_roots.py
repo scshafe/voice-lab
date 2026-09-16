@@ -20,8 +20,8 @@ from typing import Any
 import pytest
 from recording_fixtures import synthetic_catalog
 from test_recording_packages import saved_take
-from test_recording_service import request
-from test_recording_takes import DEVICE, Rig
+from test_recording_service import activate_catalog, request
+from test_recording_takes import DEVICE, Rig, store_suite
 
 import cole_voice_lab.native_recording_application as application
 from cole_voice_lab.canonical import (
@@ -33,6 +33,7 @@ from cole_voice_lab.canonical import (
 from cole_voice_lab.capture import TakeEngine, capture_prompt_suite
 from cole_voice_lab.cli import main
 from cole_voice_lab.consent import approve_self_consent, consent_record_path
+from cole_voice_lab.corpus_store import open_corpus_store
 from cole_voice_lab.datasets import (
     DatasetSelection,
     PilotGateApproval,
@@ -49,7 +50,7 @@ from cole_voice_lab.diagnostic_roots import (
 )
 from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.intake import accept_capture_session
-from cole_voice_lab.models import Prompt, PromptSuite, utc_now
+from cole_voice_lab.models import Prompt, PromptSuite, PromptSuitePurpose, utc_now
 from cole_voice_lab.native_recording_application import (
     NativeRecordingApplicationConfiguration,
     NativeRecordingApplicationRelease,
@@ -61,6 +62,8 @@ from cole_voice_lab.native_recording_application import (
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_analysis import RecordingAnalysisQueue, analysis_build_identity
 from cole_voice_lab.recording_contracts import (
+    CatalogCommand,
+    CatalogReference,
     CatalogSnapshot,
     ContextEvent,
     ContinueLegacyRecordingCommand,
@@ -122,6 +125,7 @@ def standard_root(tmp_path: Path, name: str = "standard") -> AssetLayout:
 def context_command(
     catalog: PromptSuite, subject: str, operation: str = "open"
 ) -> OpenContextCommand:
+    """An embedded open-context (the legacy-continuation form)."""
     return OpenContextCommand(
         operation_id=operation,
         subject_id=subject,
@@ -130,6 +134,29 @@ def context_command(
         capture_device=UMIK,
         capture_host="synthetic-host",
         new_setup=True,
+    )
+
+
+def referenced_command(
+    reference: CatalogReference, subject: str, operation: str = "open"
+) -> OpenContextCommand:
+    """The open-context the app sends: the catalog the service delivered, by reference."""
+    return OpenContextCommand(
+        operation_id=operation,
+        subject_id=subject,
+        catalog_reference=reference,
+        capture_device=UMIK,
+        capture_host="synthetic-host",
+        new_setup=True,
+    )
+
+
+def legacy_command(catalog: PromptSuite, subject: str) -> ContinueLegacyRecordingCommand:
+    return ContinueLegacyRecordingCommand(
+        operation_id="open",
+        session_id="legacy-session",
+        session_evidence_sha256="1" * 64,
+        context=context_command(catalog, subject),
     )
 
 
@@ -282,6 +309,7 @@ def test_every_unsafe_marker_state_refuses_guarded_operations(
 ) -> None:
     layout = standard_root(tmp_path)
     assert root_purpose(layout) == "standard"
+    reference, _ = activate_catalog(layout, store_suite(2), subject_id="synthetic-subject")
     write_marker_variant(layout, variant)
     if variant == "foreign-owner":
         uid = os.geteuid()
@@ -295,14 +323,16 @@ def test_every_unsafe_marker_state_refuses_guarded_operations(
     with pytest.raises(SecurityError):
         consent_approval(layout, "cole-self")
     assert not consent_record_path(layout, "cole-self-v1").exists()
-    backend = RecordingWorkspaceBackend(layout, "synthetic-subject", "0" * 64, discover=False)
+    backend = RecordingWorkspaceBackend(layout, "synthetic-subject", discover=False)
     try:
-        with pytest.raises(RecordingServiceError, match="marker is unsafe") as failure:
-            backend.execute(
-                request(context_command(synthetic_catalog(2), "synthetic-subject")),
-                RecordingCancellation(),
-            )
-        assert failure.value.recording_error.code == "RECORDING.GATE_NOT_READY"
+        for command in (
+            CatalogCommand(operation_id="catalog"),
+            referenced_command(reference, "synthetic-subject"),
+            legacy_command(synthetic_catalog(2), "synthetic-subject"),
+        ):
+            with pytest.raises(RecordingServiceError, match="marker is unsafe") as failure:
+                backend.execute(request(command), RecordingCancellation())
+            assert failure.value.recording_error.code == "RECORDING.GATE_NOT_READY"
     finally:
         backend.index.close()
 
@@ -359,7 +389,7 @@ class _ReleaseWorkStarted(Exception):
 
 
 def _release(
-    tmp_path: Path, layout: AssetLayout, catalog: PromptSuite, subject: str, name: str
+    tmp_path: Path, layout: AssetLayout, purpose: PromptSuitePurpose, subject: str, name: str
 ) -> Path:
     from test_recording_contracts import synthetic_contracts
 
@@ -378,8 +408,7 @@ def _release(
         schema_directory=str(runtime / "schemas"),
         client_build=build,
         client_build_path=str(runtime / "client-build.json"),
-        catalog=catalog,
-        catalog_sha256=canonical_sha256(catalog),
+        purpose=purpose,
         subject_id=subject,
         capture_device=UMIK,
         capture_host="synthetic-host",
@@ -409,9 +438,11 @@ def _release(
     return release_path
 
 
-def test_native_builder_and_verify_bind_root_purpose_subject_and_expected_catalog(
+def test_native_builder_and_verify_bind_the_declared_purpose_to_the_root_and_subject(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """The build names no catalog; its declared purpose must fit the root it records into."""
+
     def release_work(*args: Any, **kwargs: Any) -> Any:
         raise _ReleaseWorkStarted
 
@@ -419,20 +450,21 @@ def test_native_builder_and_verify_bind_root_purpose_subject_and_expected_catalo
     monkeypatch.setattr(application, "_run", release_work)
     marked = marked_root(tmp_path)
     standard = standard_root(tmp_path)
-    physical = physical_catalog()
-    pilot = synthetic_catalog(3)
-    cases: list[tuple[AssetLayout, PromptSuite, str, str | None]] = [
-        (marked, physical, SUBJECT, None),
-        (marked, pilot, SUBJECT, "marked for physical tests"),
-        (marked, physical, OTHER_SUBJECT, "another subject"),
-        (standard, physical, SUBJECT, "physical-test catalogs require"),
-        # The unmarked one-off pattern: a diagnostic subject on a standard catalog and root.
-        (standard, pilot, SUBJECT, None),
+    cases: list[tuple[AssetLayout, PromptSuitePurpose, str, str | None]] = [
+        (marked, "physical-test", SUBJECT, None),
+        (marked, "capture-pilot", SUBJECT, "marked for physical tests"),
+        (marked, "capture-corpus", SUBJECT, "marked for physical tests"),
+        (marked, "held-out-evaluation", SUBJECT, "marked for physical tests"),
+        (marked, "physical-test", OTHER_SUBJECT, "another subject"),
+        (standard, "physical-test", SUBJECT, "physical-test catalogs require"),
+        # The unmarked one-off pattern: a diagnostic subject on a standard purpose and root.
+        (standard, "capture-pilot", SUBJECT, None),
+        (standard, "held-out-evaluation", "cole-self", None),
     ]
-    for number, (layout, catalog, subject, refusal) in enumerate(cases):
+    for number, (layout, purpose, subject, refusal) in enumerate(cases):
         settings = NativeRecordingApplicationSettings(
             asset_root=str(layout.root),
-            catalog=catalog,
+            purpose=purpose,
             subject_id=subject,
             capture_device=UMIK,
             capture_host="synthetic-host",
@@ -447,38 +479,48 @@ def test_native_builder_and_verify_bind_root_purpose_subject_and_expected_catalo
         )
         if refusal is None:
             with pytest.raises(_ReleaseWorkStarted):
-                build(expected_catalog_sha256=canonical_sha256(catalog))
-            with pytest.raises(ContractError, match="--expect-catalog-sha256"):
-                build(expected_catalog_sha256="f" * 64)
+                build()
         else:
             with pytest.raises(ContractError, match=refusal):
                 build()
-        if refusal is not None:
             assert not output.with_suffix(".runtime").exists()
-        release = _release(tmp_path, layout, catalog, subject, f"Verify {number}")
+        release = _release(tmp_path, layout, purpose, subject, f"Verify {number}")
         if refusal is None:
             # Past the purpose guard, verification reaches the missing peer manifests.
             with pytest.raises(SecurityError):
                 verify_native_recording_application(release)
-            with pytest.raises(ContractError, match="--expect-catalog-sha256"):
-                verify_native_recording_application(release, expected_catalog_sha256="f" * 64)
         else:
             with pytest.raises(ContractError, match=refusal):
                 verify_native_recording_application(release)
+    # An unsafe marker refuses the build and the verification before anything else.
+    unsafe = standard_root(tmp_path, "unsafe")
+    write_marker_variant(unsafe, "group-readable")
+    with pytest.raises(SecurityError):
+        create_native_recording_application(
+            tmp_path.resolve() / "Unsafe Preview.app",
+            source_root=tmp_path,
+            python=Path(sys.executable),
+            settings=NativeRecordingApplicationSettings(
+                asset_root=str(unsafe.root),
+                purpose="capture-pilot",
+                subject_id="cole-self",
+                capture_device=UMIK,
+                capture_host="synthetic-host",
+            ),
+        )
+    with pytest.raises(SecurityError):
+        verify_native_recording_application(
+            _release(tmp_path, unsafe, "capture-pilot", "cole-self", "Unsafe")
+        )
 
     settings_path = tmp_path.resolve() / "settings.json"
-    settings_path.write_bytes(
-        NativeRecordingApplicationSettings(
-            asset_root=str(marked.root),
-            catalog=physical,
-            subject_id=SUBJECT,
-            capture_device=UMIK,
-            capture_host="synthetic-host",
-        )
-        .model_dump_json()
-        .encode()
+    physical = NativeRecordingApplicationSettings(
+        asset_root=str(marked.root),
+        purpose="physical-test",
+        subject_id=SUBJECT,
+        capture_device=UMIK,
+        capture_host="synthetic-host",
     )
-    settings_path.chmod(0o600)
     arguments = [
         "--output",
         str(tmp_path.resolve() / "Main Preview.app"),
@@ -487,14 +529,29 @@ def test_native_builder_and_verify_bind_root_purpose_subject_and_expected_catalo
         "--source-root",
         str(tmp_path),
     ]
-    for digest in ("f" * 64, "F" * 64, "short"):
-        with pytest.raises(SystemExit) as exit_status:
-            application.main([*arguments, "--expect-catalog-sha256", digest])
-        assert exit_status.value.code == 2
-    assert "--expect-catalog-sha256" in capsys.readouterr().err
+    # A pre-store settings file still embeds its catalog: refused before any release work.
+    legacy = physical.model_dump(mode="json", exclude={"purpose"}) | {
+        "schema_version": "cole-voice-lab.native-application-settings/v1",
+        "catalog": physical_catalog().model_dump(mode="json"),
+    }
+    settings_path.write_bytes(json.dumps(legacy).encode())
+    settings_path.chmod(0o600)
+    with pytest.raises(SystemExit) as exit_status:
+        application.main(arguments)
+    assert exit_status.value.code == 2
+    settings_path.unlink()
+    settings_path.write_bytes(physical.model_dump_json().encode())
+    settings_path.chmod(0o600)
+    # The release no longer pins a catalog, so the pin flag is gone.
+    with pytest.raises(SystemExit) as exit_status:
+        application.main(
+            [*arguments, "--expect-catalog-sha256", canonical_sha256(physical_catalog())]
+        )
+    assert exit_status.value.code == 2
+    assert "unrecognized arguments: --expect-catalog-sha256" in capsys.readouterr().err
     assert not (tmp_path.resolve() / "Main Preview.runtime").exists()
     with pytest.raises(_ReleaseWorkStarted):
-        application.main([*arguments, "--expect-catalog-sha256", canonical_sha256(physical)])
+        application.main(arguments)
 
 
 def test_open_context_and_group_mints_bind_marked_roots_and_their_subject(
@@ -503,14 +560,29 @@ def test_open_context_and_group_mints_bind_marked_roots_and_their_subject(
     marked = marked_root(tmp_path)
     standard = standard_root(tmp_path)
     physical = physical_catalog()
-    pilot = synthetic_catalog(3)
-    refused: list[tuple[AssetLayout, str, PromptSuite, str]] = [
-        (marked, SUBJECT, pilot, "marked for physical tests"),
-        (marked, OTHER_SUBJECT, physical, "another subject"),
-        (standard, SUBJECT, physical, "physical-test catalogs require"),
+    # The store publishes prompt-suite/v2 catalogs; a legacy continuation embeds a v1 one.
+    pilot, legacy_pilot = store_suite(3), synthetic_catalog(3)
+    published: dict[tuple[str, str], CatalogReference] = {}
+
+    def activate(layout: AssetLayout, subject: str, catalog: PromptSuite) -> CatalogReference:
+        key = (str(layout.root), catalog.suite_id)
+        if key in published:
+            with open_corpus_store(layout, create=False) as corpus:
+                corpus.activate(subject, published[key])
+        else:
+            published[key], _ = activate_catalog(
+                layout, catalog, catalog_id=catalog.suite_id, subject_id=subject
+            )
+        return published[key]
+
+    refused: list[tuple[AssetLayout, str, PromptSuite, PromptSuite, str]] = [
+        (marked, SUBJECT, pilot, legacy_pilot, "marked for physical tests"),
+        (marked, OTHER_SUBJECT, physical, physical, "another subject"),
+        (standard, SUBJECT, physical, physical, "physical-test catalogs require"),
     ]
-    for layout, subject, catalog, refusal in refused:
-        backend = RecordingWorkspaceBackend(layout, subject, "0" * 64, discover=False)
+    for layout, subject, catalog, legacy, refusal in refused:
+        reference = activate(layout, subject, catalog)
+        backend = RecordingWorkspaceBackend(layout, subject, discover=False)
         try:
             with monkeypatch.context() as patch:
 
@@ -520,35 +592,35 @@ def test_open_context_and_group_mints_bind_marked_roots_and_their_subject(
                 for name in ("context_replay", "prepare_corpus_gate", "open_context", "open_group"):
                     patch.setattr(backend.store, name, forbidden)
                 patch.setattr(backend.index, "register_catalog", forbidden)
-                context = context_command(catalog, subject)
                 commands: list[Any] = [
-                    context,
-                    ContinueLegacyRecordingCommand(
-                        operation_id="open",
-                        session_id="legacy-session",
-                        session_evidence_sha256="1" * 64,
-                        context=context,
-                    ),
+                    CatalogCommand(operation_id="catalog"),
+                    referenced_command(reference, subject),
+                    legacy_command(legacy, subject),
                 ]
                 for command in commands:
                     with pytest.raises(RecordingServiceError, match=refusal) as failure:
                         backend.execute(request(command), RecordingCancellation())
                     assert failure.value.recording_error.code == "RECORDING.GATE_NOT_READY"
-            with pytest.raises(ContractError, match=refusal):
-                backend.store.open_group(catalog, subject, UMIK, "synthetic-host", new_setup=True)
+            for embedded in (catalog, legacy):
+                with pytest.raises(ContractError, match=refusal):
+                    backend.store.open_group(
+                        embedded, subject, UMIK, "synthetic-host", new_setup=True
+                    )
             assert not any((layout.root / "provenance").rglob("group-*.json"))
         finally:
             backend.index.close()
 
     opened: list[tuple[AssetLayout, PromptSuite]] = [(marked, physical), (standard, pilot)]
     for layout, catalog in opened:
-        backend = RecordingWorkspaceBackend(layout, SUBJECT, "0" * 64, discover=False)
+        reference = activate(layout, SUBJECT, catalog)
+        backend = RecordingWorkspaceBackend(layout, SUBJECT, discover=False)
         try:
             event = backend.execute(
-                request(context_command(catalog, SUBJECT)), RecordingCancellation()
+                request(referenced_command(reference, SUBJECT)), RecordingCancellation()
             )
             assert isinstance(event, ContextEvent)
-            assert event.group.catalog == catalog and event.group.subject_id == SUBJECT
+            assert event.group.catalog_reference == reference and event.group.catalog is None
+            assert event.group.subject_id == SUBJECT
         finally:
             backend.index.close()
 

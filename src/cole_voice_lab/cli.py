@@ -861,8 +861,13 @@ def _recording_continue_legacy(options: argparse.Namespace) -> int:
     """Continue an unfinished desktop session in a new native context.
 
     The old session's own frozen evidence supplies the subject and catalog, so the
-    operator names only the new acoustic setup. Original dates, devices and takes are
+    operator names only the new acoustic setup. The catalog stays embedded in the context
+    (the one open-context form that still embeds one): a desktop session binds a frozen
+    catalog that no corpus-store version holds. Original dates, devices and takes are
     preserved; no legacy raw audio is rewritten and no engine is reopened.
+    Raises: ``ContractError`` for a finalized session or evidence that no longer binds the
+    session; ``SecurityError`` for unsafe or changed evidence (as
+    ``RecordingRecovery.continue_legacy``).
     """
 
     import hashlib
@@ -924,14 +929,24 @@ def _recording_continue_legacy(options: argparse.Namespace) -> int:
 
 
 def _recording_service(options: argparse.Namespace) -> int:
+    """Forward to ``recording_service.main``; ``--catalog-sha256`` only when it was given.
+
+    A workspace service serves its subject's active corpus-store catalog; group mode still
+    names its group's digest. Returns the service's exit status (errors as that ``main``).
+    """
     from .recording_service import main as recording_service_main
 
     return recording_service_main(
         [
             "--asset-root",
             str(_asset_root(options.asset_root)),
-            "--catalog-sha256",
-            options.catalog_sha256,
+        ]
+        + (
+            ["--catalog-sha256", options.catalog_sha256]
+            if options.catalog_sha256 is not None
+            else []
+        )
+        + [
             "--process-generation",
             options.process_generation,
             "--build-identity",
@@ -2044,7 +2059,11 @@ def build_parser() -> argparse.ArgumentParser:
         "service", help="serve strict control over inherited local stdin/stdout pipes"
     )
     recording_service.add_argument("--asset-root", required=True)
-    recording_service.add_argument("--catalog-sha256", required=True)
+    recording_service.add_argument(
+        "--catalog-sha256",
+        help="group or unprepared mode: the exact catalog digest (a workspace service "
+        "serves its subject's active corpus-store catalog)",
+    )
     recording_service.add_argument("--recording-group-id")
     recording_service.add_argument("--native-workspace", action="store_true")
     recording_service.add_argument("--subject-id", default="cole-self")

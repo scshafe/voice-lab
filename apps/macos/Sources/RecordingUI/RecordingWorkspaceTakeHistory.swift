@@ -6,7 +6,7 @@ import RecordingContracts
 extension RecordingWorkspaceModel {
     public var visibleTakeHistory: [RecordingJSON] { takeHistoryPromptID == state.prompt?.id ? takeHistory : [] }
     public func loadTakeHistory(reset: Bool = false) async {
-        guard let service, let promptID = state.prompt?.id else { return }
+        guard let service, let promptID = state.prompt?.id, let catalogSHA256 else { return }
         if reset {
             takeHistoryGeneration &+= 1; takeHistoryPageCursor = nil
             takeHistoryPreviousCursors.removeAll(); takeHistoryNextCursor = nil

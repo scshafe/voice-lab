@@ -486,7 +486,7 @@ extension RecordingHarness {
         }
         let diagnostics = RecordingBenchmarkDiagnosticCollector()
         let diagnosticSink: RecordingDiagnosticSink = { diagnostics.record($0) }
-        let model = try RecordingWorkspaceModel(
+        let model = RecordingWorkspaceModel(
             configuration: config, permissionStatus: { .granted }, permissionRequest: { false },
             reviewBackend: AVFoundationRecordingPlaybackBackend(mode: .offline, diagnosticSink: diagnosticSink),
             diagnosticSink: diagnosticSink)

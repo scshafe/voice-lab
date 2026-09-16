@@ -10,7 +10,7 @@ extension RecordingHarness {
         let config = try RecordingApplicationConfiguration.load(privateFile: configurationURL)
         guard config.recorder.arguments.contains("--synthetic-pcm") else { throw legacyError("Explicit synthetic helper required") }
         let fixture = try RecordingJSON.parse(Data(contentsOf: configurationURL.deletingLastPathComponent().appendingPathComponent("legacy-fixture.json")))
-        let model = try RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: AVFoundationRecordingPlaybackBackend(mode: .offline))
+        let model = RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: AVFoundationRecordingPlaybackBackend(mode: .offline))
         defer { model.close() }
         let observer = ReviewObserver(model)
         await model.connect()

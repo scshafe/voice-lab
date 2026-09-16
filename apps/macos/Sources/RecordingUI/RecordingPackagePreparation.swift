@@ -102,10 +102,11 @@ public struct RecordingPackagePreparationStatus: Equatable, Sendable {
 }
 
 extension RecordingWorkspaceModel {
-    /// The catalog every offered candidate must belong to exactly.
-    var packageCatalog: RecordingJSON { configuration?.catalog ?? packageFixtureCatalog ?? .null }
+    /// The catalog every offered candidate must belong to exactly: the one the service
+    /// delivered. An explicitly seeded package fixture wins (production never seeds one).
+    var packageCatalog: RecordingJSON { packageFixtureCatalog ?? catalog ?? .null }
 
-    /// Physical-test builds keep Prepare for lab, but the sheet names what it produces.
+    /// Physical-test catalogs keep Prepare for lab, but the sheet names what it produces.
     public var packageSheetTitle: String {
         packageCatalog.object?["purpose"]?.string == "physical-test"
             ? "Prepare diagnostic package" : "Prepare a lab package"

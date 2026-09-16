@@ -911,8 +911,9 @@ class RecordingTakeStore:
 
         Every group is minted here. ``reference`` plus ``suite`` (the suite that reference
         materializes) mints a recording-group/v2 that references the published snapshot and
-        embeds no catalog. ``catalog`` alone mints the embedded recording-group/v1 exactly as
-        before the corpus store (transitional: removed in corpus-store Step 4). A group is
+        embeds no catalog; every native context uses this form. ``catalog`` alone mints the
+        embedded recording-group/v1 exactly as before the corpus store, for legacy
+        continuation only (a desktop session's frozen catalog is no store version). A group is
         reused only for the same catalog form: equal embedded catalog (v1) or equal reference
         (v2), plus equal subject, device, host, gate and setup.
         Returns: the reused or newly written group.
@@ -931,7 +932,7 @@ class RecordingTakeStore:
         if catalog is not None:
             if reference is not None or suite is not None:
                 raise TypeError("open_group takes an embedded catalog or a reference, not both")
-            # transitional: removed in corpus-store Step 4
+            # Legacy continuation only: the session's frozen catalog, embedded (v1).
             materialized = catalog
             purpose = catalog.purpose
             catalog_sha256 = canonical_sha256(catalog)
@@ -1451,23 +1452,25 @@ class RecordingTakeStore:
             complete=navigation.complete if navigation is not None else False,
         )
 
-    @staticmethod
-    def _context_request_sha256(
-        command: OpenContextCommand, catalog_reference: CatalogReference | None
-    ) -> str:
-        # An embedded context keeps its original request digest; a referenced one binds both.
-        if catalog_reference is None:
-            return canonical_sha256(command)
-        return canonical_sha256(
-            [command.model_dump(mode="json"), catalog_reference.model_dump(mode="json")]
-        )
+    def reference_catalog(self, reference: CatalogReference) -> CatalogSnapshot:
+        """The verified snapshot a catalog reference names, before any group binds it.
 
-    def context_replay(
-        self, command: OpenContextCommand, *, catalog_reference: CatalogReference | None = None
-    ) -> ContextEvent | None:
+        Shares this store's ``GroupCatalogCache`` entry with the recording-group/v2 that later
+        carries ``reference``, so the file is verified once.
+        Params: ``reference`` is a validated catalog reference.
+        Returns: the snapshot whose bytes, digest, suite id and purpose the reference seals.
+        Raises: ``CorpusSnapshotSecurityError`` (a ``SecurityError``) with
+        ``CORPUS.SNAPSHOT_MISSING`` or ``CORPUS.SNAPSHOT_MISMATCH`` when the file is missing,
+        altered or disagrees with the reference.
+        """
+        return self._group_catalogs.resolve_reference(reference)
+
+    def context_replay(self, command: OpenContextCommand) -> ContextEvent | None:
         """The recorded result of an already committed open-context operation, if any.
 
-        Params: ``catalog_reference`` as for ``open_context``; it is part of the request.
+        The request digest is the canonical digest of the whole command, so a referenced
+        context binds its catalog reference and an embedded one keeps its original digest.
+        Params: ``command`` is a validated open-context command of either form.
         Returns: the original context event, or ``None`` when the operation is new.
         Raises: ``ContractError`` when the operation id names another request or kind;
         ``CorpusSnapshotSecurityError`` when the replayed group's snapshot is missing or
@@ -1475,9 +1478,7 @@ class RecordingTakeStore:
         """
         with self._metadata_lock():
             self._repair_pending()
-            replay = self._replay(
-                command.operation_id, self._context_request_sha256(command, catalog_reference)
-            )
+            replay = self._replay(command.operation_id, canonical_sha256(command))
             if replay is None:
                 return None
             if replay.kind != "open-context" or replay.cursor is None:
@@ -1488,24 +1489,26 @@ class RecordingTakeStore:
         self,
         command: OpenContextCommand,
         *,
-        catalog_reference: CatalogReference | None = None,
         prepared_gate: PreparedCaptureGate | None = None,
         commit_barrier: Callable[[], None] | None = None,
     ) -> ContextEvent:
         """Open (or reuse) the capture group for a context and commit the workspace cursor.
 
-        Params: ``catalog_reference`` names the published catalog version that
-        ``command.catalog`` materializes (transitional: moves into OpenContextCommand in
-        corpus-store Step 4); when given, the context binds a recording-group/v2 referencing
-        it. Without it the embedded recording-group/v1 is minted exactly as before. A new
+        A command naming ``catalog_reference`` binds a recording-group/v2 on the snapshot that
+        reference seals (read and verified here). A command embedding ``catalog`` mints the
+        recording-group/v1 exactly as before the corpus store; that form is for legacy
+        continuation only (the recording service refuses it as a top-level command). A new
         catalog starts the cursor on its first prompt.
+        Params: ``command`` is a validated open-context command; ``prepared_gate`` is the
+        corpus gate prepared for its catalog; ``commit_barrier`` runs before the commit.
         Returns: the context event (the recorded one on replay).
         Raises: ``RecordingSelectionError`` when the workspace moved since the command was
-        prepared; ``ContractError`` when the reference does not name ``command.catalog`` or
-        the catalog is refused for this root; ``CorpusSnapshotSecurityError`` when the
-        referenced snapshot is missing or altered; ``SecurityError`` for unsafe evidence.
+        prepared; ``ContractError`` when the command names no catalog or the catalog is
+        refused for this root (``require_catalog_root``); ``CorpusSnapshotSecurityError``
+        (``CORPUS.SNAPSHOT_MISSING`` / ``CORPUS.SNAPSHOT_MISMATCH``) when the referenced
+        snapshot is missing or altered; ``SecurityError`` for unsafe evidence.
         """
-        request_sha256 = self._context_request_sha256(command, catalog_reference)
+        request_sha256 = canonical_sha256(command)
         with self._metadata_lock():
             self._repair_pending()
             replay = self._replay(command.operation_id, request_sha256)
@@ -1519,7 +1522,22 @@ class RecordingTakeStore:
                 previous.selection.selection_revision if previous is not None else None
             ) != command.expected_selection_revision:
                 raise RecordingSelectionError("workspace changed while context was being prepared")
-            if catalog_reference is None:
+            reference = command.catalog_reference
+            if reference is not None:
+                group = self.open_group(
+                    reference=reference,
+                    suite=self.reference_catalog(reference).suite,
+                    subject_id=command.subject_id,
+                    capture_device=command.capture_device,
+                    capture_host=command.capture_host,
+                    prepared_gate=prepared_gate,
+                    new_setup=command.new_setup,
+                    setup_description=command.setup_description,
+                    _locked=True,
+                    _operation_id=command.operation_id,
+                )
+            elif command.catalog is not None:
+                # Legacy continuation only: the session's frozen catalog, embedded (v1).
                 group = self.open_group(
                     command.catalog,
                     command.subject_id,
@@ -1532,18 +1550,7 @@ class RecordingTakeStore:
                     _operation_id=command.operation_id,
                 )
             else:
-                group = self.open_group(
-                    reference=catalog_reference,
-                    suite=command.catalog,
-                    subject_id=command.subject_id,
-                    capture_device=command.capture_device,
-                    capture_host=command.capture_host,
-                    prepared_gate=prepared_gate,
-                    new_setup=command.new_setup,
-                    setup_description=command.setup_description,
-                    _locked=True,
-                    _operation_id=command.operation_id,
-                )
+                raise ContractError("open-context names no catalog")
             keep_selection = (
                 previous is not None and previous.selection.catalog_sha256 == group.catalog_sha256
             )

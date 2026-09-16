@@ -16,8 +16,8 @@ extension RecordingHarness {
         let heldBackend = RecordingHeldReviewBackend(base: backend)
         let startup = RecordingStartupHold()
         let spans = RecordingReviewSpanLog()
-        let model = try RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: heldBackend,
-                                                diagnosticSink: spans.sink, beforeCapture: { await startup.pass() })
+        let model = RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: heldBackend,
+                                            diagnosticSink: spans.sink, beforeCapture: { await startup.pass() })
         defer { model.close() }
         let observer = ReviewObserver(model)
         await model.connect()

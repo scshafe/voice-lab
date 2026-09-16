@@ -189,6 +189,88 @@ import Testing
         #expect(try !accepts(responses, response(error: unlisted)))
     }
 
+    private func serviceRequest(_ data: [String: RecordingJSON], takeID: RecordingJSON = .null) -> [String: RecordingJSON] {
+        ["data": .object(data), "error": .null,
+         "meta": .object(["protocol_version": .string("cole-voice-lab.recording/v1"), "request_id": .string("synthetic-request"),
+                          "process_generation": .string("synthetic-gen"), "state_revision": .integer(2),
+                          "event_sequence": .integer(1), "take_id": takeID])]
+    }
+
+    private func openContext(referenced: Bool = true, embedded: Bool = false, digest: Bool? = nil,
+                             purpose: String = "capture-pilot", approved: Bool = false) -> [String: RecordingJSON] {
+        var value: [String: RecordingJSON] = [
+            "command": .string("open-context"), "operation_id": .string("context-open"), "subject_id": .string("synthetic-subject"),
+            "capture_device": .object(["backend": .string("coreaudio"), "device_id": .string("synthetic-uid"), "display_name": .string("Synthetic")]),
+            "capture_host": .string("synthetic-host"),
+        ]
+        if referenced { value["catalog_reference"] = .object(reference(purpose: purpose)) }
+        if embedded { value["catalog"] = catalog(purpose: purpose) }
+        if digest ?? embedded { value["catalog_sha256"] = .string(catalogSHA256) }
+        if approved {
+            value["pilot_approval_path"] = .string("provenance/pilot-gate.json")
+            value["pilot_approval_sha256"] = .string(String(repeating: "a", count: 64))
+        }
+        return value
+    }
+
+    @Test func openContextNamesExactlyOneCatalogFormAndLegacyContinuationEmbedsIt() throws {
+        let requests = try validator("recording-service-request")
+        #expect(try accepts(requests, serviceRequest(openContext())))
+        #expect(try accepts(requests, serviceRequest(openContext(purpose: "capture-corpus", approved: true))))
+        #expect(try accepts(requests, serviceRequest(openContext(referenced: false, embedded: true))))
+        var explicitNull = openContext()
+        explicitNull["catalog"] = .null
+        explicitNull["catalog_sha256"] = .null
+        #expect(try accepts(requests, serviceRequest(explicitNull)))
+        let refusedContexts: [(String, [String: RecordingJSON])] = [
+            ("both forms", openContext(embedded: true)),
+            ("reference and digest", openContext(digest: true)),
+            ("neither form", openContext(referenced: false)),
+            ("catalog without digest", openContext(referenced: false, embedded: true, digest: false)),
+            ("digest without catalog", openContext(referenced: false, digest: true)),
+            ("pilot approval on a pilot reference", openContext(approved: true)),
+            ("pilot approval on an embedded pilot catalog", openContext(referenced: false, embedded: true, approved: true)),
+        ]
+        for (name, payload) in refusedContexts {
+            #expect(try !accepts(requests, serviceRequest(payload)), "\(name) must fail closed")
+        }
+        func legacy(_ context: [String: RecordingJSON]) -> [String: RecordingJSON] {
+            var nested = context
+            nested["operation_id"] = .string("continue-legacy")
+            nested["new_setup"] = .boolean(true)
+            return serviceRequest(["command": .string("continue-legacy-recording"), "operation_id": .string("continue-legacy"),
+                                   "session_id": .string("unfinished-session"),
+                                   "session_evidence_sha256": .string(String(repeating: "a", count: 64)), "context": .object(nested)])
+        }
+        #expect(try accepts(requests, legacy(openContext(referenced: false, embedded: true))))
+        #expect(try !accepts(requests, legacy(openContext())))
+
+        let catalogCommand: [String: RecordingJSON] = ["command": .string("catalog"), "operation_id": .string("op-catalog")]
+        #expect(try accepts(requests, serviceRequest(catalogCommand)))
+        #expect(try !accepts(requests, serviceRequest(catalogCommand, takeID: .string("synthetic-take"))))
+        #expect(try !accepts(requests, serviceRequest(["command": .string("catalog")])))
+    }
+
+    @Test func catalogEventRepeatsItsReferenceIdentity() throws {
+        let responses = try validator("recording-response")
+        func event(suiteID: String = "synthetic-pilot", purpose: String = "capture-pilot",
+                   referencePurpose: String = "capture-pilot") -> RecordingJSON {
+            var suite = catalog(purpose: purpose).object ?? [:]
+            suite["suite_id"] = .string(suiteID)
+            return .object(["event": .string("catalog"), "operation_id": .string("op-catalog"),
+                            "catalog": .object(suite), "reference": .object(reference(purpose: referencePurpose))])
+        }
+        // The suite digest is Python evidence; Swift checks the identity the reference repeats.
+        #expect(try accepts(responses, response(data: event())))
+        #expect(try !accepts(responses, response(data: event(suiteID: "another-suite"))))
+        #expect(try !accepts(responses, response(data: event(referencePurpose: "capture-corpus"))))
+        var withTake = response(data: event())
+        var meta = withTake["meta"]?.object ?? [:]
+        meta["take_id"] = .string("synthetic-take")
+        withTake["meta"] = .object(meta)
+        #expect(try !accepts(responses, withTake))
+    }
+
     @Test func selectedSuiteOfAnEmbeddedCatalogKeepsItsPurpose() throws {
         let packages = try validator("recording-package-map")
         let embedded = group(embedded: true, referenced: false)

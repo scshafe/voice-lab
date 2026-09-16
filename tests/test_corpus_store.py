@@ -1175,6 +1175,34 @@ def test_publishing_validates_selection_and_the_materialized_suite(
     assert list(store.snapshot_directory.iterdir()) == []
 
 
+def test_publishing_refuses_a_suite_one_byte_over_what_the_app_receives_in_one_message(
+    store: CorpusStore,
+) -> None:
+    from test_recording_contracts import catalog_of_exactly
+
+    from cole_voice_lab.recording_contracts import MAX_CATALOG_SUITE_BYTES
+
+    exact = catalog_of_exactly(MAX_CATALOG_SUITE_BYTES)
+    pad = exact.prompts[-1]
+    store.import_prompt_suite(exact, source="manual")
+    # The same pad one character longer, under an id of the same length.
+    assert pad.text is not None
+    add(store, "shape-pae", pad.text + "p", style=pad.style, expected_seconds=6.3)
+    store.create_catalog(exact.suite_id, purpose=exact.purpose)
+    shaped = tuple(prompt.prompt_id for prompt in exact.prompts[:-1])
+    with pytest.raises(CorpusStoreError, match="app receives in one message") as caught:
+        store.publish_version(exact.suite_id, prompt_ids=(*shaped, "shape-pae"))
+    assert caught.value.code == "CORPUS.CATALOG_INVALID"
+    assert f"would be {MAX_CATALOG_SUITE_BYTES + 1} bytes with {len(exact.prompts)}" in str(
+        caught.value
+    )
+    assert store.list_catalogs()[0].versions == ()
+    assert list(store.snapshot_directory.iterdir()) == []
+    reference = store.publish_version(exact.suite_id, prompt_ids=(*shaped, pad.prompt_id))
+    assert store.materialize(reference).suite == exact
+    assert reference.catalog_sha256 == canonical_sha256(exact)
+
+
 def test_failed_snapshot_write_leaves_no_scratch_and_no_version(
     store: CorpusStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1741,6 +1769,39 @@ def test_group_catalog_cache_verifies_each_catalog_once_and_evicts_the_oldest(
         cache.resolve(referenced)  # evicted by the embedded catalog, so read again
     assert cache.resolve(embedded).catalog_sha256 == embedded.catalog_sha256
     assert reads.count(embedded.catalog_sha256) == 1
+
+
+def test_a_reference_resolved_before_its_group_exists_shares_the_group_entry(
+    store: CorpusStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeded(store, 2)
+    reference = published(store)
+    reads: list[CatalogReference] = []
+    real = corpus_store.read_catalog_snapshot
+
+    def counted(layout: Any, named: CatalogReference) -> CatalogSnapshot:
+        reads.append(named)
+        return real(layout, named)
+
+    monkeypatch.setattr(corpus_store, "read_catalog_snapshot", counted)
+    cache = GroupCatalogCache(store.layout)
+    missing = reference.model_copy(update={"catalog_version": 2})
+    snapshot = cache.resolve_reference(reference)
+    assert snapshot == store.materialize(reference)
+    # The group minted on that reference is served from the same entry.
+    assert cache.resolve(group_for(reference)) is snapshot
+    assert cache.resolve_reference(reference) is snapshot
+    assert reads == [reference]
+    forged = reference.model_copy(update={"suite_id": "another-suite"})
+    with pytest.raises(CorpusSnapshotSecurityError, match="declares suite"):
+        cache.resolve_reference(forged)
+    snapshot_file(store, reference).unlink()
+    # A failed read caches nothing; a verified entry keeps its checked bytes.
+    for _ in range(2):
+        with pytest.raises(CorpusSnapshotSecurityError, match="missing"):
+            cache.resolve_reference(missing)
+    assert reads == [reference, forged, missing, missing]
+    assert cache.resolve_reference(reference) is snapshot
 
 
 @pytest.mark.parametrize(

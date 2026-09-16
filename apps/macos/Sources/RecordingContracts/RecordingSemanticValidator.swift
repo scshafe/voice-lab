@@ -169,6 +169,7 @@ enum RecordingSemanticValidator {
             try require(!present("take_id") || !present("after_take_id"), "Single-take recovery cannot include a page cursor")
         case "ContinueLegacyRecordingCommand":
             try require(field("operation_id") == field("context.operation_id") && field("context.new_setup") == .boolean(true), "Legacy continuation requires its explicit new native setup")
+            try require(present("context.catalog") && !present("context.catalog_reference"), "Legacy continuation binds the session's embedded catalog, not a reference")
         case "RecordingFrameRange":
             try require(number("start_frame") < number("end_frame") && number("end_frame") <= number("source_frames"), "Trim range must be nonempty and within source")
         case "RecordingNavigationResult":
@@ -251,9 +252,19 @@ enum RecordingSemanticValidator {
             let tones = entries.filter { lookup($0, "prompt.category") == .string("room-tone") }
             try require(!tones.isEmpty && tones.allSatisfy { (field("group.room_tone_take_ids").array ?? []).contains(lookup($0, "take_id")) }, "Package requires explicit compatible room tone")
         case "OpenContextCommand":
+            // Mirrors Python OpenContextCommand: a catalog reference, or (legacy continuation
+            // only) an embedded catalog with its digest; Python alone recomputes that digest.
+            let referenced = present("catalog_reference")
+            try require(referenced ? !present("catalog") && !present("catalog_sha256") : present("catalog") && present("catalog_sha256"),
+                        "Context names its catalog by reference or embeds it with its digest, never both")
             try require(string("capture_device.backend") == "coreaudio", "Native context requires Core Audio")
             try require(present("pilot_approval_path") == present("pilot_approval_sha256"), "Pilot approval path and digest must be paired")
-            try require(!present("pilot_approval_path") || string("catalog.purpose") == "capture-corpus", "Pilot approval applies only to corpus capture")
+            let purpose = string(referenced ? "catalog_reference.purpose" : "catalog.purpose")
+            try require(!present("pilot_approval_path") || purpose == "capture-corpus", "Pilot approval applies only to corpus capture")
+        case "CatalogEvent":
+            // The suite digest is Python evidence; its identity must repeat the reference's.
+            try require(field("catalog.suite_id") == field("reference.suite_id") && field("catalog.purpose") == field("reference.purpose"),
+                        "Catalog event suite id and purpose must match its reference")
         case "ContextEvent":
             try require(field("cursor.subject_id") == field("group.subject_id") && field("cursor.group_id") == field("group.group_id") && field("cursor.selection.catalog_sha256") == field("group.catalog_sha256"), "Context cursor must bind its group, subject and catalog")
             if embedsCatalog("group") {

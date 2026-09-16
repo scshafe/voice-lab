@@ -14,6 +14,8 @@ public struct RecordingPromptPresentation: Identifiable, Equatable, Sendable {
     public let labels: [String]
     public let referenceCandidate: Bool
     public let holdout: Bool
+    /// The purpose of the catalog the prompt came from: in a configured workspace, the one the
+    /// service delivered (the configuration names none).
     public let catalogPurpose: String
     public let kind: Kind
     /// Read-aloud text; nil for room tone and procedure steps in both catalog versions.

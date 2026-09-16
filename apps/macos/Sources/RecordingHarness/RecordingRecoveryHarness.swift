@@ -18,7 +18,7 @@ extension RecordingHarness {
             throw recoveryError("Zero-frame recovery requires synthetic PCM and its start barrier")
         }
         let backend = AVFoundationRecordingPlaybackBackend(mode: .offline)
-        let model = try RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: backend)
+        let model = RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: backend)
         defer { model.close() }
         let observer = ReviewObserver(model, barrierSeconds: 120)
         let fixtureRoot = configurationURL.deletingLastPathComponent()
@@ -106,7 +106,7 @@ extension RecordingHarness {
         let config = try RecordingApplicationConfiguration.load(privateFile: configurationURL)
         guard config.recorder.arguments.contains("--synthetic-pcm") else { throw recoveryError("Recovery harness requires explicit synthetic PCM") }
         let backend = AVFoundationRecordingPlaybackBackend(mode: .offline)
-        let model = try RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: backend)
+        let model = RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: backend)
         defer { model.close() }
         let observer = ReviewObserver(model, barrierSeconds: 120)
         await model.connect()
@@ -147,7 +147,7 @@ extension RecordingHarness {
             throw recoveryError("The restart run must not re-arm the single-use seal barrier")
         }
         let backend = AVFoundationRecordingPlaybackBackend(mode: .offline)
-        let model = try RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: backend)
+        let model = RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: backend)
         defer { model.close() }
         let observer = ReviewObserver(model, barrierSeconds: 120)
         await model.connect()
@@ -245,7 +245,7 @@ extension RecordingHarness {
         NSApplication.shared.setActivationPolicy(.prohibited)
         let config = try RecordingApplicationConfiguration.load(privateFile: configurationURL)
         let backend = AVFoundationRecordingPlaybackBackend(mode: .offline)
-        let model = try RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: backend)
+        let model = RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: backend)
         defer { model.close() }
         let observer = ReviewObserver(model, barrierSeconds: 120)
         await model.connect()

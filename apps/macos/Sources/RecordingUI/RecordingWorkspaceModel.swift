@@ -3,6 +3,14 @@ import RecordingContracts
 import RecordingCore
 import SwiftUI
 
+/// The service requests that open a context, in the order the workspace sends them: the
+/// catalog the service pinned, the durable snapshot, then open-context naming that catalog.
+struct RecordingContextRequests {
+    let catalog: @MainActor (_ operationID: String) async throws -> RecordingWireEnvelope
+    let snapshot: @MainActor () async throws -> RecordingWireEnvelope
+    let openContext: @MainActor (_ command: RecordingJSON) async throws -> RecordingWireEnvelope
+}
+
 /// Canonical UI transport binding. Durable decisions/navigation remain in Python;
 /// Stop always targets the native helper directly, independent of service/QC work.
 @MainActor
@@ -13,7 +21,8 @@ public final class RecordingWorkspaceModel: ObservableObject {
     @Published public var searchText = ""
     @Published public var libraryFilter = "all"
     /// In-memory label filter (§6.4). Tokens absent from the loaded catalog are pruned at assignment,
-    /// so a stale token can never hide every prompt; the catalog is fixed for a model's lifetime.
+    /// so a stale token can never hide every prompt; once delivered, the catalog is fixed for a
+    /// model's lifetime.
     @Published public var selectedLabels: Set<String> = [] {
         didSet { let known = selectedLabels.intersection(labelOptions); if known != selectedLabels { selectedLabels = known } }
     }
@@ -57,7 +66,8 @@ public final class RecordingWorkspaceModel: ObservableObject {
     @Published public internal(set) var packageCandidatesTruncated = false
     @Published public var packageSheetOpen = false
     var packageOperationID: String?
-    /// Fixture-only catalog for package candidates; a configured workspace uses its own catalog.
+    /// Fixture-only catalog for package candidates; a configured workspace uses the catalog
+    /// its service delivered.
     var packageFixtureCatalog: RecordingJSON?
     @Published public internal(set) var takeHistory: [RecordingJSON] = []
     @Published public internal(set) var takeHistoryLoading = false
@@ -69,15 +79,26 @@ public final class RecordingWorkspaceModel: ObservableObject {
     var takeHistoryGeneration: UInt64 = 0
     public var closeCancellationHandler: (@MainActor () -> Void)?
     public var closeHandler: (@MainActor () -> Void)?
+    /// The Library, built from the delivered catalog; empty until the service delivers it.
     public private(set) var prompts: [RecordingPromptPresentation] = []
+    /// The PromptSuite the service pinned for its process (its CatalogEvent), exactly as
+    /// received; nil until delivered. Package candidates and the purpose-derived UI read it.
+    public private(set) var catalog: RecordingJSON?
+    /// That catalog's CatalogReference; every open-context names it.
+    public private(set) var catalogReference: RecordingJSON?
     public private(set) var transitions: [RecordingWorkspaceTransition] = []
     public var transitionObserver: ((RecordingWorkspaceTransition) -> Void)?
     public let configuration: RecordingApplicationConfiguration?
     /// Identities the transport paths bind replies to; fixtures carry synthetic values so the
-    /// same paths run against scripted replies without a process.
-    let catalogSHA256: String
+    /// same paths run against scripted replies without a process. The catalog digest is the
+    /// delivered reference's (Swift never recomputes it) and nil until the catalog arrives, so
+    /// no history or cursor applies before then.
+    public private(set) var catalogSHA256: String?
     let recorderGeneration: String
     static let fixtureCatalogSHA256 = String(repeating: "a", count: 64)
+    /// A catalog reply carries the whole suite (up to the 1 MiB frame); an expired request
+    /// closes the channel, so both bootstrap requests get the open-context deadline.
+    static let contextRequestTimeout: TimeInterval = 30
     var reviewAssetRoot: URL? { configuration?.assetRoot ?? fixtureAssetRoot }
     private let recorder: RecorderClient?
     let service: RecordingServiceClient?
@@ -120,6 +141,10 @@ public final class RecordingWorkspaceModel: ObservableObject {
     var reviewRequest: (@MainActor (_ takeID: String, _ selection: RecordingJSON, _ operationID: String, _ diagnosticContext: RecordingDiagnosticContext?) async throws -> RecordingWireEnvelope)?
     var historyRequest: (@MainActor (_ command: RecordingJSON, _ diagnosticContext: RecordingDiagnosticContext?) async throws -> RecordingWireEnvelope)?
     var recoverySnapshotRequest: (@MainActor (_ cursor: String?) async throws -> RecordingWireEnvelope)?
+    /// Fixture-only context bootstrap (catalog, snapshot, open-context) and the configured half
+    /// of its open-context, so ordering and refusal tests script each reply without a process.
+    private(set) var contextRequests: RecordingContextRequests?
+    private(set) var fixtureContextTarget: RecordingContextTarget?
     /// Asset root of fixture review sources; a configured workspace resolves them under its own root.
     var fixtureAssetRoot: URL?
     var unsealedTerminal: RecordingUnsealedTerminal?
@@ -142,9 +167,9 @@ public final class RecordingWorkspaceModel: ObservableObject {
                 reviewBackend: any RecordingPlaybackBackend = AVFoundationRecordingPlaybackBackend(),
                 diagnosticSink: RecordingDiagnosticSink? = nil,
                 beforeCapture: @escaping @MainActor () async throws -> Void = {},
-                afterCaptureStopped: @escaping @MainActor () -> Void = {}) throws {
+                afterCaptureStopped: @escaping @MainActor () -> Void = {}) {
         self.configuration = configuration
-        catalogSHA256 = configuration.catalogSHA256; recorderGeneration = configuration.recorder.processGeneration
+        catalogSHA256 = nil; recorderGeneration = configuration.recorder.processGeneration
         self.diagnosticSink = diagnosticSink
         review = RecordingReviewController(backend: reviewBackend, diagnosticSink: diagnosticSink)
         recorder = RecorderClient(configuration: configuration.recorder)
@@ -152,15 +177,14 @@ public final class RecordingWorkspaceModel: ObservableObject {
         self.permissionStatus = permissionStatus; self.permissionRequest = permissionRequest
         self.beforeCapture = beforeCapture; self.afterCaptureStopped = afterCaptureStopped
         waveform = RecordingWaveformModel(takeID: "unselected", processGeneration: configuration.recorder.processGeneration, hostClockComparable: true)
-        let purpose = configuration.catalog.object?["purpose"]?.string ?? ""
-        prompts = try (configuration.catalog.object?["prompts"]?.array ?? []).map { try RecordingPromptPresentation($0, purpose: purpose) }
+        // The Library waits for the service's catalog (`connect`); the configuration names none.
         state.permission = permissionStatus()
     }
 
     /// Coherent disabled workspace for missing or invalid launch configuration.
     public init(unavailable message: String) {
         configuration = nil; recorder = nil; service = nil; diagnosticSink = nil
-        catalogSHA256 = Self.fixtureCatalogSHA256; recorderGeneration = "unconfigured"
+        catalogSHA256 = nil; recorderGeneration = "unconfigured"
         review = RecordingReviewController(backend: AVFoundationRecordingPlaybackBackend(mode: .offline))
         permissionStatus = { .denied }; permissionRequest = { false }
         beforeCapture = {}; afterCaptureStopped = {}
@@ -182,6 +206,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
             "text": .string(fixture.roomTone ? "Remain still and quiet. Let the room sound settle naturally. Do not read these instructions aloud." : "The morning light moved slowly across the desk. I paused, took a breath, and began again. This is a synthetic interface fixture."),
             "category": .string(fixture.roomTone ? "room-tone" : "neutral"), "style": .string(fixture.roomTone ? "Stay quiet · avoid moving the microphone" : "Comfortable pace · natural delivery"), "expected_seconds": .number(20)])
         if let catalog {
+            self.catalog = catalog
             let purpose = catalog.object?["purpose"]?.string ?? ""
             prompts = (catalog.object?["prompts"]?.array ?? []).compactMap { try? RecordingPromptPresentation($0, purpose: purpose) }
             state.prompt = prompts.first
@@ -189,6 +214,20 @@ public final class RecordingWorkspaceModel: ObservableObject {
         state.phase = fixture.phase; state.status = fixture.phase.status
         state.deviceReason = "Synthetic fixture · microphone remains closed"
         state.selection = .object(["take_id": .string("synthetic-take"), "prompt_id": .string(prompts.first?.id ?? "natural-reading")])
+    }
+
+    /// Fixture adapter for the service bootstrap: a workspace whose service handshake finished
+    /// and whose catalog, snapshot and open-context replies are scripted. Like a configured
+    /// workspace, it has no Library and no catalog digest until the scripted catalog arrives.
+    init(bootstrap requests: RecordingContextRequests, target: RecordingContextTarget) {
+        configuration = nil; recorder = nil; service = nil; diagnosticSink = nil
+        catalogSHA256 = nil; recorderGeneration = "synthetic-generation"
+        review = RecordingReviewController(backend: AVFoundationRecordingPlaybackBackend(mode: .offline))
+        permissionStatus = { .granted }; permissionRequest = { false }
+        beforeCapture = {}; afterCaptureStopped = {}
+        waveform = RecordingWaveformModel(takeID: "unselected", processGeneration: "synthetic-generation", hostClockComparable: false)
+        contextRequests = requests; fixtureContextTarget = target
+        state.serviceReady = true; state.permission = .granted
     }
 
     /// Library rows (§6.4): search, status and labels combine with AND; selected labels with OR.
@@ -227,6 +266,12 @@ public final class RecordingWorkspaceModel: ObservableObject {
               state.takeID == snapshot.takeID, snapshot.processGeneration == recorderGeneration else { return false }
         return snapshot.writtenFrames == frames && ((snapshot.firstFrame == 0 && snapshot.endFrame == frames) || selectedReview != nil)
     }
+    /// Header text while no prompt is selected. It promises progress only while the bootstrap can
+    /// still deliver one; after a refusal it names what is missing (the status says why).
+    public var promptPlaceholder: String {
+        guard state.phase == .recoverableError else { return "Preparing catalog" }
+        return catalogSHA256 == nil ? "Catalog unavailable" : "Recording context unavailable"
+    }
     public var canRecord: Bool { state.canRecord && !audioReconnectRequired && !processChannelFailed && review.playback.failure == nil }
     public var recordUnavailableReason: String {
         review.playback.failure?.message ?? (processChannelFailed ? Self.processChannelFailedReason : state.recordUnavailableReason)
@@ -243,9 +288,10 @@ public final class RecordingWorkspaceModel: ObservableObject {
         return saveAdvances ? "Save this take and select the next missing prompt" : "Save this take; the prompt stays selected while history is updating"
     }
 
-    /// Launch inherited local channels and prepare a context without opening an input device.
+    /// Launch inherited local channels and prepare a context without opening an input device:
+    /// both handshakes, then `prepareContext` (catalog → snapshot → open-context).
     public func connect() async {
-        guard !connected, let configuration, let recorder, let service else { return }
+        guard !connected, let recorder, let service else { return }
         connected = true
         consumeChannels(recorder: recorder, service: service)
         do {
@@ -254,16 +300,99 @@ public final class RecordingWorkspaceModel: ObservableObject {
             _ = try await (native, metadata)
             var updated = state; updated.serviceReady = true; publish(updated)
             _ = try result(await recorder.snapshot())
-            let restored = try result(await service.snapshot())
-            let revision = restored.data.object?["cursor"]?.object?["selection"]?.object?["selection_revision"]?.integer
+        } catch { fail(error, phase: .recoverableError); return }
+        guard await prepareContext() else { return }
+        await refreshReadiness()
+        // Persisted inventory replays pre-handshake notifications without rescanning.
+        await refreshRecoveryInventory()
+        recoveryBootstrapFinished = true
+    }
+
+    /// The service bootstrap after its handshake, in order: the catalog the service pinned
+    /// (which builds the Library), the durable snapshot, then open-context naming that
+    /// catalog's reference. A refused catalog shows the service's own message (a catalog this
+    /// build's pilot approval cannot apply to, the model's own) and leaves the workspace without
+    /// a context or Library, so Record stays unavailable; nothing else is requested. Returns
+    /// whether a context opened.
+    func prepareContext() async -> Bool {
+        guard let target = contextTarget, let requests = contextTransport() else { return false }
+        let reference: RecordingJSON
+        do { reference = try await requireCatalog(requests) } catch { failCatalog(error); return false }
+        do {
+            let revision = try await expectedSelectionRevision(requests)
             let operation = newOperation("context")
-            let response = try result(await service.channel.request(configuration.openContextCommand(operationID: operation, expectedSelectionRevision: revision), takeID: nil, timeout: 30))
+            let response = try result(await requests.openContext(target.openContextCommand(
+                operationID: operation, catalogReference: reference, expectedSelectionRevision: revision)))
             try applyContext(response.data, operationID: operation)
-            await refreshReadiness()
-            // Persisted inventory replays pre-handshake notifications without rescanning.
-            await refreshRecoveryInventory()
-            recoveryBootstrapFinished = true
-        } catch { fail(error, phase: .recoverableError) }
+            return true
+        } catch { fail(error, phase: .recoverableError); return false }
+    }
+
+    /// The selection revision an open-context must expect (the service refuses any other): the
+    /// applied cursor's once a context opened in this process, otherwise the durable snapshot's
+    /// (nil when the library has no cursor yet).
+    private func expectedSelectionRevision(_ requests: RecordingContextRequests) async throws -> Int64? {
+        if let applied = state.selection.object?["selection_revision"]?.integer { return applied }
+        let restored = try result(await requests.snapshot())
+        return restored.data.object?["cursor"]?.object?["selection"]?.object?["selection_revision"]?.integer
+    }
+
+    /// The delivered catalog's reference, requesting the catalog first when none is held. The
+    /// service pins one catalog per process, so a held reference stays the one to name.
+    private func requireCatalog(_ requests: RecordingContextRequests) async throws -> RecordingJSON {
+        if let catalogReference { return catalogReference }
+        let operation = newOperation("catalog")
+        try applyCatalog(result(await requests.catalog(operation)).data, operationID: operation)
+        guard let catalogReference else { throw invalid("Catalog reply did not name its reference") }
+        return catalogReference
+    }
+
+    /// Hold the catalog the service pinned and build the Library from it. The suite digest is
+    /// Python's (the reply schema already bound the reference's suite id and purpose to the
+    /// suite); Swift takes it from the reference and never recomputes it.
+    func applyCatalog(_ event: RecordingJSON, operationID: String) throws {
+        guard event.object?["event"] == .string("catalog"), event.object?["operation_id"] == .string(operationID),
+              let delivered = event.object?["catalog"], let raw = delivered.object?["prompts"]?.array, !raw.isEmpty,
+              let purpose = delivered.object?["purpose"]?.string,
+              let reference = event.object?["reference"], reference.object?["purpose"] == .string(purpose),
+              reference.object?["suite_id"] == delivered.object?["suite_id"],
+              let digest = reference.object?["catalog_sha256"]?.string else { throw invalid("Catalog reply does not match its operation") }
+        if let catalogReference {
+            // One catalog per service process: a different one would silently rebind the Library.
+            guard catalogReference == reference else { throw invalid("The service catalog changed while the workspace was open; restart the app") }
+            return
+        }
+        // A configured pilot approval exists only in a capture-corpus build (Python settings
+        // guarantee it) and applies only to a capture-corpus catalog; say so before any
+        // open-context the request schema would refuse without naming either purpose.
+        if let target = contextTarget, target.pilotApprovalPath != .null, purpose != "capture-corpus" {
+            let built = configuration?.purpose ?? "capture-corpus"
+            let name = reference.object?["catalog_id"]?.string ?? "catalog"
+            let version = reference.object?["catalog_version"]?.integer.map { String($0) } ?? "?"
+            throw RecordingContractError(code: "RECORDING.GATE_NOT_READY", message:
+                "This app was built for \(built) with a pilot approval, but the active catalog \(name) version \(version) is \(purpose); activate a capture-corpus catalog, or rebuild the app for \(purpose) without a pilot approval")
+        }
+        let library = try raw.map { try RecordingPromptPresentation($0, purpose: purpose) }
+        objectWillChange.send()
+        catalog = delivered; catalogReference = reference; catalogSHA256 = digest; prompts = library
+    }
+
+    /// A refused catalog is the whole explanation: its message is the status and the reason
+    /// Record is unavailable, verbatim.
+    private func failCatalog(_ error: Error) {
+        let message = errorMessage(error)
+        fail(error, phase: .recoverableError) { $0.contextReady = false; $0.contextReason = message }
+    }
+
+    private var contextTarget: RecordingContextTarget? { configuration?.context ?? fixtureContextTarget }
+
+    private func contextTransport() -> RecordingContextRequests? {
+        if let contextRequests { return contextRequests }
+        guard let service else { return nil }
+        return RecordingContextRequests(
+            catalog: { try await service.catalog(operationID: $0, timeout: Self.contextRequestTimeout) },
+            snapshot: { try await service.snapshot() },
+            openContext: { try await service.openContext($0, timeout: Self.contextRequestTimeout) })
     }
 
     public func refreshReadiness() async {
@@ -298,27 +427,36 @@ public final class RecordingWorkspaceModel: ObservableObject {
         !state.navigationPending && !review.isDirty && !(state.decision == "draft" && state.sealedFrames != nil)
     }
 
-    /// A fresh context follows an explicit gesture only after the prior draft is resolved.
+    /// A fresh context follows an explicit gesture only after the prior draft is resolved. It
+    /// names the held catalog reference (requesting the catalog only if none was delivered).
+    /// When no context opened at launch (a refused catalog or open-context), it finishes that
+    /// bootstrap: the durable snapshot supplies the expected revision, and the recovery
+    /// inventory loads once the context opens.
     public func reconnectAudio() async {
-        guard canReconnectAudio, let configuration, let service else { return }
+        guard canReconnectAudio, let target = contextTarget, let requests = contextTransport() else { return }
         audioReconnectPending = true
         defer { audioReconnectPending = false }
         do {
             try await review.playback.recover()
             await refreshReadiness()
             guard state.deviceReady, !systemSleeping else { return }
+            let reference: RecordingJSON
+            do { reference = try await requireCatalog(requests) } catch { failCatalog(error); return }
+            let revision = try await expectedSelectionRevision(requests)
             let operation = newOperation("reconnect-context")
-            let revision = state.selection.object?["selection_revision"]?.integer
-            let response = try result(await service.channel.request(configuration.openContextCommand(
-                operationID: operation, expectedSelectionRevision: revision,
-                newSetup: true, setupDescription: audioReconnectCause.contextDescription), takeID: nil, timeout: 30))
+            let response = try result(await requests.openContext(target.openContextCommand(
+                operationID: operation, catalogReference: reference, expectedSelectionRevision: revision,
+                newSetup: true, setupDescription: audioReconnectCause.contextDescription)))
             guard !systemSleeping else { return }
             try applyContext(response.data, operationID: operation)
             audioReconnectRequired = false
             var updated = state; updated.errorCode = nil
             updated.status = updated.canRecord ? "Ready to record" : updated.recordUnavailableReason
             publish(updated)
-        } catch { fail(error, phase: .recoverableError) }
+        } catch { fail(error, phase: .recoverableError); return }
+        guard !recoveryBootstrapFinished else { return }
+        await refreshRecoveryInventory()
+        recoveryBootstrapFinished = true
     }
 
     /// Coalesced Record action. Permission is requested only here, following an explicit gesture.
@@ -467,7 +605,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
             if queuedHistoryDiagnosticContext == nil { queuedHistoryDiagnosticContext = span.childContext }
             span.finish(.coalesced); return
         }
-        guard let request = historyTransport() else { span.finish(.superseded); return }
+        guard let request = historyTransport(), let catalogSHA256 else { span.finish(.superseded); return }
         historyRefreshPending = true
         if !historyRefreshInFlight { historyRefreshInFlight = true }
         var outcome = RecordingDiagnosticEvent.Outcome.success
@@ -668,10 +806,10 @@ public final class RecordingWorkspaceModel: ObservableObject {
     }
 
     func applyCursor(_ cursor: RecordingJSON, preserveTake: Bool, update: (inout RecordingWorkspaceState) -> Void = { _ in }) throws {
-        guard let selection = cursor.object?["selection"],
+        guard let selection = cursor.object?["selection"], let catalogSHA256,
               selection.object?["catalog_sha256"] == .string(catalogSHA256),
               let promptID = selection.object?["prompt_id"]?.string,
-              let prompt = prompts.first(where: { $0.id == promptID }) else { throw invalid("Cursor does not bind the configured catalog prompt") }
+              let prompt = prompts.first(where: { $0.id == promptID }) else { throw invalid("Cursor does not bind a prompt of the delivered catalog") }
         let promptChanged = state.prompt?.id != promptID
         let changed = promptChanged || state.takeID != selection.object?["take_id"]?.string
         var updated = state; update(&updated); updated.selection = selection; updated.prompt = prompt
@@ -688,7 +826,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
     /// Load one bounded metadata page on explicit library demand. A stale cursor refreshes
     /// the coherent first page; it never combines prompt coverage across index revisions.
     public func loadMorePromptStatuses() async {
-        guard !historyRefreshPending, let cursor = state.promptCursor, let service else { return }
+        guard !historyRefreshPending, let cursor = state.promptCursor, let service, let catalogSHA256 else { return }
         historyRefreshPending = true
         if !historyRefreshInFlight { historyRefreshInFlight = true }
         let revision = state.historyRevision
@@ -741,7 +879,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
     }
 
     @discardableResult private func applyHistory(_ event: RecordingJSON) -> Bool {
-        guard event.object?["event"] == .string("history"),
+        guard event.object?["event"] == .string("history"), let catalogSHA256,
               event.object?["catalog_sha256"] == .string(catalogSHA256),
               event.object?["take_prompt_id"] == nil || event.object?["take_prompt_id"] == .null,
               let revision = event.object?["index_revision"]?.integer, revision >= state.historyRevision else { return false }
@@ -776,8 +914,8 @@ public final class RecordingWorkspaceModel: ObservableObject {
         if let error = error as? NativeCaptureFailure { return error.message }
         return "Local recording operation failed; inspect recovery details"
     }
-    func fail(_ error: Error, phase: RecordingShellPhase) {
-        var updated = state; updated.phase = phase; updated.status = errorMessage(error)
+    func fail(_ error: Error, phase: RecordingShellPhase, update: (inout RecordingWorkspaceState) -> Void = { _ in }) {
+        var updated = state; update(&updated); updated.phase = phase; updated.status = errorMessage(error)
         updated.errorCode = (error as? RecordingContractError)?.code ?? (error as? NativeCaptureFailure)?.code ?? "RECORDING.INVALID_MESSAGE"
         publish(updated)
     }

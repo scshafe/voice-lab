@@ -59,19 +59,15 @@ class Versions:
         return cursor
 
     def open(self, reference: CatalogReference, operation: str) -> ContextEvent:
-        with open_corpus_store(self.rig.layout, create=False) as corpus:
-            snapshot = corpus.materialize(reference)
         return self.rig.store.open_context(
             OpenContextCommand(
                 operation_id=operation,
                 subject_id=SUBJECT,
-                catalog=snapshot.suite,
-                catalog_sha256=reference.catalog_sha256,
+                catalog_reference=reference,
                 capture_device=DEVICE,
                 capture_host="host",
                 expected_selection_revision=self.cursor.selection.selection_revision,
-            ),
-            catalog_reference=reference,
+            )
         )
 
     def select(self, prompt_id: str, operation: str) -> NavigationEvent:
@@ -104,17 +100,15 @@ def versions(tmp_path: Path) -> Iterator[Versions]:
     layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
     rig = Rig(layout, RecordingTakeStore(layout), "")
     rig.store = RecordingTakeStore(layout, clock=lambda: rig.now)
-    first, snapshot = publish_catalog(layout, store_suite(3), catalog_id=CATALOG_ID)
+    first, _ = publish_catalog(layout, store_suite(3), catalog_id=CATALOG_ID)
     context = rig.store.open_context(
         OpenContextCommand(
             operation_id="context-first",
             subject_id=SUBJECT,
-            catalog=snapshot.suite,
-            catalog_sha256=first.catalog_sha256,
+            catalog_reference=first,
             capture_device=DEVICE,
             capture_host="host",
-        ),
-        catalog_reference=first,
+        )
     )
     rig.group_id = context.group.group_id
     selection = context.cursor.selection
@@ -270,12 +264,10 @@ def test_the_service_names_native_and_legacy_takes_an_edit_stopped_counting_alik
         OpenContextCommand(
             operation_id="context-legacy",
             subject_id=LEGACY_SUBJECT,
-            catalog=reworded.suite,
-            catalog_sha256=reference.catalog_sha256,
+            catalog_reference=reference,
             capture_device=UMIK,
             capture_host="synthetic-host",
-        ),
-        catalog_reference=reference,
+        )
     )
     legacy = _review_through_the_service(
         layout, LEGACY_SUBJECT, reference.catalog_sha256, legacy_id

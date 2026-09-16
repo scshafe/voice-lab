@@ -27,14 +27,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
-from .canonical import canonical_sha256, open_regular_no_follow, sha256_file
-from .corpus_store import CorpusSnapshotSecurityError
+from .canonical import canonical_json_bytes, canonical_sha256, open_regular_no_follow, sha256_file
+from .corpus_store import (
+    CorpusSnapshotSecurityError,
+    CorpusStoreError,
+    corpus_store_migration_resources,
+    open_corpus_store,
+)
 from .diagnostic_roots import require_catalog_root
 from .errors import ContractError, SecurityError, VoiceLabError
+from .models import PromptSuite, Sha256
 from .paths import AssetLayout, _reject_existing_symlink_components
 from .recording_contracts import (
+    MAX_CATALOG_SUITE_BYTES,
     MAX_CONTROL_FRAME_BYTES,
     MAX_RECORDING_REVISION,
     MAX_TELEMETRY_FRAME_BYTES,
@@ -42,6 +49,9 @@ from .recording_contracts import (
     AcknowledgedEvent,
     AnalysisEvent,
     CancelCommand,
+    CatalogCommand,
+    CatalogEvent,
+    CatalogReference,
     CatalogSnapshot,
     ContextEvent,
     ContinueLegacyRecordingCommand,
@@ -120,6 +130,7 @@ CONTROL_POLL_SECONDS = 0.02
 CONTROL_IDLE_WAKE_SECONDS = 1.0
 CONTROL_OUTPUT_DEADLINE_SECONDS = 2.0
 CONTROL_SHUTDOWN_DEADLINE_SECONDS = 1.0
+_SHA256: TypeAdapter[str] = TypeAdapter(Sha256)
 
 
 class RecordingServiceError(VoiceLabError):
@@ -130,16 +141,41 @@ class RecordingServiceError(VoiceLabError):
         self.recording_error = RecordingError(code=code, message=message, retryable=retryable)
 
 
-def _snapshot_failure(error: CorpusSnapshotSecurityError) -> RecordingServiceError:
-    """The wire error for a group whose referenced catalog snapshot is missing or altered.
+def _snapshot_failure(
+    error: CorpusSnapshotSecurityError,
+    subject: str = "the catalog snapshot this recording context references",
+) -> RecordingServiceError:
+    """The wire error for a catalog snapshot that is missing or altered.
 
-    Both store codes surface as ``CORPUS.SNAPSHOT_MISMATCH``; the fixed message says which,
-    and carries no snapshot content.
+    Both store codes surface as ``CORPUS.SNAPSHOT_MISMATCH``; the fixed message names
+    ``subject`` and says which, and carries no snapshot content.
     """
     state = "missing" if error.code == "CORPUS.SNAPSHOT_MISSING" else "altered or unsafe"
+    return RecordingServiceError("CORPUS.SNAPSHOT_MISMATCH", f"{subject} is {state}")
+
+
+def _bounded_message(message: str) -> str:
+    # RecordingError messages are at most 1024 characters; store messages can name paths.
+    return message if len(message) <= 1024 else message[:1021] + "..."
+
+
+def _active_catalog_failure(error: CorpusStoreError, subject_id: str) -> RecordingServiceError:
+    """The wire error for a subject whose active catalog cannot be resolved.
+
+    ``CORPUS.STORE_MISSING`` and ``CORPUS.NO_ACTIVE_CATALOG`` keep their codes and the store's
+    message (it names ``voice-lab catalog init`` / ``voice-lab catalog activate``); a missing
+    or altered snapshot is ``CORPUS.SNAPSHOT_MISMATCH``; any other store failure (unsafe or
+    unavailable store) is ``RECORDING.GATE_NOT_READY`` with the store's message.
+    """
+    if isinstance(error, CorpusSnapshotSecurityError):
+        return _snapshot_failure(error, f"the active catalog snapshot of subject {subject_id}")
+    if error.code == "CORPUS.STORE_MISSING":
+        return RecordingServiceError("CORPUS.STORE_MISSING", _bounded_message(str(error)))
+    if error.code == "CORPUS.NO_ACTIVE_CATALOG":
+        return RecordingServiceError("CORPUS.NO_ACTIVE_CATALOG", _bounded_message(str(error)))
     return RecordingServiceError(
-        "CORPUS.SNAPSHOT_MISMATCH",
-        f"the catalog snapshot this recording context references is {state}",
+        "RECORDING.GATE_NOT_READY",
+        _bounded_message(f"the corpus store cannot serve the active catalog: {error}"),
     )
 
 
@@ -457,23 +493,49 @@ class RecordingTakesBackend:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class PinnedCatalog:
+    """The subject's active catalog as this service process resolved it at first use."""
+
+    snapshot: CatalogSnapshot
+    reference: CatalogReference
+
+    @property
+    def suite(self) -> PromptSuite:
+        return self.snapshot.suite
+
+
 class RecordingWorkspaceBackend:
-    """Bootstrapped native context, indexed library and durable queue behind one service."""
+    """Bootstrapped native context, indexed library and durable queue behind one service.
+
+    The subject's catalog comes from the corpus store: the first ``CatalogCommand``,
+    open-context or pre-context snapshot that needs it resolves the subject's active catalog
+    (the store is opened, read and closed again, so the CLI can edit it while the app runs)
+    and pins it for the process lifetime; a later ``voice-lab catalog activate`` takes effect
+    at the next launch. Only a successful resolution is pinned.
+    """
 
     def __init__(
         self,
         layout: AssetLayout,
         subject_id: str,
-        catalog_sha256: str,
+        catalog_sha256: str | None = None,
         *,
         store: RecordingTakeStore | None = None,
         index: RecordingIndex | None = None,
         discover: bool = True,
         analysis_queue: RecordingAnalysisQueue | None = None,
     ) -> None:
+        """Params: ``catalog_sha256`` is an explicit digest for the pre-context snapshot
+        (``--catalog-sha256``); ``None`` reports the pinned catalog's digest instead.
+        Raises: ``RecordingIndexError``, ``SecurityError`` or ``OSError`` when the index or
+        take store cannot be opened or recovered.
+        """
         self.layout = layout
         self.subject_id = subject_id
         self.initial_catalog_sha256 = catalog_sha256
+        self._catalog_lock = threading.Lock()
+        self._pinned_catalog: PinnedCatalog | None = None
         self.analysis_queue = analysis_queue
         self.package_queue: RecordingPackageQueue | None = None
         self.index = index or RecordingIndex(layout, subject_id=subject_id)
@@ -525,6 +587,99 @@ class RecordingWorkspaceBackend:
     def state_revision(self) -> int:
         return self.store.state_revision
 
+    def pinned_catalog(self) -> PinnedCatalog:
+        """The subject's active catalog for this process, resolved on first use and pinned.
+
+        Opens the corpus store read-only in effect (``create=False``), reads the active
+        version and its snapshot (aliases included) and closes the store before returning.
+        Returns: the pinned snapshot and reference.
+        Raises: ``RecordingServiceError`` with ``CORPUS.STORE_MISSING`` (no store; the message
+        names ``voice-lab catalog init``), ``CORPUS.NO_ACTIVE_CATALOG`` (the message names
+        ``voice-lab catalog init`` / ``voice-lab catalog activate``),
+        ``CORPUS.SNAPSHOT_MISMATCH`` (the active snapshot is missing or altered) or
+        ``RECORDING.GATE_NOT_READY`` (any other store failure, with the store's message, or
+        an active suite larger than ``MAX_CATALOG_SUITE_BYTES``, which no CatalogEvent frame
+        can carry). A failure pins nothing, so a later request resolves again.
+        """
+        with self._catalog_lock:
+            if self._pinned_catalog is None:
+                try:
+                    with open_corpus_store(self.layout, create=False) as corpus:
+                        _, reference = corpus.active_catalog(self.subject_id)
+                        snapshot = corpus.materialize(reference)
+                except CorpusStoreError as error:
+                    raise _active_catalog_failure(error, self.subject_id) from error
+                size = len(canonical_json_bytes(snapshot.suite))
+                if size > MAX_CATALOG_SUITE_BYTES:
+                    # Refused here, by name: an oversized reply would close the whole session.
+                    raise RecordingServiceError(
+                        "RECORDING.GATE_NOT_READY",
+                        f"active catalog {reference.catalog_id} version "
+                        f"{reference.catalog_version} is {size} bytes with "
+                        f"{len(snapshot.suite.prompts)} prompts, more than the "
+                        f"{MAX_CATALOG_SUITE_BYTES} bytes the app receives in one message; "
+                        "publish a smaller version and run `voice-lab catalog activate`",
+                    )
+                self._pinned_catalog = PinnedCatalog(snapshot=snapshot, reference=reference)
+            return self._pinned_catalog
+
+    def _served_catalog(self) -> PinnedCatalog:
+        """The pinned catalog, refused on a root that does not allow its purpose.
+
+        Its content (CatalogCommand) and identity (the pre-context snapshot's digest) are only
+        shown where open-context could open it.
+        Raises: the ``pinned_catalog`` errors and the ``_require_catalog_root`` refusal.
+        """
+        pinned = self.pinned_catalog()
+        self._require_catalog_root(pinned.suite)
+        return pinned
+
+    def _context_catalog(self, command: OpenContextCommand) -> CatalogSnapshot:
+        """The pinned catalog a top-level open-context must name, as its snapshot.
+
+        Params: ``command`` is a top-level (not legacy-continuation) open-context.
+        Returns: the pinned snapshot, whose reference equals ``command.catalog_reference``.
+        Raises: ``RecordingServiceError`` ``RECORDING.INVALID_MESSAGE`` for an embedded
+        catalog (accepted only inside continue-legacy-recording),
+        ``RECORDING.STALE_REVISION`` when the reference differs from the pinned one, and the
+        ``pinned_catalog`` errors when no active catalog can be resolved.
+        """
+        named = command.catalog_reference
+        if named is None:
+            raise RecordingServiceError(
+                "RECORDING.INVALID_MESSAGE",
+                "open-context must name the catalog this service delivered "
+                "(catalog_reference); an embedded catalog is accepted only inside "
+                "continue-legacy-recording",
+            )
+        pinned = self.pinned_catalog()
+        if named != pinned.reference:
+            served = pinned.reference
+            raise RecordingServiceError(
+                "RECORDING.STALE_REVISION",
+                f"open-context names catalog {named.catalog_id} version "
+                f"{named.catalog_version} ({named.catalog_sha256[:12]}), but this service "
+                f"serves {served.catalog_id} version {served.catalog_version} "
+                f"({served.catalog_sha256[:12]}); request the catalog again",
+            )
+        return pinned.snapshot
+
+    def _require_catalog_root(self, suite: PromptSuite) -> None:
+        """Refuse a catalog whose purpose this root does not allow, before any evidence is read.
+
+        Raises: ``RecordingServiceError`` ``RECORDING.GATE_NOT_READY`` with the
+        ``require_catalog_root`` refusal text, or naming an unsafe diagnostic root marker.
+        """
+        try:
+            require_catalog_root(self.layout, suite, self.subject_id)
+        except ContractError as error:
+            raise RecordingServiceError("RECORDING.GATE_NOT_READY", str(error)) from error
+        except SecurityError as error:
+            raise RecordingServiceError(
+                "RECORDING.GATE_NOT_READY",
+                "the diagnostic root marker is unsafe; this asset root is refused",
+            ) from error
+
     def validate_request(self, request: ServiceRequest) -> None:
         context = (
             request.data.context
@@ -563,22 +718,24 @@ class RecordingWorkspaceBackend:
                         state="blocked",
                         error=error.recording_error,
                     )
-            if isinstance(command, (OpenContextCommand, ContinueLegacyRecordingCommand)):
-                context = (
-                    command.context
-                    if isinstance(command, ContinueLegacyRecordingCommand)
-                    else command
+            if isinstance(command, CatalogCommand):
+                # A catalog this root refuses is never shown, exactly as open-context refuses it.
+                pinned = self._served_catalog()
+                return CatalogEvent(
+                    operation_id=command.operation_id,
+                    catalog=pinned.suite,
+                    reference=pinned.reference,
                 )
+            if isinstance(command, (OpenContextCommand, ContinueLegacyRecordingCommand)):
+                if isinstance(command, ContinueLegacyRecordingCommand):
+                    # Legacy continuation binds the session's frozen embedded catalog.
+                    context = command.context
+                    catalog = CatalogSnapshot.embedded(command.legacy_catalog)
+                else:
+                    context = command
+                    catalog = self._context_catalog(command)
                 # Refuse before replay or gate preparation can read or bind any evidence.
-                try:
-                    require_catalog_root(self.layout, context.catalog, self.subject_id)
-                except ContractError as error:
-                    raise RecordingServiceError("RECORDING.GATE_NOT_READY", str(error)) from error
-                except SecurityError as error:
-                    raise RecordingServiceError(
-                        "RECORDING.GATE_NOT_READY",
-                        "the diagnostic root marker is unsafe; this asset root is refused",
-                    ) from error
+                self._require_catalog_root(catalog.suite)
                 replay = self.store.context_replay(context)
                 if replay is not None and not isinstance(command, ContinueLegacyRecordingCommand):
                     return replay
@@ -588,16 +745,14 @@ class RecordingWorkspaceBackend:
                     and context.pilot_approval_sha256 is not None
                 ):
                     gate = self.store.prepare_corpus_gate(
-                        context.catalog,
+                        catalog.suite,
                         self.subject_id,
                         approval_path=context.pilot_approval_path,
                         approval_sha256=context.pilot_approval_sha256,
                     )
                 cancellation.check()
-                # OpenContextCommand still embeds its catalog (corpus-store Step 4).
-                embedded = CatalogSnapshot.embedded(context.catalog)
-                self.index.register_catalog(embedded)
-                library = RecordingLibrary(self.layout, embedded, self.subject_id)
+                self.index.register_catalog(catalog)
+                library = RecordingLibrary(self.layout, catalog, self.subject_id)
                 library.bind_native_store(self.store, self.index)
                 if isinstance(command, ContinueLegacyRecordingCommand):
                     event = RecordingRecovery(
@@ -615,8 +770,12 @@ class RecordingWorkspaceBackend:
             cursor = self.store.get_cursor(self.subject_id)
             if cursor is None:
                 if isinstance(command, SnapshotCommand):
+                    # An explicit launch digest names itself; otherwise the page reports the
+                    # pinned catalog's identity, which a root that refuses it never shows.
                     return RecordingHistoryPage(
-                        catalog_sha256=self.initial_catalog_sha256,
+                        catalog_sha256=self.initial_catalog_sha256
+                        if self.initial_catalog_sha256 is not None
+                        else self._served_catalog().reference.catalog_sha256,
                         index_revision=self.index.revision,
                         completeness="unknown",
                         has_more=False,
@@ -1328,7 +1487,16 @@ def serve_recording_pipes(session: RecordingServiceSession, input_fd: int, outpu
 
 
 def recording_service_build_identity() -> RecordingBuildIdentity:
-    """Fingerprint Python code/interpreter/runtime without loading optional model stacks."""
+    """Fingerprint Python code/interpreter/runtime without loading optional model stacks.
+
+    The source digest covers every package ``.py`` file plus every SQL migration the service
+    applies: the recording-index projection (including the prompt-alias projection) and the
+    corpus store it reads the active catalog from.
+    Returns: the service build identity.
+    Raises: ``OSError`` when a package file cannot be read; ``RecordingIndexError`` or
+    ``SqliteMigrationError`` (``SQLITE_MIGRATIONS.RESOURCE_MISSING``) when a migration
+    resource is missing; ``SecurityError`` when one is a symlink.
+    """
     package = Path(__file__).resolve().parent
     files: list[tuple[str, str, int]] = []
     for path in sorted(package.rglob("*.py")):
@@ -1337,6 +1505,7 @@ def recording_service_build_identity() -> RecordingBuildIdentity:
     from .recording_index import recording_index_migration_resources
 
     files.extend(recording_index_migration_resources())
+    files.extend(corpus_store_migration_resources())
     files.sort()
     executable_sha256, _ = sha256_file(Path(sys.executable).resolve())
     from .runtime import recording_python_environment_identity
@@ -1366,10 +1535,18 @@ def _read_private_build_identity(path: Path) -> RecordingBuildIdentity:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Launch only on inherited stdin/stdout pipes; no socket listener or audio input is opened."""
+    """Launch only on inherited stdin/stdout pipes; no socket listener or audio input is opened.
+
+    ``--native-workspace`` serves the subject's active corpus-store catalog (pinned at first
+    use); ``--catalog-sha256`` is optional there and, when given, only names the pre-context
+    snapshot's digest. ``--recording-group-id`` and the unprepared default require
+    ``--catalog-sha256`` (the group's digest, or the unprepared snapshot's).
+    Returns: 0 after a clean shutdown, 2 after a failure (one JSON line on stderr naming the
+    error code, e.g. ``RECORDING.INVALID_MESSAGE`` for a missing ``--catalog-sha256``).
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset-root", type=Path, required=True)
-    parser.add_argument("--catalog-sha256", required=True)
+    parser.add_argument("--catalog-sha256")
     parser.add_argument("--recording-group-id")
     parser.add_argument("--native-workspace", action="store_true")
     parser.add_argument("--subject-id", default="cole-self")
@@ -1400,7 +1577,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RecordingServiceError(
                 "RECORDING.BUILD_MISMATCH", "service runtime differs from the expected build"
             )
-        backend: RecordingServiceBackend = UnpreparedRecordingBackend(options.catalog_sha256)
+        if options.native_workspace and options.recording_group_id is not None:
+            raise ValueError("native workspace bootstrap owns its automatic context")
+        if options.catalog_sha256 is None:
+            if not options.native_workspace:
+                raise ValueError(
+                    "a group or unprepared recording service requires --catalog-sha256"
+                )
+        else:
+            _SHA256.validate_python(options.catalog_sha256)
+        backend: RecordingServiceBackend | None = None
         if options.recording_group_id is not None:
             store = RecordingTakeStore(layout)
             group = store.get_group(options.recording_group_id)
@@ -1427,8 +1613,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             backend = prepared
         if options.native_workspace:
-            if options.recording_group_id is not None:
-                raise ValueError("native workspace bootstrap owns its automatic context")
             workspace = RecordingWorkspaceBackend(
                 layout, options.subject_id, options.catalog_sha256
             )
@@ -1441,6 +1625,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             workspace.analysis_queue = analysis_queue
             backend = workspace
+        if backend is None:
+            backend = UnpreparedRecordingBackend(options.catalog_sha256)
         if isinstance(backend, (RecordingWorkspaceBackend, RecordingTakesBackend)):
             package_queue = RecordingPackageQueue(
                 RecordingPackageStore(

@@ -59,6 +59,7 @@ from .models import (
 )
 from .paths import AssetLayout, confined_path
 from .recording_contracts import (
+    MAX_CATALOG_SUITE_BYTES,
     CatalogReference,
     CatalogSnapshot,
     PromptAlias,
@@ -538,14 +539,35 @@ class GroupCatalogCache:
         ``CORPUS.SNAPSHOT_MISSING`` or ``CORPUS.SNAPSHOT_MISMATCH`` when a v2 group's snapshot
         file is missing, altered or disagrees with its reference; nothing is cached then.
         """
-        key = self.key(group)
+        return self._resolve(self.key(group), lambda: resolve_group_catalog(self.layout, group))
+
+    def resolve_reference(self, reference: CatalogReference) -> CatalogSnapshot:
+        """The snapshot a recording-group/v2 carrying ``reference`` binds, before one exists.
+
+        Shares the entry such a group resolves through (``key`` is
+        ``(reference.catalog_sha256, reference)``), so minting the group afterwards reads the
+        file no second time.
+        Params: ``reference`` is a validated catalog reference (e.g. an open-context's).
+        Returns: the snapshot ``read_catalog_snapshot`` verifies against the reference.
+        Raises: ``CorpusSnapshotSecurityError`` (a ``SecurityError``) with
+        ``CORPUS.SNAPSHOT_MISSING`` or ``CORPUS.SNAPSHOT_MISMATCH`` as
+        ``read_catalog_snapshot``; nothing is cached then.
+        """
+        return self._resolve(
+            (reference.catalog_sha256, reference),
+            lambda: read_catalog_snapshot(self.layout, reference),
+        )
+
+    def _resolve(
+        self, key: GroupCatalogKey, read: Callable[[], CatalogSnapshot]
+    ) -> CatalogSnapshot:
         with self._lock:
             cached = self._entries.get(key)
             if cached is not None:
                 self._entries.move_to_end(key)
                 return cached
         # A concurrent duplicate read resolves the same verified bytes.
-        snapshot = resolve_group_catalog(self.layout, group)
+        snapshot = read()
         with self._lock:
             self._entries[key] = snapshot
             self._entries.move_to_end(key)
@@ -1541,8 +1563,10 @@ class CorpusStore:
         Raises: ``CorpusStoreError`` with ``CORPUS.CATALOG_UNKNOWN``, ``CORPUS.PROMPT_UNKNOWN``,
         ``CORPUS.PROMPT_RETIRED``, ``CORPUS.PROMPT_DUPLICATE`` (an id listed twice),
         ``CORPUS.EMPTY_CATALOG`` (nothing to publish), ``CORPUS.CATALOG_INVALID`` (the suite
-        fails the ``PromptSuite`` contract, exceeds ``MAX_CATALOG_PROMPTS`` or its snapshot
-        would exceed ``MAX_CATALOG_SNAPSHOT_BYTES``), ``CORPUS.VERSION_UNCHANGED`` (this
+        fails the ``PromptSuite`` contract, exceeds ``MAX_CATALOG_PROMPTS``, its canonical
+        bytes exceed ``MAX_CATALOG_SUITE_BYTES`` (the app receives a catalog in one control
+        frame) or its snapshot would exceed ``MAX_CATALOG_SNAPSHOT_BYTES``),
+        ``CORPUS.VERSION_UNCHANGED`` (this
         exact content is already published; the message names the catalog and version and,
         when that version accepts other earlier recordings than the current revisions do,
         the prompts concerned);
@@ -1571,7 +1595,8 @@ class CorpusStore:
                         "prompts": tuple(record.prompt for record in records),
                     }
                 )
-                digest = canonical_sha256(suite)
+                suite_bytes = canonical_json_bytes(suite)
+                digest = hashlib.sha256(suite_bytes).hexdigest()
                 aliases = sorted(
                     {
                         (record.prompt_sha256, accepted)
@@ -1593,6 +1618,14 @@ class CorpusStore:
                     f"catalog {catalog_id} does not materialize a valid suite: "
                     f"{_validation_message(error)}",
                 ) from error
+            if len(suite_bytes) > MAX_CATALOG_SUITE_BYTES:
+                # The app receives a catalog whole, in one service message.
+                raise CorpusStoreError(
+                    "CORPUS.CATALOG_INVALID",
+                    f"catalog {catalog_id} would be {len(suite_bytes)} bytes with "
+                    f"{len(records)} prompts, more than the {MAX_CATALOG_SUITE_BYTES} bytes "
+                    "the recording app receives in one message; publish fewer prompts",
+                )
             payload = canonical_json_bytes(snapshot) + b"\n"
             if len(payload) > MAX_CATALOG_SNAPSHOT_BYTES:
                 raise CorpusStoreError(

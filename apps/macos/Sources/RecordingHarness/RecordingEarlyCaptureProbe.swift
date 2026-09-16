@@ -96,10 +96,10 @@ extension RecordingHarness {
             report["recorder_build"] = config.recorder.expectedPeerBuild
             report["service_build"] = config.service.expectedPeerBuild
             report["asset_root"] = .string(config.assetRoot.path)
-            report["catalog_sha256"] = .string(config.catalogSHA256)
+            report["catalog_sha256"] = .null
             report["recorder_generation"] = .string(config.recorder.processGeneration)
             report["service_generation"] = .string(config.service.processGeneration)
-            let current = try RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted },
+            let current = RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted },
                 permissionRequest: { false }, reviewBackend: AVFoundationRecordingPlaybackBackend(mode: .offline))
             model = current
             current.transitionObserver = { [weak current] _ in
@@ -123,6 +123,8 @@ extension RecordingHarness {
             let connectStart = instant()
             await current.connect()
             action("connect", connectStart, instant(), "model.connect call to its return; no history-complete wait")
+            // The configuration names no catalog; the service delivers the one it pinned.
+            report["catalog_sha256"] = current.catalogSHA256.map(RecordingJSON.string) ?? .null
             checkpoint("connected", current)
             if let error = failure() { throw error }
             guard current.canRecord, let promptID = current.state.prompt?.id else {

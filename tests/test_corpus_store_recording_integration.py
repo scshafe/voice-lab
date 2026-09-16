@@ -66,15 +66,13 @@ def launch(rig: Rig, index: RecordingIndex, version: Version, operation: str) ->
         OpenContextCommand(
             operation_id=operation,
             subject_id=SUBJECT,
-            catalog=snapshot.suite,
-            catalog_sha256=reference.catalog_sha256,
+            catalog_reference=reference,
             capture_device=DEVICE,
             capture_host="host",
             expected_selection_revision=None
             if cursor is None
             else cursor.selection.selection_revision,
-        ),
-        catalog_reference=reference,
+        )
     )
 
 

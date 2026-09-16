@@ -48,7 +48,7 @@ extension RecordingHarness {
             report["service_build"] = configuration.service.expectedPeerBuild
             report["recorder_generation"] = .string(configuration.recorder.processGeneration)
             report["service_generation"] = .string(configuration.service.processGeneration)
-            let model = try RecordingWorkspaceModel(configuration: configuration,
+            let model = RecordingWorkspaceModel(configuration: configuration,
                 permissionStatus: { .granted }, permissionRequest: { false },
                 reviewBackend: AVFoundationRecordingPlaybackBackend(mode: .offline))
             let started = DispatchTime.now().uptimeNanoseconds
@@ -62,6 +62,9 @@ extension RecordingHarness {
             report["can_record"] = .boolean(model.canRecord)
             report["history_completeness"] = .string(state.historyCompleteness)
             report["history_revision"] = .integer(state.historyRevision)
+            // The catalog the service pinned; null when its catalog request was refused.
+            report["catalog_sha256"] = model.catalogSHA256.map(RecordingJSON.string) ?? .null
+            report["catalog_reference"] = model.catalogReference ?? .null
             report["phase"] = .string(state.phase.rawValue)
             report["status"] = .string(state.status)
             report["state_error_code"] = state.errorCode.map(RecordingJSON.string) ?? .null

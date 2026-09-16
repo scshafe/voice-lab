@@ -112,7 +112,7 @@ struct RecordingHarness {
         var startupGate: CheckedContinuation<Void, Never>?
         var firstStart = true
         let startupEntered = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let model = try RecordingWorkspaceModel(configuration: configuration, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: AVFoundationRecordingPlaybackBackend(mode: .offline), beforeCapture: {
+        let model = RecordingWorkspaceModel(configuration: configuration, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: AVFoundationRecordingPlaybackBackend(mode: .offline), beforeCapture: {
             if firstStart {
                 firstStart = false
                 await withCheckedContinuation { startupGate = $0; startupEntered.continuation.yield(()) }
@@ -124,8 +124,17 @@ struct RecordingHarness {
         let delayed = configuration.recorder.arguments.contains("--synthetic-seal-barrier-directory")
         let fileEvents = try RecordingFixtureFileObserver(directory: fixtureRoot)
         defer { fileEvents.close() }
+        // The configuration names no catalog; the fixture store's active version is the only source.
+        let expectedReference = try RecordingJSON.parse(Data(contentsOf: fixtureRoot.appendingPathComponent("catalog-reference.json")))
+        guard model.prompts.isEmpty, model.catalog == nil, model.catalogSHA256 == nil else { throw transportFailure("The Library must wait for the service's catalog") }
         await model.connect()
         try await observer.wait { model.state.canRecord && model.state.historyCompleteness == "complete" }
+        guard let reference = model.catalogReference, reference == expectedReference,
+              let digest = reference.object?["catalog_sha256"]?.string, model.catalogSHA256 == digest,
+              model.catalog?.object?["suite_id"] == reference.object?["suite_id"],
+              model.state.selection.object?["catalog_sha256"] == .string(digest) else {
+            throw transportFailure("The workspace did not record against the catalog the service pinned from its store")
+        }
         guard model.prompts.count == 208, model.state.promptCursor != nil else { throw transportFailure("Transport fixture must exercise bounded prompt metadata pagination") }
         await model.loadMorePromptStatuses()
         guard model.state.promptCursor == nil, model.state.promptStatuses.count == 208 else { throw transportFailure("Paged prompt coverage did not preserve a coherent index revision") }
@@ -244,6 +253,9 @@ struct RecordingHarness {
             "prompt_timeline_coherent": true, "fixed_geometry": true, "native_focus_preserved": true, "reading_scroll_preserved": true, "paged_prompt_count": model.prompts.count,
             "first_editable_field": "library.search", "continue_missing_above_search": true,
             "delayed_seal_save_and_qc": delayed, "stop_representation_preserved": true, "draft_library_coherent": true,
+            "catalog_source": "service", "catalog_sha256": model.catalogSHA256 ?? "",
+            "catalog_id": model.catalogReference?.object?["catalog_id"]?.string ?? "",
+            "catalog_version": model.catalogReference?.object?["catalog_version"]?.integer ?? 0,
             "microphone_opened": false, "window_shown": false, "next_prompt_id": model.state.prompt!.id]
         let reportData = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted])
         try reportData.write(to: directory.appendingPathComponent("transport-result.json"), options: .atomic)

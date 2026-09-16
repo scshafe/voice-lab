@@ -464,6 +464,34 @@
       "title": "CaptureSealReceipt",
       "type": "object"
     },
+    "CatalogEvent": {
+      "additionalProperties": false,
+      "description": "The catalog the service pinned for this process: the exact suite and its reference.\n\nA plain correlated reply to ``CatalogCommand``, never a state snapshot. The app builds its\nprompts and Library from ``catalog`` and names ``reference`` when it opens a context.\nValidation fails (``ValidationError``) unless ``catalog`` hashes to\n``reference.catalog_sha256`` and repeats its suite id and purpose; the recording service\nreports such a reply as the terminal ``RECORDING.INVALID_MESSAGE``.",
+      "properties": {
+        "catalog": {
+          "$ref": "#/$defs/PromptSuite"
+        },
+        "event": {
+          "const": "catalog",
+          "default": "catalog",
+          "title": "Event",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference": {
+          "$ref": "#/$defs/CatalogReference"
+        }
+      },
+      "required": [
+        "operation_id",
+        "catalog",
+        "reference"
+      ],
+      "title": "CatalogEvent",
+      "type": "object"
+    },
     "CatalogReference": {
       "additionalProperties": false,
       "description": "A published catalog version by id, version, exact suite digest and snapshot digest.\n\n``catalog_sha256`` is the canonical digest of the suite alone (the digest every take\nand coverage projection keys on); ``snapshot_sha256`` is the sha256 of the exact\nsnapshot file bytes, so the alias half of the file is pinned too. ``suite_id`` and\n``purpose`` repeat what the snapshot's suite declares so contract-level checks (purpose\nagainst the capture gate) need no file read; the store verifies all of them against the\nsnapshot whenever a reference is materialized.",
@@ -2818,6 +2846,7 @@
         "mapping": {
           "acknowledged": "#/$defs/AcknowledgedEvent",
           "analysis": "#/$defs/AnalysisEvent",
+          "catalog": "#/$defs/CatalogEvent",
           "context": "#/$defs/ContextEvent",
           "decision": "#/$defs/DecisionEvent",
           "derivative": "#/$defs/DerivativeEvent",
@@ -2865,6 +2894,9 @@
         },
         {
           "$ref": "#/$defs/NavigationEvent"
+        },
+        {
+          "$ref": "#/$defs/CatalogEvent"
         },
         {
           "$ref": "#/$defs/ContextEvent"

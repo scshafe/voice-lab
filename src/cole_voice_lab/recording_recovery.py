@@ -156,6 +156,14 @@ class RecordingRecovery:
         Intent precedes context commit. Replaying the exact operation repairs that
         gap, and frozen evidence retains old dates, devices and individual takes.
         Historical coverage still requires the existing independent discovery.
+        The context embeds the session's frozen catalog (``ContinueLegacyRecordingCommand``
+        requires that form), so the new group is an embedded recording-group/v1: legacy
+        continuation is the one caller of ``open_group``'s embedded form.
+        Returns: the context event of the new group.
+        Raises: ``ContractError`` when the operation already binds other evidence, the session
+        is finalized or its sidecar no longer matches the command; ``SecurityError`` when the
+        session evidence changed or is unsafe; ``RecordingOwnershipConflict`` while another
+        capture owns the root; the ``RecordingTakeStore.open_context`` errors.
         """
         directory = self.store._directory("provenance/recording-legacy-continuations")
         intent_path = directory / f"{command.operation_id}.json"

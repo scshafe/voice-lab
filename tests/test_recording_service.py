@@ -16,16 +16,23 @@ from typing import Any
 import pytest
 from test_recording_contracts import synthetic_contracts
 
-from cole_voice_lab.canonical import canonical_json_bytes, write_canonical_json
+from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256, write_canonical_json
+from cole_voice_lab.corpus_store import open_corpus_store
 from cole_voice_lab.errors import ContractError, SecurityError
+from cole_voice_lab.models import PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import (
     MAX_CONTROL_FRAME_BYTES,
     MAX_TELEMETRY_FRAME_BYTES,
     AcknowledgedEvent,
     CancelCommand,
+    CatalogCommand,
+    CatalogEvent,
+    CatalogReference,
+    CatalogSnapshot,
     HandshakeCommand,
     HistoryCommand,
+    OpenContextCommand,
     RecordingBuildIdentity,
     RecordingHistoryPage,
     RecordingMessageMeta,
@@ -50,6 +57,7 @@ from cole_voice_lab.recording_service import (
     RecordingResponseTracker,
     RecordingServiceError,
     RecordingServiceSession,
+    RecordingWorkspaceBackend,
     UnpreparedRecordingBackend,
     decode_service_request,
     recording_service_build_identity,
@@ -115,8 +123,10 @@ def prepared(session: RecordingServiceSession) -> None:
     list(session.completed())
 
 
-def await_responses(session: RecordingServiceSession, count: int = 1) -> list[RecordingResponse]:
-    deadline = time.monotonic() + 2
+def await_responses(
+    session: RecordingServiceSession, count: int = 1, *, timeout: float = 2
+) -> list[RecordingResponse]:
+    deadline = time.monotonic() + timeout
     responses = []
     while len(responses) < count and time.monotonic() < deadline:
         responses.extend(session.completed())
@@ -829,63 +839,462 @@ def test_shared_capture_lock_survives_parent_descriptor_close_in_inherited_child
             process.wait(timeout=2)
 
 
-def test_open_and_continue_legacy_refuse_physical_test_before_replay_or_gate(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from recording_fixtures import synthetic_physical_test_catalog
+SUBJECT = "synthetic-subject"
 
-    from cole_voice_lab.canonical import canonical_sha256
-    from cole_voice_lab.models import CaptureDevice
-    from cole_voice_lab.recording_contracts import (
-        ContinueLegacyRecordingCommand,
-        OpenContextCommand,
+
+def activate_catalog(
+    layout: AssetLayout,
+    suite: PromptSuite,
+    *,
+    catalog_id: str = "synthetic-corpus",
+    suite_id: str | None = None,
+    subject_id: str = SUBJECT,
+) -> tuple[CatalogReference, CatalogSnapshot]:
+    """Publish ``suite`` into the root's corpus store and make it the subject's catalog.
+
+    The suite's prompts must be new to the store; the catalog takes ``suite_id`` (default:
+    ``catalog_id``) and the suite's purpose.
+    """
+    from test_recording_takes import publish_catalog
+
+    reference, snapshot = publish_catalog(layout, suite, catalog_id=catalog_id, suite_id=suite_id)
+    with open_corpus_store(layout, create=False) as corpus:
+        corpus.activate(subject_id, reference)
+    return reference, snapshot
+
+
+def workspace_backend(
+    layout: AssetLayout, catalog_sha256: str | None = None
+) -> RecordingWorkspaceBackend:
+    return RecordingWorkspaceBackend(layout, SUBJECT, catalog_sha256, discover=False)
+
+
+def execute(backend: RecordingWorkspaceBackend, data: Any) -> ReliableEvent:
+    backend.validate_request(request(data, revision=backend.state_revision))
+    return backend.execute(request(data, revision=backend.state_revision), RecordingCancellation())
+
+
+def refused(backend: RecordingWorkspaceBackend, data: Any, code: str, match: str) -> None:
+    with pytest.raises(RecordingServiceError, match=match) as failure:
+        execute(backend, data)
+    assert failure.value.recording_error.code == code
+
+
+def referenced_context(reference: CatalogReference, **changes: Any) -> OpenContextCommand:
+    from test_recording_takes import DEVICE
+
+    return OpenContextCommand.model_validate(
+        {
+            "operation_id": "context-referenced",
+            "subject_id": SUBJECT,
+            "catalog_reference": reference,
+            "capture_device": DEVICE,
+            "capture_host": "host",
+        }
+        | changes
     )
-    from cole_voice_lab.recording_service import RecordingWorkspaceBackend
+
+
+def lease_is_free(layout: AssetLayout) -> bool:
+    """Whether no process holds the corpus store open (its shared lease is released)."""
+    import fcntl
+
+    descriptor = os.open(layout.root / "provenance/corpus/.corpus.lease", os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    finally:
+        os.close(descriptor)
+    return True
+
+
+def test_catalog_request_serves_the_active_catalog_pinned_for_the_process(
+    tmp_path: Path,
+) -> None:
+    from test_recording_takes import store_suite
 
     layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
-    backend = RecordingWorkspaceBackend(layout, "synthetic-subject", "0" * 64, discover=False)
+    backend = workspace_backend(layout)
+    try:
+        catalog = CatalogCommand(operation_id="op-catalog")
+        for data in (catalog, SnapshotCommand()):
+            refused(backend, data, "CORPUS.STORE_MISSING", "voice-lab catalog init")
+        # Asking never creates a store.
+        assert not (layout.root / "provenance/corpus").exists()
+        with open_corpus_store(layout, create=True):
+            pass
+        for data in (catalog, SnapshotCommand()):
+            refused(backend, data, "CORPUS.NO_ACTIVE_CATALOG", "voice-lab catalog activate")
+        reference, snapshot = activate_catalog(layout, store_suite(3))
+        # Failures pinned nothing: the next request resolves the catalog just activated.
+        event = execute(backend, catalog)
+        assert event == CatalogEvent(
+            operation_id="op-catalog", catalog=snapshot.suite, reference=reference
+        )
+        page = execute(backend, SnapshotCommand())
+        assert isinstance(page, RecordingHistoryPage)
+        assert page.catalog_sha256 == reference.catalog_sha256
+        # The service read the store and closed it again; the CLI can edit it meanwhile.
+        assert lease_is_free(layout)
+        with open_corpus_store(layout, create=False) as corpus:
+            corpus.edit_prompt("spoken-0001", text="An edited synthetic sentence.")
+            newer = corpus.publish_version("synthetic-corpus")
+            corpus.activate(SUBJECT, newer)
+        # Pinned for the process lifetime; the next launch serves the new version.
+        assert execute(backend, catalog) == event
+        assert backend.pinned_catalog().snapshot == snapshot
+        relaunched = workspace_backend(layout)
+        try:
+            served = execute(relaunched, catalog)
+            assert isinstance(served, CatalogEvent) and served.reference == newer
+            assert served.catalog.prompts[1].text == "An edited synthetic sentence."
+        finally:
+            relaunched.index.close()
+        # An explicit launch digest still names the pre-context snapshot.
+        explicit = workspace_backend(layout, "b" * 64)
+        try:
+            page = execute(explicit, SnapshotCommand())
+            assert isinstance(page, RecordingHistoryPage) and page.catalog_sha256 == "b" * 64
+        finally:
+            explicit.index.close()
+    finally:
+        backend.index.close()
+
+
+def test_active_catalog_store_failures_are_named_and_pin_nothing(tmp_path: Path) -> None:
+    from test_recording_takes import store_suite
+
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    reference, _ = activate_catalog(layout, store_suite(2))
+    snapshot_path = layout.root / reference.snapshot_path
+    original = snapshot_path.read_bytes()
+    catalog = CatalogCommand(operation_id="op-catalog")
+
+    def attempt(code: str, match: str) -> None:
+        backend = workspace_backend(layout)
+        try:
+            refused(backend, catalog, code, match)
+            assert backend._pinned_catalog is None
+        finally:
+            backend.index.close()
+
+    snapshot_path.write_bytes(original.replace(b"number 1.", b"number 9."))
+    attempt(
+        "CORPUS.SNAPSHOT_MISMATCH",
+        "active catalog snapshot of subject synthetic-subject is altered or unsafe",
+    )
+    snapshot_path.unlink()
+    attempt("CORPUS.SNAPSHOT_MISMATCH", "is missing")
+    snapshot_path.write_bytes(original)
+    snapshot_path.chmod(0o600)
+    corpus = layout.root / "provenance/corpus"
+    corpus.chmod(0o755)
+    try:
+        attempt("RECORDING.GATE_NOT_READY", "corpus store cannot serve the active catalog")
+    finally:
+        corpus.chmod(0o700)
+    backend = workspace_backend(layout)
+    try:
+        event = execute(backend, catalog)
+        assert isinstance(event, CatalogEvent) and event.reference == reference
+    finally:
+        backend.index.close()
+
+
+def test_long_store_messages_are_bounded_on_the_wire() -> None:
+    from cole_voice_lab.corpus_store import CorpusStoreError
+    from cole_voice_lab.recording_service import _active_catalog_failure
+
+    for code in ("CORPUS.STORE_MISSING", "CORPUS.STORE_UNAVAILABLE"):
+        failure = _active_catalog_failure(CorpusStoreError(code, "x" * 5000), SUBJECT)
+        assert len(failure.recording_error.message) == 1024
+        assert failure.recording_error.message.endswith("...")
+
+
+def test_open_context_opens_only_the_pinned_catalog_by_reference(tmp_path: Path) -> None:
+    from test_recording_takes import DEVICE, store_suite
+
+    from cole_voice_lab.recording_contracts import (
+        RECORDING_GROUP_V2,
+        ContextEvent,
+        HistoryCommand,
+    )
+
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    suite = store_suite(3)
+    first, _ = activate_catalog(layout, suite)
+    with open_corpus_store(layout, create=False) as corpus:
+        corpus.edit_prompt("spoken-0000", text="A kept synthetic sentence.", keep_recordings=True)
+        kept = corpus.publish_version("synthetic-corpus")
+        corpus.activate(SUBJECT, kept)
+        snapshot = corpus.materialize(kept)
+    assert snapshot.prompt_aliases
+    backend = workspace_backend(layout)
+    try:
+        embedded = OpenContextCommand(
+            operation_id="context-embedded",
+            subject_id=SUBJECT,
+            catalog=snapshot.suite,
+            catalog_sha256=kept.catalog_sha256,
+            capture_device=DEVICE,
+            capture_host="host",
+        )
+        refused(backend, embedded, "RECORDING.INVALID_MESSAGE", "continue-legacy-recording")
+        assert backend._pinned_catalog is None
+        refused(
+            backend,
+            referenced_context(first),
+            "RECORDING.STALE_REVISION",
+            "names catalog synthetic-corpus version 1 .* serves synthetic-corpus version 2",
+        )
+        forged = kept.model_copy(update={"snapshot_sha256": "f" * 64})
+        refused(
+            backend, referenced_context(forged), "RECORDING.STALE_REVISION", "request the catalog"
+        )
+        assert not any((layout.root / "provenance").rglob("group-*.json"))
+        command = referenced_context(kept)
+        event = execute(backend, command)
+        assert isinstance(event, ContextEvent)
+        assert event.group.schema_version == RECORDING_GROUP_V2
+        assert event.group.catalog is None and event.group.catalog_reference == kept
+        assert event.cursor.selection.prompt_id == "spoken-0000"
+        assert execute(backend, command) == event
+        # The cursor branch registers the same aliased snapshot the context registered.
+        current = execute(backend, SnapshotCommand())
+        assert isinstance(current, ContextEvent) and current.history is not None
+        assert current.history.catalog_sha256 == kept.catalog_sha256
+        history = execute(backend, HistoryCommand(catalog_sha256=kept.catalog_sha256))
+        assert isinstance(history, RecordingHistoryPage)
+        assert history.total_prompt_count == 3
+        refused(
+            backend,
+            command.model_copy(update={"subject_id": "another-subject"}),
+            "RECORDING.STALE_REVISION",
+            "workspace subject",
+        )
+    finally:
+        backend.index.close()
+
+
+@pytest.mark.parametrize("direction", ["physical-test-on-standard", "standard-on-marked"])
+def test_catalog_snapshot_open_and_continue_legacy_refuse_a_root_purpose_mismatch_first(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, direction: str
+) -> None:
+    from recording_fixtures import synthetic_physical_test_catalog
+    from test_recording_takes import store_suite
+
+    from cole_voice_lab.diagnostic_roots import initialize_diagnostic_root
+    from cole_voice_lab.recording_contracts import ContinueLegacyRecordingCommand
+
+    if direction == "physical-test-on-standard":
+        subject = SUBJECT
+        layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+        catalog = synthetic_physical_test_catalog()
+        reference, _ = activate_catalog(layout, catalog, catalog_id=catalog.suite_id)
+        refusal = "physical-test catalogs"
+    else:
+        subject = "cole-physical-diagnostic-synthetic"
+        layout, _ = initialize_diagnostic_root(tmp_path.resolve() / "assets", subject_id=subject)
+        catalog = store_suite(3)
+        reference, _ = activate_catalog(layout, catalog, subject_id=subject)
+        refusal = "marked for physical tests"
+    backend = RecordingWorkspaceBackend(layout, subject, discover=False)
     try:
 
         def forbidden(*args: Any, **kwargs: Any) -> Any:
-            raise AssertionError("physical-test refusal must precede replay, gates and groups")
+            raise AssertionError("the root refusal must precede replay, gates and groups")
 
         for name in ("context_replay", "prepare_corpus_gate", "open_context", "open_group"):
             monkeypatch.setattr(backend.store, name, forbidden)
         monkeypatch.setattr(backend.index, "register_catalog", forbidden)
-        catalog = synthetic_physical_test_catalog()
-        context = OpenContextCommand(
-            operation_id="physical-open",
-            subject_id="synthetic-subject",
-            catalog=catalog,
-            catalog_sha256=canonical_sha256(catalog),
-            capture_device=CaptureDevice(
-                backend="coreaudio", device_id="synthetic", display_name="Synthetic"
-            ),
-            capture_host="host",
-            new_setup=True,
+        context = referenced_context(
+            reference, operation_id="physical-open", subject_id=subject, new_setup=True
         )
+        embedded = context.model_dump() | {
+            "catalog_reference": None,
+            "catalog": catalog,
+            "catalog_sha256": canonical_sha256(catalog),
+        }
         commands: list[Any] = [
+            CatalogCommand(operation_id="physical-catalog"),
+            # Without a cursor the snapshot would report the refused catalog's digest.
+            SnapshotCommand(),
             context,
             ContinueLegacyRecordingCommand(
                 operation_id="physical-open",
                 session_id="legacy-session",
                 session_evidence_sha256="1" * 64,
-                context=context,
+                context=OpenContextCommand.model_validate(embedded),
             ),
         ]
         for command in commands:
-            with pytest.raises(RecordingServiceError, match="physical-test catalogs") as failure:
-                backend.execute(
-                    request(command, revision=backend.state_revision), RecordingCancellation()
-                )
-            assert failure.value.recording_error.code == "RECORDING.GATE_NOT_READY"
+            refused(backend, command, "RECORDING.GATE_NOT_READY", refusal)
         assert not any((layout.root / "provenance").rglob("group-*.json"))
     finally:
         backend.index.close()
 
 
-def test_cli_service_route_preserves_explicit_launch_arguments(
+def test_a_corpus_sized_catalog_reply_fits_one_control_frame(tmp_path: Path) -> None:
+    from test_recording_contracts import CORPUS_SHAPED_PROMPT_COUNT, corpus_shaped_catalog
+
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    suite = corpus_shaped_catalog()
+    reference, _ = activate_catalog(layout, suite)
+    backend = workspace_backend(layout)
+    service = RecordingServiceSession(
+        build=build_identity(),
+        expected_client=build_identity(),
+        process_generation="generation-1",
+        backend=backend,
+    )
+    try:
+        prepared(service)
+        assert service.submit(request(CatalogCommand(operation_id="op-catalog"))) is None
+        (response,) = await_responses(service)
+        assert isinstance(response.data, CatalogEvent) and response.error is None
+        assert response.data.reference == reference and response.meta.take_id is None
+        assert len(response.data.catalog.prompts) == CORPUS_SHAPED_PROMPT_COUNT
+        assert len(recording_frame_bytes(response)) <= MAX_CONTROL_FRAME_BYTES * 3 // 4
+        assert not service.closed
+    finally:
+        service.close()
+        backend.index.close()
+
+
+def test_an_active_catalog_one_byte_over_the_frame_budget_is_refused_by_name(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from test_recording_contracts import catalog_of_exactly
+
+    from cole_voice_lab import corpus_store
+    from cole_voice_lab.recording_contracts import MAX_CATALOG_SUITE_BYTES
+
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    exact = catalog_of_exactly(MAX_CATALOG_SUITE_BYTES)
+    pad = exact.prompts[-1]
+    assert pad.text is not None
+    shaped = tuple(prompt.prompt_id for prompt in exact.prompts[:-1])
+    with open_corpus_store(layout, create=True) as corpus:
+        corpus.import_prompt_suite(exact, source="manual")
+        corpus.add_prompt(
+            "shape-pae",
+            text=pad.text + "p",
+            category="neutral",
+            style=pad.style,
+            expected_seconds=pad.expected_seconds,
+            source="manual",
+        )
+        corpus.create_catalog(exact.suite_id, purpose=exact.purpose)
+        corpus.create_catalog("oversized", suite_id=exact.suite_id, purpose=exact.purpose)
+        fitting = corpus.publish_version(exact.suite_id, prompt_ids=(*shaped, pad.prompt_id))
+        # A version one byte over, as a store without the publish-time bound could hold.
+        with monkeypatch.context() as lifted:
+            lifted.setattr(corpus_store, "MAX_CATALOG_SUITE_BYTES", MAX_CATALOG_SUITE_BYTES + 1)
+            oversized = corpus.publish_version("oversized", prompt_ids=(*shaped, "shape-pae"))
+        corpus.activate(SUBJECT, oversized)
+    backend = workspace_backend(layout)
+    service = RecordingServiceSession(
+        build=build_identity(),
+        expected_client=build_identity(),
+        process_generation="generation-1",
+        backend=backend,
+    )
+    try:
+        prepared(service)
+        assert service.submit(request(CatalogCommand(operation_id="op-oversized"))) is None
+        (response,) = await_responses(service, timeout=30)
+        assert response.data is None and response.error is not None
+        assert response.error.code == "RECORDING.GATE_NOT_READY"
+        assert (
+            f"active catalog oversized version 1 is {MAX_CATALOG_SUITE_BYTES + 1} bytes with "
+            f"{len(exact.prompts)} prompts" in response.error.message
+        )
+        assert "voice-lab catalog activate" in response.error.message
+        # Refused by name, not by closing the session; nothing was pinned.
+        assert not service.closed and backend._pinned_catalog is None
+        for data in (SnapshotCommand(), referenced_context(oversized)):
+            refused(backend, data, "RECORDING.GATE_NOT_READY", "the app receives in one message")
+        assert not any((layout.root / "provenance").rglob("group-*.json"))
+        with open_corpus_store(layout, create=False) as corpus:
+            corpus.activate(SUBJECT, fitting)
+        # A suite exactly at the budget is served whole in one frame.
+        assert (
+            service.submit(request(CatalogCommand(operation_id="op-fitting"), request_id="r-2"))
+            is None
+        )
+        (served,) = await_responses(service, timeout=30)
+        assert isinstance(served.data, CatalogEvent) and served.data.reference == fitting
+        assert len(recording_frame_bytes(served)) <= MAX_CONTROL_FRAME_BYTES
+        assert not service.closed
+    finally:
+        service.close()
+        backend.index.close()
+
+
+def test_service_launch_names_its_catalog_digest_outside_workspace_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from cole_voice_lab.recording_service import main
+
+    root = tmp_path.resolve()
+    layout = AssetLayout.initialize(root / "assets")
+    write_canonical_json(root / "service-build.json", recording_service_build_identity())
+    write_canonical_json(root / "client-build.json", build_identity())
+    base = [
+        "--asset-root",
+        str(layout.root),
+        "--process-generation",
+        "generation-1",
+        "--build-identity",
+        str(root / "service-build.json"),
+        "--expected-client-build",
+        str(root / "client-build.json"),
+    ]
+    for extra in (
+        [],
+        ["--recording-group-id", "group-synthetic"],
+        ["--catalog-sha256", "not-a-digest"],
+        ["--native-workspace", "--recording-group-id", "group-synthetic"],
+    ):
+        assert main([*base, *extra]) == 2
+        report = json.loads(capsys.readouterr().err)
+        assert report["error_code"] == "RECORDING.INVALID_MESSAGE"
+    assert not (layout.root / "provenance/corpus").exists()
+
+
+def test_real_workspace_service_delivers_its_catalog_before_a_referenced_context(
+    tmp_path: Path,
+) -> None:
+    from test_recording_navigation import ServiceProcess
+    from test_recording_takes import store_suite
+
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    reference, snapshot = activate_catalog(layout, store_suite(3))
+    service = ServiceProcess(tmp_path.resolve(), layout, None, "catalog-generation")
+    try:
+        delivered = service.request({"command": "catalog", "operation_id": "op-catalog"})
+        assert delivered is not None and delivered.error is None
+        assert isinstance(delivered.data, CatalogEvent)
+        assert delivered.data.reference == reference
+        assert delivered.data.catalog == snapshot.suite
+        page = service.request({"command": "snapshot"})
+        assert page is not None and isinstance(page.data, RecordingHistoryPage)
+        assert page.data.catalog_sha256 == reference.catalog_sha256
+        opened = service.request(referenced_context(reference).model_dump())
+        assert opened is not None and opened.error is None
+        assert opened.data is not None and opened.data.event == "context"
+        assert opened.data.group.catalog_reference == reference
+        shutdown = service.request({"command": "shutdown"})
+        assert shutdown is not None and isinstance(shutdown.data, AcknowledgedEvent)
+        assert service.process.wait(timeout=5) == 0
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("digest", [True, False])
+def test_cli_service_route_preserves_explicit_launch_arguments(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, digest: bool
 ) -> None:
     from cole_voice_lab.cli import main
 
@@ -896,44 +1305,48 @@ def test_cli_service_route_preserves_explicit_launch_arguments(
     args = [
         "--asset-root",
         str(tmp_path.resolve()),
-        "--catalog-sha256",
-        "a" * 64,
+        *(["--catalog-sha256", "a" * 64] if digest else []),
         "--process-generation",
         "generation-1",
         "--build-identity",
         "service.json",
         "--expected-client-build",
         "client.json",
+        *([] if digest else ["--native-workspace", "--subject-id", SUBJECT]),
     ]
     assert main(["recording", "service", *args]) == 0
     assert calls == [args]
 
 
-def test_backends_name_a_missing_or_altered_group_snapshot(tmp_path: Path) -> None:
-    from test_recording_takes import DEVICE, publish_catalog, store_suite
+def test_build_identity_fingerprints_the_corpus_store_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cole_voice_lab import recording_service
 
-    from cole_voice_lab.recording_contracts import (
-        ContextEvent,
-        OpenContextCommand,
-        ReserveTakeCommand,
+    baseline = recording_service_build_identity()
+    resources = recording_service.corpus_store_migration_resources()
+    assert len(resources) == 1 and resources[0][0].startswith("migrations/2026091610")
+    monkeypatch.setattr(
+        recording_service,
+        "corpus_store_migration_resources",
+        lambda: ((resources[0][0], "0" * 64, resources[0][2]),),
     )
-    from cole_voice_lab.recording_service import RecordingTakesBackend, RecordingWorkspaceBackend
+    changed = recording_service_build_identity()
+    assert changed.source_sha256 != baseline.source_sha256
+    assert changed.executable_sha256 == baseline.executable_sha256
+
+
+def test_backends_name_a_missing_or_altered_group_snapshot(tmp_path: Path) -> None:
+    from test_recording_takes import publish_catalog, store_suite
+
+    from cole_voice_lab.recording_contracts import ContextEvent, ReserveTakeCommand
+    from cole_voice_lab.recording_service import RecordingTakesBackend
     from cole_voice_lab.recording_takes import RecordingTakeStore
 
     layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
     reference, snapshot = publish_catalog(layout, store_suite(2))
     store = RecordingTakeStore(layout)
-    context = store.open_context(
-        OpenContextCommand(
-            operation_id="context-referenced",
-            subject_id="synthetic-subject",
-            catalog=snapshot.suite,
-            catalog_sha256=reference.catalog_sha256,
-            capture_device=DEVICE,
-            capture_host="host",
-        ),
-        catalog_reference=reference,
-    )
+    context = store.open_context(referenced_context(reference))
     takes = RecordingTakesBackend(store, context.group.group_id)
     reserve = ReserveTakeCommand(
         recorder_generation="helper-generation",

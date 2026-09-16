@@ -66,13 +66,16 @@ enum RecordingApplicationEntry {
             result["client_build"] = configuration.recorder.clientBuild
             result["recorder_build"] = configuration.recorder.expectedPeerBuild
             result["service_build"] = configuration.service.expectedPeerBuild
-            result["catalog_sha256"] = .string(configuration.catalogSHA256)
             result["recorder_generation"] = .string(configuration.recorder.processGeneration)
             result["service_generation"] = .string(configuration.service.processGeneration)
             await session.start(configuration: configuration)
             let useful = DispatchTime.now().uptimeNanoseconds
             let state = session.model.state
+            // The configuration names no catalog: report the one the service pinned and delivered.
+            result["catalog_sha256"] = session.model.catalogSHA256.map(RecordingJSON.string) ?? .null
+            result["catalog_reference"] = session.model.catalogReference ?? .null
             passed = session.model.canRecord && state.prompt != nil && !state.showsStop
+                && session.model.catalogSHA256 != nil
             result["service_ready"] = .boolean(state.serviceReady)
             result["context_ready"] = .boolean(state.contextReady)
             result["native_device_ready"] = .boolean(state.deviceReady)

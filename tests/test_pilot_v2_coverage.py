@@ -585,3 +585,86 @@ def test_switching_catalogs_removes_and_rewrites_no_evidence(tmp_path: Path) -> 
     with RecordingIndex(layout, subject_id=SUBJECT) as index:
         assert index.history(canonical_sha256(pilot_v2)).covered_prompt_count == 34
         assert index.history(canonical_sha256(pilot)).covered_prompt_count == 36
+
+
+def test_switching_store_catalogs_through_the_service_rewrites_no_evidence_or_store_file(
+    tmp_path: Path,
+) -> None:
+    """TC3 on the app's path: each launch pins the active store version and opens it.
+
+    The service opens the corpus store (lease, lock, WAL) for the catalog and open-context
+    requests and closes it again; no file under ``provenance/corpus/`` may change, appear or
+    disappear, so the mutable-path allowlist needs no corpus entry.
+    """
+    from test_recording_service import execute
+
+    from cole_voice_lab.corpus_store import open_corpus_store
+    from cole_voice_lab.recording_contracts import CatalogCommand, CatalogEvent, ContextEvent
+    from cole_voice_lab.recording_service import RecordingWorkspaceBackend
+
+    evidence = build_legacy_root(tmp_path.resolve() / "assets")
+    layout, pilot_v2 = evidence.layout, released_pilot_v2()
+    with open_corpus_store(layout, create=True) as corpus:
+        corpus.import_prompt_suite(pilot_v2, source="pilot-v2")
+        corpus.create_catalog("cole-corpus", purpose=pilot_v2.purpose)
+        whole = corpus.publish_version("cole-corpus")
+        corpus.create_catalog("cole-corpus-short", purpose=pilot_v2.purpose)
+        short = corpus.publish_version(
+            "cole-corpus-short",
+            tuple(
+                prompt.prompt_id for prompt in pilot_v2.prompts if prompt.prompt_id != ROOM_TONES[1]
+            ),
+        )
+    original = evidence_files(layout.root)
+
+    def corpus_files(files: dict[str, str]) -> dict[str, str]:
+        return {
+            path: digest for path, digest in files.items() if path.startswith("provenance/corpus/")
+        }
+
+    for number, reference in enumerate((whole, short, whole)):
+        # The operator's activation is a deliberate store write before the next launch.
+        with open_corpus_store(layout, create=False) as corpus:
+            corpus.activate(SUBJECT, reference)
+        before = evidence_files(layout.root)
+        assert corpus_files(before)
+        backend = RecordingWorkspaceBackend(layout, SUBJECT, discover=False)
+        try:
+            delivered = execute(backend, CatalogCommand(operation_id=f"catalog-{number}"))
+            assert isinstance(delivered, CatalogEvent) and delivered.reference == reference
+            cursor = backend.store.get_cursor(SUBJECT)
+            context = execute(
+                backend,
+                OpenContextCommand(
+                    operation_id=f"store-switch-{number}",
+                    subject_id=SUBJECT,
+                    catalog_reference=reference,
+                    capture_device=UMIK,
+                    capture_host="synthetic-host",
+                    expected_selection_revision=None
+                    if cursor is None
+                    else cursor.selection.selection_revision,
+                ),
+            )
+        finally:
+            backend.index.close()
+        assert isinstance(context, ContextEvent)
+        assert context.group.catalog_reference == reference
+        assert context.cursor.selection.prompt_id == "room-tone-start"
+        assert context.cursor.selection.take_id is None
+        assert discover_recording_library(layout, context.group.group_id)["completeness"] == (
+            "complete"
+        )
+        after = evidence_files(layout.root)
+        changed = sorted(
+            path
+            for path, digest in before.items()
+            if after.get(path) != digest and not _projection_or_pointer(path)
+        )
+        assert changed == []
+        assert corpus_files(after) == corpus_files(before)
+        assert set(original) <= set(after)
+        assert {path for path in before if not _projection_or_pointer(path)} <= set(after)
+    with RecordingIndex(layout, subject_id=SUBJECT) as index:
+        for reference in (whole, short):
+            assert index.history(reference.catalog_sha256).covered_prompt_count == 34

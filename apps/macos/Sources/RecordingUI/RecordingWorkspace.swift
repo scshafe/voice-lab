@@ -108,7 +108,7 @@ public struct RecordingWorkspace: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.state.prompt?.title ?? "Recording").font(.headline).lineLimit(1)
                 if let prompt = model.state.prompt { RecordingLabelChips(prompt: prompt) }
-                else { Text("Preparing catalog").font(.system(size: 13)).foregroundStyle(RecordingPalette.supportingText) }
+                else { Text(model.promptPlaceholder).font(.system(size: 13)).foregroundStyle(RecordingPalette.supportingText) }
             }.frame(maxWidth: .infinity, alignment: .leading)
             Menu {
                 Picker("Reading text size", selection: $model.scriptSize) {

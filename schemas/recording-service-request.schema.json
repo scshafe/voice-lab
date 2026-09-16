@@ -297,8 +297,74 @@
       "title": "CaptureSealReceipt",
       "type": "object"
     },
+    "CatalogCommand": {
+      "additionalProperties": false,
+      "description": "Ask the service for the catalog it pinned for this process (the app's first request).\n\nThe service resolves the subject's active corpus-store catalog once per process and\nanswers with a ``CatalogEvent``; a later activation takes effect at the next launch.",
+      "properties": {
+        "command": {
+          "const": "catalog",
+          "default": "catalog",
+          "title": "Command",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "title": "CatalogCommand",
+      "type": "object"
+    },
+    "CatalogReference": {
+      "additionalProperties": false,
+      "description": "A published catalog version by id, version, exact suite digest and snapshot digest.\n\n``catalog_sha256`` is the canonical digest of the suite alone (the digest every take\nand coverage projection keys on); ``snapshot_sha256`` is the sha256 of the exact\nsnapshot file bytes, so the alias half of the file is pinned too. ``suite_id`` and\n``purpose`` repeat what the snapshot's suite declares so contract-level checks (purpose\nagainst the capture gate) need no file read; the store verifies all of them against the\nsnapshot whenever a reference is materialized.",
+      "properties": {
+        "catalog_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "catalog_version": {
+          "$ref": "#/$defs/PositiveRevision"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation",
+            "physical-test"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "snapshot_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "snapshot_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "catalog_id",
+        "catalog_version",
+        "catalog_sha256",
+        "snapshot_sha256",
+        "suite_id",
+        "purpose",
+        "snapshot_path"
+      ],
+      "title": "CatalogReference",
+      "type": "object"
+    },
     "ContinueLegacyRecordingCommand": {
       "additionalProperties": false,
+      "description": "Continue an unfinished desktop session in a new native context.\n\n``context`` always embeds the session's frozen catalog and digest (the one place the\nembedded open-context form remains): a desktop session binds a catalog no corpus-store\nversion holds, and its sidecar evidence must match that catalog exactly.",
       "properties": {
         "command": {
           "const": "continue-legacy-recording",
@@ -575,6 +641,7 @@
     },
     "OpenContextCommand": {
       "additionalProperties": false,
+      "description": "Open (or reuse) the native capture context of one subject on one catalog.\n\nThe app names the catalog its ``CatalogEvent`` delivered by ``catalog_reference``; the\nservice opens only the catalog it pinned for this process. The embedded form\n(``catalog`` plus ``catalog_sha256``) is legacy continuation only: it survives inside\n``ContinueLegacyRecordingCommand``, which binds a desktop session's frozen catalog that no\ncorpus-store version holds, and the service refuses it as a top-level command. Exactly\none form is present; absent fields are omitted, so an embedded command serializes (and\nreplays) byte-identically to the contract before the corpus store.",
       "properties": {
         "capture_device": {
           "$ref": "#/$defs/CaptureDevice"
@@ -586,10 +653,37 @@
           "type": "string"
         },
         "catalog": {
-          "$ref": "#/$defs/PromptSuite"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromptSuite"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "catalog_reference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CatalogReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "catalog_sha256": {
-          "$ref": "#/$defs/Sha256"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "command": {
           "const": "open-context",
@@ -651,13 +745,16 @@
       "required": [
         "operation_id",
         "subject_id",
-        "catalog",
-        "catalog_sha256",
         "capture_device",
         "capture_host"
       ],
       "title": "OpenContextCommand",
       "type": "object"
+    },
+    "PositiveRevision": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
     },
     "PreparePackageCommand": {
       "additionalProperties": false,
@@ -1247,6 +1344,7 @@
       "discriminator": {
         "mapping": {
           "cancel": "#/$defs/CancelCommand",
+          "catalog": "#/$defs/CatalogCommand",
           "continue-legacy-recording": "#/$defs/ContinueLegacyRecordingCommand",
           "decision": "#/$defs/DecisionCommand",
           "edit": "#/$defs/EditTakeCommand",
@@ -1271,6 +1369,9 @@
       "oneOf": [
         {
           "$ref": "#/$defs/HandshakeCommand"
+        },
+        {
+          "$ref": "#/$defs/CatalogCommand"
         },
         {
           "$ref": "#/$defs/OpenContextCommand"

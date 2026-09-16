@@ -2,13 +2,49 @@ import CryptoKit
 import Foundation
 import RecordingContracts
 
-/// Canonical private application launch configuration. Python binds catalog/build digests;
-/// this loader validates strict shape, private manifests and creates fresh process identities.
+/// The configured half of every open-context: who records, on which device and host, and
+/// under which pilot approval. The catalog half is the reference the service delivered in
+/// its CatalogEvent; the app never names a catalog of its own.
+public struct RecordingContextTarget: Sendable, Equatable {
+    public let subjectID: String
+    public let captureDevice: RecordingJSON
+    public let captureHost: String
+    public let pilotApprovalPath: RecordingJSON
+    public let pilotApprovalSHA256: RecordingJSON
+
+    public init(subjectID: String, captureDevice: RecordingJSON, captureHost: String,
+                pilotApprovalPath: RecordingJSON = .null, pilotApprovalSHA256: RecordingJSON = .null) {
+        self.subjectID = subjectID; self.captureDevice = captureDevice; self.captureHost = captureHost
+        self.pilotApprovalPath = pilotApprovalPath; self.pilotApprovalSHA256 = pilotApprovalSHA256
+    }
+
+    /// Open (or reuse) a context on `catalogReference`, the CatalogEvent's `reference`, exactly
+    /// as received. Corpus authorization remains Python-owned and prepared there; the service
+    /// refuses a reference other than the catalog it pinned (RECORDING.STALE_REVISION).
+    public func openContextCommand(operationID: String, catalogReference: RecordingJSON,
+                                   expectedSelectionRevision: Int64? = nil,
+                                   newSetup: Bool = false, setupDescription: String = "") -> RecordingJSON {
+        .object(["command": .string("open-context"), "operation_id": .string(operationID),
+            "subject_id": .string(subjectID), "catalog_reference": catalogReference,
+            "capture_device": captureDevice, "capture_host": .string(captureHost),
+            "expected_selection_revision": expectedSelectionRevision.map(RecordingJSON.integer) ?? .null,
+            "new_setup": .boolean(newSetup), "setup_description": .string(setupDescription),
+            "pilot_approval_path": pilotApprovalPath, "pilot_approval_sha256": pilotApprovalSHA256])
+    }
+}
+
+/// Canonical private application launch configuration. Python binds build digests and the
+/// declared purpose; the catalog is the service's (the corpus store's active version), never
+/// the configuration's. This loader validates strict shape, private manifests and creates
+/// fresh process identities.
 public struct RecordingApplicationConfiguration: Sendable {
+    /// Python `PromptSuitePurpose`.
+    private static let purposes: Set<String> = ["capture-pilot", "capture-corpus", "held-out-evaluation", "physical-test"]
     public let assetRoot: URL
     public let schemaDirectory: URL
-    public let catalog: RecordingJSON
-    public let catalogSHA256: String
+    /// The purpose the release was built and verified for (its root guard). Recording follows
+    /// the purpose of the catalog the service pins, which the service checks against the root.
+    public let purpose: String
     public let subjectID: String
     public let captureDevice: RecordingJSON
     public let captureHost: String
@@ -16,6 +52,10 @@ public struct RecordingApplicationConfiguration: Sendable {
     public let pilotApprovalSHA256: RecordingJSON
     public let recorder: RecordingProcessConfiguration
     public let service: RecordingProcessConfiguration
+    public var context: RecordingContextTarget {
+        RecordingContextTarget(subjectID: subjectID, captureDevice: captureDevice, captureHost: captureHost,
+                               pilotApprovalPath: pilotApprovalPath, pilotApprovalSHA256: pilotApprovalSHA256)
+    }
 
     /// A sealed bundle carries only this small locator; identities live outside its signature.
     public static func configurationURL(bundle: Bundle = .main, arguments: [String] = CommandLine.arguments) throws -> URL {
@@ -37,11 +77,12 @@ public struct RecordingApplicationConfiguration: Sendable {
     }
 
     private init(value: RecordingJSON) throws {
-        let config = try Self.object(value, keys: ["schema_version", "asset_root", "schema_directory", "client_build", "client_build_path", "catalog", "catalog_sha256", "subject_id", "capture_device", "capture_host", "pilot_approval_path", "pilot_approval_sha256", "recorder", "service"])
-        guard config["schema_version"] == .string("cole-voice-lab.recording-application/v1") else { throw Self.invalid("Application configuration version is unsupported") }
+        let config = try Self.object(value, keys: ["schema_version", "asset_root", "schema_directory", "client_build", "client_build_path", "purpose", "subject_id", "capture_device", "capture_host", "pilot_approval_path", "pilot_approval_sha256", "recorder", "service"])
+        guard config["schema_version"] == .string("cole-voice-lab.recording-application/v2") else { throw Self.invalid("Application configuration version is unsupported") }
         assetRoot = URL(fileURLWithPath: try Self.absolutePath(config, "asset_root"), isDirectory: true)
         schemaDirectory = URL(fileURLWithPath: try Self.absolutePath(config, "schema_directory"), isDirectory: true)
-        catalog = config["catalog"]!; catalogSHA256 = try Self.string(config, "catalog_sha256")
+        purpose = try Self.string(config, "purpose")
+        guard Self.purposes.contains(purpose) else { throw Self.invalid("Application configuration purpose is not a catalog purpose") }
         subjectID = try Self.string(config, "subject_id"); captureDevice = config["capture_device"]!
         captureHost = try Self.string(config, "capture_host")
         pilotApprovalPath = config["pilot_approval_path"]!; pilotApprovalSHA256 = config["pilot_approval_sha256"]!
@@ -52,33 +93,19 @@ public struct RecordingApplicationConfiguration: Sendable {
         let digest = SHA256.hash(data: try Data(contentsOf: executable, options: .mappedIfSafe)).map { String(format: "%02x", $0) }.joined()
         guard client.object?["executable_sha256"] == .string(digest) else { throw Self.invalid("Application executable differs from its immutable build identity") }
         recorder = try Self.peer(config["recorder"]!, role: .recorder, assetRoot: assetRoot,
-                                 schemas: schemaDirectory, client: client, clientPath: clientPath, catalogSHA256: catalogSHA256)
+                                 schemas: schemaDirectory, client: client, clientPath: clientPath)
         service = try Self.peer(config["service"]!, role: .service, assetRoot: assetRoot,
-                                schemas: schemaDirectory, client: client, clientPath: clientPath, catalogSHA256: catalogSHA256)
-        // Reuse the Python-owned command schema, including nested catalog/device and digest shapes.
-        let schema = try Data(contentsOf: schemaDirectory.appendingPathComponent("recording-service-request.schema.json"))
-        let command = openContextCommand(operationID: "application-config-check")
-        let envelope = RecordingJSON.object(["data": command, "error": .null,
-            "meta": .object(["protocol_version": .string("cole-voice-lab.recording/v1"),
-                "request_id": .string("application-config-check"), "process_generation": .string(service.processGeneration),
-                "state_revision": .integer(0), "event_sequence": .integer(0), "take_id": .null])])
-        _ = try RecordingWireEnvelope.decode(envelope.transportData(), schema: schema)
+                                schemas: schemaDirectory, client: client, clientPath: clientPath)
+        // The device, host and pilot-approval shapes are checked where they are used: the
+        // channels validate every outgoing request against the Python-owned schemas.
     }
 
-    /// Open a new process context; corpus authorization remains Python-owned and prepared there.
-    public func openContextCommand(operationID: String, expectedSelectionRevision: Int64? = nil,
-                                   newSetup: Bool = false, setupDescription: String = "") -> RecordingJSON {
-        .object(["command": .string("open-context"), "operation_id": .string(operationID),
-            "subject_id": .string(subjectID), "catalog": catalog, "catalog_sha256": .string(catalogSHA256),
-            "capture_device": captureDevice, "capture_host": .string(captureHost),
-            "expected_selection_revision": expectedSelectionRevision.map(RecordingJSON.integer) ?? .null,
-            "new_setup": .boolean(newSetup), "setup_description": .string(setupDescription),
-            "pilot_approval_path": pilotApprovalPath, "pilot_approval_sha256": pilotApprovalSHA256])
-    }
-
+    /// The service pins its catalog from the corpus store, so no peer is launched with a catalog
+    /// digest; `--catalog-sha256` stays reserved (as in Python `_RESERVED_ARGUMENTS`) so a
+    /// configuration can never name one either.
     private static func peer(_ value: RecordingJSON, role: RecordingProcessConfiguration.Peer,
                              assetRoot: URL, schemas: URL, client: RecordingJSON,
-                             clientPath: String, catalogSHA256: String) throws -> RecordingProcessConfiguration {
+                             clientPath: String) throws -> RecordingProcessConfiguration {
         let fields = try object(value, keys: ["executable", "arguments", "environment", "build", "build_identity_path"])
         guard let argv = fields["arguments"]?.array, argv.count <= 32, argv.allSatisfy({ ($0.string?.count ?? 4097) <= 4096 }),
               !argv.contains(where: { ["--asset-root", "--process-generation", "--build-identity", "--expected-client-build", "--schema-directory", "--catalog-sha256"].contains($0.string ?? "") }) else { throw invalid("Process base arguments are invalid or override canonical launch identity") }
@@ -89,7 +116,6 @@ public struct RecordingApplicationConfiguration: Sendable {
         var arguments = argv.compactMap(\.string) + ["--asset-root", assetRoot.path, "--process-generation", generation,
             "--build-identity", buildPath, "--expected-client-build", clientPath]
         if role == .recorder { arguments += ["--schema-directory", schemas.path] }
-        else { arguments += ["--catalog-sha256", catalogSHA256] }
         var environment: [String: String]?
         if fields["environment"] != .null {
             guard let entries = fields["environment"]?.object, entries.count <= 64,

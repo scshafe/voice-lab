@@ -21,11 +21,16 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from .canonical import canonical_json_bytes, canonical_sha256, open_regular_no_follow, sha256_file
-from .diagnostic_roots import require_catalog_root
+from .diagnostic_roots import RootPurpose, require_root_purpose
 from .errors import ContractError, SecurityError, VoiceLabError
-from .models import CaptureDevice, ContractModel, PromptSuite, Sha256, StableId
+from .models import CaptureDevice, ContractModel, PromptSuitePurpose, Sha256, StableId
 from .paths import AssetLayout, _reject_existing_symlink_components, validate_relative_path
-from .recording_contracts import OpenContextCommand, RecordingBuildIdentity
+from .recording_contracts import (
+    CatalogReference,
+    OpenContextCommand,
+    RecordingBuildIdentity,
+    catalog_snapshot_path,
+)
 from .resources import resource_path
 from .runtime import RECORDING_PYTHON_DISTRIBUTIONS, inspect_macho_load_commands
 
@@ -37,6 +42,9 @@ _BUILD_ENVIRONMENT = {
     "PIP_NO_INDEX": "1",
     "PIP_DISABLE_PIP_VERSION_CHECK": "1",
 }
+# Launch flags the app appends itself (or, for --catalog-sha256, that only the service's own
+# corpus store may answer): configured peer arguments can never supply them. Swift
+# RecordingApplicationConfiguration.peer() refuses exactly this set.
 _RESERVED_ARGUMENTS = {
     "--asset-root",
     "--process-generation",
@@ -45,14 +53,51 @@ _RESERVED_ARGUMENTS = {
     "--schema-directory",
     "--catalog-sha256",
 }
+# Settings name no catalog: the service serves the subject's active corpus-store catalog.
+# This stand-in reference carries only the declared purpose, so the settings meet exactly
+# the open-context rules the app will send (Core Audio device, bounded host, paired pilot
+# approval that only a capture-corpus catalog may carry).
+_SETTINGS_CHECK_DIGEST = "0" * 64
+
+
+def _settings_check_reference(purpose: PromptSuitePurpose) -> CatalogReference:
+    return CatalogReference(
+        catalog_id="application-settings-check",
+        catalog_version=1,
+        catalog_sha256=_SETTINGS_CHECK_DIGEST,
+        snapshot_sha256=_SETTINGS_CHECK_DIGEST,
+        suite_id="application-settings-check",
+        purpose=purpose,
+        snapshot_path=catalog_snapshot_path(_SETTINGS_CHECK_DIGEST),
+    )
+
+
+def _require_release_root(
+    layout: AssetLayout, purpose: PromptSuitePurpose, subject_id: str
+) -> None:
+    """Guards #2-#3 without a catalog: the root is physical-test iff the declared purpose is.
+
+    A marked root also binds its one subject. The suite-ID prefix half of the catalog guard
+    runs where a catalog exists: the service's pinned catalog and every group mint.
+    """
+    root: RootPurpose = "physical-test" if purpose == "physical-test" else "standard"
+    require_root_purpose(layout, root, subject_id=subject_id)
 
 
 class NativeRecordingApplicationSettings(ContractModel):
-    schema_version: Literal["cole-voice-lab.native-application-settings/v1"] = (
-        "cole-voice-lab.native-application-settings/v1"
+    """Operator settings for one native preview build.
+
+    ``purpose`` is the purpose of the catalog this build is meant to record; it has no
+    default, so a physical-test build says so explicitly. It guards the build's asset root
+    only: at runtime the purpose that counts is that of the catalog the service pins from
+    the corpus store.
+    """
+
+    schema_version: Literal["cole-voice-lab.native-application-settings/v2"] = (
+        "cole-voice-lab.native-application-settings/v2"
     )
     asset_root: str = Field(min_length=1, max_length=4096)
-    catalog: PromptSuite
+    purpose: PromptSuitePurpose
     subject_id: StableId
     capture_device: CaptureDevice
     capture_host: str = Field(min_length=1, max_length=255)
@@ -64,8 +109,7 @@ class NativeRecordingApplicationSettings(ContractModel):
         OpenContextCommand(
             operation_id="application-settings-check",
             subject_id=self.subject_id,
-            catalog=self.catalog,
-            catalog_sha256=canonical_sha256(self.catalog),
+            catalog_reference=_settings_check_reference(self.purpose),
             capture_device=self.capture_device,
             capture_host=self.capture_host,
             pilot_approval_path=self.pilot_approval_path,
@@ -99,15 +143,21 @@ class NativeRecordingPeerConfiguration(ContractModel):
 
 
 class NativeRecordingApplicationConfiguration(ContractModel):
-    schema_version: Literal["cole-voice-lab.recording-application/v1"] = (
-        "cole-voice-lab.recording-application/v1"
+    """The private launch configuration the native app reads (exact key set on both sides).
+
+    It carries no catalog: after the handshake the app asks the service for the catalog the
+    service pinned from the subject's active corpus-store version. ``purpose`` repeats the
+    settings' declared catalog purpose so release verification can re-check the root.
+    """
+
+    schema_version: Literal["cole-voice-lab.recording-application/v2"] = (
+        "cole-voice-lab.recording-application/v2"
     )
     asset_root: str
     schema_directory: str
     client_build: RecordingBuildIdentity
     client_build_path: str
-    catalog: PromptSuite
-    catalog_sha256: Sha256
+    purpose: PromptSuitePurpose
     subject_id: StableId
     capture_device: CaptureDevice
     capture_host: str
@@ -128,11 +178,9 @@ class NativeRecordingApplicationConfiguration(ContractModel):
         for value in paths:
             if not Path(value).is_absolute() or os.path.normpath(value) != value:
                 raise ValueError("application paths must be normalized and absolute")
-        if self.catalog_sha256 != canonical_sha256(self.catalog):
-            raise ValueError("application catalog digest differs from its exact prompts")
         NativeRecordingApplicationSettings(
             asset_root=self.asset_root,
-            catalog=self.catalog,
+            purpose=self.purpose,
             subject_id=self.subject_id,
             capture_device=self.capture_device,
             capture_host=self.capture_host,
@@ -329,17 +377,24 @@ def create_native_recording_application(
     python: Path,
     settings: NativeRecordingApplicationSettings,
     synthetic_pcm: Path | None = None,
-    expected_catalog_sha256: str | None = None,
 ) -> NativeRecordingApplicationRelease:
     """Build a new preview, frozen code/service runtime and private signed identities.
 
     Never overwrite an output, install, launch, capture, play, download or transfer.
-    Partial failed-build artifacts remain reviewable beside the chosen output.
+    Partial failed-build artifacts remain reviewable beside the chosen output. The release
+    pins no catalog: the app loads the subject's active corpus-store catalog at launch.
+    Returns: the written release evidence.
+    Raises: ``ContractError`` before any release work when the asset root's purpose differs
+    from ``settings.purpose`` (``physical-test catalogs require an asset root created
+    with …`` / ``this asset root is marked for physical tests …``) or a marked root belongs
+    to another subject, when the platform is not macOS, when the output is not a new
+    ``*Preview.app`` or already exists, or when a build command fails; ``SecurityError`` for
+    an unsafe diagnostic marker, synthetic PCM or release source; ``OSError`` when a file
+    cannot be read or written.
     """
-    _require_expected_catalog(settings.catalog, expected_catalog_sha256)
     layout = AssetLayout.validate(Path(settings.asset_root))
-    # Refuse a catalog/root purpose mismatch before any release work exists.
-    require_catalog_root(layout, settings.catalog, settings.subject_id)
+    # Refuse a root/purpose mismatch before any release work exists.
+    _require_release_root(layout, settings.purpose, settings.subject_id)
     if sys.platform != "darwin":
         raise ContractError("native recording application packaging requires macOS")
     target = _reject_existing_symlink_components(output)
@@ -573,8 +628,7 @@ def create_native_recording_application(
         schema_directory=str(schemas),
         client_build=client_build,
         client_build_path=str(client_path),
-        catalog=settings.catalog,
-        catalog_sha256=canonical_sha256(settings.catalog),
+        purpose=settings.purpose,
         subject_id=settings.subject_id,
         capture_device=settings.capture_device,
         capture_host=settings.capture_host,
@@ -643,19 +697,21 @@ def create_native_recording_application(
     return release
 
 
-def _require_expected_catalog(catalog: PromptSuite, expected_sha256: str | None) -> None:
-    """An operator-pinned catalog digest must equal the exact catalog being released."""
-    if expected_sha256 is not None and canonical_sha256(catalog) != expected_sha256:
-        raise ContractError("native application catalog differs from --expect-catalog-sha256")
-
-
-def verify_native_recording_application(
-    release_path: Path, *, expected_catalog_sha256: str | None = None
-) -> NativeRecordingApplicationRelease:
+def verify_native_recording_application(release_path: Path) -> NativeRecordingApplicationRelease:
     """Verify private release/configuration, signed peers and frozen service identity.
 
     Executes only an isolated Python build-identity probe. Does not launch an app,
-    start a service, discover recordings, open audio devices or request permission.
+    start a service, discover recordings, open audio devices or request permission. The
+    configuration carries no catalog, so no catalog digest is verified here; the root is
+    re-checked against the configured purpose.
+    Returns: the verified release evidence.
+    Raises: ``ContractError`` when the asset root's purpose differs from the configured
+    purpose or a marked root belongs to another subject, or when the codesign check fails;
+    ``SecurityError`` when release metadata, configuration, peer manifests, executables,
+    the frozen Python identity or the schemas are missing, changed, non-canonical or unsafe;
+    ``ValidationError`` for a release or configuration that is not the current contract
+    (a ``recording-application/v1`` configuration that embeds a catalog included);
+    ``OSError`` when a file cannot be read.
     """
     release_path = _reject_existing_symlink_components(release_path)
 
@@ -684,10 +740,9 @@ def verify_native_recording_application(
     configuration = NativeRecordingApplicationConfiguration.model_validate_json(configuration_bytes)
     if configuration_bytes != canonical_json_bytes(configuration):
         raise SecurityError("native application configuration must remain canonical")
-    _require_expected_catalog(configuration.catalog, expected_catalog_sha256)
-    require_catalog_root(
+    _require_release_root(
         AssetLayout.validate(Path(configuration.asset_root)),
-        configuration.catalog,
+        configuration.purpose,
         configuration.subject_id,
     )
     expected = (release.client_build, release.recorder_build, release.service_build)
@@ -744,24 +799,21 @@ def verify_native_recording_application(
     return release
 
 
-def _sha256_argument(value: str) -> str:
-    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
-        raise argparse.ArgumentTypeError("expected 64 lowercase hexadecimal characters")
-    return value
-
-
 def main(argv: Sequence[str] | None = None) -> int:
+    """Build one native preview from a private settings file and print its release evidence.
+
+    Returns: 0 after a successful build.
+    Raises: ``SystemExit(2)`` (argparse usage error on stderr) for unknown arguments (the
+    removed ``--expect-catalog-sha256`` included), an unreadable, oversized or invalid
+    settings file (``native-application-settings/v1`` files that embed a catalog included),
+    or any build refusal ``create_native_recording_application`` raises.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--settings", type=Path, required=True)
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--synthetic-pcm", type=Path)
-    parser.add_argument(
-        "--expect-catalog-sha256",
-        type=_sha256_argument,
-        help="refuse unless the settings catalog has exactly this canonical SHA-256",
-    )
     options = parser.parse_args(argv)
     try:
         with open_regular_no_follow(
@@ -778,7 +830,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             python=options.python,
             settings=settings,
             synthetic_pcm=options.synthetic_pcm,
-            expected_catalog_sha256=options.expect_catalog_sha256,
         )
     except (VoiceLabError, OSError, ValueError) as error:
         parser.error(str(error))

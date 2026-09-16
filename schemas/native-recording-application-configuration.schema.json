@@ -108,145 +108,6 @@
       "title": "NativeRecordingPeerConfiguration",
       "type": "object"
     },
-    "Prompt": {
-      "additionalProperties": false,
-      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
-      "properties": {
-        "category": {
-          "enum": [
-            "room-tone",
-            "neutral",
-            "conversational",
-            "warm-narration",
-            "technical",
-            "numbers",
-            "expressive",
-            "reference",
-            "procedure"
-          ],
-          "title": "Category",
-          "type": "string"
-        },
-        "expected_seconds": {
-          "exclusiveMinimum": 0.0,
-          "maximum": 120.0,
-          "title": "Expected Seconds",
-          "type": "number"
-        },
-        "holdout": {
-          "default": false,
-          "title": "Holdout",
-          "type": "boolean"
-        },
-        "instructions": {
-          "anyOf": [
-            {
-              "maxLength": 2000,
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Instructions"
-        },
-        "labels": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/PromptLabel"
-          },
-          "maxItems": 8,
-          "title": "Labels",
-          "type": "array"
-        },
-        "prompt_id": {
-          "$ref": "#/$defs/StableId"
-        },
-        "reference_candidate": {
-          "default": false,
-          "title": "Reference Candidate",
-          "type": "boolean"
-        },
-        "style": {
-          "maxLength": 160,
-          "minLength": 1,
-          "title": "Style",
-          "type": "string"
-        },
-        "text": {
-          "anyOf": [
-            {
-              "maxLength": 2000,
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Text"
-        }
-      },
-      "required": [
-        "prompt_id",
-        "category",
-        "style",
-        "expected_seconds"
-      ],
-      "title": "Prompt",
-      "type": "object"
-    },
-    "PromptLabel": {
-      "maxLength": 32,
-      "minLength": 2,
-      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
-      "type": "string"
-    },
-    "PromptSuite": {
-      "additionalProperties": false,
-      "properties": {
-        "prompts": {
-          "items": {
-            "$ref": "#/$defs/Prompt"
-          },
-          "minItems": 1,
-          "title": "Prompts",
-          "type": "array"
-        },
-        "purpose": {
-          "enum": [
-            "capture-pilot",
-            "capture-corpus",
-            "held-out-evaluation",
-            "physical-test"
-          ],
-          "title": "Purpose",
-          "type": "string"
-        },
-        "schema_version": {
-          "default": "cole-voice-lab.prompt-suite/v1",
-          "enum": [
-            "cole-voice-lab.prompt-suite/v1",
-            "cole-voice-lab.prompt-suite/v2"
-          ],
-          "title": "Schema Version",
-          "type": "string"
-        },
-        "suite_id": {
-          "$ref": "#/$defs/StableId"
-        }
-      },
-      "required": [
-        "suite_id",
-        "purpose",
-        "prompts"
-      ],
-      "title": "PromptSuite",
-      "type": "object"
-    },
     "RecordingBuildIdentity": {
       "additionalProperties": false,
       "description": "Exact executable, source-tree and environment identities; mutable tags are insufficient.",
@@ -284,6 +145,7 @@
     }
   },
   "additionalProperties": false,
+  "description": "The private launch configuration the native app reads (exact key set on both sides).\n\nIt carries no catalog: after the handshake the app asks the service for the catalog the\nservice pinned from the subject's active corpus-store version. ``purpose`` repeats the\nsettings' declared catalog purpose so release verification can re-check the root.",
   "properties": {
     "asset_root": {
       "title": "Asset Root",
@@ -295,12 +157,6 @@
     "capture_host": {
       "title": "Capture Host",
       "type": "string"
-    },
-    "catalog": {
-      "$ref": "#/$defs/PromptSuite"
-    },
-    "catalog_sha256": {
-      "$ref": "#/$defs/Sha256"
     },
     "client_build": {
       "$ref": "#/$defs/RecordingBuildIdentity"
@@ -330,6 +186,16 @@
         }
       ]
     },
+    "purpose": {
+      "enum": [
+        "capture-pilot",
+        "capture-corpus",
+        "held-out-evaluation",
+        "physical-test"
+      ],
+      "title": "Purpose",
+      "type": "string"
+    },
     "recorder": {
       "$ref": "#/$defs/NativeRecordingPeerConfiguration"
     },
@@ -338,8 +204,8 @@
       "type": "string"
     },
     "schema_version": {
-      "const": "cole-voice-lab.recording-application/v1",
-      "default": "cole-voice-lab.recording-application/v1",
+      "const": "cole-voice-lab.recording-application/v2",
+      "default": "cole-voice-lab.recording-application/v2",
       "title": "Schema Version",
       "type": "string"
     },
@@ -355,8 +221,7 @@
     "schema_directory",
     "client_build",
     "client_build_path",
-    "catalog",
-    "catalog_sha256",
+    "purpose",
     "subject_id",
     "capture_device",
     "capture_host",

@@ -277,13 +277,12 @@ def test_frozen_wheel_rejects_path_escape_and_duplicate_members(tmp_path: Path) 
 def test_preview_preflight_preserves_existing_output_and_requires_native_device(
     tmp_path: Path,
 ) -> None:
-    from recording_fixtures import synthetic_catalog
     from test_recording_takes import DEVICE
 
     root = AssetLayout.initialize(tmp_path.resolve() / "assets").root
     settings = NativeRecordingApplicationSettings(
         asset_root=str(root),
-        catalog=synthetic_catalog(3),
+        purpose="capture-pilot",
         subject_id="synthetic",
         capture_device=DEVICE,
         capture_host="synthetic-host",
@@ -306,10 +305,113 @@ def test_preview_preflight_preserves_existing_output_and_requires_native_device(
         )
 
 
-def test_builder_and_verify_refuse_physical_test_catalogs_before_release_work(
+def test_settings_declare_a_purpose_and_embed_no_catalog(tmp_path: Path) -> None:
+    from recording_fixtures import synthetic_catalog
+    from test_recording_contracts import synthetic_contracts
+    from test_recording_takes import DEVICE
+
+    from cole_voice_lab.native_recording_application import (
+        NativeRecordingApplicationConfiguration,
+        NativeRecordingPeerConfiguration,
+    )
+
+    base = {
+        "asset_root": str(tmp_path.resolve() / "assets"),
+        "subject_id": "synthetic",
+        "capture_device": DEVICE.model_dump(mode="json"),
+        "capture_host": "synthetic-host",
+    }
+    settings = NativeRecordingApplicationSettings.model_validate(
+        base | {"purpose": "capture-pilot"}
+    )
+    assert settings.schema_version == "cole-voice-lab.native-application-settings/v2"
+    # No default purpose: a physical-test build must say so.
+    with pytest.raises(ValueError, match="purpose"):
+        NativeRecordingApplicationSettings.model_validate(base)
+    catalog = synthetic_catalog(3)
+    # A v1 settings file that still embeds its catalog is refused, not silently narrowed.
+    for legacy in (
+        base
+        | {
+            "schema_version": "cole-voice-lab.native-application-settings/v1",
+            "catalog": catalog.model_dump(mode="json"),
+        },
+        base | {"purpose": "capture-pilot", "catalog": catalog.model_dump(mode="json")},
+        base | {"purpose": "capture-pilot", "catalog_sha256": canonical_sha256(catalog)},
+    ):
+        with pytest.raises(ValueError):
+            NativeRecordingApplicationSettings.model_validate(legacy)
+    # The open-context rules still bind the settings through the declared purpose.
+    approval = {
+        "pilot_approval_path": "provenance/pilot-gates/g.json",
+        "pilot_approval_sha256": "1" * 64,
+    }
+    with pytest.raises(ValueError, match="corpus catalog"):
+        NativeRecordingApplicationSettings.model_validate(
+            base | {"purpose": "capture-pilot"} | approval
+        )
+    corpus = NativeRecordingApplicationSettings.model_validate(
+        base | {"purpose": "capture-corpus"} | approval
+    )
+    assert corpus.pilot_approval_sha256 == "1" * 64
+    with pytest.raises(ValueError, match="paired"):
+        NativeRecordingApplicationSettings.model_validate(
+            base | {"purpose": "capture-corpus", "pilot_approval_sha256": "1" * 64}
+        )
+    with pytest.raises(ValueError):
+        NativeRecordingApplicationSettings.model_validate(
+            base
+            | {"purpose": "capture-corpus", "pilot_approval_path": "../outside.json"}
+            | {"pilot_approval_sha256": "1" * 64}
+        )
+
+    build = synthetic_contracts()["capture-seal"].recorder_build
+    runtime = tmp_path.resolve() / "runtime"
+
+    def peer(*arguments: str) -> dict[str, Any]:
+        return {
+            "executable": str(runtime / "python/bin/python"),
+            "arguments": arguments,
+            "environment": None,
+            "build": build.model_dump(mode="json"),
+            "build_identity_path": str(runtime / "service-build.json"),
+        }
+
+    configuration = {
+        "asset_root": base["asset_root"],
+        "schema_directory": str(runtime / "schemas"),
+        "client_build": build.model_dump(mode="json"),
+        "client_build_path": str(runtime / "client-build.json"),
+        "purpose": "capture-pilot",
+        "subject_id": "synthetic",
+        "capture_device": base["capture_device"],
+        "capture_host": "synthetic-host",
+        "pilot_approval_path": None,
+        "pilot_approval_sha256": None,
+        "recorder": peer(),
+        "service": peer("-m", "cole_voice_lab.recording_service"),
+    }
+    accepted = NativeRecordingApplicationConfiguration.model_validate(configuration)
+    assert accepted.schema_version == "cole-voice-lab.recording-application/v2"
+    assert set(accepted.model_dump()) == {"schema_version", *configuration}
+    for refused in (
+        configuration | {"schema_version": "cole-voice-lab.recording-application/v1"},
+        configuration
+        | {"catalog": catalog.model_dump(mode="json"), "catalog_sha256": canonical_sha256(catalog)},
+        {key: value for key, value in configuration.items() if key != "purpose"},
+        configuration | {"purpose": "capture-pilot", "pilot_approval_sha256": "1" * 64},
+    ):
+        with pytest.raises(ValueError):
+            NativeRecordingApplicationConfiguration.model_validate(refused)
+    # A configured peer can never name a catalog digest; only the service's store answers it.
+    for flag in ("--catalog-sha256", "--asset-root", "--schema-directory"):
+        with pytest.raises(ValueError, match="canonical identity"):
+            NativeRecordingPeerConfiguration.model_validate(peer("-m", "x", flag, "a" * 64))
+
+
+def test_builder_and_verify_refuse_a_physical_test_purpose_before_release_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from recording_fixtures import synthetic_physical_test_catalog
     from test_recording_contracts import synthetic_contracts
     from test_recording_takes import DEVICE
 
@@ -329,10 +431,9 @@ def test_builder_and_verify_refuse_physical_test_catalogs_before_release_work(
     private = tmp_path.resolve() / "private"
     private.mkdir(mode=0o700)
     root = AssetLayout.initialize(private / "assets").root
-    catalog = synthetic_physical_test_catalog()
     settings = NativeRecordingApplicationSettings(
         asset_root=str(root),
-        catalog=catalog,
+        purpose="physical-test",
         subject_id="cole-physical-diagnostic-synthetic",
         capture_device=DEVICE,
         capture_host="synthetic-host",
@@ -359,8 +460,7 @@ def test_builder_and_verify_refuse_physical_test_catalogs_before_release_work(
         schema_directory=str(runtime / "schemas"),
         client_build=build,
         client_build_path=str(runtime / "client-build.json"),
-        catalog=catalog,
-        catalog_sha256=canonical_sha256(catalog),
+        purpose="physical-test",
         subject_id=settings.subject_id,
         capture_device=DEVICE,
         capture_host="synthetic-host",
@@ -524,18 +624,39 @@ def test_frozen_rollback_after_disposable_primary_loses_qt(tmp_path: Path) -> No
 
 
 @pytest.fixture(scope="module")
-def signed_native_release(tmp_path_factory: pytest.TempPathFactory) -> Any:
-    from cole_voice_lab.models import CaptureDevice
-    from cole_voice_lab.resources import load_prompt_suite
+def native_release_catalog(tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """A synthetic asset root whose corpus store serves pilot-v2's prompts as `cole-corpus`.
+
+    The release pins no catalog, so the launched app can only reach a useful state through
+    the subject's active store version. Returns the root and that version's reference.
+    """
+    from cole_voice_lab.corpus_store import open_corpus_store
+    from cole_voice_lab.prompt_catalogs import load_builtin_prompt_suite
 
     root = tmp_path_factory.mktemp("native release spaces").resolve()
     assets = AssetLayout.initialize(root / "synthetic assets")
+    pilot = load_builtin_prompt_suite("pilot-v2.json")
+    with open_corpus_store(assets, create=True) as corpus:
+        corpus.import_prompt_suite(pilot, source="pilot-v2")
+        corpus.create_catalog("cole-corpus", purpose=pilot.purpose)
+        reference = corpus.publish_version("cole-corpus")
+        corpus.activate("synthetic-subject", reference)
+        assert corpus.materialize(reference).suite.prompts == pilot.prompts
+    return SimpleNamespace(layout=assets, reference=reference)
+
+
+@pytest.fixture(scope="module")
+def signed_native_release(native_release_catalog: Any) -> Any:
+    from cole_voice_lab.models import CaptureDevice
+
+    assets = native_release_catalog.layout
+    root = assets.root.parent
     pcm = root / "synthetic.pcm"
     pcm.write_bytes(bytes(1440))
     pcm.chmod(0o600)
     settings = NativeRecordingApplicationSettings(
         asset_root=str(assets.root),
-        catalog=load_prompt_suite("pilot"),
+        purpose=native_release_catalog.reference.purpose,
         subject_id="synthetic-subject",
         capture_device=CaptureDevice(
             backend="coreaudio", device_id="synthetic-device", display_name="Synthetic UMIK-1"
@@ -574,6 +695,11 @@ def test_actual_signed_preview_has_frozen_service_and_permissions(
     configuration = json.loads(Path(release.configuration).read_text())
     assert configuration["service"]["executable"] == str(runtime / "python/bin/python")
     assert Path(release.configuration).stat().st_mode & 0o077 == 0
+    # The release pins no catalog; the service serves the store's and is launched without one.
+    assert configuration["schema_version"] == "cole-voice-lab.recording-application/v2"
+    assert configuration["purpose"] == "capture-pilot"
+    assert not {"catalog", "catalog_sha256"} & set(configuration)
+    assert "--catalog-sha256" not in configuration["service"]["arguments"]
     result = subprocess.run(
         (
             str(runtime / "python/bin/python"),
@@ -673,7 +799,7 @@ def _launch_verification(app: Path, report: Path, *flags: str) -> Any:
 
 
 def test_actual_signed_preview_reaches_useful_state_without_window_or_audio(
-    signed_native_release: Any, tmp_path: Path
+    signed_native_release: Any, native_release_catalog: Any, tmp_path: Path
 ) -> None:
     """The step's only permitted launch: a synthetic fixture app, headless and self-exiting."""
 
@@ -703,10 +829,8 @@ def test_actual_signed_preview_reaches_useful_state_without_window_or_audio(
     assert evidence["channels_closed"]
     # The configured child peers are the release's own frozen identities, not the checkout's.
     assert evidence["service_build"]["build_id"] and evidence["recorder_build"]["build_id"]
-    assert (
-        evidence["catalog_sha256"]
-        == json.loads(Path(signed_native_release.configuration).read_text())["catalog_sha256"]
-    )
+    # The catalog the app recorded against is the one the service pinned from the store.
+    assert evidence["catalog_sha256"] == native_release_catalog.reference.catalog_sha256
     # Nothing was shown, activated, recorded or played.
     for forbidden in (
         "shown_window",

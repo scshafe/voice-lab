@@ -24,7 +24,8 @@ from test_recording_contracts import synthetic_contracts  # noqa: F401  (receipt
 from test_recording_takes import DEVICE, Rig
 
 from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canonical_json
-from cole_voice_lab.models import PromptSuite
+from cole_voice_lab.corpus_store import read_catalog_snapshot
+from cole_voice_lab.models import PROMPT_SUITE_V2, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_analysis import (
     RecordingAnalysisQueue,
@@ -34,7 +35,7 @@ from cole_voice_lab.recording_contracts import (
     RECORDING_SCHEMA_MODELS,
     CaptureReservation,
     CaptureSealReceipt,
-    CatalogSnapshot,
+    CatalogReference,
     OpenContextCommand,
     RecordingBuildIdentity,
 )
@@ -44,6 +45,7 @@ from cole_voice_lab.recording_takes import RecordingTakeStore
 
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
 from recording_native_scratch import native_recording_scratch_path  # noqa: E402
+from verify_native_workspace import seed_active_catalog  # noqa: E402
 
 SAMPLE_RATE_HZ = 48_000
 CAPTURE_EVIDENCE_VERSION = "cole-voice-lab.recording-benchmark-capture/v2"
@@ -112,11 +114,40 @@ def release_binaries() -> dict[str, Any]:
 
 
 def benchmark_catalog(prompt_count: int) -> PromptSuite:
-    """Prompt identities only; no instruction text reaches a trace or a report."""
+    """Prompt identities only; no instruction text reaches a trace or a report.
 
-    from recording_fixtures import synthetic_catalog
+    A prompt-suite/v2 room tone followed by spoken prompts, because the service serves the
+    fixture's corpus store and the store publishes only v2 suites whose live texts differ.
+    Raises: ``ValueError`` when ``prompt_count`` leaves no room for a room tone and an
+    utterance; ``pydantic.ValidationError`` when the suite breaks the PromptSuite contract.
+    """
 
-    return synthetic_catalog(prompt_count)
+    if prompt_count < 2:
+        raise ValueError("benchmark requires a room tone and an utterance")
+    return PromptSuite(
+        schema_version=PROMPT_SUITE_V2,
+        suite_id="synthetic-recording-benchmark-v1",
+        purpose="capture-pilot",
+        prompts=(
+            Prompt(
+                prompt_id="synthetic-0000",
+                instructions="Synthetic benchmark instructions.",
+                category="room-tone",
+                style="Synthetic",
+                expected_seconds=10.0,
+            ),
+            *(
+                Prompt(
+                    prompt_id=f"synthetic-{index:04d}",
+                    text=f"Synthetic benchmark instructions {index}.",
+                    category="neutral",
+                    style="Synthetic",
+                    expected_seconds=10.0,
+                )
+                for index in range(1, prompt_count)
+            ),
+        ),
+    )
 
 
 def native_pcm(signal: str, frames: int = 480) -> bytes:
@@ -134,11 +165,15 @@ def native_pcm(signal: str, frames: int = 480) -> bytes:
     )
 
 
-def fabricate_history(layout: AssetLayout, catalog: PromptSuite, count: int) -> list[str]:
+def fabricate_history(layout: AssetLayout, reference: CatalogReference, count: int) -> list[str]:
     """Write `count` real durable takes through the production store and library.
 
     These are the same canonical records the service reads back, so a thousand-take
-    history is an actual thousand-take history rather than a padded index.
+    history is an actual thousand-take history rather than a padded index. The context
+    names ``reference``, the store version the service will pin, exactly as the app's does.
+    Raises: ``CorpusSnapshotSecurityError`` (``CORPUS.SNAPSHOT_MISSING`` /
+    ``CORPUS.SNAPSHOT_MISMATCH``) when the referenced snapshot is absent or altered; the
+    take store's and index's own errors when a fabricated take is refused.
     """
 
     if count == 0:
@@ -149,19 +184,18 @@ def fabricate_history(layout: AssetLayout, catalog: PromptSuite, count: int) -> 
     index = RecordingIndex(layout, subject_id=SUBJECT)
     take_ids: list[str] = []
     try:
-        index.register_catalog(CatalogSnapshot.embedded(catalog))
-        digest = canonical_sha256(catalog)
+        snapshot = read_catalog_snapshot(layout, reference)
+        index.register_catalog(snapshot)
         # Save and Next resolves the next missing prompt, which needs the catalog's own
         # metadata to be complete before the first fabricated take, not after the last.
-        index.set_completeness(digest, "complete")
-        library = RecordingLibrary(layout, catalog, SUBJECT)
+        index.set_completeness(reference.catalog_sha256, "complete")
+        library = RecordingLibrary(layout, snapshot, SUBJECT)
         library.bind_native_store(rig.store, index)
         context = rig.store.open_context(
             OpenContextCommand(
                 operation_id="benchmark-context",
                 subject_id=SUBJECT,
-                catalog=catalog,
-                catalog_sha256=digest,
+                catalog_reference=reference,
                 capture_device=DEVICE,
                 capture_host="synthetic-host",
             )
@@ -341,7 +375,9 @@ def build_native_fixture(
         write_canonical_json(schemas / f"{name}.schema.json", model.model_json_schema())
     # Room tone, the fabricated history, every recorded cycle and one spare target.
     catalog = benchmark_catalog(history_count + cycles + 2)
-    take_ids = fabricate_history(assets, catalog, history_count)
+    # The configuration names no catalog: the service pins the store's active version.
+    reference = seed_active_catalog(assets, catalog)
+    take_ids = fabricate_history(assets, reference, history_count)
     backlog = settle_analysis(assets, drain=workload == "idle")
 
     audit_log = root / "wav-opens.log"
@@ -404,13 +440,12 @@ def build_native_fixture(
     # rather than inheriting whatever umask the caller happened to run with.
     pcm.chmod(0o600)
     configuration = {
-        "schema_version": "cole-voice-lab.recording-application/v1",
+        "schema_version": "cole-voice-lab.recording-application/v2",
         "asset_root": str(assets.root),
         "schema_directory": str(schemas),
         "client_build": client_build.model_dump(mode="json"),
         "client_build_path": str(root / "client-build.json"),
-        "catalog": catalog.model_dump(mode="json"),
-        "catalog_sha256": canonical_sha256(catalog),
+        "purpose": catalog.purpose,
         "subject_id": SUBJECT,
         "capture_device": DEVICE.model_dump(mode="json"),
         "capture_host": "synthetic-host",

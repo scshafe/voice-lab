@@ -14,32 +14,36 @@ public final class RecordingServiceClient: Sendable {
 
     public func connect() async throws { try await channel.start() }
 
+    /// A request past its `timeout` closes the whole channel (the service is then gone).
     public func command(_ command: RecordingJSON, takeID: String?, requestID: String? = nil,
+                        timeout: TimeInterval = 5,
                         diagnosticContext: RecordingDiagnosticContext? = nil) async throws -> RecordingWireEnvelope {
         let context = diagnosticSink == nil ? nil : (diagnosticContext ?? RecordingDiagnosticContext(traceID: UUID().uuidString.lowercased()))
             .request(requestID, operationID: command.object?["operation_id"]?.string, takeID: takeID)
         let span = RecordingDiagnosticSpan("service.request." + (command.object?["command"]?.string ?? "invalid"), context: context, sink: diagnosticSink)
         do {
-            let response = try await channel.request(command, takeID: takeID, requestID: requestID)
+            let response = try await channel.request(command, takeID: takeID, requestID: requestID, timeout: timeout)
             span.finish(response.error == .null ? .success : .failure, errorCode: response.error.object?["code"]?.string, requestID: response.meta.request_id)
             return response
         } catch { span.finish(error is CancellationError ? .cancelled : .failure, error: error); throw error }
     }
 
-    public func openContext(operationID: String, subjectID: String, catalog: RecordingJSON,
-                            catalogSHA256: String, device: RecordingJSON, captureHost: String,
-                            expectedSelectionRevision: Int64?, newSetup: Bool = false,
-                            setupDescription: String = "", pilotApprovalPath: String? = nil,
-                            pilotApprovalSHA256: String? = nil) async throws -> RecordingWireEnvelope {
-        try await command(.object([
-            "command": .string("open-context"), "operation_id": .string(operationID),
-            "subject_id": .string(subjectID), "catalog": catalog, "catalog_sha256": .string(catalogSHA256),
-            "capture_device": device, "capture_host": .string(captureHost),
-            "expected_selection_revision": expectedSelectionRevision.map(RecordingJSON.integer) ?? .null,
-            "new_setup": .boolean(newSetup), "setup_description": .string(setupDescription),
-            "pilot_approval_path": pilotApprovalPath.map(RecordingJSON.string) ?? .null,
-            "pilot_approval_sha256": pilotApprovalSHA256.map(RecordingJSON.string) ?? .null,
-        ]), takeID: nil)
+    /// The catalog this service process pinned from the corpus store: a CatalogEvent carrying
+    /// the whole suite and its reference, or the service's refusal (for example
+    /// CORPUS.NO_ACTIVE_CATALOG, whose message names `voice-lab catalog init`). The reply can
+    /// approach the 1 MiB frame, so callers name a deadline longer than the default.
+    public func catalog(operationID: String, timeout: TimeInterval) async throws -> RecordingWireEnvelope {
+        try await command(.object(["command": .string("catalog"), "operation_id": .string(operationID)]),
+                          takeID: nil, timeout: timeout)
+    }
+
+    /// Open (or reuse) a context. `command` names the catalog reference this service delivered
+    /// (`RecordingContextTarget.openContextCommand`); the service refuses an embedded catalog.
+    public func openContext(_ command: RecordingJSON, timeout: TimeInterval) async throws -> RecordingWireEnvelope {
+        guard command.object?["command"] == .string("open-context") else {
+            throw RecordingContractError(code: "RECORDING.INVALID_MESSAGE", message: "Open context requires an open-context command")
+        }
+        return try await self.command(command, takeID: nil, timeout: timeout)
     }
 
     public func selectPrompt(_ promptID: String, selection: RecordingJSON, operationID: String) async throws -> RecordingWireEnvelope {

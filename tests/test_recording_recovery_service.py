@@ -8,8 +8,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 from test_recording_recovery import emergency, legacy_command
-from test_recording_service import await_responses, build_identity, prepared, request
-from test_recording_takes import Rig
+from test_recording_service import (
+    activate_catalog,
+    await_responses,
+    build_identity,
+    prepared,
+    request,
+)
+from test_recording_takes import Rig, store_suite
 from test_recording_takes import rig as rig
 
 from cole_voice_lab.canonical import sha256_file
@@ -239,14 +245,14 @@ def test_actual_service_startup_recovers_then_independently_verifies(
     take_id, receipt = emergency(rig)
     source_before = sha256_file(receipt.parent / "original.wav")
     group = rig.store.get_group(rig.group_id)
-    service = ServiceProcess(tmp_path, rig.layout, group.catalog_sha256, "recovery-generation")
+    reference, _ = activate_catalog(rig.layout, store_suite(2))
+    service = ServiceProcess(tmp_path, rig.layout, None, "recovery-generation")
     try:
         opened = service.request(
             OpenContextCommand(
                 operation_id="recovery-open-context",
                 subject_id=group.subject_id,
-                catalog=group.catalog,
-                catalog_sha256=group.catalog_sha256,
+                catalog_reference=reference,
                 capture_device=group.capture_device,
                 capture_host=group.capture_host,
             ).model_dump()

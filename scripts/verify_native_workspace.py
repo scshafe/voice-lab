@@ -1,8 +1,10 @@
 """Run the actual native workspace against private synthetic helper/service processes.
 
-Creates bounded PCM, manifests and exact catalog/configuration fixtures outside Git.
-Never opens a microphone, emits audio, or installs/restarts an app. The review
-accessibility gate briefly shows its owned synthetic window behind other windows.
+Creates bounded PCM, manifests, configuration and a corpus store (the exact fixture catalog,
+published and active for the synthetic subject) outside Git. The configuration names no
+catalog: the service serves the store's, as it does for the real app. Never opens a
+microphone, emits audio, or installs/restarts an app. The review accessibility gate
+briefly shows its owned synthetic window behind other windows.
 """
 
 from __future__ import annotations
@@ -18,15 +20,18 @@ import time
 from pathlib import Path
 
 from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canonical_json
-from cole_voice_lab.models import CaptureDevice, Prompt, PromptSuite
+from cole_voice_lab.corpus_store import open_corpus_store
+from cole_voice_lab.models import PROMPT_SUITE_V2, CaptureDevice, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import (
     RECORDING_SCHEMA_MODELS,
+    CatalogReference,
     RecordingBuildIdentity,
 )
 from cole_voice_lab.recording_service import recording_service_build_identity
 
 PATTERN_PCM = bytes([0, 0, 0, 255, 255, 127, 0, 0, 128])
+SUBJECT = "synthetic-subject"
 
 FIXTURE_LOCKS = (
     "provenance/capture-desktop/.capture.lock",
@@ -34,16 +39,69 @@ FIXTURE_LOCKS = (
 )
 
 
+def seed_active_catalog(layout: AssetLayout, catalog: PromptSuite) -> CatalogReference:
+    """Publish ``catalog`` exactly into the root's new corpus store and activate it.
+
+    The store version keeps the fixture's suite id, purpose and prompt order, so the app
+    receives these exact prompts from the service. Returns the active reference.
+    Raises: ``ValueError`` when the store already holds a catalog, or when the published
+    suite or its reference is not exactly ``catalog``; ``CorpusStoreError`` (``CORPUS.*``)
+    when the store refuses the prompts, the catalog or the activation.
+    """
+
+    with open_corpus_store(layout, create=True) as corpus:
+        if corpus.list_catalogs():
+            raise ValueError("Fixture corpus store must be new")
+        corpus.import_prompt_suite(catalog, source="manual")
+        corpus.create_catalog(
+            catalog.suite_id,
+            purpose=catalog.purpose,
+            description="Synthetic native verification fixture.",
+        )
+        reference = corpus.publish_version(
+            catalog.suite_id, prompt_ids=tuple(prompt.prompt_id for prompt in catalog.prompts)
+        )
+        if corpus.materialize(reference).suite != catalog:
+            raise ValueError("Fixture store published a different catalog")
+        corpus.activate(SUBJECT, reference)
+    if reference.catalog_sha256 != canonical_sha256(catalog):
+        raise ValueError("Fixture store reference names a different catalog")
+    return reference
+
+
+def desktop_session_catalog(catalog: PromptSuite) -> PromptSuite:
+    """The prompt-suite/v1 form of ``catalog`` a desktop (Qt) session records against.
+
+    Desktop sessions predate prompt-suite/v2: a silent prompt carries its instructions as
+    text. Spoken prompts are the same objects, so their legacy takes count under the store
+    version exactly as pilot-v1 takes count under pilot-v2; the room tone does not.
+    """
+
+    return PromptSuite(
+        suite_id=catalog.suite_id,
+        purpose=catalog.purpose,
+        prompts=tuple(
+            prompt
+            if prompt.text is not None
+            else Prompt.model_validate(
+                prompt.model_dump(exclude={"instructions"}) | {"text": prompt.instructions}
+            )
+            for prompt in catalog.prompts
+        ),
+    )
+
+
 def package_catalog() -> PromptSuite:
     """A compact catalog whose every prompt is recorded, so packages cover it exactly."""
 
     return PromptSuite(
+        schema_version=PROMPT_SUITE_V2,
         suite_id="synthetic-package",
         purpose="capture-pilot",
         prompts=(
             Prompt(
                 prompt_id="package-room-tone",
-                text="Remain still and quiet. Do not speak.",
+                instructions="Remain still and quiet. Do not speak.",
                 category="room-tone",
                 style="Keep the room quiet",
                 expected_seconds=1.0,
@@ -75,12 +133,13 @@ def workspace_catalog() -> PromptSuite:
     """The 208-prompt interactive catalog used by the transport and review suites."""
 
     return PromptSuite(
+        schema_version=PROMPT_SUITE_V2,
         suite_id="synthetic-workspace",
         purpose="capture-pilot",
         prompts=(
             Prompt(
                 prompt_id="room-tone",
-                text="Remain still and quiet. Do not speak.",
+                instructions="Remain still and quiet. Do not speak.",
                 category="room-tone",
                 style="Keep the room quiet",
                 expected_seconds=1.0,
@@ -205,10 +264,12 @@ def main() -> None:
         write_canonical_json(schemas / f"{name}.schema.json", model.model_json_schema())
     verified_signal = options.suite in {"package-preparation", "recovery"}
     catalog = package_catalog() if verified_signal else workspace_catalog()
+    # The transport harness requires the app to record against exactly this reference.
+    write_canonical_json(root / "catalog-reference.json", seed_active_catalog(assets, catalog))
     if options.suite == "review-legacy":
         from native_review_fixture import create_legacy
 
-        create_legacy(assets, catalog, accepted=options.accepted_legacy)
+        create_legacy(assets, desktop_session_catalog(catalog), accepted=options.accepted_legacy)
     device = CaptureDevice(
         backend="coreaudio",
         device_id="synthetic-coreaudio-uid",
@@ -250,14 +311,19 @@ def main() -> None:
         "cole_voice_lab.recording_service",
         "--native-workspace",
         "--subject-id",
-        "synthetic-subject",
+        SUBJECT,
     ]
     if options.suite == "recovery":
         # The helper's seal barrier reads this FIFO. Recovery needs that fault hook, not the
         # service-side barrier fixture, so the ordinary canonical service stays in place.
         os.mkfifo(root / "seal-release.fifo", 0o600)
     if options.delayed:
-        from cole_voice_lab import recording_index, recording_service
+        from cole_voice_lab import (
+            corpus_store,
+            recording_index,
+            recording_service,
+            sqlite_migrations,
+        )
 
         runtime = root / "python-runtime"
         package_copy = runtime / "cole_voice_lab"
@@ -272,6 +338,10 @@ def main() -> None:
         for relative, _, _ in recording_index.recording_index_migration_resources():
             name = Path(relative).name
             (migrations / name).write_bytes(recording_index._migration_bytes(name))
+        # The service build identity fingerprints the corpus store migration too.
+        for relative, _, _ in corpus_store.corpus_store_migration_resources():
+            name = Path(relative).name
+            (migrations / name).write_bytes(sqlite_migrations.migration_bytes(name))
         fixture_source = (
             Path(__file__).resolve().parents[1] / "tests/native_workspace_service_fixture.py"
         )
@@ -298,7 +368,7 @@ def main() -> None:
             str(root),
             "--native-workspace",
             "--subject-id",
-            "synthetic-subject",
+            SUBJECT,
         ]
 
     for name, identity in [
@@ -321,15 +391,15 @@ def main() -> None:
     ]
     if options.delayed or options.suite == "recovery":
         helper_arguments += ["--synthetic-seal-barrier-directory", str(root)]
+    # The configuration names no catalog: the service pins the store's active version.
     configuration = {
-        "schema_version": "cole-voice-lab.recording-application/v1",
+        "schema_version": "cole-voice-lab.recording-application/v2",
         "asset_root": str(assets.root),
         "schema_directory": str(schemas),
         "client_build": client_build.model_dump(mode="json"),
         "client_build_path": str(root / "client-build.json"),
-        "catalog": catalog.model_dump(mode="json"),
-        "catalog_sha256": canonical_sha256(catalog),
-        "subject_id": "synthetic-subject",
+        "purpose": catalog.purpose,
+        "subject_id": SUBJECT,
         "capture_device": device.model_dump(mode="json"),
         "capture_host": "synthetic-host",
         "pilot_approval_path": None,
@@ -358,9 +428,10 @@ def main() -> None:
         zero_frame.mkdir(mode=0o700)
         os.mkfifo(zero_frame / "start-release.fifo", 0o600)
         zero_frame_configuration = dict(configuration)
-        zero_frame_configuration["asset_root"] = str(
-            AssetLayout.initialize(zero_frame / "assets").root
-        )
+        zero_frame_assets = AssetLayout.initialize(zero_frame / "assets")
+        # A separate root needs its own store: the service serves only its root's catalog.
+        seed_active_catalog(zero_frame_assets, catalog)
+        zero_frame_configuration["asset_root"] = str(zero_frame_assets.root)
         zero_frame_recorder = dict(configuration["recorder"])
         zero_frame_recorder["arguments"] = [
             *helper_arguments[: helper_arguments.index("--synthetic-seal-barrier-directory")],

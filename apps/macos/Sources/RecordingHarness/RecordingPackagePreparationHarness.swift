@@ -14,7 +14,7 @@ extension RecordingHarness {
         let config = try RecordingApplicationConfiguration.load(privateFile: configurationURL)
         guard config.recorder.arguments.contains("--synthetic-pcm") else { throw packageError("Package harness requires explicit synthetic PCM") }
         let backend = AVFoundationRecordingPlaybackBackend(mode: .offline)
-        let model = try RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: backend)
+        let model = RecordingWorkspaceModel(configuration: config, permissionStatus: { .granted }, permissionRequest: { false }, reviewBackend: backend)
         defer { model.close() }
         // Four real captures, their independent analysis jobs and a package worker subprocess
         // share this host with the rest of the gate; the interactive budget is too tight.

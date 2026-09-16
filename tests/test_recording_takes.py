@@ -518,9 +518,40 @@ def test_reserve_and_retake_name_a_prompt_the_group_catalog_lacks(
     assert rig.store.get_cursor("synthetic-subject") == cursor
 
 
-def test_referenced_context_binds_its_reference_into_the_request(rig: Rig) -> None:
+def test_referenced_context_binds_its_reference_into_the_request(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cole_voice_lab import corpus_store
+
     reference, snapshot = publish_catalog(rig.layout, store_suite(3))
     command = OpenContextCommand(
+        operation_id="context-referenced",
+        subject_id="synthetic-subject",
+        catalog_reference=reference,
+        capture_device=DEVICE,
+        capture_host="host",
+    )
+    reads: list[CatalogReference] = []
+    original_read = corpus_store.read_catalog_snapshot
+
+    def counted(layout: AssetLayout, named: CatalogReference) -> CatalogSnapshot:
+        reads.append(named)
+        return original_read(layout, named)
+
+    monkeypatch.setattr(corpus_store, "read_catalog_snapshot", counted)
+    assert rig.store.context_replay(command) is None
+    event = rig.store.open_context(command)
+    # The store reads the referenced suite itself, and verifies the file once.
+    assert reads == [reference]
+    assert event.group.catalog_reference == reference and event.group.catalog is None
+    assert rig.store.group_catalog(event.group) == snapshot
+    assert event.cursor.selection.prompt_id == "spoken-0000"
+    assert event.cursor.selection.catalog_sha256 == reference.catalog_sha256
+    assert rig.store.context_replay(command) == event
+    assert reopen(rig).open_context(command) == event
+    # The whole command is the request: the same operation cannot be replayed with the
+    # embedded form of the same suite.
+    embedded = OpenContextCommand(
         operation_id="context-referenced",
         subject_id="synthetic-subject",
         catalog=snapshot.suite,
@@ -528,29 +559,40 @@ def test_referenced_context_binds_its_reference_into_the_request(rig: Rig) -> No
         capture_device=DEVICE,
         capture_host="host",
     )
-    assert rig.store.context_replay(command, catalog_reference=reference) is None
-    event = rig.store.open_context(command, catalog_reference=reference)
-    assert event.group.catalog_reference == reference
-    assert event.cursor.selection.prompt_id == "spoken-0000"
-    assert event.cursor.selection.catalog_sha256 == reference.catalog_sha256
-    assert rig.store.context_replay(command, catalog_reference=reference) == event
-    assert reopen(rig).open_context(command, catalog_reference=reference) == event
-    # The same operation cannot be replayed as the embedded form, nor vice versa.
     with pytest.raises(ContractError, match="already bound"):
-        rig.store.context_replay(command)
+        rig.store.context_replay(embedded)
     with pytest.raises(ContractError, match="already bound"):
-        rig.store.open_context(command)
+        rig.store.open_context(embedded)
     with open_corpus_store(rig.layout, create=False) as corpus:
         corpus.create_catalog("other-corpus", purpose="capture-pilot")
         other = corpus.publish_version("other-corpus")
-    mismatched = command.model_copy(
+    (rig.layout.root / other.snapshot_path).unlink()
+    files = group_files(rig)
+    missing = command.model_copy(
         update={
-            "operation_id": "context-mismatched",
+            "operation_id": "context-missing",
+            "catalog_reference": other,
             "expected_selection_revision": event.cursor.selection.selection_revision,
         }
     )
-    with pytest.raises(ContractError, match="differs from the catalog reference"):
-        rig.store.open_context(mismatched, catalog_reference=other)
+    with pytest.raises(CorpusSnapshotSecurityError) as caught:
+        rig.store.open_context(missing)
+    assert caught.value.code == "CORPUS.SNAPSHOT_MISSING"
+    assert group_files(rig) == files
+    assert not rig.store._operation_path("context-missing").exists()
+    unchecked = OpenContextCommand.model_construct(
+        **(
+            dict(command)
+            | {
+                "operation_id": "context-unchecked",
+                "catalog_reference": None,
+                "expected_selection_revision": event.cursor.selection.selection_revision,
+            }
+        )
+    )
+    with pytest.raises(ContractError, match="names no catalog"):
+        rig.store.open_context(unchecked)
+    assert not rig.store._operation_path("context-unchecked").exists()
 
 
 @pytest.mark.parametrize(

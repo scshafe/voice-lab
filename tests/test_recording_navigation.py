@@ -14,8 +14,8 @@ from recording_fixtures import synthetic_catalog
 from test_recording_contracts import synthetic_contracts
 from test_recording_review import Versions, edit_and_publish
 from test_recording_review import versions as versions
-from test_recording_service import ServiceProcessEvidence
-from test_recording_takes import DEVICE, Rig
+from test_recording_service import ServiceProcessEvidence, activate_catalog
+from test_recording_takes import DEVICE, Rig, store_suite
 
 from cole_voice_lab.canonical import canonical_sha256, write_canonical_json
 from cole_voice_lab.errors import ContractError, SecurityError
@@ -661,11 +661,12 @@ class ServiceProcess:
         self,
         directory: Path,
         layout: AssetLayout,
-        catalog_sha256: str,
+        catalog_sha256: str | None,
         generation: str,
         *,
         audit_directory: Path | None = None,
     ) -> None:
+        """A real workspace service; ``catalog_sha256`` None omits ``--catalog-sha256``."""
         self.generation = generation
         self.counter = 0
         self.revision = 0
@@ -687,8 +688,7 @@ class ServiceProcess:
                 "cole_voice_lab.recording_service",
                 "--asset-root",
                 str(layout.root),
-                "--catalog-sha256",
-                catalog_sha256,
+                *([] if catalog_sha256 is None else ["--catalog-sha256", catalog_sha256]),
                 "--native-workspace",
                 "--subject-id",
                 "synthetic-subject",
@@ -828,18 +828,20 @@ def test_real_service_bootstrap_capture_save_next_lost_reply_and_cursor_recovery
         "sys.addaudithook(observe)\n"
     )
     (audit_directory / "sitecustomize.py").chmod(0o600)
-    catalog = synthetic_catalog(3)
-    digest = canonical_sha256(catalog)
+    reference, _ = activate_catalog(layout, store_suite(3))
+    digest = reference.catalog_sha256
     service = ServiceProcess(
-        tmp_path, layout, digest, "service-first", audit_directory=audit_directory
+        tmp_path, layout, None, "service-first", audit_directory=audit_directory
     )
     try:
+        # The app's order: catalog first, then a context on the reference it was served.
+        served = service.request({"command": "catalog", "operation_id": "catalog-live"})
+        assert served.error is None and served.data.reference == reference
         opened = service.request(
             OpenContextCommand(
                 operation_id="open-live",
                 subject_id="synthetic-subject",
-                catalog=catalog,
-                catalog_sha256=digest,
+                catalog_reference=served.data.reference,
                 capture_device=DEVICE,
                 capture_host="synthetic-host",
             ).model_dump()
@@ -894,7 +896,7 @@ def test_real_service_bootstrap_capture_save_next_lost_reply_and_cursor_recovery
         previous_report = report_path.stat().st_mtime_ns
         audit_log.write_bytes(b"")
         service = ServiceProcess(
-            tmp_path, layout, digest, "service-restarted", audit_directory=audit_directory
+            tmp_path, layout, None, "service-restarted", audit_directory=audit_directory
         )
         deadline = time.monotonic() + 30
         while report_path.stat().st_mtime_ns == previous_report and time.monotonic() < deadline:
@@ -905,12 +907,12 @@ def test_real_service_bootstrap_capture_save_next_lost_reply_and_cursor_recovery
         snapshot = service.request({"command": "snapshot"})
         assert (
             snapshot.data.event == "context"
-            and snapshot.data.cursor.selection.prompt_id == "synthetic-0001"
+            and snapshot.data.cursor.selection.prompt_id == "spoken-0001"
         )
         assert snapshot.data.history.covered_prompt_count == 1
         replay = service.request(command.model_dump(), reservation.take_id)
         assert replay.error is None and replay.data.event == "saved"
-        assert replay.data.operation.navigation.next_prompt.prompt_id == "synthetic-0001"
+        assert replay.data.operation.navigation.next_prompt.prompt_id == "spoken-0001"
         assert replay.data.take.decision_revision == 1
         assert replay.data.cursor == snapshot.data.cursor
         # Finish the owned service and its background children before opening
@@ -991,14 +993,14 @@ def test_blocked_context_preparation_does_not_block_metadata_or_replace_newer_se
         )
         before = nav.cursor
         corpus = PromptSuite.model_validate(
-            nav.library.prompt_suite.model_dump() | {"purpose": "capture-corpus"}
+            store_suite(3).model_dump() | {"purpose": "capture-corpus"}
         )
+        reference, _ = activate_catalog(nav.rig.layout, corpus)
         preparation = submit(
             OpenContextCommand(
                 operation_id="prepare-slow",
                 subject_id="synthetic-subject",
-                catalog=corpus,
-                catalog_sha256=canonical_sha256(corpus),
+                catalog_reference=reference,
                 capture_device=DEVICE,
                 capture_host="host",
                 expected_selection_revision=before.selection.selection_revision,
@@ -1071,11 +1073,14 @@ def test_workspace_backend_context_history_replay_and_completion_publication(
     )
     with pytest.raises(RecordingServiceError, match="requested catalog"):
         execute({"command": "history", "catalog_sha256": "f" * 64})
+    # The service opens the subject's active corpus-store catalog, named by its reference.
+    reference, _ = activate_catalog(nav.rig.layout, store_suite(3))
+    served = execute({"command": "catalog", "operation_id": "catalog"})
+    assert served.event == "catalog" and served.reference == reference
     command = OpenContextCommand(
         operation_id="new-setup",
         subject_id="synthetic-subject",
-        catalog=nav.context.group.catalog,
-        catalog_sha256=nav.context.group.catalog_sha256,
+        catalog_reference=served.reference,
         capture_device=DEVICE,
         capture_host="synthetic-host",
         new_setup=True,
@@ -1083,6 +1088,7 @@ def test_workspace_backend_context_history_replay_and_completion_publication(
     )
     opened = execute(command.model_dump())
     assert opened.group.group_id != nav.context.group.group_id
+    assert opened.group.catalog_reference == reference
     assert execute(command.model_dump()) == opened
     with pytest.raises(RecordingServiceError, match="workspace subject"):
         execute(command.model_copy(update={"subject_id": "another-subject"}).model_dump())

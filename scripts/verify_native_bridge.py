@@ -20,6 +20,8 @@ from pathlib import Path
 from test_recording_contracts import synthetic_contracts
 
 from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canonical_json
+from cole_voice_lab.corpus_store import open_corpus_store
+from cole_voice_lab.models import PROMPT_SUITE_V2, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import (
     RECORDING_SCHEMA_MODELS,
@@ -29,6 +31,27 @@ from cole_voice_lab.recording_contracts import (
 )
 from cole_voice_lab.recording_service import recording_service_build_identity
 from cole_voice_lab.recording_takes import RecordingTakeStore
+
+
+def bridge_catalog(template: PromptSuite) -> PromptSuite:
+    """The synthetic contract catalog as the prompt-suite/v2 the corpus store publishes.
+
+    A silent prompt moves its text into instructions; everything else is unchanged.
+    """
+
+    return PromptSuite(
+        schema_version=PROMPT_SUITE_V2,
+        suite_id=template.suite_id,
+        purpose=template.purpose,
+        prompts=tuple(
+            prompt
+            if prompt.spoken
+            else Prompt.model_validate(
+                prompt.model_dump(exclude={"text"}) | {"instructions": prompt.content}
+            )
+            for prompt in template.prompts
+        ),
+    )
 
 
 def main() -> None:
@@ -83,12 +106,25 @@ def main() -> None:
         write_canonical_json(root / f"{name}-build.json", build)
     value = synthetic_contracts()
     template_group = value["recording-group"]
+    # Every native group references a published store version (recording-group/v2); only
+    # legacy continuation still embeds its catalog.
+    if template_group.catalog is None:
+        raise ValueError("Bridge template group must embed its synthetic catalog")
+    catalog = bridge_catalog(template_group.catalog)
+    with open_corpus_store(assets, create=True) as corpus:
+        corpus.import_prompt_suite(catalog, source="manual")
+        corpus.create_catalog(catalog.suite_id, purpose=catalog.purpose)
+        reference = corpus.publish_version(catalog.suite_id)
+        suite = corpus.materialize(reference).suite
+    if suite != catalog:
+        raise ValueError("Bridge store published a different catalog")
     store = RecordingTakeStore(assets, clock=lambda: datetime.now(UTC) - timedelta(seconds=1))
     group = store.open_group(
-        template_group.catalog,
-        template_group.subject_id,
-        template_group.capture_device,
-        "synthetic-host",
+        reference=reference,
+        suite=suite,
+        subject_id=template_group.subject_id,
+        capture_device=template_group.capture_device,
+        capture_host="synthetic-host",
     )
     recorder_generation = "synthetic-recorder-generation"
     pcm = b"".join(
@@ -150,7 +186,7 @@ def main() -> None:
         "group_id": group.group_id,
         "selection": {
             "catalog_sha256": group.catalog_sha256,
-            "prompt_id": group.catalog.prompts[0].prompt_id,
+            "prompt_id": suite.prompts[0].prompt_id,
             "take_id": None,
             "selection_revision": 0,
             "index_revision": 0,

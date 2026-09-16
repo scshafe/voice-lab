@@ -31,6 +31,14 @@ from .paths import validate_relative_path
 
 PROTOCOL_VERSION: Literal["cole-voice-lab.recording/v1"] = "cole-voice-lab.recording/v1"
 MAX_CONTROL_FRAME_BYTES = 1_048_576
+# Room a CatalogEvent reply needs beside its suite: the response envelope and meta, the
+# event keys, its operation id and the reference. With every id and revision at its maximum
+# that is 1,291 bytes, under a third of the reserve (tests/test_recording_contracts.py).
+CATALOG_EVENT_RESERVE_BYTES: Final = 4_096
+# The service sends a catalog whole, in one CatalogEvent control frame. A suite whose
+# canonical bytes stay within this budget always fits; the corpus store refuses to publish
+# a larger version and the service refuses to serve one.
+MAX_CATALOG_SUITE_BYTES: Final = MAX_CONTROL_FRAME_BYTES - CATALOG_EVENT_RESERVE_BYTES
 MAX_TELEMETRY_FRAME_BYTES = 262_144
 MAX_WAVEFORM_BUCKETS = 4096
 MAX_HISTORY_PAGE_SIZE = 200
@@ -890,12 +898,37 @@ class ShutdownCommand(ContractModel):
     command: Literal["shutdown"] = "shutdown"
 
 
+class CatalogCommand(ContractModel):
+    """Ask the service for the catalog it pinned for this process (the app's first request).
+
+    The service resolves the subject's active corpus-store catalog once per process and
+    answers with a ``CatalogEvent``; a later activation takes effect at the next launch.
+    """
+
+    command: Literal["catalog"] = "catalog"
+    operation_id: StableId
+
+
 class OpenContextCommand(ContractModel):
+    """Open (or reuse) the native capture context of one subject on one catalog.
+
+    The app names the catalog its ``CatalogEvent`` delivered by ``catalog_reference``; the
+    service opens only the catalog it pinned for this process. The embedded form
+    (``catalog`` plus ``catalog_sha256``) is legacy continuation only: it survives inside
+    ``ContinueLegacyRecordingCommand``, which binds a desktop session's frozen catalog that no
+    corpus-store version holds, and the service refuses it as a top-level command. Exactly
+    one form is present; absent fields are omitted, so an embedded command serializes (and
+    replays) byte-identically to the contract before the corpus store.
+    """
+
     command: Literal["open-context"] = "open-context"
     operation_id: StableId
     subject_id: StableId
-    catalog: PromptSuite
-    catalog_sha256: Sha256
+    catalog_reference: CatalogReference | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    catalog: PromptSuite | None = Field(default=None, exclude_if=lambda value: value is None)
+    catalog_sha256: Sha256 | None = Field(default=None, exclude_if=lambda value: value is None)
     capture_device: CaptureDevice
     capture_host: str = Field(min_length=1, max_length=255)
     expected_selection_revision: Revision | None = None
@@ -904,15 +937,37 @@ class OpenContextCommand(ContractModel):
     pilot_approval_path: RelativePath | None = None
     pilot_approval_sha256: Sha256 | None = None
 
+    @property
+    def catalog_purpose(self) -> PromptSuitePurpose:
+        """The purpose of the named catalog: the reference's, or the embedded suite's.
+
+        Returns: that purpose.
+        Raises: ``ContractError`` (uncoded) for an unvalidated command that names no catalog;
+        validation guarantees one form, so a validated command never raises.
+        """
+        if self.catalog_reference is not None:
+            return self.catalog_reference.purpose
+        if self.catalog is None:
+            raise ContractError("open-context names no catalog")
+        return self.catalog.purpose
+
     @model_validator(mode="after")
     def _bound_context(self) -> OpenContextCommand:
-        if canonical_sha256(self.catalog) != self.catalog_sha256:
+        if self.catalog_reference is not None:
+            if self.catalog is not None or self.catalog_sha256 is not None:
+                raise ValueError("context names its catalog by reference or embeds it, not both")
+        elif self.catalog is None or self.catalog_sha256 is None:
+            raise ValueError(
+                "context requires a catalog reference (legacy continuation embeds its catalog "
+                "and digest)"
+            )
+        elif canonical_sha256(self.catalog) != self.catalog_sha256:
             raise ValueError("context must bind its exact canonical catalog")
         if self.capture_device.backend != "coreaudio":
             raise ValueError("native context requires Core Audio")
         if (self.pilot_approval_path is None) != (self.pilot_approval_sha256 is None):
             raise ValueError("pilot approval path and digest must be paired")
-        if self.pilot_approval_path is not None and self.catalog.purpose != "capture-corpus":
+        if self.pilot_approval_path is not None and self.catalog_purpose != "capture-corpus":
             raise ValueError("pilot approval applies only to the corpus catalog")
         return self
 
@@ -1032,16 +1087,38 @@ class PreparePackageCommand(ContractModel):
 
 
 class ContinueLegacyRecordingCommand(ContractModel):
+    """Continue an unfinished desktop session in a new native context.
+
+    ``context`` always embeds the session's frozen catalog and digest (the one place the
+    embedded open-context form remains): a desktop session binds a catalog no corpus-store
+    version holds, and its sidecar evidence must match that catalog exactly.
+    """
+
     command: Literal["continue-legacy-recording"] = "continue-legacy-recording"
     operation_id: StableId
     session_id: StableId
     session_evidence_sha256: Sha256
     context: OpenContextCommand
 
+    @property
+    def legacy_catalog(self) -> PromptSuite:
+        """The session's frozen catalog, embedded in ``context``.
+
+        Returns: the embedded suite.
+        Raises: ``ContractError`` for an unvalidated command whose context embeds none.
+        """
+        if self.context.catalog is None:
+            raise ContractError("legacy continuation requires the session's embedded catalog")
+        return self.context.catalog
+
     @model_validator(mode="after")
     def _explicit_new_native_context(self) -> ContinueLegacyRecordingCommand:
         if self.context.operation_id != self.operation_id or not self.context.new_setup:
             raise ValueError("legacy continuation requires its own explicit native setup operation")
+        if self.context.catalog_reference is not None:
+            raise ValueError(
+                "legacy continuation binds the session's embedded catalog, not a catalog reference"
+            )
         return self
 
 
@@ -1084,6 +1161,7 @@ type RecorderCommand = Annotated[
 ]
 type ServiceCommand = Annotated[
     HandshakeCommand
+    | CatalogCommand
     | OpenContextCommand
     | ReserveTakeCommand
     | RegisterSealCommand
@@ -1547,6 +1625,33 @@ class DerivativeEvent(ContractModel):
         return self
 
 
+class CatalogEvent(ContractModel):
+    """The catalog the service pinned for this process: the exact suite and its reference.
+
+    A plain correlated reply to ``CatalogCommand``, never a state snapshot. The app builds its
+    prompts and Library from ``catalog`` and names ``reference`` when it opens a context.
+    Validation fails (``ValidationError``) unless ``catalog`` hashes to
+    ``reference.catalog_sha256`` and repeats its suite id and purpose; the recording service
+    reports such a reply as the terminal ``RECORDING.INVALID_MESSAGE``.
+    """
+
+    event: Literal["catalog"] = "catalog"
+    operation_id: StableId
+    catalog: PromptSuite
+    reference: CatalogReference
+
+    @model_validator(mode="after")
+    def _catalog_matches_reference(self) -> CatalogEvent:
+        if canonical_sha256(self.catalog) != self.reference.catalog_sha256:
+            raise ValueError("catalog event must deliver the exact suite its reference names")
+        if (
+            self.catalog.suite_id != self.reference.suite_id
+            or self.catalog.purpose != self.reference.purpose
+        ):
+            raise ValueError("catalog event suite id and purpose must match its reference")
+        return self
+
+
 class ContextEvent(ContractModel):
     event: Literal["context"] = "context"
     group: RecordingGroup
@@ -1787,6 +1892,7 @@ type ReliableEvent = Annotated[
     | TakeEvent
     | SaveEvent
     | NavigationEvent
+    | CatalogEvent
     | ContextEvent
     | ReviewEvent
     | ReviewActionEvent
