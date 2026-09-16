@@ -8,6 +8,7 @@ Related: models.py, capture.CaptureContinuityEvidence, docs/NATIVE_RECORDING_UX.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import cached_property
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, Field, StringConstraints, model_validator
@@ -21,6 +22,7 @@ from .models import (
     ContractModel,
     Prompt,
     PromptSuite,
+    PromptSuitePurpose,
     Sha256,
     StableId,
 )
@@ -145,6 +147,130 @@ class PreparedCaptureGate(ContractModel):
         if (self.approval_path is None) != (self.approval_sha256 is None):
             raise ValueError("approval path and digest must be supplied together")
         return self
+
+
+CATALOG_SNAPSHOT_ROOT = "provenance/corpus/snapshots"
+CATALOG_SNAPSHOT_VERSION: Literal["cole-voice-lab.catalog-snapshot/v1"] = (
+    "cole-voice-lab.catalog-snapshot/v1"
+)
+MAX_CATALOG_SNAPSHOT_ALIASES = 100_000
+
+
+def catalog_snapshot_path(catalog_sha256: str) -> str:
+    """The one relative path a published catalog's snapshot may occupy under the root."""
+    return f"{CATALOG_SNAPSHOT_ROOT}/{catalog_sha256}.json"
+
+
+class CatalogReference(ContractModel):
+    """A published catalog version by id, version, exact suite digest and snapshot digest.
+
+    ``catalog_sha256`` is the canonical digest of the suite alone (the digest every take
+    and coverage projection keys on); ``snapshot_sha256`` is the sha256 of the exact
+    snapshot file bytes, so the alias half of the file is pinned too. ``suite_id`` and
+    ``purpose`` repeat what the snapshot's suite declares so contract-level checks (purpose
+    against the capture gate) need no file read; the store verifies all of them against the
+    snapshot whenever a reference is materialized.
+    """
+
+    catalog_id: StableId
+    catalog_version: PositiveRevision
+    catalog_sha256: Sha256
+    snapshot_sha256: Sha256
+    suite_id: StableId
+    purpose: PromptSuitePurpose
+    snapshot_path: RelativePath
+
+    @model_validator(mode="after")
+    def _content_addressed_snapshot(self) -> CatalogReference:
+        if self.snapshot_path != catalog_snapshot_path(self.catalog_sha256):
+            raise ValueError("catalog snapshot path must be the content-addressed one")
+        return self
+
+
+class PromptAlias(ContractModel):
+    """One earlier prompt digest that still counts as a recording of the current prompt."""
+
+    prompt_sha256: Sha256
+    accepted_prompt_sha256: Sha256
+
+    @model_validator(mode="after")
+    def _distinct_digests(self) -> PromptAlias:
+        if self.prompt_sha256 == self.accepted_prompt_sha256:
+            raise ValueError("a prompt alias cannot accept the current digest")
+        return self
+
+
+class CatalogSnapshot(ContractModel):
+    """The immutable file behind one published catalog version.
+
+    ``suite`` is the exact PromptSuite whose canonical digest is ``catalog_sha256`` (the
+    file is named after it); ``prompt_aliases`` lists, sorted and unique, every earlier
+    digest a keep-recordings revision still accepts, keyed by the current prompt digest.
+    """
+
+    schema_version: Literal["cole-voice-lab.catalog-snapshot/v1"] = CATALOG_SNAPSHOT_VERSION
+    suite: PromptSuite
+    catalog_sha256: Sha256
+    prompt_aliases: tuple[PromptAlias, ...] = Field(max_length=MAX_CATALOG_SNAPSHOT_ALIASES)
+
+    @model_validator(mode="after")
+    def _aliases_bind_to_current_prompts(self) -> CatalogSnapshot:
+        if canonical_sha256(self.suite) != self.catalog_sha256:
+            raise ValueError("catalog snapshot digest must match the exact suite")
+        current = {canonical_sha256(prompt) for prompt in self.suite.prompts}
+        keys = [
+            (alias.prompt_sha256, alias.accepted_prompt_sha256) for alias in self.prompt_aliases
+        ]
+        if keys != sorted(set(keys)):
+            raise ValueError("prompt aliases must be sorted and unique")
+        if len({accepted for _, accepted in keys}) != len(keys):
+            raise ValueError("an accepted digest cannot belong to more than one prompt")
+        for prompt_sha256, accepted_prompt_sha256 in keys:
+            if prompt_sha256 not in current:
+                raise ValueError("prompt aliases must belong to prompts of the suite")
+            if accepted_prompt_sha256 in current:
+                raise ValueError("an accepted digest cannot also be a current prompt digest")
+        return self
+
+    @cached_property
+    def _current_digests(self) -> frozenset[str]:
+        return frozenset(canonical_sha256(prompt) for prompt in self.suite.prompts)
+
+    @cached_property
+    def _accepted_by_current(self) -> dict[str, frozenset[str]]:
+        accepted: dict[str, set[str]] = {}
+        for alias in self.prompt_aliases:
+            accepted.setdefault(alias.prompt_sha256, set()).add(alias.accepted_prompt_sha256)
+        return {key: frozenset(value) for key, value in accepted.items()}
+
+    @cached_property
+    def _current_by_recorded(self) -> dict[str, str]:
+        current = {digest: digest for digest in self._current_digests}
+        for alias in self.prompt_aliases:
+            current[alias.accepted_prompt_sha256] = alias.prompt_sha256
+        return current
+
+    def accepted_hashes(self, prompt_sha256: str) -> frozenset[str]:
+        """Every recorded digest that covers the prompt with the given current digest.
+
+        Params: ``prompt_sha256`` is the canonical digest of a prompt in ``suite``.
+        Returns: that digest plus every alias it accepts.
+        Raises: ``KeyError`` when no prompt of the suite has that digest.
+        """
+        if prompt_sha256 not in self._current_digests:
+            raise KeyError(prompt_sha256)
+        return frozenset({prompt_sha256}) | self._accepted_by_current.get(
+            prompt_sha256, frozenset()
+        )
+
+    def current_for(self, recorded_sha256: str) -> str | None:
+        """Map a take's recorded prompt digest to the current prompt digest it counts for.
+
+        Params: ``recorded_sha256`` is the digest the take was recorded against.
+        Returns: the current digest (itself when it is current, the owning prompt's when it
+        is an accepted alias) or ``None`` when no prompt of this snapshot counts it.
+        """
+        return self._current_by_recorded.get(recorded_sha256)
 
 
 class RecordingGroup(ContractModel):
@@ -1649,4 +1775,10 @@ RECORDING_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "recording-telemetry": RecordingTelemetry,
     "recording-transition": RecordingTransition,
     "recording-history-entry": RecordingHistoryEntry,
+}
+# Corpus-store contracts are generated like the rest but stay out of the native conformance
+# registry until a recording group nests the reference.
+CORPUS_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
+    "catalog-reference": CatalogReference,
+    "catalog-snapshot": CatalogSnapshot,
 }

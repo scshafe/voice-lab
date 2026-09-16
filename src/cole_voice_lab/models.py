@@ -61,6 +61,10 @@ type PromptLabel = Annotated[
 
 PROMPT_SUITE_V1: Final = "cole-voice-lab.prompt-suite/v1"
 PROMPT_SUITE_V2: Final = "cole-voice-lab.prompt-suite/v2"
+# A plain alias (not a PEP 695 ``type``) so the generated schema keeps its inline enum.
+PromptSuitePurpose = Literal[
+    "capture-pilot", "capture-corpus", "held-out-evaluation", "physical-test"
+]
 PHYSICAL_TEST_SUITE_PREFIX: Final = "cole-physical-test-"
 SILENT_PROMPT_CATEGORIES: Final = frozenset({"room-tone", "procedure"})
 # Labels are presentation and filter tokens only; none may impersonate a
@@ -175,7 +179,12 @@ class Prompt(ContractModel):
         return self.text
 
 
-def _has_hidden_control(value: str) -> bool:
+def has_hidden_control(value: str) -> bool:
+    """True when ``value`` carries a format (Cf) or control (Cc, newline excepted) character.
+
+    This is the prompt-suite/v2 text hygiene rule; the corpus store applies it at add and
+    edit time so no stored prompt can later refuse to publish.
+    """
     return any(
         (category := unicodedata.category(character)) == "Cf"
         or (category == "Cc" and character != "\n")
@@ -188,7 +197,7 @@ class PromptSuite(ContractModel):
         PROMPT_SUITE_V1
     )
     suite_id: StableId
-    purpose: Literal["capture-pilot", "capture-corpus", "held-out-evaluation", "physical-test"]
+    purpose: PromptSuitePurpose
     prompts: tuple[Prompt, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -230,7 +239,7 @@ class PromptSuite(ContractModel):
             if not physical_test and ("test" in prompt.labels or prompt.category == "procedure"):
                 raise ValueError("only physical-test catalogs may use the test label or procedures")
             if any(
-                value is not None and _has_hidden_control(value)
+                value is not None and has_hidden_control(value)
                 for value in (prompt.text, prompt.instructions, prompt.style)
             ):
                 raise ValueError("prompt-suite/v2 text cannot contain format or control characters")

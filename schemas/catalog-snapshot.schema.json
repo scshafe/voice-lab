@@ -1,0 +1,201 @@
+{
+  "$defs": {
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference",
+            "procedure"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptAlias": {
+      "additionalProperties": false,
+      "description": "One earlier prompt digest that still counts as a recording of the current prompt.",
+      "properties": {
+        "accepted_prompt_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "prompt_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "prompt_sha256",
+        "accepted_prompt_sha256"
+      ],
+      "title": "PromptAlias",
+      "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "PromptSuite": {
+      "additionalProperties": false,
+      "properties": {
+        "prompts": {
+          "items": {
+            "$ref": "#/$defs/Prompt"
+          },
+          "minItems": 1,
+          "title": "Prompts",
+          "type": "array"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation",
+            "physical-test"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "cole-voice-lab.prompt-suite/v1",
+          "enum": [
+            "cole-voice-lab.prompt-suite/v1",
+            "cole-voice-lab.prompt-suite/v2"
+          ],
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "suite_id",
+        "purpose",
+        "prompts"
+      ],
+      "title": "PromptSuite",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The immutable file behind one published catalog version.\n\n``suite`` is the exact PromptSuite whose canonical digest is ``catalog_sha256`` (the\nfile is named after it); ``prompt_aliases`` lists, sorted and unique, every earlier\ndigest a keep-recordings revision still accepts, keyed by the current prompt digest.",
+  "properties": {
+    "catalog_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "prompt_aliases": {
+      "items": {
+        "$ref": "#/$defs/PromptAlias"
+      },
+      "maxItems": 100000,
+      "title": "Prompt Aliases",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.catalog-snapshot/v1",
+      "default": "cole-voice-lab.catalog-snapshot/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "suite": {
+      "$ref": "#/$defs/PromptSuite"
+    }
+  },
+  "required": [
+    "suite",
+    "catalog_sha256",
+    "prompt_aliases"
+  ],
+  "title": "CatalogSnapshot",
+  "type": "object"
+}

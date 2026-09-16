@@ -54,7 +54,7 @@ from .promotion import (
     WinningRunRecord,
 )
 from .recording_analysis import RECORDING_ANALYSIS_SCHEMA_MODELS
-from .recording_contracts import RECORDING_SCHEMA_MODELS
+from .recording_contracts import CORPUS_SCHEMA_MODELS, RECORDING_SCHEMA_MODELS
 from .recording_discovery import RecordingDiscoveryCheckpoint
 from .recording_discovery_contracts import (
     DiscoveryAck,
@@ -81,6 +81,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     **NATIVE_RECORDING_APPLICATION_SCHEMA_MODELS,
     "recording-python-runtime-receipt": RecordingPythonRuntimeReceipt,
     **RECORDING_SCHEMA_MODELS,
+    **CORPUS_SCHEMA_MODELS,
     **RECORDING_ANALYSIS_SCHEMA_MODELS,
     **RECORDING_TAKE_SCHEMA_MODELS,
     **RECORDING_PACKAGE_SCHEMA_MODELS,

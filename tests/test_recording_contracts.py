@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -27,18 +28,22 @@ from cole_voice_lab.models import (
 )
 from cole_voice_lab.prompt_catalogs import load_builtin_prompt_suite
 from cole_voice_lab.recording_contracts import (
+    CORPUS_SCHEMA_MODELS,
     MAX_CONTROL_FRAME_BYTES,
     MAX_RECORDING_FRAMES,
     MAX_TELEMETRY_FRAME_BYTES,
     RECORDING_SCHEMA_MODELS,
     CaptureReservation,
     CaptureSealReceipt,
+    CatalogReference,
+    CatalogSnapshot,
     ContextEvent,
     NativeRecoveryReceipt,
     NavigationEvent,
     OpenContextCommand,
     PackagePreparationEvent,
     PreparedCaptureGate,
+    PromptAlias,
     RecorderRequest,
     RecorderStateEvent,
     RecordingAnalysisResult,
@@ -68,6 +73,7 @@ from cole_voice_lab.recording_contracts import (
     ServiceRequest,
     WaveformBucket,
     WaveformSnapshot,
+    catalog_snapshot_path,
     native_recovery_bytes,
     recording_frame_bytes,
 )
@@ -2046,6 +2052,111 @@ def test_prompt_suite_v2_conformance_cases(case: Any) -> None:
     else:
         with pytest.raises(ValidationError):
             RECORDING_SCHEMA_MODELS[name].model_validate_json(json.dumps(payload))
+
+
+def _catalog_reference(suite: PromptSuite, **changes: Any) -> CatalogReference:
+    digest = canonical_sha256(suite)
+    snapshot = CatalogSnapshot(suite=suite, catalog_sha256=digest, prompt_aliases=())
+    payload: dict[str, Any] = {
+        "catalog_id": "cole-corpus",
+        "catalog_version": 1,
+        "catalog_sha256": digest,
+        "snapshot_sha256": hashlib.sha256(canonical_json_bytes(snapshot) + b"\n").hexdigest(),
+        "suite_id": suite.suite_id,
+        "purpose": suite.purpose,
+        "snapshot_path": catalog_snapshot_path(digest),
+    }
+    payload.update(changes)
+    return CatalogReference.model_validate(payload)
+
+
+def test_catalog_reference_binds_the_content_addressed_snapshot_path() -> None:
+    suite = synthetic_contracts()["recording-group"].catalog
+    reference = _catalog_reference(suite)
+    assert reference.snapshot_path == f"provenance/corpus/snapshots/{reference.catalog_sha256}.json"
+    assert reference.snapshot_sha256 != reference.catalog_sha256
+    assert CatalogReference.model_validate_json(canonical_json_bytes(reference)) == reference
+    for changes, message in (
+        ({"snapshot_path": "provenance/corpus/snapshots/other.json"}, "content-addressed"),
+        ({"snapshot_path": f"elsewhere/{reference.catalog_sha256}.json"}, "content-addressed"),
+        ({"catalog_version": 0}, "greater than or equal to 1"),
+        ({"purpose": "karaoke"}, "purpose"),
+        ({"catalog_id": "Bad Id"}, "pattern"),
+        ({"snapshot_sha256": "not-a-digest"}, "snapshot_sha256"),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            _catalog_reference(suite, **changes)
+    with pytest.raises(ValidationError, match="snapshot_sha256"):
+        CatalogReference.model_validate(
+            {
+                key: value
+                for key, value in reference.model_dump().items()
+                if key != "snapshot_sha256"
+            }
+        )
+
+
+def test_prompt_alias_never_accepts_its_own_digest() -> None:
+    alias = PromptAlias(prompt_sha256="a" * 64, accepted_prompt_sha256="b" * 64)
+    assert alias.accepted_prompt_sha256 == "b" * 64
+    with pytest.raises(ValidationError, match="cannot accept the current digest"):
+        PromptAlias(prompt_sha256="a" * 64, accepted_prompt_sha256="a" * 64)
+
+
+def test_catalog_snapshot_validates_its_digest_and_aliases_and_maps_recorded_digests() -> None:
+    suite = load_builtin_prompt_suite("evaluation-v1.json")
+    digest = canonical_sha256(suite)
+    current = [canonical_sha256(prompt) for prompt in suite.prompts]
+    aliases = tuple(
+        sorted(
+            (
+                PromptAlias(prompt_sha256=current[1], accepted_prompt_sha256="1" * 64),
+                PromptAlias(prompt_sha256=current[1], accepted_prompt_sha256="2" * 64),
+                PromptAlias(prompt_sha256=current[2], accepted_prompt_sha256="3" * 64),
+            ),
+            key=lambda alias: (alias.prompt_sha256, alias.accepted_prompt_sha256),
+        )
+    )
+    snapshot = CatalogSnapshot(suite=suite, catalog_sha256=digest, prompt_aliases=aliases)
+    assert snapshot.schema_version == "cole-voice-lab.catalog-snapshot/v1"
+    assert snapshot.accepted_hashes(current[0]) == {current[0]}
+    assert snapshot.accepted_hashes(current[1]) == {current[1], "1" * 64, "2" * 64}
+    assert snapshot.current_for(current[0]) == current[0]
+    assert snapshot.current_for("2" * 64) == current[1]
+    assert snapshot.current_for("3" * 64) == current[2]
+    assert snapshot.current_for("9" * 64) is None
+    with pytest.raises(KeyError):
+        snapshot.accepted_hashes("9" * 64)
+    restored = CatalogSnapshot.model_validate_json(canonical_json_bytes(snapshot))
+    assert restored == snapshot
+    assert restored.current_for("1" * 64) == current[1]
+    assert set(CORPUS_SCHEMA_MODELS) == {"catalog-reference", "catalog-snapshot"}
+    assert CORPUS_SCHEMA_MODELS["catalog-snapshot"] is CatalogSnapshot
+    for prompt_aliases, message in (
+        (tuple(reversed(aliases)), "sorted and unique"),
+        ((aliases[0], aliases[0]), "sorted and unique"),
+        ((PromptAlias(prompt_sha256="f" * 64, accepted_prompt_sha256="1" * 64),), "belong to"),
+        (
+            (PromptAlias(prompt_sha256=current[1], accepted_prompt_sha256=current[0]),),
+            "cannot also be a current prompt digest",
+        ),
+        (
+            tuple(
+                sorted(
+                    (
+                        PromptAlias(prompt_sha256=current[1], accepted_prompt_sha256="e" * 64),
+                        PromptAlias(prompt_sha256=current[2], accepted_prompt_sha256="e" * 64),
+                    ),
+                    key=lambda alias: alias.prompt_sha256,
+                )
+            ),
+            "cannot belong to more than one prompt",
+        ),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            CatalogSnapshot(suite=suite, catalog_sha256=digest, prompt_aliases=prompt_aliases)
+    with pytest.raises(ValidationError, match="digest must match the exact suite"):
+        CatalogSnapshot(suite=suite, catalog_sha256="0" * 64, prompt_aliases=())
 
 
 if __name__ == "__main__":

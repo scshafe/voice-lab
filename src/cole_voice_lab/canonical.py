@@ -40,6 +40,34 @@ def canonical_sha256(value: object) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
+def require_private_metadata(
+    metadata: os.stat_result, label: str, *, directory: bool = False
+) -> None:
+    """Fail closed unless ``metadata`` describes an owned private file or directory.
+
+    Params: ``metadata`` is an ``os.stat``/``os.fstat`` result; ``label`` names the path in
+    the error; ``directory`` selects the directory rule (S_ISDIR, no link-count check)
+    instead of the regular-file rule (S_ISREG and exactly one hard link).
+    Returns: nothing.
+    Raises: ``SecurityError`` when the type is wrong, the owner is not this process's
+    user, any group/other permission bit is set, or a regular file has more than one link.
+    """
+    valid_type = stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode)
+    if (
+        not valid_type
+        or metadata.st_uid != os.getuid()
+        or metadata.st_mode & 0o077
+        or (not directory and metadata.st_nlink != 1)
+    ):
+        kind = "directory" if directory else "regular file"
+        raise SecurityError(f"requires an owned private {kind}: {label}")
+
+
+def file_identity(metadata: os.stat_result) -> tuple[int, int]:
+    """The ``(st_dev, st_ino)`` pair that detects a replaced file or directory."""
+    return metadata.st_dev, metadata.st_ino
+
+
 def open_regular_no_follow(path: Path) -> BinaryIO:
     """Open one regular file without following its final symlink."""
 

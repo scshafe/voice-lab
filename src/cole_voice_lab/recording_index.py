@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import sqlite3
-import stat
 import tempfile
 import threading
 from collections.abc import Iterable, Iterator, Sequence
@@ -28,7 +27,12 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
-from .canonical import canonical_json_bytes, canonical_sha256
+from .canonical import (
+    canonical_json_bytes,
+    canonical_sha256,
+    file_identity,
+    require_private_metadata,
+)
 from .errors import ContractError, SecurityError
 from .models import Prompt, PromptSuite, StableId
 from .paths import AssetLayout, validate_relative_path
@@ -333,21 +337,6 @@ def recording_index_migration(direction: Literal["up", "down"] = "up", *, versio
     )
 
 
-def _private_metadata(metadata: os.stat_result, label: str, *, directory: bool = False) -> None:
-    valid_type = stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode)
-    if (
-        not valid_type
-        or metadata.st_uid != os.getuid()
-        or metadata.st_mode & 0o077
-        or (not directory and metadata.st_nlink != 1)
-    ):
-        raise SecurityError(f"recording index requires an owned private file/directory: {label}")
-
-
-def _identity(metadata: os.stat_result) -> tuple[int, int]:
-    return metadata.st_dev, metadata.st_ino
-
-
 def history_entry_for_take(take: RecordingTake) -> RecordingHistoryEntry:
     """Project one native take head exactly as the index stores it."""
     seal = take.seal
@@ -405,7 +394,7 @@ class RecordingIndex:
                 descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 self._descriptors.append(descriptor)
                 self._directory_bindings.append((path, descriptor))
-                _private_metadata(os.fstat(descriptor), str(path), directory=True)
+                require_private_metadata(os.fstat(descriptor), str(path), directory=True)
             provenance_fd = self._descriptors[-1]
             try:
                 os.mkdir("recording-library", mode=0o700, dir_fd=provenance_fd)
@@ -419,7 +408,7 @@ class RecordingIndex:
             )
             self._descriptors.append(directory_fd)
             self._directory_bindings.append((self.directory, directory_fd))
-            _private_metadata(os.fstat(directory_fd), str(self.directory), directory=True)
+            require_private_metadata(os.fstat(directory_fd), str(self.directory), directory=True)
             self._lease_fd = self._open_private(".index.lease", os.O_RDWR | os.O_CREAT)
             fcntl.flock(self._lease_fd, fcntl.LOCK_SH)
             self._lock_fd = self._open_private(".index.lock", os.O_RDWR | os.O_CREAT)
@@ -514,7 +503,7 @@ class RecordingIndex:
             dir_fd=self._directory_bindings[-1][1],
         )
         self._descriptors.append(descriptor)
-        _private_metadata(os.fstat(descriptor), name)
+        require_private_metadata(os.fstat(descriptor), name)
         return descriptor
 
     def _bind_database(self) -> tuple[int, int]:
@@ -537,22 +526,22 @@ class RecordingIndex:
             )
             try:
                 metadata = os.fstat(descriptor)
-                _private_metadata(metadata, _DATABASE_NAME)
+                require_private_metadata(metadata, _DATABASE_NAME)
             finally:
                 os.close(descriptor)
-        _private_metadata(metadata, _DATABASE_NAME)
-        identity = _identity(metadata)
+        require_private_metadata(metadata, _DATABASE_NAME)
+        identity = file_identity(metadata)
         current = os.stat(_DATABASE_NAME, dir_fd=directory_fd, follow_symlinks=False)
-        _private_metadata(current, _DATABASE_NAME)
-        if _identity(current) != identity:
+        require_private_metadata(current, _DATABASE_NAME)
+        if file_identity(current) != identity:
             raise SecurityError("recording index database was replaced")
         return identity
 
     def _check_paths(self) -> None:
         for path, descriptor in self._directory_bindings:
             current = os.stat(path, follow_symlinks=False)
-            _private_metadata(current, str(path), directory=True)
-            if _identity(current) != _identity(os.fstat(descriptor)):
+            require_private_metadata(current, str(path), directory=True)
+            if file_identity(current) != file_identity(os.fstat(descriptor)):
                 raise SecurityError(f"recording index directory was replaced: {path}")
         directory_fd = self._directory_bindings[-1][1]
         allowed = {
@@ -568,12 +557,16 @@ class RecordingIndex:
             # Do not open/close database or sidecar inodes while SQLite is live:
             # POSIX close releases every process-owned record lock on that file.
             current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            _private_metadata(current, name)
-            if name == _DATABASE_NAME and _identity(current) != self._database_identity:
+            require_private_metadata(current, name)
+            if name == _DATABASE_NAME and file_identity(current) != self._database_identity:
                 raise SecurityError("recording index database was replaced")
-            if name == ".index.lock" and _identity(current) != _identity(os.fstat(self._lock_fd)):
+            if name == ".index.lock" and file_identity(current) != file_identity(
+                os.fstat(self._lock_fd)
+            ):
                 raise SecurityError("recording index lock was replaced")
-            if name == ".index.lease" and _identity(current) != _identity(os.fstat(self._lease_fd)):
+            if name == ".index.lease" and file_identity(current) != file_identity(
+                os.fstat(self._lease_fd)
+            ):
                 raise SecurityError("recording index lease was replaced")
         for required in (_DATABASE_NAME, ".index.lock", ".index.lease"):
             if required not in members:
@@ -1912,16 +1905,16 @@ class RecordingIndex:
         """
         layout = AssetLayout.validate(layout.root)
         directory = layout.directory("provenance") / "recording-library"
-        _private_metadata(directory.lstat(), str(directory), directory=True)
+        require_private_metadata(directory.lstat(), str(directory), directory=True)
         directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         lock_fd = -1
         lease_fd = -1
         try:
             lease_fd = os.open(".index.lease", os.O_RDWR | os.O_NOFOLLOW, dir_fd=directory_fd)
-            _private_metadata(os.fstat(lease_fd), ".index.lease")
+            require_private_metadata(os.fstat(lease_fd), ".index.lease")
             fcntl.flock(lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             lock_fd = os.open(".index.lock", os.O_RDWR | os.O_NOFOLLOW, dir_fd=directory_fd)
-            _private_metadata(os.fstat(lock_fd), ".index.lock")
+            require_private_metadata(os.fstat(lock_fd), ".index.lock")
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             allowed = {
                 ".index.lock",
@@ -1932,7 +1925,9 @@ class RecordingIndex:
             for name in os.listdir(directory_fd):
                 if name not in allowed:
                     raise SecurityError(f"unexpected cache member during rebuild: {name}")
-                _private_metadata(os.stat(name, dir_fd=directory_fd, follow_symlinks=False), name)
+                require_private_metadata(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False), name
+                )
             destination = directory.with_name(f"recording-library-quarantine-{uuid4().hex}")
             os.rename(directory, destination)
             parent_fd = os.open(directory.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
