@@ -89,7 +89,7 @@ def test_wire_receives_building_before_held_child_scan_and_plain_save_stays_dura
     # Bootstrap the real publisher/handshake before releasing the normal startup schedule.
     monkeypatch.setattr(RecordingDiscoveryCoordinator, "schedule", lambda *_: None)
     backend = RecordingWorkspaceBackend(
-        nav.rig.layout, "synthetic-subject", digest, store=nav.rig.store, index=nav.index
+        nav.rig.layout, "synthetic-subject", store=nav.rig.store, index=nav.index
     )
     session = RecordingServiceSession(
         build=build_identity(),

@@ -181,12 +181,15 @@ import Testing
         #expect(try accepts(responses, response(data: context(group(version: v2), promptID: "snapshot-only-prompt"))))
         #expect(try !accepts(responses, response(data: context(embedded, promptID: "snapshot-only-prompt"))))
         #expect(try accepts(responses, response(data: context(embedded, promptID: "synthetic-room"))))
-        for code in ["CORPUS.NO_ACTIVE_CATALOG", "CORPUS.CATALOG_UNKNOWN", "CORPUS.SNAPSHOT_MISMATCH", "CORPUS.STORE_MISSING"] {
+        for code in ["CORPUS.NO_ACTIVE_CATALOG", "CORPUS.SNAPSHOT_MISMATCH", "CORPUS.STORE_MISSING"] {
             let error = RecordingJSON.object(["code": .string(code), "message": .string("Synthetic corpus-store failure"), "retryable": .boolean(false)])
             #expect(try accepts(responses, response(error: error)), "\(code) is a wire error code")
         }
-        let unlisted = RecordingJSON.object(["code": .string("CORPUS.PROMPT_DUPLICATE"), "message": .string("Synthetic"), "retryable": .boolean(false)])
-        #expect(try !accepts(responses, response(error: unlisted)))
+        // Store-only codes never reach the app: the service sends none of them.
+        for code in ["CORPUS.CATALOG_UNKNOWN", "CORPUS.PROMPT_DUPLICATE"] {
+            let unlisted = RecordingJSON.object(["code": .string(code), "message": .string("Synthetic"), "retryable": .boolean(false)])
+            #expect(try !accepts(responses, response(error: unlisted)), "\(code) is not a wire error code")
+        }
     }
 
     private func serviceRequest(_ data: [String: RecordingJSON], takeID: RecordingJSON = .null) -> [String: RecordingJSON] {

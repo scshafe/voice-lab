@@ -648,6 +648,42 @@ def test_silent_prompt_needs_no_text_and_source_reference_is_canonicalized(
     ]
 
 
+def test_a_source_reference_records_an_accepted_unpinned_source_only_when_there_is_one(
+    store: CorpusStore,
+) -> None:
+    pinned = canonical_json_bytes(SOURCE_REFERENCE).decode()
+    # References written before the field existed are the canonical form of a pinned source.
+    assert "unpinned_source_accepted" not in json.loads(pinned)
+    assert PromptSourceReference.model_validate_json(pinned).unpinned_source_accepted is False
+    unpinned = SOURCE_REFERENCE.model_copy(update={"unpinned_source_accepted": True})
+    unpinned_json = unpinned.model_dump_json()
+    assert json.loads(canonical_json_bytes(unpinned))["unpinned_source_accepted"] is True
+    explicit_false = SOURCE_REFERENCE.model_dump(mode="json") | {"unpinned_source_accepted": False}
+    for index, (reference, stored) in enumerate(
+        (
+            (json.dumps(explicit_false), pinned),
+            (unpinned_json, canonical_json_bytes(unpinned).decode()),
+        )
+    ):
+        record = add(
+            store,
+            f"harvard-01-0{index + 1}",
+            f"Sentence number {index + 1}.",
+            source="harvard",
+            source_reference=reference,
+        )
+        assert record.source_reference == stored
+    with pytest.raises(CorpusStoreError, match="unpinned_source_accepted") as caught:
+        add(
+            store,
+            "harvard-01-03",
+            "Sentence number 3.",
+            source="harvard",
+            source_reference=json.dumps(explicit_false | {"unpinned_source_accepted": "yes"}),
+        )
+    assert caught.value.code == "CORPUS.SOURCE_REFERENCE_INVALID"
+
+
 @pytest.mark.parametrize(
     "fields, code, message",
     [
@@ -749,6 +785,75 @@ def test_duplicate_prompt_id_or_live_text_is_refused(store: CorpusStore) -> None
     assert [record.prompt.prompt_id for record in store.list_prompts()] == ["prompt-02"]
 
 
+def test_spoken_words_ignore_case_punctuation_and_spacing() -> None:
+    assert corpus_store.spoken_words("  It's   the BIRCH canoe!  ") == (
+        "its",
+        "the",
+        "birch",
+        "canoe",
+    )
+    assert corpus_store.spoken_words("Café, NAÏVE déjà vu.") == ("café", "naïve", "déjà", "vu")
+    assert corpus_store.spoken_words("snake_case & 42") == ("snakecase", "42")
+    assert corpus_store.spoken_words("...") == ()
+
+
+def test_a_prompt_that_reads_like_another_live_prompt_is_refused_everywhere(
+    store: CorpusStore,
+) -> None:
+    """Two live prompts that read the same would count one recording twice."""
+    add(store, "prompt-01", "The birch canoe slid on the smooth planks.")
+    add(store, "prompt-02", "Sentence two.")
+    add(store, "dots-01", "...")
+    same = "prompt echo-01 reads the same as live prompt prompt-01"
+    with pytest.raises(CorpusStoreError, match=same) as caught:
+        add(store, "echo-01", "the Birch canoe slid on the smooth  planks!")
+    assert caught.value.code == "CORPUS.PROMPT_DUPLICATE"
+    assert (
+        '(ignoring case, punctuation and spacing): "the Birch canoe slid on the smooth  planks!" '
+        'and "The birch canoe slid on the smooth planks."'
+    ) in str(caught.value)
+    # Text without words reads the same only when it is the same text.
+    add(store, "dots-02", "!!!")
+    with pytest.raises(CorpusStoreError, match="repeats the text of live prompt dots-01"):
+        add(store, "dots-03", "...")
+    with pytest.raises(CorpusStoreError, match="prompt-02 reads the same as live prompt prompt-01"):
+        store.edit_prompt("prompt-02", text="The birch canoe slid on the smooth planks?")
+    # A prompt may keep its own reading, e.g. in a keep-recordings punctuation fix.
+    kept = store.edit_prompt(
+        "prompt-01", text="The birch canoe slid on the smooth planks!", keep_recordings=True
+    )
+    assert kept.revision == 2
+    suite = PromptSuite(
+        schema_version=PROMPT_SUITE_V2,
+        suite_id="operator-suite",
+        purpose="capture-corpus",
+        prompts=tuple(
+            Prompt(
+                prompt_id=prompt_id,
+                text=text,
+                category="neutral",
+                style="Plain.",
+                expected_seconds=3.0,
+            )
+            for prompt_id, text in (
+                ("fresh-01", "A fresh sentence."),
+                ("fresh-02", "a FRESH sentence"),
+            )
+        ),
+    )
+    with pytest.raises(CorpusStoreError, match="fresh-02 reads the same as live prompt fresh-01"):
+        store.import_prompt_suite(suite, source="import")
+    assert [r.prompt.prompt_id for r in store.list_prompts()] == [
+        "prompt-01",
+        "prompt-02",
+        "dots-01",
+        "dots-02",
+    ]
+    # Retiring a prompt frees its reading.
+    store.retire_prompt("prompt-01")
+    assert add(store, "echo-01", "the Birch canoe slid on the smooth planks").revision == 1
+
+
 def test_unknown_prompt_is_named_everywhere(store: CorpusStore) -> None:
     for call in (
         lambda: store.edit_prompt("absent", text="x"),
@@ -822,7 +927,11 @@ def test_a_dry_run_edit_runs_every_check_and_stores_nothing(store: CorpusStore) 
     first = add(store, "prompt-01", "Sentence one.")
     add(store, "prompt-02", "Sentence two.")
     preview = store.edit_prompt(
-        "prompt-01", text="Sentence one, revised.", keep_recordings=True, dry_run=True
+        "prompt-01",
+        text="Sentence one, revised.",
+        keep_recordings=True,
+        allow_rewording=True,
+        dry_run=True,
     )
     assert (preview.revision, preview.prompt.text) == (2, "Sentence one, revised.")
     assert preview.keeps_recordings is True
@@ -841,7 +950,9 @@ def test_a_dry_run_edit_runs_every_check_and_stores_nothing(store: CorpusStore) 
     with pytest.raises(CorpusStoreError) as retired:
         store.edit_prompt("prompt-02", style="Brisk.", dry_run=True)
     assert retired.value.code == "CORPUS.PROMPT_RETIRED"
-    written = store.edit_prompt("prompt-01", text="Sentence one, revised.", keep_recordings=True)
+    written = store.edit_prompt(
+        "prompt-01", text="Sentence one, revised.", keep_recordings=True, allow_rewording=True
+    )
     assert written.prompt == preview.prompt and written.revision == preview.revision
     assert written.accepted_prompt_sha256s == preview.accepted_prompt_sha256s
     assert store.prompt_history("prompt-01") == (first, written)
@@ -925,7 +1036,16 @@ def test_publish_names_the_live_prompts_its_catalog_purpose_refuses(store: Corpu
     seeded(store, 1)
     for number in range(12):
         add(store, f"held-{number:02d}", f"Held sentence {number}.", holdout=True)
-    store.create_catalog(CATALOG, purpose="capture-pilot")
+    with pytest.raises(CorpusStoreError, match="cannot hold the live prompts held-00") as caught:
+        store.create_catalog(CATALOG, purpose="capture-pilot")
+    assert caught.value.code == "CORPUS.CATALOG_UNPUBLISHABLE"
+    assert store.list_catalogs() == ()
+    # Only a store written outside its API can hold such a catalog; publishing still says why.
+    with raw(store) as outside:
+        outside.execute(
+            "INSERT INTO corpus_catalogs VALUES (?, ?, 'capture-pilot', ?, NULL, '')",
+            (CATALOG, CATALOG, EPOCH.isoformat(timespec="microseconds")),
+        )
     with pytest.raises(CorpusStoreError, match="does not materialize a valid suite") as caught:
         store.publish_version(CATALOG)
     assert caught.value.code == "CORPUS.CATALOG_INVALID"
@@ -1155,13 +1275,128 @@ def test_keep_recordings_edit_cannot_change_held_out_or_spoken_behaviour(
     assert back.accepted_prompt_sha256s == (moved.prompt_sha256,)
 
 
+def test_a_keep_recordings_edit_rewords_only_when_the_caller_vouches_for_the_recordings(
+    store: CorpusStore,
+) -> None:
+    """The typo-class bound is the store's rule, so every editor applies it."""
+    first = add(store, "prompt-01", "Synthetic sentence number 0.")
+    tone = add(
+        store, "tone-01", None, category="room-tone", style="Silence.", instructions="Be still."
+    )
+    for dry_run in (True, False):
+        with pytest.raises(CorpusStoreError, match="is a rewording") as caught:
+            store.edit_prompt(
+                "prompt-01",
+                text="Synthetic sentence zero.",
+                keep_recordings=True,
+                dry_run=dry_run,
+            )
+        assert caught.value.code == "CORPUS.REWORDING_REFUSED"
+        message = str(caught.value)
+        assert '"Synthetic sentence number 0." -> "Synthetic sentence zero."' in message
+        assert "add --allow-rewording if the recordings already say the new text" in message
+    assert store.prompt_history("prompt-01") == (first,)
+    # The identity rule is checked first: a spoken prompt never becomes silent coverage.
+    with pytest.raises(CorpusStoreError, match="cannot change its held-out flag") as caught:
+        store.edit_prompt(
+            "prompt-01",
+            text=None,
+            category="room-tone",
+            instructions="Be still.",
+            keep_recordings=True,
+            allow_rewording=True,
+        )
+    assert caught.value.code == "CORPUS.PROMPT_INVALID"
+    with pytest.raises(ValueError, match="only qualifies a keep_recordings edit"):
+        store.edit_prompt("prompt-01", text="Synthetic sentence zero.", allow_rewording=True)
+    # A typo-class fix, a silent prompt's instructions and a default rewording need no word.
+    typo = store.edit_prompt("prompt-01", text="Synthetic sentense number 0!", keep_recordings=True)
+    assert typo.accepted_prompt_sha256s == (first.prompt_sha256,)
+    silent = store.edit_prompt("tone-01", instructions="Stay silent now.", keep_recordings=True)
+    assert silent.accepted_prompt_sha256s == (tone.prompt_sha256,)
+    reworded = store.edit_prompt(
+        "prompt-01", text="Synthetic sentence zero.", keep_recordings=True, allow_rewording=True
+    )
+    assert reworded.accepted_prompt_sha256s == tuple(
+        sorted((first.prompt_sha256, typo.prompt_sha256))
+    )
+    assert store.edit_prompt("prompt-01", text="A new sentence entirely.").revision == 4
+
+
+def test_every_live_prompt_must_fit_every_catalog_of_the_store(store: CorpusStore) -> None:
+    """``publish`` takes every live prompt, so the store refuses what a catalog cannot hold."""
+    held = {"holdout": True}
+    # Without catalogs any storable prompt is taken.
+    add(store, "held-00", "Held sentence zero.", **held)
+    with pytest.raises(CorpusStoreError, match="cannot hold the live prompts held-00;") as caught:
+        store.create_catalog(CATALOG, purpose="capture-pilot")
+    assert caught.value.code == "CORPUS.CATALOG_UNPUBLISHABLE"
+    assert str(caught.value).endswith(
+        "every version publishes every live prompt (`voice-lab catalog publish`), so nothing "
+        "was written"
+    )
+    # A retired prompt is never published again, so it constrains no new catalog.
+    store.retire_prompt("held-00")
+    store.create_catalog(CATALOG, purpose="capture-pilot")
+    seeded(store, 1)
+    unpublishable = "CORPUS.PROMPT_UNPUBLISHABLE"
+    with pytest.raises(CorpusStoreError) as caught:
+        add(store, "held-01", "Held sentence one.", **held)
+    assert caught.value.code == unpublishable
+    assert str(caught.value) == (
+        "`voice-lab catalog publish` publishes every live prompt, and a catalog of this store "
+        "could never publish held-01 (catalog cole-corpus is capture-pilot: prompt holdout "
+        "flags must agree with suite purpose); nothing was written"
+    )
+    with pytest.raises(CorpusStoreError, match="only physical-test catalogs") as caught:
+        add(store, "label-01", "A labelled sentence.", labels=("test",))
+    assert caught.value.code == unpublishable
+    for dry_run in (True, False):
+        with pytest.raises(CorpusStoreError, match="could never publish prompt-01") as caught:
+            store.edit_prompt("prompt-01", holdout=True, dry_run=dry_run)
+        assert caught.value.code == unpublishable
+    suite = PromptSuite(
+        schema_version=PROMPT_SUITE_V2,
+        suite_id="evaluation",
+        purpose="held-out-evaluation",
+        prompts=tuple(
+            Prompt(
+                prompt_id=f"eval-{number:02d}",
+                text=f"Evaluation sentence {number}.",
+                category="neutral",
+                style="Plain.",
+                expected_seconds=3.0,
+                holdout=True,
+            )
+            for number in range(12)
+        ),
+    )
+    with pytest.raises(CorpusStoreError, match="eval-09 .* and 2 more; nothing") as caught:
+        store.import_prompt_suite(suite, source="import")
+    assert caught.value.code == unpublishable and "eval-10" not in str(caught.value)
+    assert [r.prompt.prompt_id for r in store.list_prompts(include_retired=True)] == [
+        "held-00",
+        "prompt-01",
+    ]
+    assert len(store.prompt_history("prompt-01")) == 1
+    with pytest.raises(CorpusStoreError, match="cannot hold the live prompts prompt-01") as caught:
+        store.create_catalog("evaluation", purpose="held-out-evaluation")
+    assert caught.value.code == "CORPUS.CATALOG_UNPUBLISHABLE"
+    # A duplicate id is named before the fit, as before.
+    with pytest.raises(CorpusStoreError, match="already exists") as caught:
+        store.create_catalog(CATALOG, purpose="held-out-evaluation")
+    assert caught.value.code == "CORPUS.CATALOG_DUPLICATE"
+    assert [record.catalog_id for record in store.list_catalogs()] == [CATALOG]
+
+
 def test_republishing_reverted_content_names_the_recordings_that_version_does_not_accept(
     store: CorpusStore,
 ) -> None:
     first, _ = seeded(store, 2)
     original = published(store)
-    store.edit_prompt("prompt-01", text="Sentence number one.", keep_recordings=True)
-    store.edit_prompt("prompt-01", text=first.prompt.text, keep_recordings=True)
+    reworded = {"keep_recordings": True, "allow_rewording": True}
+    store.edit_prompt("prompt-01", text="Sentence number one.", **reworded)
+    store.edit_prompt("prompt-01", text=first.prompt.text, **reworded)
     # The reverted suite is version 1's content, which accepts no earlier recording.
     with pytest.raises(CorpusStoreError, match=f"catalog {CATALOG} version 1, which") as caught:
         store.publish_version(CATALOG)
@@ -1184,7 +1419,10 @@ def test_republishing_names_at_most_ten_prompts_whose_accepted_recordings_differ
     for record in records:
         store.edit_prompt(record.prompt.prompt_id, text="Edited " + str(record.prompt.text))
         store.edit_prompt(
-            record.prompt.prompt_id, text=str(record.prompt.text), keep_recordings=True
+            record.prompt.prompt_id,
+            text=str(record.prompt.text),
+            keep_recordings=True,
+            allow_rewording=True,
         )
     with pytest.raises(CorpusStoreError, match="prompt-10 and 2 more than") as caught:
         store.publish_version(CATALOG)
@@ -1435,7 +1673,16 @@ def test_publishing_validates_selection_and_the_materialized_suite(
     with pytest.raises(CorpusStoreError, match="unknown prompt: absent") as caught:
         store.publish_version(CATALOG, prompt_ids=("prompt-01", "absent"))
     assert caught.value.code == "CORPUS.PROMPT_UNKNOWN"
-    store.create_catalog("held-out", purpose="held-out-evaluation")
+    with pytest.raises(CorpusStoreError, match="cannot hold the live prompts") as caught:
+        store.create_catalog("held-out", purpose="held-out-evaluation")
+    assert caught.value.code == "CORPUS.CATALOG_UNPUBLISHABLE"
+    # Publishing validates the suite itself, whatever wrote the catalog row.
+    with raw(store) as outside:
+        outside.execute(
+            "INSERT INTO corpus_catalogs VALUES "
+            "('held-out', 'held-out', 'held-out-evaluation', ?, NULL, '')",
+            (EPOCH.isoformat(timespec="microseconds"),),
+        )
     with pytest.raises(CorpusStoreError, match="holdout flags must agree") as caught:
         store.publish_version("held-out")
     assert caught.value.code == "CORPUS.CATALOG_INVALID"

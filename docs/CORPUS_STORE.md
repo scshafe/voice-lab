@@ -76,8 +76,15 @@ Rules the store enforces:
 - Editing appends revision N+1. Only a prompt's current-revision pointer and retired time,
   and a subject's active version, are ever updated in place. No row is ever deleted, and
   every foreign key is `ON DELETE RESTRICT`.
-- A live prompt's id and text are unique. Retiring a prompt frees its text for another
-  prompt, but its id stays used.
+- A live prompt's id is unique, and no two live prompts read the same: their texts may not
+  be equal, nor equal once case, punctuation and spacing are ignored
+  (`corpus_store.spoken_words`), because one recording would count for both
+  (`CORPUS.PROMPT_DUPLICATE`, naming both prompts). Retiring a prompt frees its text for
+  another prompt, but its id stays used.
+- Every live prompt fits every catalog of the store, because `publish` takes every live
+  prompt (see "Every live prompt fits every catalog" below).
+- A keep-recordings edit accepts only a typo-class text change unless its caller allows a
+  rewording (see "Editing" below).
 - Publishing materializes a `prompt-suite/v2` `PromptSuite` (the catalog's suite id and
   purpose; every live prompt in insertion order), validates it with the unchanged contract,
   writes the snapshot, and takes version `max + 1` under the exclusive lock. Two concurrent
@@ -159,7 +166,7 @@ command prints one JSON document. Every refusal exits 2; a refusal with a code p
 | `add-prompt <id> [--text T] [--instructions I] [--category] [--style] [--expected-seconds] [--label …] [--reference-candidate] [--holdout]` | revision 1 of a new prompt (source `manual`); a silent prompt has instructions and no text | a prompt |
 | `edit-prompt <id> <fields> [--keep-recordings [--allow-rewording]] [--subject-id S] [--expected-revision N] [--dry-run] [--json]` | the next revision, after a preview | a revision |
 | `retire-prompt <id>` | leaves the prompt out of every later version | the retired time |
-| `import-harvard`, `import-arctic` (`--from-file F --fetched-at T --source-url U` \| `--fetch`) | a whole standard set | 720 or 1,132 prompts |
+| `import-harvard`, `import-arctic` (`--from-file F --fetched-at T --source-url U` \| `--fetch`) `[--accept-unpinned-source]` | a whole standard set | 720 or 1,132 prompts |
 | `import-json <prompt_suite.json>` | every prompt of a suite (source `import`) | prompts |
 | `publish [--catalog-id]` | a new version from every live prompt | a version and its snapshot |
 | `activate --subject-id S --version N [--catalog-id]` | S records against that version from the next app launch | the subject row |
@@ -223,14 +230,38 @@ voice-lab catalog retire-prompt warm-05 --asset-root <library>
 voice-lab catalog import-harvard --asset-root <library> --fetch
 ```
 
-Every live prompt must fit every catalog of the store, because `publish` takes every live
-prompt. `add-prompt`, the importers and `edit-prompt` refuse a prompt some catalog's purpose
-cannot hold (`CATALOG_CLI.PROMPT_UNPUBLISHABLE`: for example a held-out prompt in a store with
-a capture catalog, or a `test` label outside a physical-test catalog), and `create` refuses a
-catalog that cannot hold the live prompts (`CATALOG_CLI.CATALOG_UNPUBLISHABLE`). A prompt that
-no `prompt-suite/v2` catalog of any purpose could hold, such as a room tone with text, is
-refused by the store itself (`CORPUS.PROMPT_INVALID`). Nothing is written in any of these
-cases.
+### Every live prompt fits every catalog
+
+`publish` takes every live prompt, so one live prompt that a catalog's purpose refuses would
+stop every later version of that catalog, and retiring it would use its id up for good. The
+store therefore refuses, inside the write transaction:
+
+- a new prompt or an edited revision that the purpose of one of its catalogs cannot hold
+  (`CORPUS.PROMPT_UNPUBLISHABLE`, naming each prompt, the catalog and the reason: for example
+  a held-out prompt in a store with a capture catalog, or a `test` label outside a
+  physical-test catalog); an import is refused whole and names up to 10 prompts;
+- a new catalog whose purpose cannot hold every live prompt
+  (`CORPUS.CATALOG_UNPUBLISHABLE`); retired prompts do not count.
+
+A prompt that no `prompt-suite/v2` catalog of any purpose could hold, such as a room tone
+with text, is refused whatever the catalogs are (`CORPUS.PROMPT_INVALID`). Nothing is written
+in any of these cases. A store without catalogs takes any storable prompt; its first catalog
+must then fit them. `publish` still validates the whole suite and names the prompts its
+purpose refuses, for a store whose rows were written some other way.
+
+### Every editor goes through the store
+
+The rules above, the keep-recordings rules under "Editing" and the reading rule are the
+store's, not the command line's: `CorpusStore.add_prompt`, `import_prompt_suite`,
+`initialize_catalog`, `edit_prompt` and `create_catalog` apply them inside their write
+transaction, and `edit_prompt(dry_run=True)` applies them to a preview. Any editor (the
+`voice-lab catalog` commands today, an in-app editor later) must write through these methods
+and never through its own SQL. Only `edit_prompt(keep_recordings=True, allow_rewording=True)`
+passes the typo-class bound, and an editor passes it only on the operator's explicit word
+(`--allow-rewording`). A standard-set importer builds its prompts with
+`standard_prompt_sets.standard_prompt_set`, which applies the strict parse and the pinned
+digest (see "Standard sentence sets"). The command line decides only what the store cannot
+know: that a new catalog id is not a built-in name, and which flag combinations make sense.
 
 ## `--catalog id[@version]`
 
@@ -241,7 +272,8 @@ cases.
    `pilot-v2`, `physical-test-v1` (`prompts show` also accepts `pilot` and `evaluation`).
 2. Otherwise `<catalog_id>` is that catalog's latest published version, and
    `<catalog_id>@<N>` is version N. N is ASCII digits without a leading zero, at most
-   2^63 − 1.
+   2^63 − 1; `--version` and `--expected-revision` take exactly the same spelling (`7`,
+   never `07`), and argparse refuses anything else.
 3. The name is resolved in the `--asset-root` library's store (`resolve_reference`, then
    `materialize`), and the store is closed before any evidence is read.
 
@@ -280,12 +312,14 @@ a default edit. The reason: held-out evaluation audio must never reach training,
 must never cover speech. The index and the snapshot apply the same function, so an alias that
 breaks the rule never counts even if it were written.
 
-The command adds one more limit: `--keep-recordings` accepts only a typo-class text change,
-measured on the words read aloud after ignoring case, punctuation and spacing: at most 2 word
-edits and at most 3 character edits (`corpus_store.text_change`). A real rewording is refused
-(`CATALOG_CLI.REWORDING_REFUSED`) unless `--allow-rewording` is added, for recordings that
-already say the new text. The bound is a guard, not a proof: a same-length three-letter
-substitution passes it, which is why the preview shows both texts.
+The store adds one more limit, because kept audio trains with the new text: a keep-recordings
+edit accepts only a typo-class text change, measured on the words read aloud after ignoring
+case, punctuation and spacing: at most 2 word edits and at most 3 character edits
+(`corpus_store.text_change`). A real rewording is refused (`CORPUS.REWORDING_REFUSED`) unless
+the caller passes `allow_rewording=True` (`--allow-rewording`), for recordings that already
+say the new text. The identity rule is checked first, and silent prompts have no text to
+compare. The bound is a guard, not a proof: a same-length three-letter substitution passes
+it, which is why the preview shows both texts.
 
 **The preview.** `edit-prompt` runs every store check in a rolled-back transaction first, then
 prints, before writing: the old and new text with the kind of change, and how many recordings
@@ -342,6 +376,10 @@ The app's configuration carries no catalog
 6. The app requests the durable snapshot, then sends `OpenContextCommand` with
    `catalog_reference`. The service opens a `recording-group/v2` context on the pinned version.
 
+The pre-context snapshot names the pinned catalog's digest. A workspace service
+(`--native-workspace`) therefore refuses `--catalog-sha256` as a usage error (argparse, exit
+2); only group and unprepared services take a launch digest.
+
 Because the catalog is pinned per process, a `catalog activate` while the app runs takes effect
 at the next launch. The service does not keep the store open, so the CLI can edit it while the
 app runs. Switching catalogs, adding prompts and editing prompts are all
@@ -374,18 +412,21 @@ Store codes (`CorpusStoreCode`). The CLI prints them as `voice-lab: CODE: messag
 | `CORPUS.STORE_MISSING` | no `provenance/corpus/corpus.sqlite3` (or no library named for a published `--catalog`) | `voice-lab catalog init --subject-id S --from-builtin pilot-v2 [--drop-room-tones]`, then relaunch the app |
 | `CORPUS.STORE_UNAVAILABLE` | the database cannot be opened or migrated, fails `quick_check` or `foreign_key_check`, has an unsupported schema version, holds a row that no longer validates, or a query fails | do not edit the database; restore `provenance/corpus/` from backup. An unsupported version means a newer build wrote it: use that build |
 | `CORPUS.STORE_UNSAFE` | a store directory or file is not owned by you, has group or other permission bits, is a symlink or a hard-linked file, was replaced while open, or an unexpected entry exists | fix ownership and modes, move the unexpected entry out of `provenance/corpus/`; investigate a replacement before continuing |
-| `CORPUS.PROMPT_DUPLICATE` | the id exists, a live prompt has the same text, an id is listed twice, or the standard set is already imported | choose another id or edit/retire the other prompt; a repeated import needs nothing |
+| `CORPUS.PROMPT_DUPLICATE` | the id exists, a live prompt has the same text or text that reads the same (both prompts are named), an id is listed twice, or the standard set is already imported | choose another id or edit/retire the other prompt; a repeated import needs nothing |
 | `CORPUS.PROMPT_UNKNOWN` | no such prompt | check the id with `catalog show` (published prompts only) or in the output of the `add-prompt` or import command that created it; no command lists unpublished prompt ids |
 | `CORPUS.PROMPT_RETIRED` | editing, publishing or retiring a retired prompt | add a new prompt with another id |
 | `CORPUS.PROMPT_INVALID` | the prompt fails the `Prompt` contract, carries control or format characters, fits no v2 catalog of any purpose, or a keep-recordings edit changes its identity | fix the fields; make an identity change as a default edit |
 | `CORPUS.PROMPT_UNCHANGED` | the edit changes nothing | nothing |
 | `CORPUS.PROMPT_CHANGED` | the prompt is no longer at `--expected-revision` | preview again and write with the new revision |
-| `CORPUS.SOURCE_INVALID` | a standard-set file does not parse to exactly 720 or 1,132 sentences, is larger than 4 MiB, or the prompt source is unknown | check the file is the published list; nothing was imported |
+| `CORPUS.PROMPT_UNPUBLISHABLE` | a new or edited prompt that the purpose of one of the store's catalogs cannot hold | fix the fields, or keep such prompts in a store whose catalogs hold them |
+| `CORPUS.REWORDING_REFUSED` | a keep-recordings edit changes more than a typo-class amount of text | edit without `--keep-recordings` (the prompt is recorded again), or add `--allow-rewording` if the recordings already say the new text |
+| `CORPUS.SOURCE_INVALID` | a standard-set file does not parse to exactly 720 or 1,132 sentences, is larger than 4 MiB, or does not have the pinned SHA-256 of the published list (checked last); or the prompt source is unknown | check the file is the published list; for a list that changed on purpose, check it and add `--accept-unpinned-source`; nothing was imported |
 | `CORPUS.SOURCE_UNAVAILABLE` | `--fetch` failed or did not answer 200 | retry, or download a copy and use `--from-file` |
 | `CORPUS.SOURCE_REFERENCE_INVALID` | the source URL is not a plain http(s) URL; or, from Python callers only (`standard_prompt_set`, the store API), a fetch time without an offset, a malformed source reference, or a standard-set prompt without one | correct `--source-url`. The CLI refuses a `--fetched-at` without an offset itself, as a usage error with no code (exit 2) |
 | `CORPUS.CATALOG_DUPLICATE` | the catalog id exists, or `init` found a store that already holds prompts or catalogs | follow the next step the message names |
 | `CORPUS.CATALOG_UNKNOWN` | no such catalog (also an unknown `--catalog` name) | `catalog list` |
 | `CORPUS.CATALOG_INVALID` | a bad catalog id, suite id, purpose or description; a publish whose suite the contract refuses (the message names the prompts and why); more than 10,000 prompts; over the one-message byte budget | retire or edit the named prompts, or publish fewer |
+| `CORPUS.CATALOG_UNPUBLISHABLE` | a new catalog's purpose cannot hold every live prompt | choose another purpose, or retire or edit the named prompts first |
 | `CORPUS.VERSION_UNKNOWN` | no such version, nothing published yet, or a malformed version | `catalog show`; publish first |
 | `CORPUS.VERSION_UNCHANGED` | the live prompts equal an already published version | nothing to publish; activate the named version if needed |
 | `CORPUS.SUBJECT_INVALID` | the subject id is not a stable id | use a lowercase stable id |
@@ -407,7 +448,9 @@ What the app receives (the wire `ErrorCode` vocabulary):
 | `SNAPSHOT_MISSING`, `SNAPSHOT_MISMATCH` | `CORPUS.SNAPSHOT_MISMATCH` | fixed text saying "missing" or "altered or unsafe", without file content |
 | any other store failure | `RECORDING.GATE_NOT_READY` | "the corpus store cannot serve the active catalog: …" (at most 1,024 characters) |
 
-`CORPUS.CATALOG_UNKNOWN` is part of the wire vocabulary, but the service does not send it.
+The wire `ErrorCode` vocabulary holds exactly these three `CORPUS` codes. Every other store
+code, `CORPUS.CATALOG_UNKNOWN` included, is printed by the command line only and never
+reaches the app.
 
 Command codes (`cli.CatalogCommandError`):
 
@@ -415,9 +458,9 @@ Command codes (`cli.CatalogCommandError`):
 | --- | --- |
 | `CATALOG_CLI.USAGE_INVALID` | a flag combination the command refuses (`init` without a seed or `--purpose`, `--drop-room-tones` without a seed, `--allow-rewording` without `--keep-recordings`, `--from-file` without `--fetched-at` and `--source-url`, `--fetch` with either, an edit with no field, a prompt without text or expected seconds, a physical-test catalog without a `cole-physical-test-` suite id) |
 | `CATALOG_CLI.CATALOG_ID_RESERVED` | a new catalog named like a built-in |
-| `CATALOG_CLI.REWORDING_REFUSED` | `--keep-recordings` for more than a typo-class change |
-| `CATALOG_CLI.PROMPT_UNPUBLISHABLE` | a prompt one of the store's catalogs could never publish |
-| `CATALOG_CLI.CATALOG_UNPUBLISHABLE` | a new catalog that cannot hold the live prompts |
+
+Every other refusal of a catalog command is the store's (`CORPUS.*`), so any other editor
+gets the same one.
 
 ## Integrity model
 
@@ -458,7 +501,12 @@ What it does not defend against:
 - **Confidentiality.** Prompt text is stored in plain text; the file modes are the only
   protection.
 - **Source provenance.** For `--from-file` imports, the recorded URL and time are the
-  operator's statements, unchecked; the recorded SHA-256 binds the content, not its origin.
+  operator's statements, unchecked. Neither a saved copy nor a `--fetch` (ARCTIC is served
+  over plain http) is authenticated by its transfer; what binds the content is the pinned
+  SHA-256 of the published list, which every import must match unless the operator passes
+  `--accept-unpinned-source`. Such an import is recorded in every prompt's source reference
+  (`"unpinned_source_accepted": true`), and its content is only as good as the operator's
+  check.
 - **Rewording under `--allow-rewording`.** The operator vouches that the recordings say the new
   text.
 
@@ -491,7 +539,7 @@ and v2 groups that referenced the lost snapshots stay unreadable until those exa
 | Prompts | 720, in 72 lists of 10 | 1,132 (593 `a` and 539 `b` utterances) |
 | Ids | `harvard-LL-NN` (`harvard-01-01` … `harvard-72-10`) | the utterance id with `_` → `-` (`arctic-a0001` … `arctic-b0539`) |
 | Source | https://www.cs.columbia.edu/~hgs/audio/harvard.html | http://festvox.org/cmu_arctic/cmuarctic.data (served over plain http only) |
-| Saved copy SHA-256 (2026-09-16) | `f8c981aed97020642fd2423de787b3ccd2a7233f32fe07ebd26d2279c195cb75` | `60e3d9a4dc33732c9100baadd747312bdc1a200fc891766507397289753a25c7` |
+| Pinned SHA-256 (`STANDARD_SET_SHA256`, saved 2026-09-16) | `f8c981aed97020642fd2423de787b3ccd2a7233f32fe07ebd26d2279c195cb75` | `60e3d9a4dc33732c9100baadd747312bdc1a200fc891766507397289753a25c7` |
 | Expected reading time | 2,991.4 s | 5,102.6 s |
 
 **Harvard.** IEEE Recommended Practice for Speech Quality Measurements, IEEE Std 297-1969
@@ -515,12 +563,21 @@ How an import works:
   ARCTIC: every line must be `( arctic_a0001 "…" )`; whitespace inside the quotes is collapsed
   (in the published list this only drops the trailing space of `arctic-a0028`); quotes and
   backslashes inside a sentence are refused. Two sentences that read the same
-  (ignoring case and punctuation) are refused. Any count other than 720 or 1,132 imports
-  nothing (`CORPUS.SOURCE_INVALID`).
+  (`corpus_store.spoken_words`: case, punctuation and spacing ignored) are refused. Any count
+  other than 720 or 1,132 imports nothing (`CORPUS.SOURCE_INVALID`).
+- The file must be the published list: its SHA-256 must equal the pinned digest in the
+  table above (`CORPUS.SOURCE_INVALID`, naming both digests, checked after parsing). With
+  `--accept-unpinned-source` another copy is imported, and every prompt's source reference
+  records `"unpinned_source_accepted": true`. The command's JSON reports `sha256`,
+  `pinned_sha256` and `unpinned_source_accepted`.
+- No sentence may read the same as a live prompt of the store (`CORPUS.PROMPT_DUPLICATE`,
+  naming the sentence's id and the live prompt's).
 - Every sentence becomes a `neutral` prompt with style "Plain reading, natural pace." and
   `expected_seconds = round(0.42 × words + 0.8, 1)`, source `harvard` or `arctic`.
 - Each prompt stores `prompt_source_reference`: canonical JSON
-  `{"url", "fetched_at", "sha256", "license"}`.
+  `{"url", "fetched_at", "sha256", "license"}`, plus `"unpinned_source_accepted": true`
+  only for an accepted unpinned copy (the key is omitted otherwise, so earlier references
+  keep their bytes).
 - `--from-file` needs `--fetched-at` (ISO 8601 with an offset; argparse refuses one without)
   and `--source-url`. The URL is recorded as given. The time is recorded as the same instant
   in UTC: `2026-09-16T06:17:51+02:00` is stored as `2026-09-16T04:17:51Z` and printed as
@@ -528,4 +585,5 @@ How an import works:
 - `--fetch` downloads (30 s timeout, 4 MiB limit) and records the time it fetched and the URL
   the response came from; it is the only network access and is never implied.
 - The store must exist. If it already holds the set's first sentence, the import is refused
-  before anything is read or fetched. The import is one transaction: the whole set or nothing.
+  before anything is read or fetched. The import is one transaction: the whole set or nothing
+  (every catalog must hold every sentence, see "Every live prompt fits every catalog").

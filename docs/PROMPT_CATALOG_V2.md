@@ -689,7 +689,7 @@ Revision 3: the dispositions above are revision 2's and were executed as written
 - **22:** discovery resolves each group's catalog with `resolve_group_catalog`, so a v2 group is read through its sealed snapshot.
 - **23, 44:** `OpenContextCommand` names `catalog_reference`; its embedded form survives only inside `ContinueLegacyRecordingCommand` (row 37, unchanged).
 - **24:** settings and configuration carry no catalog and declare a purpose; `--expect-catalog-sha256` is removed.
-- **25:** the workspace service pins its catalog from the store; `--catalog-sha256` is optional in workspace mode.
+- **25:** the workspace service pins its catalog from the store and its pre-context snapshot names that catalog's digest; it refuses `--catalog-sha256`, which group and unprepared services still require.
 - **27:** exact containment, or containment through a keep-recordings alias (§3.1). Review resolves an alias-covered take to its current prompt (`CatalogSnapshot.require_current_prompt_for`). It refuses a take whose prompt no longer counts with `RecordingPromptNotCountedError`, which the service sends as `RECORDING.STALE_REVISION`.
 - **29, 30, 34:** the package plan resolves the group's catalog through the take store (`group_catalog`) instead of reading an embedded suite.
 - **38:** exact, or through a keep-recordings alias (§3.1): `RecordingLibrary.counts` also accepts a recorded prompt that the catalog's aliases accept.

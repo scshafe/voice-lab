@@ -2111,10 +2111,11 @@ def test_prompt_suite_v2_conformance_cases(case: Any) -> None:
 RECORDING_GROUP_V2 = "cole-voice-lab.recording-group/v2"
 CORPUS_WIRE_CODES = (
     "CORPUS.NO_ACTIVE_CATALOG",
-    "CORPUS.CATALOG_UNKNOWN",
     "CORPUS.SNAPSHOT_MISMATCH",
     "CORPUS.STORE_MISSING",
 )
+# Store codes the recording service never sends (the CLI still prints them).
+CORPUS_STORE_ONLY_CODES = ("CORPUS.CATALOG_UNKNOWN", "CORPUS.PROMPT_DUPLICATE")
 _ABSENT = object()
 
 
@@ -2315,20 +2316,23 @@ def recording_group_v2_cases() -> list[tuple[str, str, bool, str, dict[str, Any]
             "recording-response",
             changed(context, ("data", "cursor", "selection", "catalog_sha256"), "0" * 64),
         ),
-        (
-            "error-unlisted-corpus-code",
-            "recording-response",
-            changed(
-                RecordingResponse(
-                    data=None,
-                    error=RecordingError(
-                        code=CORPUS_WIRE_CODES[0], message="Synthetic", retryable=False
+        *(
+            (
+                f"error-store-only-code-{code.removeprefix('CORPUS.').lower().replace('_', '-')}",
+                "recording-response",
+                changed(
+                    RecordingResponse(
+                        data=None,
+                        error=RecordingError(
+                            code=CORPUS_WIRE_CODES[0], message="Synthetic", retryable=False
+                        ),
+                        meta=meta,
                     ),
-                    meta=meta,
+                    ("error", "code"),
+                    code,
                 ),
-                ("error", "code"),
-                "CORPUS.PROMPT_DUPLICATE",
-            ),
+            )
+            for code in CORPUS_STORE_ONLY_CODES
         ),
     ]
     return [

@@ -1046,7 +1046,12 @@ def publish_revision(
     layout: AssetLayout, prompt_id: str, text: str, *, keep_recordings: bool
 ) -> tuple[CatalogReference, CatalogSnapshot]:
     with open_corpus_store(layout, create=False) as corpus:
-        corpus.edit_prompt(prompt_id, text=text, keep_recordings=keep_recordings)
+        corpus.edit_prompt(
+            prompt_id,
+            text=text,
+            keep_recordings=keep_recordings,
+            allow_rewording=keep_recordings,
+        )
         reference = corpus.publish_version(CORPUS_ID)
         return reference, corpus.materialize(reference)
 

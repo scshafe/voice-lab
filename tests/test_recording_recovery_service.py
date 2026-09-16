@@ -205,7 +205,6 @@ def test_continue_legacy_service_retains_checksum_bound_prior_evidence(rig: Rig)
     backend = RecordingWorkspaceBackend(
         rig.layout,
         "synthetic-subject",
-        command.context.catalog_sha256,
         store=rig.store,
         discover=False,
     )
@@ -246,7 +245,7 @@ def test_actual_service_startup_recovers_then_independently_verifies(
     source_before = sha256_file(receipt.parent / "original.wav")
     group = rig.store.get_group(rig.group_id)
     reference, _ = activate_catalog(rig.layout, store_suite(2))
-    service = ServiceProcess(tmp_path, rig.layout, None, "recovery-generation")
+    service = ServiceProcess(tmp_path, rig.layout, "recovery-generation")
     try:
         opened = service.request(
             OpenContextCommand(
@@ -655,10 +654,7 @@ def test_actual_service_eof_cancels_startup_commit_and_restart_recovers(
         "    return close(self)\n"
         "r.RecordingRecoverySupervisor.close = closing\n"
     )
-    group = rig.store.get_group(rig.group_id)
-    service = ServiceProcess(
-        tmp_path, rig.layout, group.catalog_sha256, "recovery-eof", audit_directory=audit
-    )
+    service = ServiceProcess(tmp_path, rig.layout, "recovery-eof", audit_directory=audit)
 
     def wait_for(path: Path) -> None:
         deadline = time.monotonic() + 5
@@ -678,7 +674,7 @@ def test_actual_service_eof_cancels_startup_commit_and_restart_recovers(
         service.close()
     assert rig.store.get_take(take_id).seal is None
     assert not (rig.layout.root / f"provenance/recording-takes/{take_id}/seal.json").exists()
-    restarted = ServiceProcess(tmp_path, rig.layout, group.catalog_sha256, "recovery-restart")
+    restarted = ServiceProcess(tmp_path, rig.layout, "recovery-restart")
     try:
         deadline = time.monotonic() + 5
         from cole_voice_lab.recording_takes import RecordingMetadataBusyError

@@ -21,7 +21,7 @@ import pytest
 from recording_fixtures import synthetic_catalog
 from test_recording_packages import saved_take
 from test_recording_service import activate_catalog, request
-from test_recording_takes import DEVICE, Rig, store_suite
+from test_recording_takes import DEVICE, Rig, allow_mixed_purpose_store, store_suite
 
 import cole_voice_lab.native_recording_application as application
 from cole_voice_lab.canonical import (
@@ -570,9 +570,12 @@ def test_open_context_and_group_mints_bind_marked_roots_and_their_subject(
             with open_corpus_store(layout, create=False) as corpus:
                 corpus.activate(subject, published[key])
         else:
-            published[key], _ = activate_catalog(
-                layout, catalog, catalog_id=catalog.suite_id, subject_id=subject
-            )
+            # The marked root's store holds a capture and a physical-test catalog.
+            with monkeypatch.context() as patch:
+                allow_mixed_purpose_store(patch)
+                published[key], _ = activate_catalog(
+                    layout, catalog, catalog_id=catalog.suite_id, subject_id=subject
+                )
         return published[key]
 
     refused: list[tuple[AssetLayout, str, PromptSuite, PromptSuite, str]] = [

@@ -10,8 +10,10 @@ import-harvard`` / ``import-arctic``).
 
 A parse that does not yield exactly the published sentence count, or meets anything it does
 not recognize (markup inside a sentence, an escaped quote, a stray line), fails as
-``CorpusStoreError`` ``CORPUS.SOURCE_INVALID``; a set is never imported partially. Fetching
-is a separate, explicit call (``fetch_standard_set``); reading a saved copy never touches the
+``CorpusStoreError`` ``CORPUS.SOURCE_INVALID``; a set is never imported partially. The bytes
+must also be the published list itself (``STANDARD_SET_SHA256``) unless the caller accepts an
+unpinned copy explicitly, which every prompt's source reference then records. Fetching is a
+separate, explicit call (``fetch_standard_set``); reading a saved copy never touches the
 network.
 """
 
@@ -22,7 +24,7 @@ import html
 import re
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +33,12 @@ from typing import Final, Literal, Protocol
 from pydantic import ValidationError
 
 from .canonical import canonical_json_bytes, open_regular_no_follow
-from .corpus_store import CorpusStoreError, PromptSourceReference, validation_problems
+from .corpus_store import (
+    CorpusStoreError,
+    PromptSourceReference,
+    spoken_words,
+    validation_problems,
+)
 from .models import PROMPT_SUITE_V2, Prompt, PromptSuite, utc_now
 
 type StandardSetName = Literal["harvard", "arctic"]
@@ -40,8 +47,16 @@ type StandardSetName = Literal["harvard", "arctic"]
 # actually came from (after redirects); a saved copy records the URL its operator states.
 HARVARD_URL: Final = "https://www.cs.columbia.edu/~hgs/audio/harvard.html"
 # festvox.org serves this list over plain http only (https refused the connection on
-# 2026-09-16); the recorded file sha256 and the exact 1,132-sentence parse bind the content.
+# 2026-09-16), so nothing about the transfer authenticates it: the pinned digest below is
+# what binds the content, whether it was fetched or read from a saved copy.
 ARCTIC_URL: Final = "http://festvox.org/cmu_arctic/cmuarctic.data"
+# SHA-256 of the published lists as saved on 2026-09-16 (harvard.html: 720 sentences in 72
+# lists; cmuarctic.data: 1,132 lines). A copy with other bytes is refused unless the caller
+# accepts it explicitly (``--accept-unpinned-source``), which the source reference records.
+STANDARD_SET_SHA256: Final[Mapping[StandardSetName, str]] = {
+    "harvard": "f8c981aed97020642fd2423de787b3ccd2a7233f32fe07ebd26d2279c195cb75",
+    "arctic": "60e3d9a4dc33732c9100baadd747312bdc1a200fc891766507397289753a25c7",
+}
 # Every published list starts with this sentence, so a store holding it holds the set.
 STANDARD_SET_FIRST_PROMPT_IDS: Final = {"harvard": "harvard-01-01", "arctic": "arctic-a0001"}
 MAX_SOURCE_URL_CHARS: Final = 2048
@@ -99,7 +114,6 @@ subject to the pretty light restrictions detailed below.
 _HARVARD_LIST_HEADING = re.compile(r"<h2>List (\d+)</h2>")
 _HARVARD_ITEM = re.compile(r"<li>(.*?)</li>", re.DOTALL)
 _ARCTIC_LINE = re.compile(r'^\(\s*(arctic_[ab]\d{4})\s+"(.*)"\s*\)\s*$')
-_NOT_WORD = re.compile(r"[^a-z0-9 ]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,13 +130,17 @@ class StandardPromptSet:
 
     ``suite`` is only a carrier (the store imports its prompts in order; the suite id and
     purpose are never published); ``source_reference`` is the canonical
-    ``PromptSourceReference`` JSON stored beside each prompt.
+    ``PromptSourceReference`` JSON stored beside each prompt. ``sha256`` is the source's
+    digest and ``pinned_sha256`` the published list's; ``unpinned_source_accepted`` is true
+    when they differ (the caller accepted the copy explicitly).
     """
 
     name: StandardSetName
     suite: PromptSuite
     source_reference: str
     sha256: str
+    pinned_sha256: str
+    unpinned_source_accepted: bool
     fetched_at: datetime
     url: str
 
@@ -198,15 +216,16 @@ def _require_count(
             f"{label} yields {len(sentences)} sentences, not the {expected} the published set has"
         )
     ids: set[str] = set()
-    readings: dict[str, str] = {}
+    readings: dict[tuple[str, ...], str] = {}
     for sentence in sentences:
         if not sentence.text:
             raise _invalid(f"{label} sentence {sentence.prompt_id} is empty")
         if sentence.prompt_id in ids:
             raise _invalid(f"{label} repeats sentence id {sentence.prompt_id}")
         ids.add(sentence.prompt_id)
-        # Two sentences that read identically would be one recording counted twice.
-        reading = " ".join(_NOT_WORD.sub("", sentence.text.lower()).split())
+        # Two sentences that read identically would be one recording counted twice; the
+        # store applies the same normalization against its live prompts at import.
+        reading = spoken_words(sentence.text)
         if reading in readings:
             raise _invalid(
                 f"{label} sentences {readings[reading]} and {sentence.prompt_id} read the same"
@@ -289,21 +308,26 @@ def standard_prompt_set(
     fetched_at: datetime,
     url: str,
     expected_count: int | None = None,
+    accept_unpinned_source: bool = False,
 ) -> StandardPromptSet:
     """Parse one set and attach the provenance every one of its prompts records.
 
     Every sentence becomes a ``neutral`` prompt with style ``STANDARD_PROMPT_STYLE`` and
-    ``standard_expected_seconds(text)``.
-    Params: ``name`` selects the parser and license; ``payload`` is the exact source bytes
-    (their sha256 is recorded); ``fetched_at`` is when that copy was fetched (timezone-aware);
-    ``url`` is where it came from, recorded as given (never assumed: a saved copy's operator
-    states it, a fetch reports the URL its response came from); ``expected_count`` as for
-    the parser.
+    ``standard_expected_seconds(text)``. The source must be the published list
+    (``STANDARD_SET_SHA256[name]``): neither a plain-http fetch nor an operator's copy is
+    otherwise authenticated.
+    Params: ``name`` selects the parser, license and pinned digest; ``payload`` is the exact
+    source bytes (their sha256 is recorded); ``fetched_at`` is when that copy was fetched
+    (timezone-aware); ``url`` is where it came from, recorded as given (never assumed: a
+    saved copy's operator states it, a fetch reports the URL its response came from);
+    ``expected_count`` as for the parser; ``accept_unpinned_source`` accepts bytes other
+    than the published list's (the reference then records ``unpinned_source_accepted``).
     Returns: the parsed set.
-    Raises: ``CorpusStoreError`` ``CORPUS.SOURCE_INVALID`` from the parser, or when a
-    sentence does not form a valid prompt-suite/v2 prompt (length, control characters);
-    ``CORPUS.SOURCE_REFERENCE_INVALID`` when ``fetched_at`` is naive or ``url`` fails
-    ``source_url``.
+    Raises: ``CorpusStoreError`` ``CORPUS.SOURCE_INVALID`` from the parser, when a sentence
+    does not form a valid prompt-suite/v2 prompt (length, control characters), or, after
+    every other check, when the digest is not the pinned one and ``accept_unpinned_source``
+    is false (the message names both digests); ``CORPUS.SOURCE_REFERENCE_INVALID`` when
+    ``fetched_at`` is naive or ``url`` fails ``source_url``.
     """
     if name == "harvard":
         sentences = parse_harvard_sentences(payload, expected_count=expected_count)
@@ -312,9 +336,15 @@ def standard_prompt_set(
         sentences = parse_arctic_sentences(payload, expected_count=expected_count)
         license_text = ARCTIC_LICENSE
     digest = hashlib.sha256(payload).hexdigest()
+    pinned = STANDARD_SET_SHA256[name]
+    unpinned = digest != pinned
     try:
         reference = PromptSourceReference(
-            url=source_url(url), fetched_at=fetched_at, sha256=digest, license=license_text
+            url=source_url(url),
+            fetched_at=fetched_at,
+            sha256=digest,
+            license=license_text,
+            unpinned_source_accepted=unpinned,
         )
     except ValidationError as error:
         raise CorpusStoreError(
@@ -341,11 +371,20 @@ def standard_prompt_set(
         raise _invalid(
             f"{name} sentences do not form valid prompts: {validation_problems(error)}"
         ) from error
+    if unpinned and not accept_unpinned_source:
+        raise _invalid(
+            f"the {name} copy has sha256 {digest}, not {pinned}, the published list's; "
+            "nothing was imported. Use a copy of the published list, or pass "
+            "--accept-unpinned-source to import this one (every prompt's source reference "
+            "then records it)"
+        )
     return StandardPromptSet(
         name=name,
         suite=suite,
         source_reference=canonical_json_bytes(reference).decode(),
         sha256=digest,
+        pinned_sha256=pinned,
+        unpinned_source_accepted=unpinned,
         fetched_at=reference.fetched_at,
         url=reference.url,
     )
@@ -380,7 +419,8 @@ def fetch_standard_set(
     Params: ``name`` selects the URL; ``timeout`` bounds the request in seconds; ``opener``
     performs it (``urllib.request.urlopen``); ``clock`` stamps the fetch.
     Returns: ``(payload, fetched_at, url)``; ``url`` is where the response came from (the
-    requested URL, or where it redirected to).
+    requested URL, or where it redirected to). The payload is not trusted yet:
+    ``standard_prompt_set`` checks it against the pinned digest.
     Raises: ``CorpusStoreError`` ``CORPUS.SOURCE_UNAVAILABLE`` when the request fails or does
     not answer 200, ``CORPUS.SOURCE_INVALID`` when the body exceeds
     ``MAX_STANDARD_SET_BYTES``, ``CORPUS.SOURCE_REFERENCE_INVALID`` when the response's URL

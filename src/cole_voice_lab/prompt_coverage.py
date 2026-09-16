@@ -18,7 +18,7 @@ import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from pydantic import JsonValue, ValidationError
+from pydantic import JsonValue
 
 from .canonical import canonical_sha256
 from .corpus_store import (
@@ -29,7 +29,7 @@ from .corpus_store import (
     require_referenced_snapshot,
 )
 from .errors import ContractError, VoiceLabError
-from .models import PROMPT_SUITE_V1, Prompt, PromptSuite, PromptSuitePurpose
+from .models import Prompt, PromptSuite
 from .paths import AssetLayout
 from .recording_contracts import (
     CatalogReference,
@@ -145,8 +145,6 @@ class PromptRecordings:
     # legacy session without provenance); a readable package that simply holds no
     # counting recording of this prompt is not one of them.
     unknown_record_ids: tuple[str, ...]
-    # Why no catalog can hold this revision (so nothing can count for it), or None.
-    fits_no_catalog: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,32 +353,24 @@ def prompt_coverage_report(
     )
 
 
-def _counting_suite(prompt: Prompt) -> PromptSuite | str:
-    """The one-prompt catalog a prompt revision can be counted through, or why none exists.
+def _counting_suite(prompt: Prompt) -> PromptSuite:
+    """The one-prompt catalog a corpus-store revision is counted through.
 
     Recordings count by the recorded prompt alone, never by the catalog around it, so any
     suite that validates with the prompt gives the same answer: the first prompt-suite/v2
-    purpose that holds it (``corpus_store.prompt_catalog_fit``), else a prompt-suite/v1
-    suite (a v1-style room tone that still carries text; v1 has no physical-test purpose).
-    When neither schema validates, no catalog of any purpose can contain the revision.
+    purpose that holds it (``corpus_store.prompt_catalog_fit``). The store never holds a
+    revision that no such purpose can hold.
+    Raises: ``ValueError`` for a prompt no prompt-suite/v2 catalog can hold (not a store
+    revision; a caller bug).
     """
     fit = prompt_catalog_fit(prompt)
     suite = next(iter(fit.suites.values()), None)
-    if suite is not None:
-        return suite
-    purpose: PromptSuitePurpose = "held-out-evaluation" if prompt.holdout else "capture-pilot"
-    try:
-        return PromptSuite(
-            schema_version=PROMPT_SUITE_V1,
-            suite_id="recording-count",
-            purpose=purpose,
-            prompts=(prompt,),
+    if suite is None:
+        raise ValueError(
+            f"prompt {prompt.prompt_id} fits no prompt-suite/v2 catalog ({fit.explanation()}), "
+            "so it is no corpus-store revision whose recordings could be counted"
         )
-    except ValidationError as error:
-        legacy = "; ".join(
-            dict.fromkeys(item["msg"].removeprefix("Value error, ") for item in error.errors())
-        )
-    return f"{fit.explanation()}; prompt-suite/v1 {purpose}: {legacy}"
+    return suite
 
 
 def _unassignable(layout: AssetLayout, record_ids: tuple[str, ...]) -> tuple[str, ...]:
@@ -416,30 +406,21 @@ def prompt_recordings(
     ``prompt`` itself or against an earlier revision whose digest the revision accepts
     (``accepted_prompt_sha256s``) and which keeps the prompt's identity. File-only, like the
     report: no SQLite, no writes.
-    Params: ``layout`` is the asset root; ``subject_id`` selects the takes; ``prompt`` is the
-    revision; ``accepted_prompt_sha256s`` are the earlier digests it accepts (the store's
+    Params: ``layout`` is the asset root; ``subject_id`` selects the takes; ``prompt`` is a
+    corpus-store revision (``PromptRecord.prompt``: some prompt-suite/v2 catalog can hold
+    it); ``accepted_prompt_sha256s`` are the earlier digests it accepts (the store's
     ``PromptRecord.accepted_prompt_sha256s``).
     Returns: the counted take ids (sorted) and the records whose prompts cannot be told
     (a subject's native package whose map validated is read exactly, so it is never one of
-    them even when it holds no recording of this prompt). A revision that no catalog can
-    contain (``fits_no_catalog`` names why) is counted by no catalog, so it has no counted
-    takes and no evidence is read.
-    Raises: ``PromptCoverageProjectionError`` when the accepted digests do not form valid
-    aliases or evidence cannot be read or projected; ``CorpusSnapshotSecurityError``,
-    unwrapped, as ``prompt_coverage_report``.
+    them even when it holds no recording of this prompt).
+    Raises: ``ValueError`` for a prompt no prompt-suite/v2 catalog can hold, before any
+    evidence is read; ``PromptCoverageProjectionError`` when the accepted digests do not
+    form valid aliases or evidence cannot be read or projected;
+    ``CorpusSnapshotSecurityError``, unwrapped, as ``prompt_coverage_report``.
     """
     layout = AssetLayout.validate(layout.root)
     suite = _counting_suite(prompt)
     digest = canonical_sha256(prompt)
-    if isinstance(suite, str):
-        return PromptRecordings(
-            subject_id=subject_id,
-            prompt_id=prompt.prompt_id,
-            prompt_sha256=digest,
-            take_ids=(),
-            unknown_record_ids=(),
-            fits_no_catalog=suite,
-        )
     try:
         snapshot = CatalogSnapshot(
             suite=suite,

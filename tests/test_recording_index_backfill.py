@@ -64,7 +64,10 @@ def published(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Published]:
         seeded = corpus.materialize(corpus.publish_version(CATALOG_ID))
         for number in (1, 3):
             corpus.edit_prompt(
-                spoken(number), text=f"{_text(spoken(number))} Again.", keep_recordings=True
+                spoken(number),
+                text=f"{_text(spoken(number))} Again.",
+                keep_recordings=True,
+                allow_rewording=True,
             )
         kept = corpus.materialize(corpus.publish_version(CATALOG_ID))
         corpus.edit_prompt(spoken(2), text="A different synthetic sentence.")

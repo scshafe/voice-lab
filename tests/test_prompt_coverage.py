@@ -39,6 +39,7 @@ from test_recording_index_backfill import Published
 from test_recording_index_backfill import published as published
 from test_recording_takes import DEVICE, Rig, open_referenced, publish_catalog, store_suite
 
+import cole_voice_lab.prompt_coverage as prompt_coverage
 from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256
 from cole_voice_lab.cli import main
 from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
@@ -293,7 +294,7 @@ def test_report_through_a_published_snapshot_reads_files_only(tmp_path: Path) ->
         corpus.create_catalog("cole-corpus", purpose="capture-pilot")
         seeded = corpus.publish_version("cole-corpus")
         seeded_snapshot = corpus.materialize(seeded)
-        corpus.edit_prompt(spoken(5), text=reworded, keep_recordings=True)
+        corpus.edit_prompt(spoken(5), text=reworded, keep_recordings=True, allow_rewording=True)
         kept = corpus.materialize(corpus.publish_version("cole-corpus"))
     rig = _native_rig(layout)
     group = rig.store.open_group(
@@ -675,7 +676,7 @@ def test_one_prompt_revision_counts_the_recordings_the_report_counts(
             counted = prompt_recordings(layout, SUBJECT, prompt, accepted)
             assert (counted.prompt_id, counted.prompt_sha256) == (prompt_id, digest)
             assert len(counted.take_ids) == report[prompt_id].retained_take_count, prompt_id
-            assert counted.unknown_record_ids == () and counted.fits_no_catalog is None
+            assert counted.unknown_record_ids == ()
             if prompt_id == spoken(1) and snapshot is published.kept:
                 assert len(counted.take_ids) == 3
                 # Without its aliases the reworded revision counts nothing.
@@ -683,9 +684,10 @@ def test_one_prompt_revision_counts_the_recordings_the_report_counts(
     assert prompt_recordings(layout, "someone-else", pilot_v1().prompts[1]).take_ids == ()
 
 
-def test_a_revision_is_counted_through_the_one_catalog_shape_that_can_hold_it(
-    tmp_path: Path,
+def test_only_a_revision_some_prompt_suite_v2_catalog_can_hold_is_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The store holds no other revision, so any other prompt is a caller's mistake."""
     layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
 
     def prompt(**fields: Any) -> Prompt:
@@ -703,27 +705,35 @@ def test_a_revision_is_counted_through_the_one_catalog_shape_that_can_hold_it(
         prompt(holdout=True),
         prompt(labels=("test",)),
         prompt(text=None, category="procedure", instructions="Press Record.", labels=("test",)),
-        prompt(category="room-tone"),  # a prompt-suite/v1 room tone keeps its text
         prompt(text=None, category="room-tone", instructions="Stay silent.", labels=("quiet",)),
     )
     for candidate in countable:
         counted = prompt_recordings(layout, SUBJECT, candidate)
-        assert counted.take_ids == () and counted.fits_no_catalog is None, candidate
+        assert counted.take_ids == () and counted.unknown_record_ids == (), candidate
+
+    def no_evidence(*_: object) -> None:
+        raise AssertionError("an uncountable prompt reads no evidence")
+
+    monkeypatch.setattr(prompt_coverage, "_native_entries", no_evidence)
     for candidate, problem in (
         (
             prompt(text=None, category="procedure", instructions="Press Record."),
             "physical-test prompts require the test label",
         ),
         (prompt(holdout=True, labels=("test",)), "only physical-test catalogs may use the test"),
+        # A prompt-suite/v1 room tone kept its text; no store revision can.
+        (prompt(category="room-tone"), "room tone requires instructions and no text"),
         (
             prompt(category="room-tone", labels=("quiet",)),
             "prompt-suite/v2 room tone requires instructions",
         ),
         (prompt(labels=("test",), reference_candidate=True), "no references"),
     ):
-        counted = prompt_recordings(layout, SUBJECT, candidate, ("a" * 64,))
-        assert counted.take_ids == () and counted.unknown_record_ids == ()
-        assert counted.fits_no_catalog is not None and problem in counted.fits_no_catalog
+        with pytest.raises(ValueError, match="fits no prompt-suite/v2 catalog") as refused:
+            prompt_recordings(layout, SUBJECT, candidate, ("a" * 64,))
+        assert problem in str(refused.value), candidate
+        assert "no corpus-store revision" in str(refused.value)
+    monkeypatch.undo()
     probe = prompt()
     with pytest.raises(PromptCoverageProjectionError, match="recording count failed"):
         prompt_recordings(layout, SUBJECT, probe, (canonical_sha256(probe),))

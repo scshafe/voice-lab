@@ -89,7 +89,12 @@ def edit_and_publish(
     layout: AssetLayout, text: str, *, keep_recordings: bool
 ) -> tuple[CatalogReference, CatalogSnapshot]:
     with open_corpus_store(layout, create=False) as corpus:
-        corpus.edit_prompt("spoken-0000", text=text, keep_recordings=keep_recordings)
+        corpus.edit_prompt(
+            "spoken-0000",
+            text=text,
+            keep_recordings=keep_recordings,
+            allow_rewording=keep_recordings,
+        )
         reference = corpus.publish_version(CATALOG_ID)
         return reference, corpus.materialize(reference)
 
@@ -208,9 +213,9 @@ def test_default_edit_leaves_an_old_take_outside_the_new_version(versions: Versi
 
 
 def _review_through_the_service(
-    layout: AssetLayout, subject_id: str, catalog_sha256: str, take_id: str
+    layout: AssetLayout, subject_id: str, take_id: str
 ) -> RecordingServiceError:
-    backend = RecordingWorkspaceBackend(layout, subject_id, catalog_sha256, discover=False)
+    backend = RecordingWorkspaceBackend(layout, subject_id, discover=False)
     try:
         cursor = backend.store.get_cursor(subject_id)
         assert cursor is not None
@@ -235,9 +240,7 @@ def test_the_service_names_native_and_legacy_takes_an_edit_stopped_counting_alik
         versions.rig.layout, "A different sentence entirely.", keep_recordings=False
     )
     versions.open(changed, "context-changed")
-    native = _review_through_the_service(
-        versions.rig.layout, SUBJECT, changed.catalog_sha256, take_id
-    ).recording_error
+    native = _review_through_the_service(versions.rig.layout, SUBJECT, take_id).recording_error
 
     evidence = build_legacy_root(tmp_path.resolve() / "legacy" / "assets")
     layout, pilot_v2 = evidence.layout, released_pilot_v2()
@@ -269,9 +272,7 @@ def test_the_service_names_native_and_legacy_takes_an_edit_stopped_counting_alik
             capture_host="synthetic-host",
         )
     )
-    legacy = _review_through_the_service(
-        layout, LEGACY_SUBJECT, reference.catalog_sha256, legacy_id
-    ).recording_error
+    legacy = _review_through_the_service(layout, LEGACY_SUBJECT, legacy_id).recording_error
     for error, (identity, prompt_id) in (
         (native, (take_id, "spoken-0000")),
         (legacy, (legacy_id, spoken(2))),

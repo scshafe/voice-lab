@@ -90,12 +90,15 @@ type CorpusStoreCode = Literal[
     "CORPUS.PROMPT_INVALID",
     "CORPUS.PROMPT_UNCHANGED",
     "CORPUS.PROMPT_CHANGED",
+    "CORPUS.PROMPT_UNPUBLISHABLE",
+    "CORPUS.REWORDING_REFUSED",
     "CORPUS.SOURCE_INVALID",
     "CORPUS.SOURCE_UNAVAILABLE",
     "CORPUS.SOURCE_REFERENCE_INVALID",
     "CORPUS.CATALOG_DUPLICATE",
     "CORPUS.CATALOG_UNKNOWN",
     "CORPUS.CATALOG_INVALID",
+    "CORPUS.CATALOG_UNPUBLISHABLE",
     "CORPUS.VERSION_UNKNOWN",
     "CORPUS.VERSION_UNCHANGED",
     "CORPUS.SUBJECT_INVALID",
@@ -121,6 +124,8 @@ MAX_KEPT_WORD_EDITS: Final = 2
 MAX_KEPT_CHARACTER_EDITS: Final = 3
 # Resolved group catalogs kept per owner (take store, index); a process binds a handful.
 MAX_CACHED_GROUP_CATALOGS: Final = 8
+# At most this many prompts are named in one refusal.
+MAX_NAMED_PROMPTS: Final = 10
 STORE_MISSING_MESSAGE: Final = (
     f"no corpus store at provenance/{CORPUS_DIRECTORY}/{CORPUS_DATABASE_NAME}; "
     "run `voice-lab catalog init` to create one"
@@ -194,12 +199,20 @@ class CorpusSnapshotSecurityError(SecurityError, CorpusStoreError):
 
 
 class PromptSourceReference(ContractModel):
-    """Provenance of an imported sentence set, stored as canonical JSON beside its prompts."""
+    """Provenance of an imported sentence set, stored as canonical JSON beside its prompts.
+
+    ``sha256`` is the digest of the exact source bytes. ``unpinned_source_accepted`` is true
+    only when those bytes are not the published list the importer pins
+    (``standard_prompt_sets.STANDARD_SET_SHA256``) and the operator imported them anyway
+    (``--accept-unpinned-source``); it is omitted from the JSON when false, so references
+    written before the field existed keep their exact bytes.
+    """
 
     url: str = Field(min_length=1, max_length=2048)
     fetched_at: UtcTimestamp
     sha256: Sha256
     license: str = Field(min_length=1, max_length=65_536)
+    unpinned_source_accepted: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class _Unchanged(enum.Enum):
@@ -326,8 +339,30 @@ def validation_problems(error: ValidationError) -> str:
     return "; ".join(parts)
 
 
-def _spoken_words(text: str) -> tuple[str, ...]:
+def spoken_words(text: str) -> tuple[str, ...]:
+    """The words a reader says for ``text``: case, punctuation and spacing are ignored.
+
+    The one normalization behind every "reads the same" rule: the keep-recordings bound
+    (``text_change``), the store's refusal of a prompt that reads like another live prompt,
+    and the standard-set parsers' refusal of two sentences that read alike.
+    Params: ``text`` is spoken prompt text.
+    Returns: the case-folded words with every character that is neither a letter nor a
+    digit removed (so ``"It's"`` is ``"its"``), in order.
+    Raises: nothing.
+    """
     return tuple(_NOT_SPOKEN.sub("", text.casefold()).split())
+
+
+def _named(items: Sequence[str]) -> str:
+    """At most ``MAX_NAMED_PROMPTS`` items, then how many more there are."""
+    shown = ", ".join(items[:MAX_NAMED_PROMPTS])
+    extra = len(items) - MAX_NAMED_PROMPTS
+    return shown + (f" and {extra} more" if extra > 0 else "")
+
+
+def _reading_key(text: str) -> tuple[str, ...]:
+    """Two live texts with the same key read the same; text without words keys on itself."""
+    return spoken_words(text) or (text,)
 
 
 def _edits_within(first: Sequence[str], second: Sequence[str], limit: int) -> int | None:
@@ -355,14 +390,14 @@ def text_change(before: str, after: str) -> TextChange:
     A kept recording keeps its audio and trains with the new text, so the new text must
     still be what the audio says: case, punctuation and spacing are free, and beyond that
     at most ``MAX_KEPT_WORD_EDITS`` word edits and ``MAX_KEPT_CHARACTER_EDITS`` character
-    edits (``TextChange.typo_class``). ``CorpusStore.edit_prompt`` does not enforce this --
-    programmatic callers own their pairs -- but ``voice-lab catalog edit-prompt
-    --keep-recordings`` refuses anything else unless the operator overrides it.
+    edits (``TextChange.typo_class``). ``CorpusStore.edit_prompt`` refuses a keep-recordings
+    edit beyond that (``CORPUS.REWORDING_REFUSED``) unless its caller passes
+    ``allow_rewording`` (``voice-lab catalog edit-prompt --allow-rewording``).
     Params: ``before`` and ``after`` are the current and the new spoken text.
     Returns: the measured change.
     Raises: nothing.
     """
-    words_before, words_after = _spoken_words(before), _spoken_words(after)
+    words_before, words_after = spoken_words(before), spoken_words(after)
     return TextChange(
         before=before,
         after=after,
@@ -370,6 +405,27 @@ def text_change(before: str, after: str) -> TextChange:
         character_edits=_edits_within(
             " ".join(words_before), " ".join(words_after), MAX_KEPT_CHARACTER_EDITS
         ),
+    )
+
+
+def _quoted(text: str | None) -> str:
+    return "(no spoken text)" if text is None else json.dumps(text, ensure_ascii=False)
+
+
+def _require_typo_class(prompt_id: str, before: str | None, after: str | None) -> None:
+    """A kept recording pairs old audio with the new text, so the words must still match."""
+    if before is None or after is None or before == after:
+        return  # silent prompts carry no transcript; the identity rule refuses spoken/silent
+    if text_change(before, after).typo_class:
+        return
+    raise CorpusStoreError(
+        "CORPUS.REWORDING_REFUSED",
+        f"--keep-recordings keeps {prompt_id}'s recordings only for a typo-class fix (at most "
+        f"{MAX_KEPT_WORD_EDITS} word edits and {MAX_KEPT_CHARACTER_EDITS} character edits, "
+        f"ignoring case, punctuation and spacing), and {_quoted(before)} -> "
+        f"{_quoted(after)} is a rewording: the kept audio would train with words it does "
+        "not say. Edit without --keep-recordings (the prompt is recorded again), or add "
+        "--allow-rewording if the recordings already say the new text; nothing was written",
     )
 
 
@@ -1323,19 +1379,102 @@ class CorpusStore:
         return self._record(row, self._accepted(connection, prompt_id, row["prompt_revision"]))
 
     @staticmethod
-    def _require_unique_text(connection: sqlite3.Connection, prompt: Prompt) -> None:
+    def _live_readings(
+        connection: sqlite3.Connection, *, excluding: str | None = None
+    ) -> dict[tuple[str, ...], tuple[str, str]]:
+        """Every live spoken prompt's reading (``_reading_key``) -> (prompt id, text)."""
+        rows = connection.execute(
+            "SELECT p.prompt_id, r.prompt_text FROM corpus_prompts p "
+            "JOIN corpus_prompt_revisions r "
+            "ON r.prompt_id = p.prompt_id AND r.prompt_revision = p.prompt_current_revision "
+            "WHERE p.prompt_retired_at IS NULL AND r.prompt_text IS NOT NULL "
+            "AND p.prompt_id IS NOT ? ORDER BY p.prompt_insertion_ordinal",
+            (excluding,),
+        ).fetchall()
+        readings: dict[tuple[str, ...], tuple[str, str]] = {}
+        for row in rows:
+            readings.setdefault(
+                _reading_key(row["prompt_text"]), (row["prompt_id"], row["prompt_text"])
+            )
+        return readings
+
+    @staticmethod
+    def _require_distinct_reading(
+        prompt: Prompt, readings: dict[tuple[str, ...], tuple[str, str]]
+    ) -> None:
+        """Two live prompts that read the same would count one recording twice."""
         if prompt.text is None:
             return
-        row = connection.execute(
-            "SELECT p.prompt_id FROM corpus_prompts p JOIN corpus_prompt_revisions r "
-            "ON r.prompt_id = p.prompt_id AND r.prompt_revision = p.prompt_current_revision "
-            "WHERE p.prompt_retired_at IS NULL AND r.prompt_text = ? AND p.prompt_id != ?",
-            (prompt.text, prompt.prompt_id),
-        ).fetchone()
-        if row is not None:
+        found = readings.get(_reading_key(prompt.text))
+        if found is None:
+            return
+        other, text = found
+        if text == prompt.text:
+            message = f"prompt {prompt.prompt_id} repeats the text of live prompt {other}"
+        else:
+            message = (
+                f"prompt {prompt.prompt_id} reads the same as live prompt {other} (ignoring "
+                f"case, punctuation and spacing): {json.dumps(prompt.text, ensure_ascii=False)} "
+                f"and {json.dumps(text, ensure_ascii=False)}"
+            )
+        raise CorpusStoreError("CORPUS.PROMPT_DUPLICATE", message)
+
+    @staticmethod
+    def _live_catalog_purposes(connection: sqlite3.Connection) -> tuple[tuple[str, str], ...]:
+        """(catalog id, purpose) of every catalog ``publish`` still serves, in creation order."""
+        rows = connection.execute(
+            "SELECT catalog_id, catalog_purpose FROM corpus_catalogs "
+            "WHERE catalog_retired_at IS NULL ORDER BY catalog_created_at, catalog_id"
+        ).fetchall()
+        return tuple((row["catalog_id"], row["catalog_purpose"]) for row in rows)
+
+    def _require_publishable(
+        self, connection: sqlite3.Connection, prompts: Sequence[Prompt]
+    ) -> None:
+        """Every live prompt must fit every catalog: ``publish`` takes every live prompt.
+
+        One live prompt that a catalog's purpose refuses (a held-out prompt beside a capture
+        catalog, a ``test`` label outside a physical-test one) would stop every later version
+        of that catalog, and retiring it would use its id up for good.
+        """
+        catalogs = self._live_catalog_purposes(connection)
+        if not catalogs:
+            return
+        purposes = tuple(dict.fromkeys(purpose for _, purpose in catalogs))
+        refused: list[str] = []
+        for prompt in prompts:
+            fit = prompt_catalog_fit(prompt, purposes)
+            blocked = [
+                (catalog, purpose) for catalog, purpose in catalogs if not fit.holds(purpose)
+            ]
+            if blocked:
+                catalog_id, purpose = blocked[0]
+                problem = fit.problems.get(purpose, f"unknown purpose {purpose}")
+                refused.append(f"{prompt.prompt_id} (catalog {catalog_id} is {purpose}: {problem})")
+        if refused:
             raise CorpusStoreError(
-                "CORPUS.PROMPT_DUPLICATE",
-                f"prompt {prompt.prompt_id} repeats the text of live prompt {row['prompt_id']}",
+                "CORPUS.PROMPT_UNPUBLISHABLE",
+                "`voice-lab catalog publish` publishes every live prompt, and a catalog of this "
+                f"store could never publish {_named(refused)}; nothing was written",
+            )
+
+    def _require_catalog_holds_live_prompts(
+        self, connection: sqlite3.Connection, definition: CatalogDefinition
+    ) -> None:
+        """A new catalog must hold every live prompt (see ``_require_publishable``)."""
+        refused = [
+            record.prompt.prompt_id
+            for record in self._live_records(connection)
+            if not prompt_catalog_fit(record.prompt, (definition.purpose,)).holds(
+                definition.purpose
+            )
+        ]
+        if refused:
+            raise CorpusStoreError(
+                "CORPUS.CATALOG_UNPUBLISHABLE",
+                f"a {definition.purpose} catalog cannot hold the live prompts "
+                f"{_named(refused)}; every version publishes every live prompt (`voice-lab "
+                "catalog publish`), so nothing was written",
             )
 
     @staticmethod
@@ -1378,17 +1517,21 @@ class CorpusStore:
         connection: sqlite3.Connection,
         prompt: Prompt,
         *,
+        readings: dict[tuple[str, ...], tuple[str, str]],
         source: PromptSource,
         source_reference: str | None,
         created_at: str,
     ) -> PromptRecord:
+        """Insert revision 1; ``readings`` (``_live_readings``) gains the new prompt's."""
         if connection.execute(
             "SELECT 1 FROM corpus_prompts WHERE prompt_id = ?", (prompt.prompt_id,)
         ).fetchone():
             raise CorpusStoreError(
                 "CORPUS.PROMPT_DUPLICATE", f"prompt id already exists: {prompt.prompt_id}"
             )
-        self._require_unique_text(connection, prompt)
+        self._require_distinct_reading(prompt, readings)
+        if prompt.text is not None:
+            readings[_reading_key(prompt.text)] = (prompt.prompt_id, prompt.text)
         ordinal = connection.execute(
             "SELECT COALESCE(MAX(prompt_insertion_ordinal), -1) + 1 FROM corpus_prompts"
         ).fetchone()[0]
@@ -1433,8 +1576,11 @@ class CorpusStore:
         (``prompt_catalog_fit``; applied here so every stored prompt can publish somewhere),
         ``CORPUS.SOURCE_INVALID`` for an unknown source, ``CORPUS.SOURCE_REFERENCE_INVALID``
         for a malformed reference or a harvard/arctic prompt without one,
-        ``CORPUS.PROMPT_DUPLICATE`` when the id exists or a live prompt already has exactly
-        this text; store and path failures as ``open_corpus_store``.
+        ``CORPUS.PROMPT_UNPUBLISHABLE`` when the purpose of one of the store's catalogs
+        refuses the prompt (``publish_version`` takes every live prompt),
+        ``CORPUS.PROMPT_DUPLICATE`` when the id exists or a live prompt already has this text
+        or one that reads the same (``spoken_words``); store and path failures as
+        ``open_corpus_store``. Nothing is written on any refusal.
         """
         prompt = prompt_from_fields(
             prompt_id,
@@ -1451,8 +1597,14 @@ class CorpusStore:
         reference = _validated_source_reference(prompt_source, source_reference)
         now = self._now()
         with self._transaction(write=True) as connection:
+            self._require_publishable(connection, (prompt,))
             return self._insert_prompt(
-                connection, prompt, source=prompt_source, source_reference=reference, created_at=now
+                connection,
+                prompt,
+                readings=self._live_readings(connection),
+                source=prompt_source,
+                source_reference=reference,
+                created_at=now,
             )
 
     def import_prompt_suite(
@@ -1464,9 +1616,11 @@ class CorpusStore:
         ``source`` and ``source_reference`` as in ``add_prompt``, applied to every prompt.
         Returns: the added prompt ids in order.
         Raises: as ``add_prompt`` (``CORPUS.PROMPT_INVALID`` covers a v1 suite whose text
-        carries format or control characters, or whose room tone carries text);
-        ``CORPUS.PROMPT_DUPLICATE`` when any prompt repeats an existing id or a live
-        prompt's text. Nothing is added unless every prompt is.
+        carries format or control characters, or whose room tone carries text;
+        ``CORPUS.PROMPT_UNPUBLISHABLE`` names every refused prompt before anything else is
+        checked); ``CORPUS.PROMPT_DUPLICATE`` when any prompt repeats an existing id, or its
+        text equals or reads the same as a live prompt's or an earlier prompt's of the suite
+        (the message names both prompt ids). Nothing is added unless every prompt is.
         """
         prompts = tuple(_storable_prompt(prompt) for prompt in suite.prompts)
         prompt_source = _validated(_SOURCE, source, "CORPUS.SOURCE_INVALID", "prompt source")
@@ -1486,9 +1640,16 @@ class CorpusStore:
         source_reference: str | None,
         now: str,
     ) -> tuple[str, ...]:
+        self._require_publishable(connection, prompts)
+        readings = self._live_readings(connection)
         return tuple(
             self._insert_prompt(
-                connection, prompt, source=source, source_reference=source_reference, created_at=now
+                connection,
+                prompt,
+                readings=readings,
+                source=source,
+                source_reference=source_reference,
+                created_at=now,
             ).prompt.prompt_id
             for prompt in prompts
         )
@@ -1498,6 +1659,7 @@ class CorpusStore:
         prompt_id: str,
         *,
         keep_recordings: bool = False,
+        allow_rewording: bool = False,
         text: str | None | _Unchanged = UNCHANGED,
         category: str | _Unchanged = UNCHANGED,
         style: str | _Unchanged = UNCHANGED,
@@ -1519,26 +1681,37 @@ class CorpusStore:
         keep the prompt's ``keep_recordings_identity``: it cannot change the held-out flag
         or the spoken/silent behaviour (a room tone never becomes speech coverage, and
         evaluation audio never becomes training audio); make such a change as a default edit.
-        A catalog version's identity is its suite content, so recordings kept only through
-        a revert (A, then B kept, then A again kept) count again only in a version whose
-        content differs from the one already published for A; ``publish_version`` names
-        such prompts when it refuses to republish that content.
-        Params: ``prompt_id``; ``keep_recordings``; each field as in ``add_prompt`` or
-        ``UNCHANGED``; ``expected_revision`` is the revision the caller inspected (counted
-        recordings for, showed the operator): the edit is refused unless it is still the
-        current one, checked inside the write transaction; ``dry_run`` runs every check and
-        builds the revision inside the write transaction, then rolls it back, so nothing is
-        stored.
+        Kept audio trains with the new text, so a keep-recordings edit also accepts only a
+        typo-class text change (``text_change``) unless ``allow_rewording`` says the
+        recordings already say the new text. A catalog version's identity is its suite
+        content, so recordings kept only through a revert (A, then B kept, then A again
+        kept) count again only in a version whose content differs from the one already
+        published for A; ``publish_version`` names such prompts when it refuses to republish
+        that content.
+        Params: ``prompt_id``; ``keep_recordings``; ``allow_rewording`` lifts the typo-class
+        bound of a keep-recordings edit (the caller vouches for the recordings); each field
+        as in ``add_prompt`` or ``UNCHANGED``; ``expected_revision`` is the revision the
+        caller inspected (counted recordings for, showed the operator): the edit is refused
+        unless it is still the current one, checked inside the write transaction;
+        ``dry_run`` runs every check and builds the revision inside the write transaction,
+        then rolls it back, so nothing is stored.
         Returns: the new current record (with ``dry_run``, the record the edit would store).
-        Raises: ``CorpusStoreError`` with ``CORPUS.PROMPT_UNKNOWN``, ``CORPUS.PROMPT_RETIRED``,
+        Raises: ``ValueError`` for ``allow_rewording`` without ``keep_recordings`` (a caller
+        bug); ``CorpusStoreError`` with ``CORPUS.PROMPT_UNKNOWN``, ``CORPUS.PROMPT_RETIRED``,
         ``CORPUS.PROMPT_CHANGED`` (the current revision is not ``expected_revision``),
         ``CORPUS.PROMPT_INVALID`` (the edited fields do not form a valid ``Prompt``, the
         prompt would fit no prompt-suite/v2 catalog, or a keep-recordings edit changes the
         held-out flag or spoken/silent behaviour),
-        ``CORPUS.PROMPT_UNCHANGED`` (the edit reproduces the current content exactly) or
-        ``CORPUS.PROMPT_DUPLICATE`` (another live prompt already has the new text); store and
-        path failures as ``open_corpus_store``.
+        ``CORPUS.PROMPT_UNCHANGED`` (the edit reproduces the current content exactly),
+        ``CORPUS.PROMPT_DUPLICATE`` (another live prompt already has the new text or one
+        that reads the same), ``CORPUS.REWORDING_REFUSED`` (a keep-recordings edit rewords
+        the text beyond a typo-class fix without ``allow_rewording``) or
+        ``CORPUS.PROMPT_UNPUBLISHABLE`` (one of the store's catalogs could not hold the
+        edited prompt); store and path failures as ``open_corpus_store``. The checks run in
+        this order, and nothing is written on any refusal.
         """
+        if allow_rewording and not keep_recordings:
+            raise ValueError("allow_rewording only qualifies a keep_recordings edit")
         requested: dict[str, object] = {
             "text": text,
             "category": category,
@@ -1555,6 +1728,7 @@ class CorpusStore:
                 prompt_id,
                 requested,
                 keep_recordings=keep_recordings,
+                allow_rewording=allow_rewording,
                 expected_revision=expected_revision,
                 now=now,
                 dry_run=dry_run,
@@ -1568,6 +1742,7 @@ class CorpusStore:
         requested: dict[str, object],
         *,
         keep_recordings: bool,
+        allow_rewording: bool,
         expected_revision: int | None,
         now: str,
         dry_run: bool,
@@ -1594,7 +1769,9 @@ class CorpusStore:
                 raise CorpusStoreError(
                     "CORPUS.PROMPT_UNCHANGED", f"edit leaves prompt {prompt_id} unchanged"
                 )
-            self._require_unique_text(connection, prompt)
+            self._require_distinct_reading(
+                prompt, self._live_readings(connection, excluding=prompt_id)
+            )
             accepted: set[str] = set()
             if keep_recordings:
                 if keep_recordings_identity(prompt) != keep_recordings_identity(current.prompt):
@@ -1603,7 +1780,10 @@ class CorpusStore:
                         f"a keep-recordings edit of {prompt_id} cannot change its held-out flag "
                         "or whether it is spoken or silent; make that change as a default edit",
                     )
+                if not allow_rewording:
+                    _require_typo_class(prompt_id, current.prompt.text, prompt.text)
                 accepted = {*current.accepted_prompt_sha256s, current.prompt_sha256} - {digest}
+            self._require_publishable(connection, (prompt,))
             revision = current.revision + 1
             self._insert_revision(
                 connection,
@@ -1810,8 +1990,10 @@ class CorpusStore:
         Params: as ``catalog_definition``.
         Returns: the record with no versions.
         Raises: ``CorpusStoreError`` with ``CORPUS.CATALOG_INVALID`` as
-        ``catalog_definition``, ``CORPUS.CATALOG_DUPLICATE`` when the id exists; store and
-        path failures as ``open_corpus_store``.
+        ``catalog_definition``, ``CORPUS.CATALOG_DUPLICATE`` when the id exists,
+        ``CORPUS.CATALOG_UNPUBLISHABLE`` when the purpose refuses a live prompt (every later
+        version takes every live prompt; the message names them); store and path failures
+        as ``open_corpus_store``.
         """
         definition = catalog_definition(
             catalog_id, suite_id=suite_id, purpose=purpose, description=description
@@ -1830,6 +2012,7 @@ class CorpusStore:
             raise CorpusStoreError(
                 "CORPUS.CATALOG_DUPLICATE", f"catalog id already exists: {catalog_id}"
             )
+        self._require_catalog_holds_live_prompts(connection, definition)
         connection.execute(
             "INSERT INTO corpus_catalogs VALUES (?, ?, ?, ?, NULL, ?)",
             (catalog_id, definition.suite_id, definition.purpose, now, definition.description),
@@ -1860,8 +2043,9 @@ class CorpusStore:
         Raises: ``ValueError`` when ``subject_id`` is given without a seed or missing with
         one (a caller bug); ``CorpusStoreError`` with ``CORPUS.CATALOG_DUPLICATE`` when the
         store already holds any prompt or catalog, ``CORPUS.SUBJECT_INVALID``, and as
-        ``import_prompt_suite``, ``publish_version`` and ``activate``; store and path
-        failures as ``open_corpus_store``.
+        ``import_prompt_suite``, ``create_catalog`` (``CORPUS.CATALOG_UNPUBLISHABLE`` when
+        the definition's purpose refuses a seed prompt), ``publish_version`` and
+        ``activate``; store and path failures as ``open_corpus_store``.
         """
         if (seed is None) != (subject_id is None):
             raise ValueError("a seeded catalog is activated for exactly one subject")

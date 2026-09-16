@@ -102,7 +102,12 @@ class Library:
 
     def edit(self, text: str, *, keep_recordings: bool) -> Version:
         with open_corpus_store(self.layout, create=False) as corpus:
-            corpus.edit_prompt("spoken-0000", text=text, keep_recordings=keep_recordings)
+            corpus.edit_prompt(
+                "spoken-0000",
+                text=text,
+                keep_recordings=keep_recordings,
+                allow_rewording=keep_recordings,
+            )
             reference = corpus.publish_version(CATALOG_ID)
             return reference, corpus.materialize(reference)
 

@@ -35,9 +35,8 @@ def test_snapshot_replies_while_historical_recovery_is_held(
     rig: Rig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    catalog = rig.store.get_group(rig.group_id).catalog_sha256
     workspace = RecordingWorkspaceBackend(
-        rig.layout, "synthetic-subject", catalog, store=rig.store, discover=False
+        rig.layout, "synthetic-subject", store=rig.store, discover=False
     )
     reservation = rig.reserve()
     entered, release = threading.Event(), threading.Event()
@@ -97,9 +96,8 @@ def test_pre_intent_reservation_cannot_be_classified_before_its_protection_commi
     rig: Rig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    catalog = rig.store.get_group(rig.group_id).catalog_sha256
     workspace = RecordingWorkspaceBackend(
-        rig.layout, "synthetic-subject", catalog, store=rig.store, discover=False
+        rig.layout, "synthetic-subject", store=rig.store, discover=False
     )
     entered, release, observed = threading.Event(), threading.Event(), threading.Event()
     failures: list[Any] = []
@@ -174,9 +172,8 @@ def test_bulk_recovery_preserves_current_session_reservation_without_inspection(
     rig: Rig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    catalog = rig.store.get_group(rig.group_id).catalog_sha256
     workspace = RecordingWorkspaceBackend(
-        rig.layout, "synthetic-subject", catalog, store=rig.store, discover=False
+        rig.layout, "synthetic-subject", store=rig.store, discover=False
     )
     try:
         reservation = rig.store.reserve(
@@ -219,9 +216,8 @@ def test_zero_frame_current_session_terminal_resolves_only_through_explicit_rech
     rig: Rig,
 ) -> None:
     """Physical P09: Stop before the first buffer left a protected reservation scanning."""
-    catalog = rig.store.get_group(rig.group_id).catalog_sha256
     workspace = RecordingWorkspaceBackend(
-        rig.layout, "synthetic-subject", catalog, store=rig.store, discover=False
+        rig.layout, "synthetic-subject", store=rig.store, discover=False
     )
     failures: list[Any] = []
     supervisor = RecordingRecoverySupervisor(

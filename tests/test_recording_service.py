@@ -863,10 +863,8 @@ def activate_catalog(
     return reference, snapshot
 
 
-def workspace_backend(
-    layout: AssetLayout, catalog_sha256: str | None = None
-) -> RecordingWorkspaceBackend:
-    return RecordingWorkspaceBackend(layout, SUBJECT, catalog_sha256, discover=False)
+def workspace_backend(layout: AssetLayout) -> RecordingWorkspaceBackend:
+    return RecordingWorkspaceBackend(layout, SUBJECT, discover=False)
 
 
 def execute(backend: RecordingWorkspaceBackend, data: Any) -> ReliableEvent:
@@ -951,13 +949,6 @@ def test_catalog_request_serves_the_active_catalog_pinned_for_the_process(
             assert served.catalog.prompts[1].text == "An edited synthetic sentence."
         finally:
             relaunched.index.close()
-        # An explicit launch digest still names the pre-context snapshot.
-        explicit = workspace_backend(layout, "b" * 64)
-        try:
-            page = execute(explicit, SnapshotCommand())
-            assert isinstance(page, RecordingHistoryPage) and page.catalog_sha256 == "b" * 64
-        finally:
-            explicit.index.close()
     finally:
         backend.index.close()
 
@@ -1025,7 +1016,12 @@ def test_open_context_opens_only_the_pinned_catalog_by_reference(tmp_path: Path)
     suite = store_suite(3)
     first, _ = activate_catalog(layout, suite)
     with open_corpus_store(layout, create=False) as corpus:
-        corpus.edit_prompt("spoken-0000", text="A kept synthetic sentence.", keep_recordings=True)
+        corpus.edit_prompt(
+            "spoken-0000",
+            text="A kept synthetic sentence.",
+            keep_recordings=True,
+            allow_rewording=True,
+        )
         kept = corpus.publish_version("synthetic-corpus")
         corpus.activate(SUBJECT, kept)
         snapshot = corpus.materialize(kept)
@@ -1263,6 +1259,38 @@ def test_service_launch_names_its_catalog_digest_outside_workspace_mode(
     assert not (layout.root / "provenance/corpus").exists()
 
 
+def test_a_workspace_service_refuses_a_launch_catalog_digest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The workspace names its pinned catalog; a launch digest would go unchecked."""
+    from cole_voice_lab.cli import main as cli_main
+    from cole_voice_lab.recording_service import main
+
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    base = [
+        "--asset-root",
+        str(layout.root),
+        "--process-generation",
+        "generation-1",
+        "--build-identity",
+        "service.json",
+        "--expected-client-build",
+        "client.json",
+        "--native-workspace",
+        "--catalog-sha256",
+        "a" * 64,
+    ]
+    for launch in (main, lambda args: cli_main(["recording", "service", *args])):
+        with pytest.raises(SystemExit) as refused:
+            launch(base)
+        assert refused.value.code == 2
+        error = capsys.readouterr().err
+        assert "argument --catalog-sha256: not allowed with argument --native-workspace" in error
+    # Nothing was opened or created: argparse refuses before the service starts.
+    assert not (layout.root / "provenance/corpus").exists()
+    assert not (layout.root / "provenance/recording-takes").exists()
+
+
 def test_real_workspace_service_delivers_its_catalog_before_a_referenced_context(
     tmp_path: Path,
 ) -> None:
@@ -1271,7 +1299,7 @@ def test_real_workspace_service_delivers_its_catalog_before_a_referenced_context
 
     layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
     reference, snapshot = activate_catalog(layout, store_suite(3))
-    service = ServiceProcess(tmp_path.resolve(), layout, None, "catalog-generation")
+    service = ServiceProcess(tmp_path.resolve(), layout, "catalog-generation")
     try:
         delivered = service.request({"command": "catalog", "operation_id": "op-catalog"})
         assert delivered is not None and delivered.error is None
@@ -1358,9 +1386,7 @@ def test_backends_name_a_missing_or_altered_group_snapshot(tmp_path: Path) -> No
     original = path.read_bytes()
 
     def assert_named(state: str) -> None:
-        backend = RecordingWorkspaceBackend(
-            layout, "synthetic-subject", reference.catalog_sha256, discover=False
-        )
+        backend = RecordingWorkspaceBackend(layout, "synthetic-subject", discover=False)
         try:
             with pytest.raises(RecordingServiceError, match=f"references is {state}") as failure:
                 backend.execute(
@@ -1379,9 +1405,7 @@ def test_backends_name_a_missing_or_altered_group_snapshot(tmp_path: Path) -> No
             layout.root / "provenance/recording-takes/.operations/reserve-damaged.json"
         ).exists()
 
-    backend = RecordingWorkspaceBackend(
-        layout, "synthetic-subject", reference.catalog_sha256, discover=False
-    )
+    backend = RecordingWorkspaceBackend(layout, "synthetic-subject", discover=False)
     try:
         event = backend.execute(
             request(SnapshotCommand(), revision=backend.state_revision), RecordingCancellation()

@@ -610,7 +610,6 @@ def test_workspace_backend_selection_prepares_review_without_another_commit(
     backend = RecordingWorkspaceBackend(
         nav.rig.layout,
         "synthetic-subject",
-        nav.context.group.catalog_sha256,
         store=nav.rig.store,
         index=nav.index,
         discover=False,
@@ -661,12 +660,11 @@ class ServiceProcess:
         self,
         directory: Path,
         layout: AssetLayout,
-        catalog_sha256: str | None,
         generation: str,
         *,
         audit_directory: Path | None = None,
     ) -> None:
-        """A real workspace service; ``catalog_sha256`` None omits ``--catalog-sha256``."""
+        """A real workspace service; it pins its subject's active corpus-store catalog."""
         self.generation = generation
         self.counter = 0
         self.revision = 0
@@ -688,7 +686,6 @@ class ServiceProcess:
                 "cole_voice_lab.recording_service",
                 "--asset-root",
                 str(layout.root),
-                *([] if catalog_sha256 is None else ["--catalog-sha256", catalog_sha256]),
                 "--native-workspace",
                 "--subject-id",
                 "synthetic-subject",
@@ -830,9 +827,7 @@ def test_real_service_bootstrap_capture_save_next_lost_reply_and_cursor_recovery
     (audit_directory / "sitecustomize.py").chmod(0o600)
     reference, _ = activate_catalog(layout, store_suite(3))
     digest = reference.catalog_sha256
-    service = ServiceProcess(
-        tmp_path, layout, None, "service-first", audit_directory=audit_directory
-    )
+    service = ServiceProcess(tmp_path, layout, "service-first", audit_directory=audit_directory)
     try:
         # The app's order: catalog first, then a context on the reference it was served.
         served = service.request({"command": "catalog", "operation_id": "catalog-live"})
@@ -896,7 +891,7 @@ def test_real_service_bootstrap_capture_save_next_lost_reply_and_cursor_recovery
         previous_report = report_path.stat().st_mtime_ns
         audit_log.write_bytes(b"")
         service = ServiceProcess(
-            tmp_path, layout, None, "service-restarted", audit_directory=audit_directory
+            tmp_path, layout, "service-restarted", audit_directory=audit_directory
         )
         deadline = time.monotonic() + 30
         while report_path.stat().st_mtime_ns == previous_report and time.monotonic() < deadline:
@@ -945,7 +940,6 @@ def test_blocked_context_preparation_does_not_block_metadata_or_replace_newer_se
     backend = RecordingWorkspaceBackend(
         nav.rig.layout,
         "synthetic-subject",
-        nav.context.group.catalog_sha256,
         store=nav.rig.store,
         index=nav.index,
         discover=False,
@@ -1038,7 +1032,6 @@ def test_workspace_backend_context_history_replay_and_completion_publication(
     backend = RecordingWorkspaceBackend(
         nav.rig.layout,
         "synthetic-subject",
-        nav.context.group.catalog_sha256,
         store=nav.rig.store,
         index=nav.index,
         discover=False,
@@ -1111,7 +1104,6 @@ def test_workspace_backend_preserves_named_failures(
     backend = RecordingWorkspaceBackend(
         nav.rig.layout,
         "synthetic-subject",
-        nav.context.group.catalog_sha256,
         store=nav.rig.store,
         index=nav.index,
         discover=False,

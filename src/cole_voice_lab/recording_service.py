@@ -519,21 +519,19 @@ class RecordingWorkspaceBackend:
         self,
         layout: AssetLayout,
         subject_id: str,
-        catalog_sha256: str | None = None,
         *,
         store: RecordingTakeStore | None = None,
         index: RecordingIndex | None = None,
         discover: bool = True,
         analysis_queue: RecordingAnalysisQueue | None = None,
     ) -> None:
-        """Params: ``catalog_sha256`` is an explicit digest for the pre-context snapshot
-        (``--catalog-sha256``); ``None`` reports the pinned catalog's digest instead.
+        """Params: ``subject_id`` is whose active catalog is pinned and whose takes are
+        served; the pre-context snapshot names the pinned catalog's digest.
         Raises: ``RecordingIndexError``, ``SecurityError`` or ``OSError`` when the index or
         take store cannot be opened or recovered.
         """
         self.layout = layout
         self.subject_id = subject_id
-        self.initial_catalog_sha256 = catalog_sha256
         self._catalog_lock = threading.Lock()
         self._pinned_catalog: PinnedCatalog | None = None
         self.analysis_queue = analysis_queue
@@ -770,12 +768,10 @@ class RecordingWorkspaceBackend:
             cursor = self.store.get_cursor(self.subject_id)
             if cursor is None:
                 if isinstance(command, SnapshotCommand):
-                    # An explicit launch digest names itself; otherwise the page reports the
-                    # pinned catalog's identity, which a root that refuses it never shows.
+                    # The page reports the pinned catalog's identity, which a root that
+                    # refuses that catalog never shows.
                     return RecordingHistoryPage(
-                        catalog_sha256=self.initial_catalog_sha256
-                        if self.initial_catalog_sha256 is not None
-                        else self._served_catalog().reference.catalog_sha256,
+                        catalog_sha256=self._served_catalog().reference.catalog_sha256,
                         index_revision=self.index.revision,
                         completeness="unknown",
                         has_more=False,
@@ -1538,17 +1534,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Launch only on inherited stdin/stdout pipes; no socket listener or audio input is opened.
 
     ``--native-workspace`` serves the subject's active corpus-store catalog (pinned at first
-    use); ``--catalog-sha256`` is optional there and, when given, only names the pre-context
-    snapshot's digest. ``--recording-group-id`` and the unprepared default require
+    use), and its pre-context snapshot names that catalog's digest, so it refuses
+    ``--catalog-sha256``. ``--recording-group-id`` and the unprepared default require
     ``--catalog-sha256`` (the group's digest, or the unprepared snapshot's).
     Returns: 0 after a clean shutdown, 2 after a failure (one JSON line on stderr naming the
     error code, e.g. ``RECORDING.INVALID_MESSAGE`` for a missing ``--catalog-sha256``).
+    Raises: ``SystemExit`` (status 2, argparse usage on stderr) for unusable arguments,
+    ``--catalog-sha256`` together with ``--native-workspace`` included.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset-root", type=Path, required=True)
-    parser.add_argument("--catalog-sha256")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--catalog-sha256")
     parser.add_argument("--recording-group-id")
-    parser.add_argument("--native-workspace", action="store_true")
+    mode.add_argument("--native-workspace", action="store_true")
     parser.add_argument("--subject-id", default="cole-self")
     parser.add_argument("--process-generation", required=True)
     parser.add_argument("--expected-client-build", type=Path, required=True)
@@ -1613,9 +1612,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             backend = prepared
         if options.native_workspace:
-            workspace = RecordingWorkspaceBackend(
-                layout, options.subject_id, options.catalog_sha256
-            )
+            workspace = RecordingWorkspaceBackend(layout, options.subject_id)
             index = workspace.index
             analysis_queue = RecordingAnalysisQueue(
                 workspace.store,

@@ -129,7 +129,6 @@ def test_library_and_workspace_service_forward_selected_prompt(nav: NavigationRi
     backend = RecordingWorkspaceBackend(
         nav.rig.layout,
         "synthetic-subject",
-        nav.context.group.catalog_sha256,
         store=nav.rig.store,
         index=nav.index,
         discover=False,

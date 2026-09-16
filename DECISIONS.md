@@ -290,12 +290,22 @@ the same silent category). The store refuses a keep-recordings edit that changes
 these, and every reader applies the same rule. The reason is that held-out evaluation
 audio must never reach training and silence must never count as speech. For the same
 reason the fine-tune corpus refuses a held-out catalog (`FINETUNE.CATALOG_HELD_OUT`) and
-never trains on held-out or silent recordings. The command additionally limits
-`--keep-recordings` to typo-class text changes unless `--allow-rewording` is given, so
-kept audio says the words it trains with. For store catalogs this is the one exception to
-the exact-digest coverage of docs/PROMPT_CATALOG_V2.md §3.1; built-in catalogs accept no
-aliases.
+never trains on held-out or silent recordings. The store additionally limits a
+keep-recordings edit to typo-class text changes unless the operator allows a rewording
+(`--allow-rewording`), so kept audio says the words it trains with. For store catalogs
+this is the one exception to the exact-digest coverage of docs/PROMPT_CATALOG_V2.md §3.1;
+built-in catalogs accept no aliases.
 
-The command line is the editor; an in-app editor is a separate change. The rollout is
+The store, not the command line, owns every rule about what it may hold: the keep-recordings
+rules above; every live prompt fitting the purpose of every catalog (a version publishes
+every live prompt); and no two live prompts reading the same once case, punctuation and
+spacing are ignored (one recording would count twice). Its write methods apply them in the
+same transaction as the write, so every editor inherits them. The Harvard and CMU ARCTIC
+lists are pinned by the SHA-256 of the published files: neither a plain-http fetch nor a
+saved copy is otherwise authenticated, so another copy is imported only when the operator
+accepts it explicitly, and each of its prompts records that.
+
+The command line is the editor; an in-app editor is a separate change and writes through
+the same store methods. The rollout is
 tracked in `migrations/active/corpus-store.md` until the real library is seeded and the
 new build is installed and confirmed. See docs/CORPUS_STORE.md.

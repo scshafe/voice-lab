@@ -155,9 +155,12 @@ def seeded(cli: Cli, root: Path) -> Any:
 
 
 def excerpt_counts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Treat the checked-in excerpts as whole files (20 sentences each)."""
+    """Treat the checked-in excerpts as the whole published files (20 sentences each)."""
     monkeypatch.setattr(standard_sets, "HARVARD_SENTENCE_COUNT", 20)
     monkeypatch.setattr(standard_sets, "ARCTIC_SENTENCE_COUNT", 20)
+    for name, excerpt in (("harvard", HARVARD_EXCERPT), ("arctic", ARCTIC_EXCERPT)):
+        digest = hashlib.sha256(excerpt.read_bytes()).hexdigest()
+        monkeypatch.setitem(standard_sets.STANDARD_SET_SHA256, name, digest)
 
 
 def saved_copy(name: str, digest: str) -> Path:
@@ -194,7 +197,12 @@ def test_harvard_excerpt_parses_into_twenty_prompts_with_list_and_item_ids() -> 
     assert texts["harvard-02-10"] == "The girl at the booth sold fifty bonds."
 
     prompt_set = standard_prompt_set(
-        "harvard", payload, fetched_at=fetched_at(), url=HARVARD_URL, expected_count=20
+        "harvard",
+        payload,
+        fetched_at=fetched_at(),
+        url=HARVARD_URL,
+        expected_count=20,
+        accept_unpinned_source=True,
     )
     assert prompt_set.suite.schema_version == PROMPT_SUITE_V2
     assert len(prompt_set.suite.prompts) == 20
@@ -211,7 +219,10 @@ def test_harvard_excerpt_parses_into_twenty_prompts_with_list_and_item_ids() -> 
         "fetched_at": "2026-09-16T04:17:51Z",
         "sha256": hashlib.sha256(payload).hexdigest(),
         "license": HARVARD_LICENSE,
+        "unpinned_source_accepted": True,
     }
+    assert prompt_set.unpinned_source_accepted is True
+    assert prompt_set.pinned_sha256 == HARVARD_FILE_SHA256 != prompt_set.sha256
     assert "IEEE" in HARVARD_LICENSE and "10.1109/IEEESTD.1969.7405210" in HARVARD_LICENSE
 
 
@@ -225,7 +236,12 @@ def test_arctic_excerpt_parses_into_twenty_prompts_with_utterance_ids() -> None:
     assert sentences[-1].text == "Clubs and balls and cities grew to be only memories."
     copy_url = COPY_URLS["import-arctic"]
     prompt_set = standard_prompt_set(
-        "arctic", payload, fetched_at=fetched_at(), url=copy_url, expected_count=20
+        "arctic",
+        payload,
+        fetched_at=fetched_at(),
+        url=copy_url,
+        expected_count=20,
+        accept_unpinned_source=True,
     )
     assert {prompt.category for prompt in prompt_set.suite.prompts} == {"neutral"}
     assert prompt_set.suite.prompts[4].expected_seconds == standard_expected_seconds(
@@ -377,6 +393,14 @@ def test_the_published_sets_parse_to_720_and_1132_sentences() -> None:
     )
     assert len(harvard.suite.prompts) == 720 and len(arctic.suite.prompts) == 1_132
     assert harvard.sha256 == HARVARD_FILE_SHA256 and arctic.sha256 == ARCTIC_FILE_SHA256
+    # The saved copies are the pinned published lists, so no override is recorded.
+    assert standard_sets.STANDARD_SET_SHA256 == {
+        "harvard": HARVARD_FILE_SHA256,
+        "arctic": ARCTIC_FILE_SHA256,
+    }
+    for prompt_set in (harvard, arctic):
+        assert prompt_set.unpinned_source_accepted is False
+        assert "unpinned_source_accepted" not in json.loads(prompt_set.source_reference)
     arctic_ids = [prompt.prompt_id for prompt in arctic.suite.prompts]
     assert sum(prompt_id.startswith("arctic-a") for prompt_id in arctic_ids) == 593
     assert sum(prompt_id.startswith("arctic-b") for prompt_id in arctic_ids) == 539
@@ -887,7 +911,7 @@ def test_a_second_catalog_is_created_explicitly_and_published_from_the_same_prom
         *base,
         "--purpose",
         "held-out-evaluation",
-        code="CATALOG_CLI.CATALOG_UNPUBLISHABLE",
+        code="CORPUS.CATALOG_UNPUBLISHABLE",
     )
     assert "a held-out-evaluation catalog cannot hold the live prompts reference-neutral-01" in (
         refusal
@@ -1049,6 +1073,112 @@ def test_a_duplicate_text_or_a_repeated_import_is_refused_and_nothing_is_written
         assert len(store.list_prompts(include_retired=True)) == 55
 
 
+def test_a_set_sentence_that_reads_like_a_live_prompt_is_refused_naming_both(
+    cli: Cli, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Case and punctuation apart, harvard-01-01 is a prompt the store already holds."""
+    seeded(cli, root)
+    excerpt_counts(monkeypatch)
+    base = ("--asset-root", str(root))
+    cli.json(
+        "catalog",
+        "add-prompt",
+        "my-canoe",
+        *base,
+        "--text",
+        "the Birch canoe slid on the smooth planks",
+    )
+    refusal = cli.refused(
+        "catalog",
+        "import-harvard",
+        *base,
+        "--from-file",
+        str(HARVARD_EXCERPT),
+        "--fetched-at",
+        FETCHED_AT,
+        "--source-url",
+        HARVARD_URL,
+        code="CORPUS.PROMPT_DUPLICATE",
+    )
+    assert (
+        "prompt harvard-01-01 reads the same as live prompt my-canoe (ignoring case, "
+        'punctuation and spacing): "The birch canoe slid on the smooth planks." and '
+        '"the Birch canoe slid on the smooth planks"'
+    ) in refusal
+    with store_of(root) as store:
+        ids = [record.prompt.prompt_id for record in store.list_prompts(include_retired=True)]
+    assert len(ids) == 35 and not any(prompt_id.startswith("harvard") for prompt_id in ids)
+    # Once the operator's prompt is retired, the set imports whole.
+    cli.json("catalog", "retire-prompt", "my-canoe", *base)
+    assert _import(cli, root, "import-harvard", HARVARD_EXCERPT)["prompt_count"] == 20
+
+
+def test_a_copy_that_is_not_the_published_list_is_imported_only_on_the_operators_word(
+    cli: Cli, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither plain-http fetches nor saved copies are authenticated; the pinned digest is."""
+    seeded(cli, root)
+    # The excerpts parse as whole sets but keep the published lists' pinned digests.
+    monkeypatch.setattr(standard_sets, "HARVARD_SENTENCE_COUNT", 20)
+    monkeypatch.setattr(standard_sets, "ARCTIC_SENTENCE_COUNT", 20)
+    assert standard_sets.STANDARD_SET_SHA256 == {
+        "harvard": HARVARD_FILE_SHA256,
+        "arctic": ARCTIC_FILE_SHA256,
+    }
+    moment = datetime(2026, 9, 16, 12, tzinfo=UTC)
+    monkeypatch.setattr(
+        standard_sets,
+        "fetch_standard_set",
+        lambda name: (ARCTIC_EXCERPT.read_bytes(), moment, ARCTIC_URL),
+    )
+    base = ("--asset-root", str(root))
+    harvard_digest = hashlib.sha256(HARVARD_EXCERPT.read_bytes()).hexdigest()
+    copy = (
+        "catalog",
+        "import-harvard",
+        *base,
+        "--from-file",
+        str(HARVARD_EXCERPT),
+        "--fetched-at",
+        FETCHED_AT,
+        "--source-url",
+        HARVARD_URL,
+    )
+    refusal = cli.refused(*copy, code="CORPUS.SOURCE_INVALID")
+    assert (
+        f"the harvard copy has sha256 {harvard_digest}, not {HARVARD_FILE_SHA256}, the "
+        "published list's; nothing was imported"
+    ) in refusal
+    assert "pass --accept-unpinned-source to import this one" in refusal
+    fetched = cli.refused(
+        "catalog", "import-arctic", *base, "--fetch", code="CORPUS.SOURCE_INVALID"
+    )
+    assert f"not {ARCTIC_FILE_SHA256}, the published list's" in fetched
+    with store_of(root) as store:
+        assert len(store.list_prompts(include_retired=True)) == 34
+
+    for arguments, source, digest, pinned in (
+        (copy, "harvard", harvard_digest, HARVARD_FILE_SHA256),
+        (
+            ("catalog", "import-arctic", *base, "--fetch"),
+            "arctic",
+            hashlib.sha256(ARCTIC_EXCERPT.read_bytes()).hexdigest(),
+            ARCTIC_FILE_SHA256,
+        ),
+    ):
+        printed = cli.json(*arguments, "--accept-unpinned-source")
+        assert (printed["sha256"], printed["pinned_sha256"]) == (digest, pinned)
+        assert printed["unpinned_source_accepted"] is True and printed["prompt_count"] == 20
+        with store_of(root) as store:
+            records = [r for r in store.list_prompts() if r.source == source]
+        assert len(records) == 20
+        for record in records:
+            assert record.source_reference is not None
+            reference = json.loads(record.source_reference)
+            assert reference["sha256"] == digest
+            assert reference["unpinned_source_accepted"] is True
+
+
 def test_the_published_sets_import_whole_and_publish_1886_prompts(cli: Cli, root: Path) -> None:
     harvard = saved_copy("harvard.html", HARVARD_FILE_SHA256)
     arctic = saved_copy("cmuarctic.data", ARCTIC_FILE_SHA256)
@@ -1056,6 +1186,8 @@ def test_the_published_sets_import_whole_and_publish_1886_prompts(cli: Cli, root
     assert _import(cli, root, "import-harvard", harvard)["prompt_count"] == 720
     printed = _import(cli, root, "import-arctic", arctic)
     assert printed["prompt_count"] == 1_132
+    assert printed["sha256"] == printed["pinned_sha256"] == ARCTIC_FILE_SHA256
+    assert printed["unpinned_source_accepted"] is False
     assert (printed["first_prompt_id"], printed["last_prompt_id"]) == (
         "arctic-a0001",
         "arctic-b0539",
@@ -1240,7 +1372,7 @@ def test_prompts_a_catalog_of_the_store_cannot_publish_are_refused_before_writin
 ) -> None:
     seeded(cli, root)
     base = ("--asset-root", str(root))
-    unpublishable = "CATALOG_CLI.PROMPT_UNPUBLISHABLE"
+    unpublishable = "CORPUS.PROMPT_UNPUBLISHABLE"
     refusal = cli.refused(
         "catalog",
         "add-prompt",
@@ -1316,7 +1448,7 @@ def test_a_store_without_catalogs_takes_any_prompt_and_a_catalog_must_fit_them(
         *base,
         "--purpose",
         "capture-pilot",
-        code="CATALOG_CLI.CATALOG_UNPUBLISHABLE",
+        code="CORPUS.CATALOG_UNPUBLISHABLE",
     )
     cli.json("catalog", "create", "evaluation-set", *base, "--purpose", "held-out-evaluation")
     published = cli.json("catalog", "publish", *base, "--catalog-id", "evaluation-set")
@@ -1403,7 +1535,9 @@ def test_publish_show_export_and_activate_name_exact_versions(
 
 
 @pytest.mark.parametrize(
-    "version", ["0", "-1", "one", "1.0", str(MAX_CATALOG_VERSION + 1), "9" * 30, "9" * 5000]
+    "version",
+    ["0", "01", "007", "-1", "+1", " 1", "one", "1.0", "١", str(MAX_CATALOG_VERSION + 1)]
+    + ["9" * 30, "9" * 5000],
 )
 def test_a_version_flag_takes_only_a_positive_sqlite_integer(
     cli: Cli, root: Path, version: str
@@ -1417,8 +1551,10 @@ def test_a_version_flag_takes_only_a_positive_sqlite_integer(
         with pytest.raises(SystemExit) as refused:
             build_parser().parse_args(command)
         assert refused.value.code == 2
-        assert "expected a positive whole number" in cli.capsys.readouterr().err
-    assert build_parser().parse_args(["catalog", "show", "--version", "007"]).version == 7
+        error = cli.capsys.readouterr().err
+        assert "expected a positive whole number of at most" in error
+        assert "without a leading zero" in error
+    assert build_parser().parse_args(["catalog", "show", "--version", "7"]).version == 7
     largest = str(MAX_CATALOG_VERSION)
     assert build_parser().parse_args(["catalog", "show", "--version", largest]).version == (
         MAX_CATALOG_VERSION
@@ -1430,8 +1566,9 @@ def test_a_version_flag_takes_only_a_positive_sqlite_integer(
 
 
 def test_activation_keeps_a_physical_test_catalog_off_a_standard_root(cli: Cli, root: Path) -> None:
-    seeded(cli, root)
-    with store_of(root) as store:
+    # A store holds a physical-test catalog only beside prompts it can publish, so this one
+    # is created through the store API (catalog init refuses it on a standard root).
+    with open_corpus_store(AssetLayout.validate(root), create=True) as store:
         store.import_prompt_suite(
             PromptSuite.model_validate_json(
                 json.dumps(
@@ -1469,8 +1606,9 @@ def test_activation_keeps_a_physical_test_catalog_off_a_standard_root(cli: Cli, 
         "1",
     )
     assert PHYSICAL_TEST_CATALOG_REFUSAL in refusal
-    with store_of(root) as store:
-        assert store.active_catalog(SUBJECT)[1].catalog_id == "cole-corpus"
+    with store_of(root) as store, pytest.raises(CorpusStoreError) as inactive:
+        store.active_catalog(SUBJECT)
+    assert inactive.value.code == "CORPUS.NO_ACTIVE_CATALOG"
 
 
 # -- add, edit, retire -------------------------------------------------------------------
@@ -1579,7 +1717,7 @@ def test_prompts_are_added_edited_and_retired_through_the_cli(cli: Cli, root: Pa
         "procedure",
         "--label",
         "test",
-        code="CATALOG_CLI.PROMPT_UNPUBLISHABLE",
+        code="CORPUS.PROMPT_UNPUBLISHABLE",
     )
     spoken_again = cli.json(
         "catalog",
@@ -1597,7 +1735,7 @@ def test_prompts_are_added_edited_and_retired_through_the_cli(cli: Cli, root: Pa
     )
     assert spoken_again["record"]["prompt"]["text"] == "Now it is spoken."
     assert "instructions" not in spoken_again["record"]["prompt"]
-    assert spoken_again["recordings"]["fits_no_catalog"] is None
+    assert "fits_no_catalog" not in spoken_again["recordings"]
     assert spoken_again["text_change"] == {
         "before": None,
         "after": "Now it is spoken.",
@@ -1690,7 +1828,7 @@ def test_edit_prompt_states_the_text_and_the_native_recordings_before_it_writes(
         "--text",
         "Synthetic sentence zero.",
         "--keep-recordings",
-        code="CATALOG_CLI.REWORDING_REFUSED",
+        code="CORPUS.REWORDING_REFUSED",
     )
     assert '"Synthetic sentence number 0." -> "Synthetic sentence zero." is a rewording' in refusal
     assert "add --allow-rewording if the recordings already say the new text" in refusal
@@ -1743,7 +1881,6 @@ def test_edit_prompt_states_the_text_and_the_native_recordings_before_it_writes(
         "outcome": "invalidated",
         "take_ids": [library.take_id],
         "unknown_record_ids": [],
-        "fits_no_catalog": None,
     }
     assert invalidated["text_change"]["typo_class"] is False
     assert invalidated["previous"]["keeps_recordings"] is True
@@ -2094,7 +2231,10 @@ def test_an_unknown_catalog_is_refused_by_name_and_code_in_every_command(
 
     seeded(cli, root)
     too_large = f"cole-corpus@{MAX_CATALOG_VERSION + 1}"
-    whole = f"(a version is a positive whole number of at most {MAX_CATALOG_VERSION})"
+    whole = (
+        f"(a version is a positive whole number of at most {MAX_CATALOG_VERSION}, without "
+        "a leading zero)"
+    )
     for name, code, detail in (
         ("cole-corpus@2", "CORPUS.VERSION_UNKNOWN", "(catalog cole-corpus has no version 2)"),
         ("other", "CORPUS.CATALOG_UNKNOWN", "(unknown catalog: other)"),

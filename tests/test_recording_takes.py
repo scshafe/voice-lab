@@ -21,7 +21,11 @@ from cole_voice_lab.canonical import (
     sha256_file,
     write_canonical_json,
 )
-from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
+from cole_voice_lab.corpus_store import (
+    CorpusSnapshotSecurityError,
+    CorpusStore,
+    open_corpus_store,
+)
 from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.models import PROMPT_SUITE_V2, CaptureDevice, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
@@ -286,6 +290,17 @@ def publish_catalog(
         return reference, corpus.materialize(reference)
 
 
+def allow_mixed_purpose_store(patch: pytest.MonkeyPatch) -> None:
+    """Let one library's store hold catalogs whose purposes share no prompt.
+
+    The store refuses that through its API (every live prompt must fit every catalog), so
+    only a store written some other way holds, say, a capture catalog beside a
+    physical-test one. Readers and root guards must still refuse such a version.
+    """
+    patch.setattr(CorpusStore, "_require_publishable", lambda *_: None)
+    patch.setattr(CorpusStore, "_require_catalog_holds_live_prompts", lambda *_: None)
+
+
 def open_referenced(
     store: RecordingTakeStore,
     reference: CatalogReference,
@@ -348,7 +363,12 @@ def test_referenced_groups_are_reused_and_replayed_only_for_the_same_reference(r
     assert again.group_id not in {group.group_id, embedded.group_id}
     assert open_referenced(rig.store, reference, snapshot, new_setup=True).reason == "new-setup"
     with open_corpus_store(rig.layout, create=False) as corpus:
-        corpus.edit_prompt("spoken-0000", text="Synthetic sentence zero.", keep_recordings=True)
+        corpus.edit_prompt(
+            "spoken-0000",
+            text="Synthetic sentence zero.",
+            keep_recordings=True,
+            allow_rewording=True,
+        )
         newer = corpus.publish_version("synthetic-corpus")
         newer_snapshot = corpus.materialize(newer)
     changed = open_referenced(rig.store, newer, newer_snapshot)
@@ -365,14 +385,18 @@ def test_referenced_groups_are_reused_and_replayed_only_for_the_same_reference(r
     assert group_files(rig) == files
 
 
-def test_open_group_takes_exactly_one_catalog_form_and_a_matching_suite(rig: Rig) -> None:
+def test_open_group_takes_exactly_one_catalog_form_and_a_matching_suite(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
     reference, snapshot = publish_catalog(rig.layout, store_suite(2))
-    physical, physical_snapshot = publish_catalog(
-        rig.layout,
-        synthetic_physical_test_catalog(),
-        catalog_id="physical",
-        suite_id="cole-physical-test-synthetic",
-    )
+    with monkeypatch.context() as patch:
+        allow_mixed_purpose_store(patch)
+        physical, physical_snapshot = publish_catalog(
+            rig.layout,
+            synthetic_physical_test_catalog(),
+            catalog_id="physical",
+            suite_id="cole-physical-test-synthetic",
+        )
     files = group_files(rig)
     identity = {"subject_id": "synthetic-subject", "capture_device": DEVICE, "capture_host": "host"}
     with pytest.raises(TypeError, match="not both"):

@@ -56,8 +56,9 @@ The loader generates a fresh process UUID for each peer on every launch and adds
 no catalog digest to the service: the service pins its catalog from the corpus
 store. Base arguments cannot supply any of these flags or `--catalog-sha256`,
 which stays reserved on both sides (`_RESERVED_ARGUMENTS` in Python, `peer()` in
-Swift) so a configuration can never name the catalog. The normal helper has no
-base arguments. Normal service base arguments are
+Swift) so a configuration can never name the catalog; a `--native-workspace`
+service also refuses `--catalog-sha256` itself (argparse, exit 2). The normal
+helper has no base arguments. Normal service base arguments are
 `-m cole_voice_lab.recording_service --native-workspace --subject-id SUBJECT`.
 Omit `--recording-group-id`; the typed context response owns the current group.
 

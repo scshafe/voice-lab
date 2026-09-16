@@ -277,7 +277,12 @@ def test_selection_names_a_published_version_only_when_it_seals_the_selected_cat
     layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
     first, plain = publish_catalog(layout, store_suite(2))
     with open_corpus_store(layout, create=False) as corpus:
-        corpus.edit_prompt("spoken-0001", text="Synthetic sentence one.", keep_recordings=True)
+        corpus.edit_prompt(
+            "spoken-0001",
+            text="Synthetic sentence one.",
+            keep_recordings=True,
+            allow_rewording=True,
+        )
         second = corpus.publish_version("synthetic-corpus")
         aliased = corpus.materialize(second)
     corpus_of = select_finetune_corpus(layout, aliased, SUBJECT, reference=second)

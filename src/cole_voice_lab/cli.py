@@ -10,7 +10,7 @@ import re
 import stat
 import subprocess
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -144,16 +144,11 @@ DEFAULT_CATALOG_ID = "cole-corpus"
 BUILTIN_PROMPT_SOURCES = {"pilot-v1": "pilot-v1", "pilot-v2": "pilot-v2"}
 # Catalog versions and prompt revisions are SQLite integers (corpus_store.MAX_CATALOG_VERSION).
 MAX_CLI_VERSION = 2**63 - 1
-# At most this many prompts are named in one refusal.
-MAX_NAMED_PROMPTS = 10
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]*\.[A-Z][A-Z0-9_]*$")
 
 type CatalogCommandCode = Literal[
     "CATALOG_CLI.USAGE_INVALID",
     "CATALOG_CLI.CATALOG_ID_RESERVED",
-    "CATALOG_CLI.REWORDING_REFUSED",
-    "CATALOG_CLI.PROMPT_UNPUBLISHABLE",
-    "CATALOG_CLI.CATALOG_UNPUBLISHABLE",
 ]
 
 
@@ -161,11 +156,11 @@ class CatalogCommandError(VoiceLabError):
     """A refusal the catalog commands decide themselves; ``code`` names it.
 
     ``CATALOG_CLI.USAGE_INVALID``: a flag combination the command refuses.
-    ``CATALOG_CLI.CATALOG_ID_RESERVED``: a new catalog named like a released built-in.
-    ``CATALOG_CLI.REWORDING_REFUSED``: ``--keep-recordings`` for more than a typo-class fix.
-    ``CATALOG_CLI.PROMPT_UNPUBLISHABLE``: a prompt one of the store's catalogs cannot hold.
-    ``CATALOG_CLI.CATALOG_UNPUBLISHABLE``: a new catalog that cannot hold the live prompts.
-    Store refusals stay ``CorpusStoreError`` (``CORPUS.*``).
+    ``CATALOG_CLI.CATALOG_ID_RESERVED``: a new catalog named like a released built-in (the
+    CLI resolves built-in names first, so only the CLI can reserve them).
+    Every rule about what the store may hold is the store's own and stays a
+    ``CorpusStoreError`` (``CORPUS.*``): the typo-class bound of a keep-recordings edit,
+    every live prompt fitting every catalog, and no two live prompts reading the same.
     """
 
     def __init__(self, code: CatalogCommandCode, message: str) -> None:
@@ -214,14 +209,33 @@ def _aware_datetime(value: str) -> datetime:
     return parsed
 
 
+def _version_number(text: str) -> int | None:
+    """``text`` as a catalog version or prompt revision, or ``None`` when it is not one.
+
+    The one spelling every version flag and ``<catalog_id>@<version>`` accept: ASCII digits
+    without a leading zero, 1 to ``MAX_CLI_VERSION`` (so ``7`` names version 7 and ``07``
+    names nothing).
+    """
+    if (
+        not text.isascii()
+        or not text.isdecimal()
+        or text[0] == "0"
+        or len(text) > len(str(MAX_CLI_VERSION))
+        or int(text) > MAX_CLI_VERSION
+    ):
+        return None
+    return int(text)
+
+
 def _positive_number(value: str) -> int:
-    """An argparse type for a catalog version or prompt revision (1 to ``MAX_CLI_VERSION``)."""
-    digits = value.isascii() and value.isdecimal() and len(value.lstrip("0")) <= 19
-    if not digits or not 1 <= int(value) <= MAX_CLI_VERSION:
+    """An argparse type for a catalog version or prompt revision (``_version_number``)."""
+    number = _version_number(value)
+    if number is None:
         raise argparse.ArgumentTypeError(
-            f"expected a positive whole number of at most {MAX_CLI_VERSION}: {value}"
+            f"expected a positive whole number of at most {MAX_CLI_VERSION}, without a "
+            f"leading zero: {value}"
         )
-    return int(value)
+    return number
 
 
 def _asset_root(value: str | None) -> Path:
@@ -538,20 +552,16 @@ def _parse_catalog_name(name: str, builtins: Mapping[str, str]) -> tuple[str, in
         raise _unknown_catalog(name, builtins, "CORPUS.CATALOG_UNKNOWN")
     if not separator:
         return catalog_id, None
-    if (
-        not version_text.isascii()
-        or not version_text.isdecimal()
-        or version_text[0] == "0"
-        or len(version_text) > len(str(MAX_CLI_VERSION))
-        or int(version_text) > MAX_CLI_VERSION
-    ):
+    version = _version_number(version_text)
+    if version is None:
         raise _unknown_catalog(
             name,
             builtins,
             "CORPUS.VERSION_UNKNOWN",
-            f"a version is a positive whole number of at most {MAX_CLI_VERSION}",
+            f"a version is a positive whole number of at most {MAX_CLI_VERSION}, without a "
+            "leading zero",
         )
-    return catalog_id, int(version_text)
+    return catalog_id, version
 
 
 def _resolve_catalog(
@@ -979,13 +989,6 @@ def _new_catalog_id(catalog_id: str) -> str:
     return catalog_id
 
 
-def _named(items: Sequence[str]) -> str:
-    """At most ``MAX_NAMED_PROMPTS`` items, then how many more there are."""
-    shown = ", ".join(items[:MAX_NAMED_PROMPTS])
-    extra = len(items) - MAX_NAMED_PROMPTS
-    return shown + (f" and {extra} more" if extra > 0 else "")
-
-
 def _timestamp_json(value: datetime | None) -> str | None:
     return None if value is None else value.isoformat()
 
@@ -1042,38 +1045,6 @@ def _active_reference(store: CorpusStore, subject_id: str) -> CatalogReference |
         if error.code != "CORPUS.NO_ACTIVE_CATALOG":
             raise
         return None
-
-
-def _require_publishable(store: CorpusStore, prompts: Sequence[Prompt]) -> None:
-    """Refuse prompts that a catalog of this store could never publish.
-
-    ``voice-lab catalog publish`` publishes every live prompt, so one live prompt that a
-    catalog's purpose refuses (a held-out prompt in a capture catalog, a ``test`` label
-    outside a physical-test one) would stop every later version of that catalog, and
-    retiring it would use its id up for good. Raises ``CatalogCommandError``
-    ``CATALOG_CLI.PROMPT_UNPUBLISHABLE`` naming the prompts before anything is written.
-    """
-    from .corpus_store import prompt_catalog_fit
-
-    catalogs = [record for record in store.list_catalogs() if record.retired_at is None]
-    if not catalogs:
-        return
-    purposes = tuple(dict.fromkeys(record.purpose for record in catalogs))
-    refused: list[str] = []
-    for prompt in prompts:
-        fit = prompt_catalog_fit(prompt, purposes)
-        blocked = next((record for record in catalogs if not fit.holds(record.purpose)), None)
-        if blocked is not None:
-            refused.append(
-                f"{prompt.prompt_id} (catalog {blocked.catalog_id} is {blocked.purpose}: "
-                f"{fit.problems[blocked.purpose]})"
-            )
-    if refused:
-        raise CatalogCommandError(
-            "CATALOG_CLI.PROMPT_UNPUBLISHABLE",
-            "`voice-lab catalog publish` publishes every live prompt, and a catalog of this "
-            f"store could never publish {_named(refused)}; nothing was written",
-        )
 
 
 def _init_refusal(store: CorpusStore, subject_id: str) -> str | None:
@@ -1212,7 +1183,7 @@ def _catalog_init(options: argparse.Namespace) -> int:
 
 
 def _catalog_create(options: argparse.Namespace) -> int:
-    from .corpus_store import catalog_definition, prompt_catalog_fit
+    from .corpus_store import catalog_definition
 
     layout = _catalog_layout(options)
     definition = catalog_definition(
@@ -1222,20 +1193,7 @@ def _catalog_create(options: argparse.Namespace) -> int:
         description=options.description,
     )
     with _open_catalog_store(layout) as store:
-        refused = [
-            record.prompt.prompt_id
-            for record in store.list_prompts()
-            if not prompt_catalog_fit(record.prompt, (definition.purpose,)).holds(
-                definition.purpose
-            )
-        ]
-        if refused:
-            raise CatalogCommandError(
-                "CATALOG_CLI.CATALOG_UNPUBLISHABLE",
-                f"a {definition.purpose} catalog cannot hold the live prompts "
-                f"{_named(refused)}, and `voice-lab catalog publish` publishes every live "
-                "prompt; nothing was written",
-            )
+        # The store refuses a purpose that cannot hold every live prompt.
         record = store.create_catalog(
             definition.catalog_id,
             suite_id=definition.suite_id,
@@ -1358,9 +1316,10 @@ def _catalog_add_prompt(options: argparse.Namespace) -> int:
         "reference_candidate": options.reference_candidate,
         "holdout": options.holdout,
     }
-    prompt = prompt_from_fields(options.prompt_id, **fields)
+    # The fields are checked before the store is opened; the store checks them again, with
+    # every rule about the other live prompts and the catalogs, inside its write.
+    prompt_from_fields(options.prompt_id, **fields)
     with _open_catalog_store(layout) as store:
-        _require_publishable(store, (prompt,))
         record = store.add_prompt(options.prompt_id, source="manual", **fields)
     _json_print(_prompt_record_json(record))
     return 0
@@ -1413,14 +1372,11 @@ def _text_change_json(before: Prompt, after: Prompt) -> dict[str, JsonValue] | N
     }
 
 
-def _recordings_line(
-    prompt_id: str, subject_id: str, count: int, keep: bool, fits_no_catalog: str | None
-) -> str:
+def _recordings_line(prompt_id: str, subject_id: str, count: int, keep: bool) -> str:
     """What an edit does to the recordings that count for the prompt now, in one line."""
     if count == 0:
-        reason = "" if fits_no_catalog is None else f" (no catalog can hold it: {fits_no_catalog})"
         return (
-            f"{prompt_id}: no recordings of {subject_id} count for this prompt now{reason}, so "
+            f"{prompt_id}: no recordings of {subject_id} count for this prompt now, so "
             f"this edit {'keeps' if keep else 'invalidates'} none"
         )
     them = "it" if count == 1 else "them"
@@ -1432,25 +1388,6 @@ def _recordings_line(
     return (
         f"{prompt_id}: {count} recording{'' if count == 1 else 's'} of {subject_id} "
         f"count{'s' if count == 1 else ''} for this prompt now; {consequence}"
-    )
-
-
-def _require_typo_class(prompt_id: str, before: Prompt, after: Prompt) -> None:
-    """``--keep-recordings`` pairs old audio with the new text, so the words must still match."""
-    from .corpus_store import MAX_KEPT_CHARACTER_EDITS, MAX_KEPT_WORD_EDITS, text_change
-
-    if before.text is None or after.text is None or before.text == after.text:
-        return  # silent prompts carry no transcript; spoken/silent changes the store refuses
-    if text_change(before.text, after.text).typo_class:
-        return
-    raise CatalogCommandError(
-        "CATALOG_CLI.REWORDING_REFUSED",
-        f"--keep-recordings keeps {prompt_id}'s recordings only for a typo-class fix (at most "
-        f"{MAX_KEPT_WORD_EDITS} word edits and {MAX_KEPT_CHARACTER_EDITS} character edits, "
-        f"ignoring case, punctuation and spacing), and {_quoted(before.text)} -> "
-        f"{_quoted(after.text)} is a rewording: the kept audio would train with words it does "
-        "not say. Edit without --keep-recordings (the prompt is recorded again), or add "
-        "--allow-rewording if the recordings already say the new text; nothing was written",
     )
 
 
@@ -1471,18 +1408,22 @@ def _catalog_edit_prompt(options: argparse.Namespace) -> int:
         )
     prompt_id = options.prompt_id
     keep = options.keep_recordings
+    rewording = options.allow_rewording
     with _open_catalog_store(layout) as store:
         current = store.prompt_history(prompt_id)[-1]
         # The revision counted and shown here is the only one the write may replace.
         revision = options.expected_revision or current.revision
-        # Every store check runs first (the preview is rolled back), so a refused edit
-        # never reports recordings it would not touch.
+        # Every store check (the keep-recordings rewording bound and catalog fit included)
+        # runs first in a rolled-back preview, so a refused edit never reports recordings it
+        # would not touch.
         preview = store.edit_prompt(
-            prompt_id, keep_recordings=keep, expected_revision=revision, dry_run=True, **changes
+            prompt_id,
+            keep_recordings=keep,
+            allow_rewording=rewording,
+            expected_revision=revision,
+            dry_run=True,
+            **changes,
         )
-        if keep and not options.allow_rewording:
-            _require_typo_class(prompt_id, current.prompt, preview.prompt)
-        _require_publishable(store, (preview.prompt,))
         counted = prompt_recordings(
             layout, options.subject_id, current.prompt, current.accepted_prompt_sha256s
         )
@@ -1492,9 +1433,7 @@ def _catalog_edit_prompt(options: argparse.Namespace) -> int:
             for line in (_text_change_line(prompt_id, current.prompt, preview.prompt),)
             if line is not None
         ]
-        lines.append(
-            _recordings_line(prompt_id, options.subject_id, count, keep, counted.fits_no_catalog)
-        )
+        lines.append(_recordings_line(prompt_id, options.subject_id, count, keep))
         unknown = counted.unknown_record_ids
         if unknown:
             state = "record whose prompts" if len(unknown) == 1 else "records whose prompts"
@@ -1508,7 +1447,11 @@ def _catalog_edit_prompt(options: argparse.Namespace) -> int:
             preview
             if options.dry_run
             else store.edit_prompt(
-                prompt_id, keep_recordings=keep, expected_revision=current.revision, **changes
+                prompt_id,
+                keep_recordings=keep,
+                allow_rewording=rewording,
+                expected_revision=current.revision,
+                **changes,
             )
         )
     if options.json:
@@ -1523,7 +1466,6 @@ def _catalog_edit_prompt(options: argparse.Namespace) -> int:
                     "outcome": "kept" if keep else "invalidated",
                     "take_ids": list(counted.take_ids),
                     "unknown_record_ids": list(unknown),
-                    "fits_no_catalog": counted.fits_no_catalog,
                 },
                 "written": not options.dry_run,
                 "previous": _prompt_record_json(current),
@@ -1603,9 +1545,16 @@ def _catalog_import_standard(
     else:
         payload = read_standard_set_file(Path(options.from_file))
         fetched_at, url = options.fetched_at, options.source_url
-    prompt_set = standard_prompt_set(name, payload, fetched_at=fetched_at, url=url)
+    prompt_set = standard_prompt_set(
+        name,
+        payload,
+        fetched_at=fetched_at,
+        url=url,
+        accept_unpinned_source=options.accept_unpinned_source,
+    )
     with _open_catalog_store(layout) as store:
-        _require_publishable(store, prompt_set.suite.prompts)
+        # One store transaction: every catalog must hold the set, and no sentence may read
+        # like a live prompt, or nothing is imported.
         prompt_ids = store.import_prompt_suite(
             prompt_set.suite, source=name, source_reference=prompt_set.source_reference
         )
@@ -1615,6 +1564,8 @@ def _catalog_import_standard(
             "url": prompt_set.url,
             "fetched_at": prompt_set.fetched_at.isoformat(),
             "sha256": prompt_set.sha256,
+            "pinned_sha256": prompt_set.pinned_sha256,
+            "unpinned_source_accepted": prompt_set.unpinned_source_accepted,
             "prompt_count": len(prompt_ids),
             "first_prompt_id": prompt_ids[0],
             "last_prompt_id": prompt_ids[-1],
@@ -1638,7 +1589,6 @@ def _catalog_import_json(options: argparse.Namespace) -> int:
     layout = _catalog_layout(options)
     suite = _read_bounded_contract(Path(options.suite_path), PromptSuite)
     with _open_catalog_store(layout) as store:
-        _require_publishable(store, suite.prompts)
         prompt_ids = store.import_prompt_suite(suite, source="import")
     _json_print(
         {
@@ -1858,8 +1808,9 @@ def _recording_continue_legacy(options: argparse.Namespace) -> int:
 def _recording_service(options: argparse.Namespace) -> int:
     """Forward to ``recording_service.main``; ``--catalog-sha256`` only when it was given.
 
-    A workspace service serves its subject's active corpus-store catalog; group mode still
-    names its group's digest. Returns the service's exit status (errors as that ``main``).
+    A workspace service serves its subject's active corpus-store catalog (the parser refuses
+    ``--catalog-sha256`` with ``--native-workspace``); group mode still names its group's
+    digest. Returns the service's exit status (errors as that ``main``).
     """
     from .recording_service import main as recording_service_main
 
@@ -3134,6 +3085,12 @@ def build_parser() -> argparse.ArgumentParser:
         importer.add_argument(
             "--source-url", help="where the --from-file copy was downloaded from (http/https)"
         )
+        importer.add_argument(
+            "--accept-unpinned-source",
+            action="store_true",
+            help="import a list whose sha256 is not the published list's (recorded in every "
+            "prompt's source reference)",
+        )
         importer.set_defaults(handler=handler)
 
     catalog_import_json = catalog_commands.add_parser(
@@ -3181,13 +3138,14 @@ def build_parser() -> argparse.ArgumentParser:
         "service", help="serve strict control over inherited local stdin/stdout pipes"
     )
     recording_service.add_argument("--asset-root", required=True)
-    recording_service.add_argument(
+    service_mode = recording_service.add_mutually_exclusive_group()
+    service_mode.add_argument(
         "--catalog-sha256",
         help="group or unprepared mode: the exact catalog digest (a workspace service "
-        "serves its subject's active corpus-store catalog)",
+        "serves its subject's active corpus-store catalog and refuses this flag)",
     )
     recording_service.add_argument("--recording-group-id")
-    recording_service.add_argument("--native-workspace", action="store_true")
+    service_mode.add_argument("--native-workspace", action="store_true")
     recording_service.add_argument("--subject-id", default="cole-self")
     recording_service.add_argument("--process-generation", required=True)
     recording_service.add_argument("--build-identity", required=True)
