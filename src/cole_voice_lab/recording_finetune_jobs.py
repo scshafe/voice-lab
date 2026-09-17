@@ -16,7 +16,7 @@ Worker protocol (length-prefixed frames, ``recording_service.RecordingFrameDecod
 ``FineTuneWorkerReply`` out. The worker kills its own group when its stdin ends, so the
 trainer never outlives the service.
 Related: finetune.py (the pipeline), recording_service.py (dispatch and startup),
-recording_package_jobs.py (the durable pattern), recording_contracts.py (wire events),
+recording_takes.py (durable evidence writes), recording_contracts.py (wire events),
 docs/FINETUNE.md.
 """
 

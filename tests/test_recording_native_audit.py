@@ -105,7 +105,6 @@ def test_actual_near_match_identity_preflight_fails_closed(audit_root: Path) -> 
         ("cole_voice_lab.recording_analysis", ["--worker"]),
         ("cole_voice_lab.recording_edit_jobs", ["--worker"]),
         ("cole_voice_lab.recording_finetune_jobs", ["--worker"]),
-        ("cole_voice_lab.recording_package_jobs", ["--worker"]),
         (
             "cole_voice_lab.recording_discovery",
             [

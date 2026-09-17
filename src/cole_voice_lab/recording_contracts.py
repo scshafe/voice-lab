@@ -1743,29 +1743,6 @@ class AnalysisEvent(ContractModel):
     result: RecordingAnalysisResult
 
 
-# Package queue state (recording_package_jobs); not a service event since fine-tuning.
-class PackagePreparationEvent(ContractModel):
-    event: Literal["package-preparation"] = "package-preparation"
-    operation_id: StableId
-    group_id: StableId
-    state: Literal["queued", "running", "blocked", "failed"]
-    error: RecordingError | None = None
-
-    @model_validator(mode="after")
-    def _failure_detail(self) -> PackagePreparationEvent:
-        if (self.state in {"blocked", "failed"}) != (self.error is not None):
-            raise ValueError(
-                "blocked/failed package preparation requires a named prerequisite/error"
-            )
-        return self
-
-
-# A prepared package map (recording_package_jobs); not a service event since fine-tuning.
-class PackageEvent(ContractModel):
-    event: Literal["package"] = "package"
-    package: RecordingPackageMap
-
-
 type FineTuneState = Literal["queued", "running", "finished", "failed", "cancelled"]
 type FineTuneStage = Literal["selecting", "dataset", "training", "sampling"]
 

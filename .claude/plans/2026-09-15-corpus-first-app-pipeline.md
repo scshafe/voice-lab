@@ -49,7 +49,7 @@
   - Replace the `package-preparation` suite in `scripts/verify_native_recording.py` and `scripts/verify_native_workspace.py` with `finetune`: the real four-process flow against a stub runtime (submit → progress events → finished → `run.json` re-read by Python; refusal when the runtime is missing; cancel; Save available throughout). Delete `RecordingPackagePreparationHarness.swift`, `scripts/verify_native_packages.py`, `RecordingPackageTests`.
   - Verify: `scripts/verify-native-recording --suite finetune`
 
-- [ ] **Step 7: Python cleanup**
+- [x] **Step 7: Python cleanup**
   - Delete `recording_package_jobs.py` and `tests/test_recording_package_jobs.py`; keep `recording_packages.py` (readers of existing package maps, alias/removal semantics) and its tests; remove the service's package wiring left from Step 3; remove `prepare-package` from `RecordingServiceClient`.
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_recording_packages.py tests/test_recording_service.py && .venv/bin/ruff check . && .venv/bin/mypy src/cole_voice_lab`
 
