@@ -108,6 +108,13 @@ public struct RecordingSpeakClip: Identifiable, Equatable, Sendable {
     }
 }
 
+/// A generation change VoiceOver announces: a request started, finished or failed. `sequence`
+/// tells two equal texts apart.
+public struct RecordingSpeakAnnouncement: Equatable, Sendable {
+    public let sequence: UInt64
+    public let text: String
+}
+
 /// What a Speak submit sends.
 struct RecordingSpeakCommand: Equatable, Sendable {
     let operationID: String
@@ -132,7 +139,7 @@ struct RecordingSpeakRequests {
 @MainActor
 public final class RecordingSpeakModel: ObservableObject {
     /// Unicode scalars per request (the service counts code points).
-    public static let textLimit = 2_000
+    public nonisolated static let textLimit = 2_000
     static let clipMemory = 200
     static let runMemory = 32
 
@@ -155,6 +162,9 @@ public final class RecordingSpeakModel: ObservableObject {
     public static let playbackDuringCaptureReason = "Playback is unavailable while recording"
     public static let noClipReason = "No clip is selected"
     public static let clipLoadingReason = "The clip is loading"
+    public static let clipSavingReason = "A clip is being saved"
+    public static let noLibraryReason = "Speak clips need the recording library, which this workspace does not have"
+    public static let generatingAnnouncement = "Generating speech"
 
     public static func tooLongReason(_ count: Int) -> String {
         "Shorten the text to \(textLimit.formatted()) characters (\(count.formatted()) now)"
@@ -187,6 +197,15 @@ public final class RecordingSpeakModel: ObservableObject {
     @Published public private(set) var clipFailure: String?
     /// A playback action that was refused, until the next one succeeds.
     @Published public private(set) var playbackNotice: String?
+    /// The last generation change to announce (the app posts it unless the session is synthetic).
+    @Published public private(set) var announcement: RecordingSpeakAnnouncement?
+    /// The clip a Save As is copying, while it runs.
+    @Published public private(set) var savingClipID: String?
+    /// How the last Save As ended: where the copy went, or why it was not saved.
+    @Published public private(set) var saveNotice: String?
+    @Published public private(set) var saveFailed = false
+    var saveTask: Task<Void, Never>?
+    private var announcementSequence: UInt64 = 0
     /// Speak's own transport; it yields to capture like the review transport.
     public let playback: RecordingPlaybackController
     weak var workspace: RecordingWorkspaceModel?
@@ -355,6 +374,7 @@ public final class RecordingSpeakModel: ObservableObject {
                                             referencePromptID: reference, nfeSteps: RecordingServiceClient.speechDefaultSteps)
         request = RecordingSpeakRequest(operationID: operation, text: text, modelID: model.id, modelTitle: model.title,
                                         referencePromptID: reference)
+        announce(Self.generatingAnnouncement)
         Task { [weak self] in
             do {
                 // The request's own events carry its operation id as their request id.
@@ -373,6 +393,7 @@ public final class RecordingSpeakModel: ObservableObject {
         current.errorCode = (error as? RecordingContractError)?.code ?? "RECORDING.INVALID_MESSAGE"
         current.message = RecordingWorkspaceModel.errorMessage(error)
         request = current
+        announce(current.message)
         if current.errorCode == "FINETUNE.JOB_ACTIVE" { workspace?.scheduleFineTuneStatus() }
     }
 
@@ -416,11 +437,13 @@ public final class RecordingSpeakModel: ObservableObject {
                 current.errorCode = "RECORDING.INVALID_MESSAGE"
                 current.message = "Speak finished without a playable clip"
                 request = current
+                announce(current.message)
                 return
             }
             current.clipID = clip.id
-            request = current
             remember(clip)
+            request = current
+            announce(Self.readyAnnouncement(seconds: clip.seconds))
             selectClip(clip.id)
             return
         case .failed:
@@ -428,10 +451,24 @@ public final class RecordingSpeakModel: ObservableObject {
             let error = object["error"]?.object
             current.errorCode = error?["code"]?.string
             current.message = error?["message"]?.string
+            announce(current.message ?? "Speak failed")
         case .cancelled:
             current.cancelRequested = false
         }
         request = current
+    }
+
+    /// "Speech ready, 2.5 seconds": tenths, without a trailing ".0".
+    public nonisolated static func readyAnnouncement(seconds: Double) -> String {
+        let tenths = Int((max(0, seconds.isFinite ? seconds : 0) * 10).rounded())
+        let amount = tenths % 10 == 0 ? String(tenths / 10) : String(format: "%ld.%ld", tenths / 10, tenths % 10)
+        return "Speech ready, \(amount) \(tenths == 10 ? "second" : "seconds")"
+    }
+
+    private func announce(_ text: String?) {
+        guard let text else { return }
+        announcementSequence &+= 1
+        announcement = RecordingSpeakAnnouncement(sequence: announcementSequence, text: text)
     }
 
     private func remember(_ clip: RecordingSpeakClip) {
@@ -448,6 +485,7 @@ public final class RecordingSpeakModel: ObservableObject {
         current.errorCode = nil
         current.message = Self.channelClosedFailure
         request = current
+        announce(current.message)
     }
 
     /// The service stopped supervising jobs: no request can end any more, and none can start.
@@ -459,6 +497,7 @@ public final class RecordingSpeakModel: ObservableObject {
         current.errorCode = nil
         current.message = message
         request = current
+        announce(message)
     }
 
     // MARK: runs
@@ -512,6 +551,10 @@ public final class RecordingSpeakModel: ObservableObject {
         guard canPlay else { return }
         Task { [weak self] in
             guard let self else { return }
+            // One transport plays at a time: the review output pauses first.
+            if let review = workspace?.review {
+                do { try await review.playback.pause() } catch { review.report(error); return }
+            }
             do { try await playback.playPause(); playbackNotice = nil }
             catch { playbackNotice = RecordingWorkspaceModel.errorMessage(error) }
         }
@@ -582,10 +625,68 @@ public final class RecordingSpeakModel: ObservableObject {
         }
     }
 
+    /// The window closed: a request still running ends with the service (no confirmation; it is
+    /// in memory and short), and no clip load or save continues.
     func close() {
         clipLoadGeneration &+= 1
         clipLoadTask?.cancel()
         clipLoadTask = nil
+        if var current = request, current.phase.isActive {
+            current.phase = .cancelled
+            current.cancelRequested = false
+            request = current
+        }
+    }
+
+    // MARK: Save As
+
+    public var canSave: Bool { saveUnavailableReason == nil }
+
+    public var saveUnavailableReason: String? {
+        guard selectedClip != nil else { return Self.noClipReason }
+        if savingClipID != nil { return Self.clipSavingReason }
+        return workspace?.reviewAssetRoot == nil ? Self.noLibraryReason : nil
+    }
+
+    /// A file name for the clip's copy: its first words, lowercased and hyphenated.
+    public nonisolated static func suggestedFileName(for clip: RecordingSpeakClip) -> String {
+        var words: [String] = []
+        var current = ""
+        for character in clip.text.lowercased() {
+            if character.isLetter || character.isNumber { current.append(character); continue }
+            if !current.isEmpty { words.append(current); current = "" }
+        }
+        if !current.isEmpty { words.append(current) }
+        var name = ""
+        for word in words where name.count + word.count < 48 { name += (name.isEmpty ? "" : "-") + word }
+        return (name.isEmpty ? "speech" : name) + ".wav"
+    }
+
+    /// Copy clip `id` to `destination` (a Save As choice): the clip is re-hashed as it is read,
+    /// the bytes go to a temporary file beside the destination, which then atomically replaces
+    /// it. The outcome is `saveNotice`; a copy of a changed clip is never kept.
+    public func saveClip(_ id: String, to destination: URL) {
+        guard canSave, let clip = clips.first(where: { $0.id == id }), let assetRoot = workspace?.reviewAssetRoot else { return }
+        savingClipID = id
+        saveNotice = nil
+        saveFailed = false
+        let maximumBytes = RecordingPlaybackFormat.speech.maximumFileBytes(frameCount: clip.frames)
+        saveTask = Task { [weak self] in
+            let outcome = await Task.detached(priority: .userInitiated) { () -> Result<Void, any Error> in
+                Result {
+                    try RecordingSpeakExport.copy(assetRoot: assetRoot, relativePath: clip.relativePath, sha256: clip.sha256,
+                                                  maximumBytes: maximumBytes, to: destination)
+                }
+            }.value
+            guard let self else { return }
+            savingClipID = nil
+            switch outcome {
+            case .success: saveNotice = "Saved " + destination.lastPathComponent
+            case .failure(let error):
+                saveFailed = true
+                saveNotice = RecordingWorkspaceModel.errorMessage(error)
+            }
+        }
     }
 
     // MARK: formatting

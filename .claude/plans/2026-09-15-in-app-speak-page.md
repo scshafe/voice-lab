@@ -25,7 +25,7 @@
   - Tests: `apps/macos/Tests/RecordingWorkspaceTests/RecordingSpeakModelTests.swift` (event application, phase transitions, interlock, model list ordering).
   - Verify: `cd apps/macos && swift test --filter RecordingSpeakModelTests`
 
-- [ ] **Step 3: Speak view and page switch**
+- [x] **Step 3: Speak view and page switch**
   - `RecordingUI/RecordingSpeakView.swift`: multi-line text editor with placeholder (⌘↩ = Speak), model picker, reference picker (reference prompts only), `Speak` button with `Generating…` and cancel, a player for the newest clip (play/pause, elapsed/total, scrub), the session's clip list with text and duration, `Save As…` (NSSavePanel, WAV copy). In `RecordingApp.swift`: a segmented `Picker("Page")` in the window toolbar, `Record` | `Speak`; the workspace keeps its size and geometry; keyboard shortcuts stay window-scoped per page (R/Space/Return on Record; ⌘↩ on Speak).
   - Accessibility: labels on every control, VoiceOver reads generation state changes, Reduce Motion respected, contrast per `RecordingPalette`.
   - Verify: `cd apps/macos && swift test --filter RecordingSpeakTests && scripts/verify-native-recording --suite accessibility` (extended with the Speak page)

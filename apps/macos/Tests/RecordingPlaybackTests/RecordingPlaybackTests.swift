@@ -235,6 +235,29 @@ private struct AudioFixture {
         #expect(try Data(contentsOf: fixture.root.appendingPathComponent("original.wav")) == fixture.bytes)
     }
 
+    @Test @MainActor func pauseStopsOnlyPlayingOutputAndKeepsItsPosition() async throws {
+        let backend = FakePlayback()
+        let controller = RecordingPlaybackController(backend: backend)
+        // Nothing selected, then a stopped source: pausing changes nothing.
+        try await controller.pause()
+        #expect(controller.phase == .empty)
+        try await controller.select(source(), retainedRange: 0..<4800)
+        let stopped = controller.generation
+        try await controller.pause()
+        #expect(controller.phase == .stopped && controller.generation == stopped)
+        try await controller.playPause()
+        await backend.setFrame(1_500)
+        try await controller.pause()
+        #expect(controller.phase == .paused && controller.cursorFrame == 1_500 && controller.canPlay)
+        let paused = controller.generation
+        try await controller.pause()
+        #expect(controller.generation == paused, "a paused transport is left as it is")
+        // Playing again resumes where it paused.
+        try await controller.playPause()
+        #expect(controller.phase == .playing)
+        #expect(await backend.plays.map(\.0) == [0, 1_500])
+    }
+
     @Test @MainActor func completionBeforeStartReplyDoesNotLeaveTransportPlaying() async throws {
         let backend = FakePlayback()
         let controller = RecordingPlaybackController(backend: backend)

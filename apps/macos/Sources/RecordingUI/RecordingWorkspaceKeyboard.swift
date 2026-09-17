@@ -19,6 +19,8 @@ public final class RecordingWorkspaceKeyboardView: NSView {
     private var menuDepth = 0
     init(model: RecordingWorkspaceModel) { self.model = model; super.init(frame: .zero) }
     required init?(coder: NSCoder) { nil }
+    /// Whether the key monitor is installed (only while the workspace is in a window).
+    var isMonitoring: Bool { monitor != nil }
     public override func hitTest(_ point: NSPoint) -> NSView? { nil }
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow(); uninstall()

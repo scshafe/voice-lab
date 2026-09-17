@@ -74,6 +74,21 @@ import RecordingContracts
         }
     }
 
+    /// Pause output that is playing or starting (another page or transport takes over); any
+    /// other state is left as it is. The cursor stays where the output stopped.
+    public func pause() async throws {
+        guard phase == .playing || phase == .starting else { return }
+        let token = advanceGeneration()
+        pendingGeneration = token
+        defer { if pendingGeneration == token { pendingGeneration = nil } }
+        do {
+            if let frame = try await backend.pause(), token == generation { cursorFrame = clamped(frame) }
+            guard token == generation else { return }
+            phase = .paused
+            rememberCursor()
+        } catch { if token == generation { recordFailure(error) }; throw error }
+    }
+
     /// Seek never starts stopped audio. Active playback reschedules its exact segment.
     public func seek(to frame: Int64) async throws {
         guard !closing, canPlay else { throw unavailable("Selected audio is not ready for seeking") }

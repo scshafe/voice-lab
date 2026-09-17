@@ -38,6 +38,9 @@ public final class RecordingWorkspaceModel: ObservableObject {
     public let review: RecordingReviewController
     /// The Speak page's state and its own playback transport (RecordingSpeakModel.swift).
     public let speak: RecordingSpeakModel
+    /// The page the window shows (RecordingPageContainer.swift).
+    @Published public internal(set) var page: RecordingPage = .record
+    var pageSwitchTask: Task<Void, Never>?
     @Published public internal(set) var reviewConfirmation: RecordingReviewConfirmation?
     @Published public var decisionReason = ""
     var reviewOperationID: String?
@@ -225,10 +228,11 @@ public final class RecordingWorkspaceModel: ObservableObject {
     /// Inert fixture adapter for the original shell harness; it cannot create process clients.
     /// A synthetic `catalog` replaces the one-prompt fixture so library tests can cover many prompts.
     public init(fixture: RecordingShellState, catalog: RecordingJSON? = nil,
+                reviewBackend: any RecordingPlaybackBackend = AVFoundationRecordingPlaybackBackend(mode: .offline),
                 speechBackend: any RecordingPlaybackBackend = AVFoundationRecordingPlaybackBackend(mode: .offline)) {
         configuration = nil; recorder = nil; service = nil; diagnosticSink = nil
         catalogSHA256 = Self.fixtureCatalogSHA256; recorderGeneration = "synthetic-generation"
-        review = RecordingReviewController(backend: AVFoundationRecordingPlaybackBackend(mode: .offline))
+        review = RecordingReviewController(backend: reviewBackend)
         speak = RecordingSpeakModel(backend: speechBackend)
         permissionStatus = { .denied }; permissionRequest = { false }
         beforeCapture = {}; afterCaptureStopped = {}

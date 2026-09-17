@@ -11,6 +11,7 @@ final class RecordingApplicationSession: ObservableObject {
     @Published private(set) var model = RecordingWorkspaceModel(unavailable: "Preparing recording workspace…")
     private var started = false
     private var announcements: AnyCancellable?
+    private var speechAnnouncements: AnyCancellable?
 
     func start() async {
         guard !started else { return }; started = true
@@ -39,10 +40,20 @@ final class RecordingApplicationSession: ObservableObject {
         // Automated synthetic fixtures never post announcements or invoke VoiceOver.
         if !synthetic {
             announcements = connected.$state.map(\.status).removeDuplicates().dropFirst().sink { [weak connected] _ in
-                guard let connected, let window = NSApp.mainWindow else { return }
-                NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [.announcement: connected.state.status, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+                guard let connected else { return }
+                Self.announce(connected.state.status)
+            }
+            // Speak: generation started, finished (with its length) or failed (its message).
+            speechAnnouncements = connected.speak.$announcement.compactMap { $0 }.removeDuplicates().sink { announcement in
+                Self.announce(announcement.text)
             }
         }
         await connected.connect()
+    }
+
+    private static func announce(_ text: String) {
+        guard let window = NSApp.mainWindow else { return }
+        NSAccessibility.post(element: window, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
     }
 }

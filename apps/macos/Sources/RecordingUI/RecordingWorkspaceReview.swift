@@ -97,6 +97,8 @@ extension RecordingWorkspaceModel {
         guard canPlaySelected else { return }
         Task { [weak self] in
             guard let self else { return }
+            // One transport plays at a time: Speak's output pauses first.
+            do { try await speak.playback.pause() } catch { speak.reportPlayback(error); return }
             do { try await review.playback.playPause() } catch { review.report(error) }
         }
     }

@@ -11,12 +11,19 @@ struct RecordingApp: App {
     @StateObject private var appearance = RecordingAppearanceController(defaults: .standard)
     var body: some Scene {
         Window("Cole Voice Recorder", id: "recording") {
-            RecordingWorkspace(model: session.model)
+            // The page container shows Record or Speak with the page control in the toolbar;
+            // the window's close handling belongs to the window, whichever page is shown.
+            RecordingPageContainer(model: session.model)
                 .background(RecordingWindowLifecycle(model: session.model))
                 .task { await session.start(); delegate.model = session.model }
         }
         .defaultSize(width: 1060, height: 700)
         .commands {
+            // View ▸ Record Page (⌘1) / Speak Page (⌘2).
+            CommandGroup(before: .toolbar) {
+                RecordingPageMenuItems(model: session.model)
+                Divider()
+            }
             // View ▸ Appearance ▸ System / Light / Dark; choosing System restores the system appearance at once.
             CommandGroup(after: .toolbar) {
                 Picker("Appearance", selection: $appearance.preference) {
