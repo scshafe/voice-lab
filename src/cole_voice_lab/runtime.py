@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import Field, JsonValue, field_validator, model_validator
 
@@ -878,13 +878,281 @@ def _immutable_tree_sha256(
     return canonical_sha256(entries)
 
 
+# The complete third-party closure of the recording service. cffi, cryptography and pycparser
+# are the library vault's sealing closure (requirements/vault-macos.txt): background copying
+# encrypts in a worker of this same frozen Python.
 RECORDING_PYTHON_DISTRIBUTIONS = (
     "annotated-types",
+    "cffi",
+    "cryptography",
+    "pycparser",
     "pydantic",
     "pydantic-core",
     "typing-extensions",
     "typing-inspection",
 )
+VAULT_REQUIREMENTS_LOCK = "requirements/vault-macos.txt"
+_VAULT_DISTRIBUTIONS = frozenset({"cffi", "cryptography", "pycparser"})
+# RECORD rows outside a distribution's tree that pip writes for its declared entry-point
+# scripts (site-packages is <prefix>/lib/pythonX.Y/site-packages). They are launchers, not
+# importable code, so they are neither fingerprinted nor frozen; any other row that leaves the
+# tree is refused.
+_LAUNCHER_RECORD_PREFIX = "../../../bin/"
+_LAUNCHER_GROUPS = frozenset({"console_scripts", "gui_scripts"})
+_LAUNCHER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def missing_recording_python_distribution_message(name: str) -> str:
+    """How to install a missing recording-service distribution, for a refusal.
+
+    Params: ``name``, one of ``RECORDING_PYTHON_DISTRIBUTIONS``.
+    Returns: a message naming the distribution and the reviewed install route.
+    Raises: nothing.
+    """
+    if name in _VAULT_DISTRIBUTIONS:
+        route = (
+            f"install the reviewed vault lock {VAULT_REQUIREMENTS_LOCK} into it "
+            "(python -I -B -m pip install --require-hashes --no-deps --only-binary=:all: "
+            f"-r {VAULT_REQUIREMENTS_LOCK})"
+        )
+    else:
+        route = "install the package's dependencies into it (python -m pip install -e '.[dev]')"
+    return f"the recording service Python has no installed {name}; {route}"
+
+
+def recording_python_distribution(name: str) -> importlib.metadata.Distribution:
+    """The installed distribution of one recording-service dependency.
+
+    Params: ``name``, one of ``RECORDING_PYTHON_DISTRIBUTIONS``.
+    Returns: its ``importlib.metadata`` distribution in the running interpreter.
+    Raises: ``RuntimeUnavailableError`` naming the install route (``VAULT_REQUIREMENTS_LOCK``
+    for the sealing closure) when it is not installed.
+    """
+    try:
+        return importlib.metadata.distribution(name)
+    except importlib.metadata.PackageNotFoundError as error:
+        message = missing_recording_python_distribution_message(name)
+        raise RuntimeUnavailableError(message) from error
+
+
+def recording_distribution_files(
+    name: str, files: Sequence[str], launchers: Sequence[str]
+) -> tuple[str, ...]:
+    """The RECORD rows of a service distribution's own tree, launcher rows dropped.
+
+    Params: ``name``; ``files``, the distribution's RECORD rows as strings; ``launchers``, the
+    names of its ``console_scripts`` / ``gui_scripts`` entry points.
+    Returns: every row except ``../../../bin/<launcher>`` rows, in the given order (the
+    remaining rows are validated as relative paths by the caller).
+    Raises: ``SecurityError`` when a launcher name is not a plain file name.
+    """
+    for launcher in launchers:
+        if _LAUNCHER_NAME.fullmatch(launcher) is None:
+            raise SecurityError(f"Python dependency declares an unsafe launcher: {name}")
+    dropped = {f"{_LAUNCHER_RECORD_PREFIX}{launcher}" for launcher in launchers}
+    return tuple(relative for relative in files if relative not in dropped)
+
+
+def _declared_distribution_files(
+    name: str, distribution: importlib.metadata.Distribution
+) -> tuple[str, ...]:
+    declared = distribution.files
+    if declared is None or len(declared) > 100_000:
+        raise SecurityError(f"Python dependency has no bounded installed file evidence: {name}")
+    files = [str(item) for item in declared]
+    launchers: list[str] = []
+    if any(relative.startswith(_LAUNCHER_RECORD_PREFIX) for relative in files):
+        launchers = [
+            entry.name for entry in distribution.entry_points if entry.group in _LAUNCHER_GROUPS
+        ]
+    return recording_distribution_files(name, files, launchers)
+
+
+type _MarkerKind = Literal["string", "name", "operator", "open", "close"]
+type _MarkerToken = tuple[_MarkerKind, str]
+
+# The PEP 508 marker subset the service closure uses: string variables compared with == / !=,
+# version variables compared with the six ordering operators, and/or, and parentheses.
+_MARKER_STRING_VARIABLES = frozenset(
+    {
+        "extra",
+        "implementation_name",
+        "platform_python_implementation",
+        "platform_system",
+        "sys_platform",
+    }
+)
+_MARKER_VERSION_VARIABLES = frozenset({"python_full_version", "python_version"})
+_MARKER_TOKEN = re.compile(
+    r"""\s*(?:
+        (?P<string>'[^'\\]*'|"[^"\\]*")
+        |(?P<operator><=|>=|==|!=|<|>)
+        |(?P<open>\()
+        |(?P<close>\))
+        |(?P<name>[a-z_]+)
+    )""",
+    re.VERBOSE,
+)
+_MARKER_RELEASE = re.compile(r"[0-9]{1,6}(?:\.[0-9]{1,6}){0,5}")
+_MARKER_NAME_SEPARATORS = re.compile(r"[-_.]+")
+
+
+class _MarkerParser:
+    """Recursive descent over the marker subset; anything else is refused."""
+
+    def __init__(self, marker: str, environment: Mapping[str, str]) -> None:
+        self.marker = marker
+        self.environment = environment
+        self.tokens: list[_MarkerToken] = []
+        position = 0
+        text = marker.rstrip()
+        while position < len(text):
+            match = _MARKER_TOKEN.match(text, position)
+            if match is None or match.lastgroup is None:
+                raise self.refusal("an unsupported character")
+            # Every alternative of the token pattern is one named group of a token kind.
+            kind = cast(_MarkerKind, match.lastgroup)
+            self.tokens.append((kind, match[kind]))
+            position = match.end()
+        self.position = 0
+
+    def refusal(self, problem: str) -> SecurityError:
+        return SecurityError(
+            f"Python service dependency marker has {problem}, so its closure cannot be "
+            f"decided: {self.marker!r}"
+        )
+
+    def take(self) -> _MarkerToken:
+        if self.position >= len(self.tokens):
+            raise self.refusal("a missing term")
+        token = self.tokens[self.position]
+        self.position += 1
+        return token
+
+    def peek_name(self, name: str) -> bool:
+        return self.position < len(self.tokens) and self.tokens[self.position] == ("name", name)
+
+    def evaluate(self) -> bool:
+        result = self.disjunction()
+        if self.position != len(self.tokens):
+            raise self.refusal("trailing terms")
+        return result
+
+    def disjunction(self) -> bool:
+        result = self.conjunction()
+        while self.peek_name("or"):
+            self.position += 1
+            right = self.conjunction()
+            result = result or right
+        return result
+
+    def conjunction(self) -> bool:
+        result = self.term()
+        while self.peek_name("and"):
+            self.position += 1
+            right = self.term()
+            result = result and right
+        return result
+
+    def term(self) -> bool:
+        kind, value = self.take()
+        if kind == "open":
+            result = self.disjunction()
+            if self.take() != ("close", ")"):
+                raise self.refusal("an unbalanced parenthesis")
+            return result
+        if kind != "name":
+            raise self.refusal(f"a comparison that does not start with a variable ({value})")
+        operator_kind, operator = self.take()
+        if operator_kind != "operator":
+            raise self.refusal(f"an unsupported operator ({operator})")
+        literal_kind, literal = self.take()
+        if literal_kind != "string":
+            raise self.refusal(f"a comparison with a non-string value ({literal})")
+        return self.compare(value, operator, literal[1:-1])
+
+    def compare(self, variable: str, operator: str, literal: str) -> bool:
+        if variable in _MARKER_STRING_VARIABLES:
+            if operator not in ("==", "!="):
+                raise self.refusal(f"a version operator on {variable} ({operator})")
+            current = self.environment[variable]
+            if variable == "extra":
+                # Extra names compare normalized (PEP 685); the service installs no extras.
+                current = _MARKER_NAME_SEPARATORS.sub("-", current).lower()
+                literal = _MARKER_NAME_SEPARATORS.sub("-", literal).lower()
+            return (current == literal) is (operator == "==")
+        if variable not in _MARKER_VERSION_VARIABLES:
+            raise self.refusal(f"an unsupported variable ({variable})")
+        current_release = self.release(self.environment[variable])
+        wanted = self.release(literal)
+        width = max(len(current_release), len(wanted))
+        left = current_release + (0,) * (width - len(current_release))
+        right = wanted + (0,) * (width - len(wanted))
+        return {
+            "==": left == right,
+            "!=": left != right,
+            "<": left < right,
+            "<=": left <= right,
+            ">": left > right,
+            ">=": left >= right,
+        }[operator]
+
+    def release(self, value: str) -> tuple[int, ...]:
+        if _MARKER_RELEASE.fullmatch(value) is None:
+            raise self.refusal(f"a version that is not a plain release ({value!r})")
+        return tuple(int(part) for part in value.split("."))
+
+
+def recording_marker_environment() -> dict[str, str]:
+    """The marker variables of the running interpreter, with no extra installed.
+
+    Returns: the values ``requirement_marker_applies`` reads.
+    Raises: nothing.
+    """
+    import platform
+
+    return {
+        "extra": "",
+        "implementation_name": sys.implementation.name,
+        "platform_python_implementation": platform.python_implementation(),
+        "platform_system": platform.system(),
+        "python_full_version": platform.python_version(),
+        "python_version": ".".join(platform.python_version_tuple()[:2]),
+        "sys_platform": sys.platform,
+    }
+
+
+def requirement_marker_applies(marker: str, environment: Mapping[str, str]) -> bool:
+    """Whether a ``Requires-Dist`` environment marker selects the requirement here.
+
+    Only the subset the service closure uses is understood: ``extra``,
+    ``implementation_name``, ``platform_python_implementation``, ``platform_system`` and
+    ``sys_platform`` compared with ``==`` / ``!=``; ``python_version`` and
+    ``python_full_version`` compared with ``==``, ``!=``, ``<``, ``<=``, ``>``, ``>=``
+    against a plain release; ``and``, ``or`` and parentheses. The whole marker is parsed
+    before its value is used.
+    Params: ``marker``, the text after the requirement's ``;``; ``environment``, as
+    ``recording_marker_environment`` returns it.
+    Returns: the marker's value.
+    Raises: ``SecurityError`` for anything outside the subset (another variable or operator,
+    ``in``/``not``, a value on the left, a version that is not a plain release, unbalanced
+    parentheses), so an unknown marker can never silently widen or narrow the closure.
+    """
+    return _MarkerParser(marker, environment).evaluate()
+
+
+def _required_distribution(
+    name: str, requirement: str, environment: Mapping[str, str]
+) -> str | None:
+    """The canonical name a ``Requires-Dist`` row requires here, or ``None`` if its marker
+    excludes it."""
+    requirement_text, separator, marker = requirement.partition(";")
+    if separator and not requirement_marker_applies(marker, environment):
+        return None
+    package = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement_text.strip())
+    if package is None:
+        raise SecurityError(f"Python service dependency closure changed: {name}: {requirement}")
+    return canonical_package_name(package[0])
 
 
 @dataclass(frozen=True)
@@ -1026,26 +1294,19 @@ def inspect_macho_load_commands(path: Path) -> MachOLoadCommands:
 
 
 def _python_distribution_identity(name: str) -> tuple[dict[str, object], tuple[Path, ...]]:
-    distribution = importlib.metadata.distribution(name)
+    distribution = recording_python_distribution(name)
+    environment = recording_marker_environment()
     for requirement in distribution.requires or ():
-        # This service intentionally installs no extras. Unknown base dependencies
-        # need an explicit closure update rather than an incomplete fingerprint.
-        if re.search(r";.*\bextra\s*==", requirement):
-            continue
-        package = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement)
-        if (
-            package is None
-            or canonical_package_name(package[0]) not in RECORDING_PYTHON_DISTRIBUTIONS
-        ):
+        # This service intentionally installs no extras, so an extra's requirement is not
+        # selected. A dependency the markers select here must already be in the closure: an
+        # unknown one needs an explicit closure update rather than an incomplete fingerprint.
+        required = _required_distribution(name, requirement, environment)
+        if required is not None and required not in RECORDING_PYTHON_DISTRIBUTIONS:
             raise SecurityError(f"Python service dependency closure changed: {name}: {requirement}")
     root = Path(str(distribution.locate_file(""))).resolve(strict=True)
-    declared = distribution.files
-    if declared is None or len(declared) > 100_000:
-        raise SecurityError(f"Python dependency has no bounded installed file evidence: {name}")
     entries: list[tuple[str, str, int]] = []
     macho: list[Path] = []
-    for item in sorted(declared, key=str):
-        relative = str(item)
+    for relative in sorted(_declared_distribution_files(name, distribution)):
         validate_relative_path(relative)
         candidate = root / relative
         # pip may record caches which were deliberately omitted by a bytecode-free
@@ -1230,11 +1491,11 @@ def _recording_runtime_entries(
         paths.update(parent / name for name in (*directories, *files))
         directories[:] = [name for name in directories if parent / name != excluded]
     for name in RECORDING_PYTHON_DISTRIBUTIONS:
-        distribution = importlib.metadata.distribution(name)
+        distribution = recording_python_distribution(name)
         root = Path(str(distribution.locate_file(""))).resolve(strict=True)
         paths.add(root)
-        for item in distribution.files or ():
-            candidate = root / str(item)
+        for relative in _declared_distribution_files(name, distribution):
+            candidate = root / validate_relative_path(relative)
             if candidate.suffix == ".pyc" and not candidate.exists():
                 continue
             paths.add(candidate)

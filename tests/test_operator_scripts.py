@@ -1024,6 +1024,28 @@ def test_bootstrap_rejects_unreviewed_application_dependency_metadata(tmp_path: 
     assert "Requires-Dist names are not in the reviewed bundled dependency set" in result.stderr
 
 
+def test_bootstrap_keeps_the_vault_extra_out_of_a_capture_kit(tmp_path: Path) -> None:
+    # As setuptools writes the optional vault encryption (pyproject.toml) into the metadata.
+    wheel, wheel_digest, manifest_digest = _write_test_bundle(
+        tmp_path / "capture-kit",
+        requires_dist=(
+            'cryptography==50.0.1; extra == "vault"',
+            'cryptography==50.0.1; extra == "dev"',
+        ),
+    )
+
+    result = _run(
+        str(wheel.parent / "macbook-bootstrap"),
+        "--verify-bundle",
+        str(wheel),
+        wheel_digest,
+        manifest_digest,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "verified capture-kit bundle" in result.stdout
+
+
 @pytest.mark.parametrize(
     ("member_type", "expected"),
     ((stat.S_IFLNK | 0o777, "symlink"), (stat.S_IFCHR | 0o600, "device")),

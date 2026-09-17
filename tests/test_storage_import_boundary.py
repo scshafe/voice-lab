@@ -30,7 +30,11 @@ ADAPTERS: dict[str, tuple[str, ...]] = {
     "cole_voice_lab.corpus_store_sqlite": (),
     # The vault server (Step 7) serves the local stores.
     "cole_voice_lab.storage_local": ("src/cole_voice_lab/storage_server.py",),
+    # The sealed store and the library key; library copies reach it only through the binding.
+    "cole_voice_lab.storage_sealing": (),
 }
+# Third-party packages only one module may import (the vault's encryption).
+EXCLUSIVE_PACKAGES: dict[str, str] = {"cryptography": "src/cole_voice_lab/storage_sealing.py"}
 IMPORT_CALLS = frozenset({"import_module", "__import__", "run_module"})
 
 
@@ -210,6 +214,59 @@ def test_only_the_composition_root_the_adapters_and_the_seeders_import_an_adapte
     )
     for adapter in ADAPTERS:
         assert (REPOSITORY / "src" / (adapter.replace(".", "/") + ".py")).is_file(), adapter
+
+
+def exclusive_package_imports(root: Path) -> list[Import]:
+    """Every import of an ``EXCLUSIVE_PACKAGES`` package under ``root``'s scanned sources."""
+    found: list[Import] = []
+    for path, tree in python_sources(root):
+        relative = path.relative_to(root)
+        for line, module in imported_modules(tree, package_of(relative)):
+            for package in EXCLUSIVE_PACKAGES:
+                if module == package or module.startswith(f"{package}."):
+                    found.append(Import(relative.as_posix(), line, package))
+    return found
+
+
+def test_only_the_sealing_adapter_imports_cryptography() -> None:
+    found = exclusive_package_imports(REPOSITORY)
+    assert [item for item in found if item.path != EXCLUSIVE_PACKAGES[item.module]] == []
+    # The scan sees the one importer, so an empty violation list means something.
+    assert {item.path for item in found} == set(EXCLUSIVE_PACKAGES.values())
+
+
+def test_the_exclusive_package_scan_finds_lazy_and_dynamic_imports(tmp_path: Path) -> None:
+    write(tmp_path, "src/cole_voice_lab/__init__.py", "")
+    write(
+        tmp_path,
+        "src/cole_voice_lab/storage_sealing.py",
+        "from cryptography.hazmat.primitives.ciphers.aead import AESGCM\n",
+    )
+    write(
+        tmp_path,
+        "src/cole_voice_lab/library_replication.py",
+        "\n".join(
+            (
+                "import importlib",
+                "def seal():",
+                "    from cryptography.exceptions import InvalidTag",  # 3
+                "    return importlib.import_module('cryptography.fernet')",  # 4
+                "import cryptography",  # 5
+                "import cryptographyish",
+                "",
+            )
+        ),
+    )
+    write(tmp_path, "scripts/keys.py", "__import__('cryptography', fromlist=['x509'])\n")
+    found = exclusive_package_imports(tmp_path)
+    assert {
+        (item.path, item.line) for item in found if item.path != EXCLUSIVE_PACKAGES[item.module]
+    } == {
+        ("src/cole_voice_lab/library_replication.py", 3),
+        ("src/cole_voice_lab/library_replication.py", 4),
+        ("src/cole_voice_lab/library_replication.py", 5),
+        ("scripts/keys.py", 1),
+    }
 
 
 def write(root: Path, relative: str, text: str) -> None:

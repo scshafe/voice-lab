@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import json
 import plistlib
 import shlex
 import subprocess
@@ -346,6 +347,21 @@ def test_desktop_bootstrap_is_a_hash_pinned_preview_by_default():
     assert result.returncode == 0
     assert '"execution_requested": false' in result.stdout
     assert '"--require-hashes"' in result.stdout
+    assert "vault-macos.txt" not in result.stdout
+
+
+def test_desktop_bootstrap_adds_the_vault_lock_only_when_asked():
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/bootstrap-desktop"), "--with-vault"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    command = json.loads(result.stdout)["command"]
+    assert command[-2:] == ["--requirement", str(ROOT / "requirements/vault-macos.txt")]
+    assert "--require-hashes" in command and "--no-deps" in command
+    assert "--only-binary=:all:" in command
 
 
 def test_native_desktop_module_exposes_cli_help_without_opening_window():

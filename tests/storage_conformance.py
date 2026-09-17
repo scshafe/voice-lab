@@ -5,10 +5,12 @@ opens stores (in this process or in a spawned child, so it must pickle), states 
 capabilities, and offers hooks that damage or inspect the files behind the store. Portable
 checks run for every spec. A check that needs a capability or a hook is its own test, which
 starts by requiring them, so a spec without one reports it SKIPPED with a reason naming the
-capability; no assertion is dropped inside a test that passes. Step 4 adds a sealed spec and
-Step 8 the HTTP specs by appending a ``SpecFactory`` to ``SPECS``; an HTTP spec's hooks act on
-its server's backing directory, and after a damage hook every store it opens must be built on
-the damaged backing.
+capability; no assertion is dropped inside a test that passes. Specs: ``local`` (the local
+store) and ``sealed-local`` (the sealed store over the local store, with a fixed synthetic
+test key; its refs are random, its largest put is ``MAX_SEALED_PLAINTEXT_BYTES``, and its
+hooks damage the ciphertext files of the local store underneath). Step 8 adds the HTTP specs
+by appending a ``SpecFactory`` to ``SPECS``; an HTTP spec's hooks act on its server's backing
+directory, and after a damage hook every store it opens must be built on the damaged backing.
 
 Collected by pytest through ``python_files`` (pyproject). Multi-process checks spawn children
 that run the module-level ``_..._in_child`` functions and synchronize only through barriers,
@@ -47,6 +49,12 @@ from cole_voice_lab.storage_ports import (
     StorageIntegrityError,
     StorageNameError,
     library_head_ref,
+)
+from cole_voice_lab.storage_sealing import (
+    MAX_SEALED_PLAINTEXT_BYTES,
+    LibraryKey,
+    SealedBlobStore,
+    open_sealed_blob,
 )
 
 CONTEXT = multiprocessing.get_context("spawn")
@@ -271,6 +279,10 @@ class LocalSpec:
     def blob_path(self, ref: BlobRef) -> Path:
         return self.root / "blobs" / ref.sha256[:2] / ref.sha256
 
+    def stored_form_holds(self, stored: bytes, data: bytes) -> bool:
+        """Whether ``stored``, as the store writes it to a file, is the stored form of ``data``."""
+        return stored == data
+
     def ref_path(self, name: str) -> Path:
         *directories, last = name.split("/")
         return self.root.joinpath("refs", *(f"{part}.d" for part in directories), f"{last}.json")
@@ -381,11 +393,12 @@ class LocalSpec:
         temporary = self.root / "tmp" / f"99999-{'a' * 32}.tmp"
         temporary.write_bytes(orphan)
         temporary.chmod(0o600)
-        blobs = tuple(
-            digest_ref(leftover.read_bytes()) for leftover in sorted((self.root / "tmp").iterdir())
+        stored = [leftover.read_bytes() for leftover in sorted((self.root / "tmp").iterdir())]
+        assert orphan in stored
+        assert any(self.stored_form_holds(item, dead_put) for item in stored)
+        return CrashLeftovers(
+            blobs=tuple(digest_ref(item) for item in stored), ref_names=(dead_swap,)
         )
-        assert digest_ref(dead_put) in blobs and digest_ref(orphan) in blobs
-        return CrashLeftovers(blobs=blobs, ref_names=(dead_swap,))
 
     def leftover_temporaries(self) -> tuple[str, ...]:
         return tuple(sorted(os.listdir(self.root / "tmp")))
@@ -431,6 +444,47 @@ def local_spec(base: Path) -> Iterator[LocalSpec]:
         restore_access(base)
 
 
+# -- the sealed spec over the local store --------------------------------------------------
+
+SEALED_LIBRARY = "conformance-library"
+# A fixed synthetic key, never a real one: specs are pickled into children, keys are not.
+SEALED_TEST_KEY = bytes(range(0x40, 0x60))
+
+
+def sealed_test_key() -> LibraryKey:
+    return LibraryKey(SEALED_TEST_KEY)
+
+
+@dataclass(frozen=True)
+class SealedLocalSpec(LocalSpec):
+    """``SealedBlobStore`` over ``LocalBlobStore``, and ``LocalRefStore``, on one directory.
+
+    Refs name ciphertext, so the damage hooks act on the local store's ciphertext files.
+    """
+
+    name: ClassVar[str] = "sealed-local"
+    deterministic_refs: ClassVar[bool] = False
+    max_put_bytes: ClassVar[int] = MAX_SEALED_PLAINTEXT_BYTES
+
+    def open_blob_store(self) -> BlobStore:
+        return SealedBlobStore(
+            LocalBlobStore(self.root), key=sealed_test_key(), library_id=SEALED_LIBRARY
+        )
+
+    def stored_form_holds(self, stored: bytes, data: bytes) -> bool:
+        try:
+            opened = open_sealed_blob(sealed_test_key(), SEALED_LIBRARY, stored, label="leftover")
+        except StorageIntegrityError:
+            return False
+        return opened == data
+
+
+@contextmanager
+def sealed_local_spec(base: Path) -> Iterator[SealedLocalSpec]:
+    with local_spec(base) as local:
+        yield SealedLocalSpec(root=local.root, scratch=local.scratch)
+
+
 @dataclass(frozen=True)
 class SpecFactory:
     """A named way to build a spec in a private base directory (and tear it down after)."""
@@ -439,7 +493,10 @@ class SpecFactory:
     make: Callable[[Path], AbstractContextManager[Any]] = field(repr=False)
 
 
-SPECS: list[SpecFactory] = [SpecFactory("local", local_spec)]
+SPECS: list[SpecFactory] = [
+    SpecFactory("local", local_spec),
+    SpecFactory("sealed-local", sealed_local_spec),
+]
 
 
 @pytest.fixture(params=SPECS, ids=lambda factory: factory.id)
@@ -464,6 +521,18 @@ def require_deterministic_refs(spec: StorageSpec) -> None:
 def require_random_refs(spec: StorageSpec) -> None:
     if spec.deterministic_refs:
         pytest.skip(f"{spec.name} gives equal bytes one ref (capability: deterministic_refs)")
+
+
+def expected_refusals(spec: StorageSpec, operations: frozenset[Operation]) -> frozenset[Operation]:
+    """The operations ``spec`` must refuse when ``REFUSALS`` names ``operations``.
+
+    ``put`` stores bytes that are already stored, so a store with deterministic refs reads the
+    stored blob. A store with random refs (capability: deterministic_refs) stores every put as
+    new bytes, as ``put-new`` does, so its ``put`` must fail exactly where ``put-new`` must.
+    """
+    if spec.deterministic_refs or "put-new" in operations:
+        return operations
+    return operations - {"put"}
 
 
 def require_backing_paths_in_errors(spec: StorageSpec) -> Path:
@@ -1088,7 +1157,7 @@ def refuse_on_unsafe_backing(
     integrity = refusal.code == "STORAGE.INTEGRITY"
     refused: list[tuple[Operation, StorageError]] = []
     for table, names in ((fresh, refusal.fresh), (existing, refusal.existing)):
-        for name in sorted(names):
+        for name in sorted(expected_refusals(spec, names)):
             refused.append((name, storage_failure(refusal.code, table[name], integrity=integrity)))
             assert still_unsafe(), name
     return refused

@@ -4,6 +4,8 @@
 Use the repository's existing development interpreter. The default is a JSON
 preview; --execute --allow-downloads installs the two listed GUI wheels.
 --with-build-tools also installs the exact repository build backend for verification.
+--with-vault also installs the library vault's encryption lock (cryptography and its
+closure), which scripts/verify and native app builds require.
 Model runtimes, capture-kit installs, and private media are never modified.
 """
 
@@ -23,6 +25,7 @@ def main() -> int:
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--allow-downloads", action="store_true")
     parser.add_argument("--with-build-tools", action="store_true")
+    parser.add_argument("--with-vault", action="store_true")
     options = parser.parse_args()
     if options.execute and not options.allow_downloads:
         parser.error("installation requires --execute --allow-downloads")
@@ -47,6 +50,8 @@ def main() -> int:
     ]
     if options.with_build_tools:
         command.extend(("--requirement", str(lock.parent / "development-build.txt")))
+    if options.with_vault:
+        command.extend(("--requirement", str(lock.parent / "vault-macos.txt")))
     print(json.dumps({"command": command, "execution_requested": options.execute}, indent=2))
     if options.execute:
         environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")

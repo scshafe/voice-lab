@@ -126,7 +126,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
 - **Tailnet client** (`storage_http_client.py`): `HttpBlobStore` and `HttpRefStore`.
 - **Encryption** (`storage_sealing.py`): `SealedBlobStore` wraps any `BlobStore`.
   - Each blob is encrypted with AES-256-GCM, using a random 96-bit nonce and the library id as associated data.
-  - The ref is the digest of the encrypted bytes. The same recording uploaded twice therefore gets two different refs, so the vault's contents cannot confirm that a known file is there. The copying layer does its own de-duplication on the Mac.
+  - The ref is the digest of the encrypted bytes. The same recording uploaded twice therefore gets two different refs~~, so the vault's contents cannot confirm that a known file is there~~. *(Amended 2026-09-17, Step 4: lengths are not hidden. A sealed blob is exactly 33 bytes longer than its plaintext, so the vault host learns each chunk's size and upload time, can link equal-size blobs, and can guess that a file of a distinctive size is stored. This is accepted and recorded in D-020; the format's version byte leaves room for padding later.)* The copying layer does its own de-duplication on the Mac.
   - The key is a 256-bit library key in the login Keychain, plus a recovery sheet Cole keeps offline (Decision 2).
   - The composition root always wraps the vault in `SealedBlobStore`, and no binding can turn encryption off.
 
@@ -289,7 +289,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
     - refusal of symlinks and hard links.
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/storage_conformance.py --cov=cole_voice_lab.storage_local --cov-branch`
 
-- [ ] **Step 4: Encrypted blob store and the library key**
+- [x] **Step 4: Encrypted blob store and the library key**
   - Needs Cole's go-ahead to download `cryptography` (Decision 7).
   - Add the optional `vault` extra and `requirements/vault-macos.txt`, with an exact version and hashes.
   - Add `storage_sealing.py`. It creates the key in the login Keychain through `/usr/bin/security` and exports the recovery sheet.
@@ -512,3 +512,5 @@ The first draft was reviewed on 2026-09-17 by `rigorous-architect` (the storage 
 **Amended 2026-09-17 (Step 1):** the old corpus-store test file keeps the shared-logic tests, pytest now collects `*_conformance.py`, and the Step 1 verify command runs `tests/test_corpus_store.py` too.
 
 **Amended 2026-09-17 (Step 2):** the upload-started ledger entry names the payload digest of the generation's manifest plan (a manifest's chunk refs exist only after sealing); the completion entry names the manifest digest; the binding names its classes.
+
+**Amended 2026-09-17 (Step 4):** sealed blobs do not hide plaintext sizes; the leak is accepted and goes into D-020.

@@ -22,7 +22,7 @@ from pydantic import AfterValidator, Field, model_validator
 
 from .canonical import canonical_json_bytes, canonical_sha256, open_regular_no_follow, sha256_file
 from .diagnostic_roots import RootPurpose, require_root_purpose
-from .errors import ContractError, SecurityError, VoiceLabError
+from .errors import ContractError, RuntimeUnavailableError, SecurityError, VoiceLabError
 from .models import CaptureDevice, ContractModel, PromptSuitePurpose, Sha256, StableId
 from .paths import (
     AssetLayout,
@@ -37,7 +37,12 @@ from .recording_contracts import (
     catalog_snapshot_path,
 )
 from .resources import resource_path
-from .runtime import RECORDING_PYTHON_DISTRIBUTIONS, inspect_macho_load_commands
+from .runtime import (
+    RECORDING_PYTHON_DISTRIBUTIONS,
+    inspect_macho_load_commands,
+    missing_recording_python_distribution_message,
+    recording_distribution_files,
+)
 
 _BUILD_ENVIRONMENT = {
     "PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -315,19 +320,32 @@ def _freeze_dependencies(source_python: Path, destination: Path) -> None:
     site = destination / "lib/python3.12/site-packages"
     if not site.is_dir():
         raise ContractError("native recording service requires the checked Python 3.12 layout")
+    # A missing distribution is reported as null, so the refusal can name its install route.
     probe = (
-        "import importlib.metadata,json; "
-        "print(json.dumps({n:[str(importlib.metadata.distribution(n).locate_file('')), "
-        "[str(f) for f in importlib.metadata.files(n) or ()]] for n in "
+        "import importlib.metadata as m,json\n"
+        "def describe(name):\n"
+        "    try:\n"
+        "        found = m.distribution(name)\n"
+        "    except m.PackageNotFoundError:\n"
+        "        return None\n"
+        "    return [str(found.locate_file('')), [str(f) for f in found.files or ()],\n"
+        "        [e.name for e in found.entry_points if e.group in "
+        "('console_scripts', 'gui_scripts')]]\n"
+        "print(json.dumps({name: describe(name) for name in "
         + repr(RECORDING_PYTHON_DISTRIBUTIONS)
-        + "}))"
+        + "}))\n"
     )
     installed = json.loads(_run((str(source_python), "-I", "-B", "-c", probe)))
     if not isinstance(installed, dict) or set(installed) != set(RECORDING_PYTHON_DISTRIBUTIONS):
         raise ContractError("service dependencies differ from the expected isolated closure")
     for name in RECORDING_PYTHON_DISTRIBUTIONS:
-        root_text, files = installed[name]
+        if installed[name] is None:
+            raise RuntimeUnavailableError(missing_recording_python_distribution_message(name))
+    for name in RECORDING_PYTHON_DISTRIBUTIONS:
+        root_text, declared, launchers = installed[name]
         root = Path(root_text).resolve(strict=True)
+        # pip's launcher rows (../../../bin/<script>) are not part of the frozen service.
+        files = recording_distribution_files(name, declared, launchers)
         if not files or len(files) > 100_000:
             raise ContractError(f"cannot freeze undeclared dependency files: {name}")
         for relative in sorted(files):

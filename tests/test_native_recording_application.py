@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import importlib.metadata
+import json
 import os
+import platform
+import re
 import struct
 import sys
 from pathlib import Path
@@ -10,7 +14,7 @@ from typing import Any
 import pytest
 
 from cole_voice_lab.canonical import canonical_sha256
-from cole_voice_lab.errors import ContractError, SecurityError
+from cole_voice_lab.errors import ContractError, RuntimeUnavailableError, SecurityError
 from cole_voice_lab.native_recording_application import (
     NativeRecordingApplicationSettings,
     _install_frozen_wheel,
@@ -20,10 +24,17 @@ from cole_voice_lab.native_recording_application import (
 )
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.runtime import (
+    RECORDING_PYTHON_DISTRIBUTIONS,
+    VAULT_REQUIREMENTS_LOCK,
     _immutable_tree_sha256,
     _python_distribution_identity,
     _python_linked_library_identity,
     inspect_macho_load_commands,
+    missing_recording_python_distribution_message,
+    recording_distribution_files,
+    recording_marker_environment,
+    recording_python_distribution,
+    requirement_marker_applies,
 )
 
 
@@ -218,6 +229,377 @@ def test_dependency_import_shadow_and_symlink_are_rejected(
     path.symlink_to(shadow)
     with pytest.raises(SecurityError, match="symlink"):
         _python_distribution_identity("typing-extensions")
+
+
+# -- the service closure: environment markers, launcher rows, missing distributions ------
+
+DARWIN = {
+    "extra": "",
+    "implementation_name": "cpython",
+    "platform_python_implementation": "CPython",
+    "platform_system": "Darwin",
+    "python_full_version": "3.12.14",
+    "python_version": "3.12",
+    "sys_platform": "darwin",
+}
+LINUX_310 = DARWIN | {
+    "platform_system": "Linux",
+    "python_full_version": "3.10.4",
+    "python_version": "3.10",
+    "sys_platform": "linux",
+}
+PYPY = DARWIN | {"implementation_name": "pypy", "platform_python_implementation": "PyPy"}
+
+
+def test_the_service_closure_is_the_pydantic_family_and_the_sealing_closure() -> None:
+    assert RECORDING_PYTHON_DISTRIBUTIONS == (
+        "annotated-types",
+        "cffi",
+        "cryptography",
+        "pycparser",
+        "pydantic",
+        "pydantic-core",
+        "typing-extensions",
+        "typing-inspection",
+    )
+    assert VAULT_REQUIREMENTS_LOCK == "requirements/vault-macos.txt"
+
+
+def test_the_marker_environment_is_this_interpreters_with_no_extra() -> None:
+    assert recording_marker_environment() == {
+        "extra": "",
+        "implementation_name": sys.implementation.name,
+        "platform_python_implementation": platform.python_implementation(),
+        "platform_system": platform.system(),
+        "python_full_version": platform.python_version(),
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "sys_platform": sys.platform,
+    }
+
+
+def test_the_installed_closure_markers_select_only_what_this_interpreter_needs() -> None:
+    environment = recording_marker_environment()
+    selected: dict[str, bool] = {}
+    for name in RECORDING_PYTHON_DISTRIBUTIONS:
+        for requirement in importlib.metadata.distribution(name).requires or ():
+            _, separator, marker = requirement.partition(";")
+            if separator:
+                selected[requirement] = requirement_marker_applies(marker, environment)
+    assert selected, "the closure has no marker rows to check"
+    for requirement, applies in selected.items():
+        name = requirement.split(";")[0].strip()
+        if "extra ==" in requirement:
+            assert not applies, requirement
+        elif name.startswith(("cffi", "pycparser")):
+            assert applies, requirement
+        elif name.startswith("typing-extensions"):
+            assert not applies, requirement  # needed only before Python 3.11
+    assert any(item.startswith("cffi") for item in selected)
+    assert any(item.startswith("pycparser") for item in selected)
+
+
+@pytest.mark.parametrize(
+    ("marker", "environment", "expected"),
+    [
+        ("extra == 'ssh'", DARWIN, False),
+        ("extra != 'ssh'", DARWIN, True),
+        ("extra == 'ssh'", DARWIN | {"extra": "ssh"}, True),
+        ('extra == "Tz.Data"', DARWIN | {"extra": "tz_data"}, True),
+        ("platform_python_implementation != 'PyPy'", DARWIN, True),
+        ("platform_python_implementation != 'PyPy'", PYPY, False),
+        ('implementation_name != "PyPy"', DARWIN, True),
+        ('implementation_name == "pypy"', PYPY, True),
+        ("python_full_version < '3.11'", DARWIN, False),
+        ("python_full_version < '3.11'", LINUX_310, True),
+        ("python_full_version > '3.12.13'", DARWIN, True),
+        ("python_full_version >= '3.12.15'", DARWIN, False),
+        ("python_version == '3.12.0'", DARWIN, True),
+        ("python_version != '3.12'", DARWIN, False),
+        ("python_version <= '3.12'", DARWIN, True),
+        ("python_version > '3.12'", DARWIN, False),
+        ("python_version >= '3.9' and platform_system == 'Windows'", LINUX_310, False),
+        (
+            "(python_version >= '3.9' and platform_system == 'Windows') and extra == 'timezone'",
+            DARWIN | {"platform_system": "Windows", "extra": "timezone"},
+            True,
+        ),
+        (
+            "(python_version >= '3.9' and platform_system == 'Windows') and extra == 'timezone'",
+            DARWIN | {"platform_system": "Windows"},
+            False,
+        ),
+        ("sys_platform == 'darwin' or sys_platform == 'linux'", LINUX_310, True),
+        ("sys_platform == 'win32' or sys_platform == 'cygwin'", DARWIN, False),
+        (
+            "sys_platform == 'win32' or (platform_system == 'Linux' and python_version < '3.11')",
+            LINUX_310,
+            True,
+        ),
+        ("extra == 'a' or extra == 'b' and extra == 'c'", DARWIN | {"extra": "a"}, True),
+        ("  sys_platform=='darwin'  ", DARWIN, True),
+    ],
+)
+def test_a_supported_marker_is_evaluated_as_pep_508_says(
+    marker: str, environment: dict[str, str], expected: bool
+) -> None:
+    assert requirement_marker_applies(marker, environment) is expected
+
+
+@pytest.mark.parametrize(
+    ("marker", "problem"),
+    [
+        ("os_name == 'nt'", "unsupported variable"),
+        ("platform_release == '1'", "unsupported variable"),
+        ("python_version in '3.11 3.12'", "unsupported operator"),
+        ("python_version not in '3.11'", "unsupported operator"),
+        ("not extra == 'x'", "unsupported operator"),
+        ("extra 'x'", "unsupported operator"),
+        ("'3.11' < python_version", "does not start with a variable"),
+        ("python_version ~= '3.11'", "unsupported character"),
+        ("python_version === '3.12'", "unsupported character"),
+        ('extra == "a\\\\b"', "unsupported character"),
+        ("extra == 'x' ; extra == 'y'", "unsupported character"),
+        ("python_version >= '3.12rc1'", "not a plain release"),
+        ("python_version >= '3.*'", "not a plain release"),
+        ("python_version >= '1111111'", "not a plain release"),
+        ("platform_system >= 'Darwin'", "version operator on platform_system"),
+        ("extra == x", "non-string value"),
+        ("(extra == 'x'", "missing term"),
+        ("(extra == 'x' extra", "unbalanced parenthesis"),
+        ("extra == 'x')", "trailing terms"),
+        ("extra == 'x' extra == 'y'", "trailing terms"),
+        ("extra ==", "missing term"),
+        ("extra == 'x' or", "missing term"),
+        ("", "missing term"),
+    ],
+)
+def test_an_unknown_marker_is_refused_rather_than_guessed(marker: str, problem: str) -> None:
+    with pytest.raises(SecurityError, match=re.escape(problem)) as caught:
+        requirement_marker_applies(marker, DARWIN)
+    assert str(caught.value).startswith("Python service dependency marker has ")
+    assert repr(marker) in str(caught.value)
+
+
+def fake_distribution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    requires: list[str] | None = None,
+    rows: tuple[str, ...] = (),
+    entry_points: tuple[SimpleNamespace, ...] = (),
+) -> None:
+    """Install a one-module fake of typing-extensions that ``runtime`` sees."""
+    import cole_voice_lab.runtime as runtime
+
+    path = tmp_path / "typing_extensions.py"
+    path.write_text("VALUE = 1\n")
+    fake = SimpleNamespace(
+        files=[Path(path.name), *(Path(row) for row in rows)],
+        version="unchanged",
+        requires=requires,
+        locate_file=lambda _: str(tmp_path),
+        entry_points=entry_points,
+    )
+    monkeypatch.setattr(runtime.importlib.metadata, "distribution", lambda _: fake)
+    monkeypatch.setattr(
+        runtime.importlib, "import_module", lambda _: SimpleNamespace(__file__=str(path))
+    )
+
+
+def test_a_dependency_that_markers_exclude_here_is_not_part_of_the_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_distribution(
+        tmp_path,
+        monkeypatch,
+        requires=[
+            "cffi>=2.0.0 ; platform_python_implementation != 'PyPy'",
+            'pycparser; implementation_name != "PyPy"',
+            "zlib-ng>=1 ; python_full_version < '3.11'",
+            "pywin32 ; sys_platform == 'win32'",
+            "bcrypt>=3.1.5 ; extra == 'ssh'",
+            "tzdata; (python_version >= '3.9' and platform_system == 'Windows') and "
+            "extra == 'timezone'",
+            "; extra == 'nameless'",
+        ],
+    )
+    identity, _ = _python_distribution_identity("typing-extensions")
+    assert identity["file_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    ["requests>=2", "requests ; sys_platform == 'darwin'", "@nonsense", " ; extra != 'x'"],
+)
+def test_a_dependency_selected_here_outside_the_closure_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requirement: str
+) -> None:
+    fake_distribution(tmp_path, monkeypatch, requires=["pydantic-core", requirement])
+    with pytest.raises(SecurityError, match="dependency closure changed"):
+        _python_distribution_identity("typing-extensions")
+
+
+def test_a_closure_marker_outside_the_supported_subset_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_distribution(tmp_path, monkeypatch, requires=["cffi ; os_name == 'nt'"])
+    with pytest.raises(SecurityError, match="unsupported variable"):
+        _python_distribution_identity("typing-extensions")
+
+
+def test_only_declared_launcher_rows_are_left_out_of_a_dependency_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launchers = (
+        SimpleNamespace(name="fake-tool", group="console_scripts"),
+        SimpleNamespace(name="fake-window", group="gui_scripts"),
+        SimpleNamespace(name="elsewhere", group="distutils.setup_keywords"),
+    )
+    rows = ("../../../bin/fake-tool", "../../../bin/fake-window")
+    fake_distribution(tmp_path, monkeypatch, rows=rows, entry_points=launchers)
+    identity, _ = _python_distribution_identity("typing-extensions")
+    assert identity["file_count"] == 1
+    fake_distribution(
+        tmp_path, monkeypatch, rows=("../../../bin/elsewhere",), entry_points=launchers
+    )
+    with pytest.raises(ValueError, match="parent path components"):
+        _python_distribution_identity("typing-extensions")
+    fake_distribution(tmp_path, monkeypatch, rows=("../outside.py",))
+    with pytest.raises(ValueError, match="parent path components"):
+        _python_distribution_identity("typing-extensions")
+
+
+def test_launcher_rows_are_dropped_by_name_and_unsafe_names_are_refused() -> None:
+    rows = ["pkg/__init__.py", "../../../bin/tool", "../../../bin/other", "../../bin/tool"]
+    assert recording_distribution_files("pkg", rows, ["tool"]) == (
+        "pkg/__init__.py",
+        "../../../bin/other",
+        "../../bin/tool",
+    )
+    assert recording_distribution_files("pkg", rows, []) == tuple(rows)
+    for unsafe in ("../evil", "", "two words", "x" * 129, ".hidden"):
+        with pytest.raises(SecurityError, match="unsafe launcher"):
+            recording_distribution_files("pkg", rows, ["tool", unsafe])
+
+
+def test_a_dependency_without_bounded_file_evidence_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cole_voice_lab.runtime as runtime
+
+    fake_distribution(tmp_path, monkeypatch)
+    missing = SimpleNamespace(files=None, requires=None, locate_file=lambda _: str(tmp_path))
+    monkeypatch.setattr(runtime.importlib.metadata, "distribution", lambda _: missing)
+    with pytest.raises(SecurityError, match="no bounded installed file evidence"):
+        _python_distribution_identity("typing-extensions")
+
+
+def test_the_installed_cffi_is_fingerprinted_without_its_launcher() -> None:
+    distribution = importlib.metadata.distribution("cffi")
+    root = Path(str(distribution.locate_file(""))).resolve()
+    rows = [str(item) for item in distribution.files or ()]
+    assert "../../../bin/cffi-gen-src" in rows
+    counted = [
+        row
+        for row in rows
+        if not row.startswith("../") and not (row.endswith(".pyc") and not (root / row).exists())
+    ]
+    identity, extensions = _python_distribution_identity("cffi")
+    assert identity["file_count"] == len(counted)
+    assert [path.name for path in extensions] == ["_cffi_backend.cpython-312-darwin.so"]
+    _, extensions = _python_distribution_identity("cryptography")
+    assert [path.name for path in extensions] == ["_rust.abi3.so"]
+
+
+@pytest.mark.parametrize(
+    ("name", "route"),
+    [
+        ("cryptography", "install the reviewed vault lock requirements/vault-macos.txt"),
+        ("cffi", "-r requirements/vault-macos.txt"),
+        ("pycparser", "--require-hashes --no-deps --only-binary=:all:"),
+        ("pydantic", "pip install -e '.[dev]'"),
+    ],
+)
+def test_a_missing_service_distribution_names_its_install_route(
+    monkeypatch: pytest.MonkeyPatch, name: str, route: str
+) -> None:
+    import cole_voice_lab.runtime as runtime
+
+    def missing(requested: str) -> object:
+        raise importlib.metadata.PackageNotFoundError(requested)
+
+    monkeypatch.setattr(runtime.importlib.metadata, "distribution", missing)
+    message = missing_recording_python_distribution_message(name)
+    assert name in message and route in message
+    assert ("vault-macos" in message) is (name != "pydantic")
+    for action in (
+        lambda: recording_python_distribution(name),
+        lambda: _python_distribution_identity(name),
+    ):
+        with pytest.raises(RuntimeUnavailableError, match=f"has no installed {name};") as caught:
+            action()
+        assert str(caught.value) == message
+    with pytest.raises(RuntimeUnavailableError, match="has no installed annotated-types"):
+        runtime._recording_runtime_entries({"linked_libraries": {"files": []}})
+
+
+def freeze_probe_answer(
+    monkeypatch: pytest.MonkeyPatch, destination: Path, answer: dict[str, object]
+) -> None:
+    import cole_voice_lab.native_recording_application as application
+
+    def run(arguments: Any, **_options: object) -> str:
+        if "venv" in arguments:
+            (destination / "lib/python3.12/site-packages").mkdir(parents=True)
+            return ""
+        assert "PackageNotFoundError" in arguments[-1] and "console_scripts" in arguments[-1]
+        return json.dumps(answer)
+
+    monkeypatch.setattr(application, "_run", run)
+
+
+def test_freezing_refuses_a_missing_service_distribution_by_its_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cole_voice_lab.native_recording_application import _freeze_dependencies
+
+    destination = tmp_path / "runtime"
+    answer: dict[str, object] = {
+        name: None if name == "cryptography" else [str(tmp_path), ["x.py"], []]
+        for name in RECORDING_PYTHON_DISTRIBUTIONS
+    }
+    freeze_probe_answer(monkeypatch, destination, answer)
+    with pytest.raises(RuntimeUnavailableError, match="requirements/vault-macos.txt"):
+        _freeze_dependencies(Path(sys.executable), destination)
+    assert not list((destination / "lib/python3.12/site-packages").iterdir())
+
+
+def test_freezing_copies_no_launcher_and_refuses_other_relocated_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cole_voice_lab.native_recording_application import _freeze_dependencies
+
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in RECORDING_PYTHON_DISTRIBUTIONS:
+        (source / f"{name}.py").write_text("VALUE = 1\n")
+    answer: dict[str, object] = {
+        name: [str(source), [f"{name}.py", "../../../bin/tool"], ["tool"]]
+        for name in RECORDING_PYTHON_DISTRIBUTIONS
+    }
+    destination = tmp_path / "runtime"
+    freeze_probe_answer(monkeypatch, destination, answer)
+    _freeze_dependencies(Path(sys.executable), destination)
+    site = destination / "lib/python3.12/site-packages"
+    assert sorted(path.name for path in site.iterdir()) == sorted(
+        f"{name}.py" for name in RECORDING_PYTHON_DISTRIBUTIONS
+    )
+    assert not (destination / "bin").exists()
+    undeclared = {name: [str(source), [f"{name}.py", "../../../bin/tool"], []] for name in answer}
+    destination = tmp_path / "second runtime"
+    freeze_probe_answer(monkeypatch, destination, undeclared)
+    with pytest.raises(ValueError, match="parent path components"):
+        _freeze_dependencies(Path(sys.executable), destination)
 
 
 def test_immutable_tree_explicit_site_exclusion_does_not_follow_global_packages(
@@ -776,9 +1158,15 @@ def test_actual_signed_preview_has_frozen_service_and_permissions(
             "-I",
             "-B",
             "-c",
-            "import importlib.util,json,cole_voice_lab; "
+            "import importlib.util,json,cole_voice_lab,cryptography; "
+            "from cryptography.hazmat.primitives.ciphers.aead import AESGCM; "
+            "from cole_voice_lab.storage_sealing import LibraryKey,open_sealed_blob,seal_blob; "
+            "key=LibraryKey(bytes(range(32))); "
+            "sealed=seal_blob(key,'frozen-library',b'frozen service seals'); "
             "print(json.dumps({'qt':importlib.util.find_spec('PySide6') is None,"
-            "'source':cole_voice_lab.__file__}))",
+            "'source':cole_voice_lab.__file__,'cryptography':cryptography.__file__,"
+            "'aead':AESGCM.__module__,"
+            "'opened':open_sealed_blob(key,'frozen-library',sealed,label='x').decode()}))",
         ),
         capture_output=True,
         text=True,
@@ -787,6 +1175,14 @@ def test_actual_signed_preview_has_frozen_service_and_permissions(
     )
     identity = json.loads(result.stdout)
     assert identity["qt"] and Path(identity["source"]).is_relative_to(runtime / "python")
+    # The frozen service carries the vault's sealing closure, and seals with it.
+    assert Path(identity["cryptography"]).is_relative_to(runtime / "python")
+    assert identity["aead"].startswith("cryptography.")
+    assert identity["opened"] == "frozen service seals"
+    assert not (runtime / "python/bin/cffi-gen-src").exists()
+    frozen_site = runtime / "python/lib/python3.12/site-packages"
+    assert (frozen_site / "_cffi_backend.cpython-312-darwin.so").is_file()
+    assert (frozen_site / "cryptography/hazmat/bindings/_rust.abi3.so").is_file()
     for executable in (app, app / "Contents/Helpers/ColeVoiceRecorderHelper"):
         signature = subprocess.run(
             ("/usr/bin/codesign", "-d", "--entitlements", ":-", str(executable)),
@@ -797,8 +1193,11 @@ def test_actual_signed_preview_has_frozen_service_and_permissions(
         assert plistlib.loads(signature.stdout)["com.apple.security.device.audio-input"] is True
 
 
+@pytest.mark.parametrize(
+    "changed", ["typing_extensions.py", "cryptography/__about__.py"], ids=["pydantic", "vault"]
+)
 def test_actual_frozen_service_rejects_changed_dependency_with_preserved_mtime(
-    signed_native_release: Any, tmp_path: Path
+    signed_native_release: Any, tmp_path: Path, changed: str
 ) -> None:
     import shutil
     import subprocess
@@ -822,7 +1221,7 @@ def test_actual_frozen_service_rejects_changed_dependency_with_preserved_mtime(
         capture_output=True,
         timeout=30,
     )
-    dependency = clone / "lib/python3.12/site-packages/typing_extensions.py"
+    dependency = clone / "lib/python3.12/site-packages" / changed
     before = dependency.stat()
     raw = dependency.read_bytes()
     offset = raw.index(b"#") + 1

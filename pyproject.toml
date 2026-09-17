@@ -19,6 +19,10 @@ dependencies = [
 desktop = [
   "PySide6-Essentials==6.11.2",
 ]
+# Library vault encryption; hash-locked with its closure in requirements/vault-macos.txt.
+vault = [
+  "cryptography==50.0.1",
+]
 dev = [
   "build>=1.2,<2",
   "setuptools==80.9.0",
@@ -28,6 +32,7 @@ dev = [
   "pytest-cov>=6,<7",
   "ruff>=0.11,<1",
   "PySide6-Essentials==6.11.2",
+  "cryptography==50.0.1",
 ]
 
 [project.scripts]
