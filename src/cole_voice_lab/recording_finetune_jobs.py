@@ -1,4 +1,4 @@
-"""Durable one-at-a-time fine-tune jobs and their owned, cancellable worker process.
+"""Durable one-at-a-time fine-tune jobs, Speak requests, and their owned, cancellable workers.
 
 @canonical finetune_jobs -- the recording service accepts a fine-tune in metadata time
 (``FineTuneJobQueue.submit`` checks the runtime and free disk, never the library) and one
@@ -9,13 +9,20 @@ supervisor turns the worker's stage frames and the tail of ``train.log`` into
 ``FineTuneProgressEvent``s (at most one every five seconds), cancels by signalling the whole
 group, and marks a job a stopped service left running as failed (``FINETUNE.INTERRUPTED``),
 publishing that outcome; a job is never retried.
+Speak requests (``SynthesizeCommand``) are the second job kind of the same supervisor: in
+memory only, one at a time, sharing the one GPU slot with fine-tuning, each run by the same
+worker module (``finetune.resolve_speech_model`` then ``finetune.synthesize_speech``) with a
+120 s deadline and cancelled by killing its group. The supervisor keeps the digests the
+workers verified (``finetune.FineTuneDigestCache``) and hands them to the next request.
 Layout under ``provenance/finetune-jobs/``: ``.owner.lock`` (one owning service),
 ``head.json`` (the one queued or running job), ``requests/<op>.json`` and
-``terminal/<op>.json`` (immutable). Runs are written to ``derived/finetune/<run id>/``.
+``terminal/<op>.json`` (immutable). Runs are written to ``derived/finetune/<run id>/``,
+Speak clips to ``derived/speech/<op>/``.
 Worker protocol (length-prefixed frames, ``recording_service.RecordingFrameDecoder``): one
-``FineTuneWorkerRequest`` in; ``FineTuneWorkerStage`` frames then one
-``FineTuneWorkerReply`` out. The worker kills its own group when its stdin ends, so the
-trainer never outlives the service.
+``FineTuneWorkerRequest`` in, ``FineTuneWorkerStage`` frames then one
+``FineTuneWorkerReply`` out; or one ``SpeechWorkerRequest`` in and one ``SpeechWorkerReply``
+out. The worker kills its own group when its stdin ends, so neither the trainer nor the
+synthesizer outlives the service.
 Related: finetune.py (the pipeline), recording_service.py (dispatch and startup),
 recording_takes.py (durable evidence writes), recording_contracts.py (wire events),
 docs/FINETUNE.md.
@@ -37,15 +44,16 @@ import subprocess
 import sys
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Final, Literal
+from typing import Annotated, Any, Final, Literal
 from uuid import uuid4
 
-from pydantic import AfterValidator, Field, StringConstraints, TypeAdapter, model_validator
+from pydantic import Field, TypeAdapter, model_validator
 
 from .canonical import canonical_sha256, open_regular_no_follow
 from .corpus_store import (
@@ -57,22 +65,35 @@ from .corpus_store import (
 from .errors import ContractError, SecurityError, VoiceLabError
 from .finetune import (
     FINETUNE_OUTPUT_ROOT,
+    MAX_TRUSTED_DIGESTS,
+    AbsolutePath,
+    FineTuneDigestCache,
     FineTuneError,
     FineTuneHyperparameters,
     FineTunePipelineStep,
     FineTunePretrainedPins,
+    FineTuneRuntimeProbe,
+    FineTuneTrustedDigests,
+    FineTuneVerifiedDigest,
+    SpeechClip,
+    SpeechResolution,
+    discard_speech_output,
     finetune_run_summary,
-    latest_finished_finetune_run,
+    finished_finetune_run_ids,
+    finished_finetune_runs,
     mark_finetune_run_failed,
     release_finetune_runtime_link,
+    resolve_speech_model,
     run_finetune_pipeline,
+    synthesize_speech,
 )
 from .models import ContractModel, Sha256, StableId, utc_now
-from .paths import AssetLayout, confined_path, validate_absolute_path
+from .paths import AssetLayout, confined_path
 from .recording_contracts import (
     FINETUNE_MAX_EPOCHS,
     MAX_CONTROL_FRAME_BYTES,
     CancelFineTuneCommand,
+    CancelSynthesisCommand,
     CatalogReference,
     ErrorCode,
     FineTuneCommand,
@@ -84,8 +105,12 @@ from .recording_contracts import (
     FineTuneStatusCommand,
     FineTuneStatusEvent,
     RecordingError,
+    SynthesisEvent,
+    SynthesisState,
+    SynthesizeCommand,
     UtcTimestamp,
     recording_frame_bytes,
+    speech_directory,
 )
 from .recording_service import (
     RecordingFrameDecoder,
@@ -127,12 +152,13 @@ _LOG_TAIL_BYTES: Final = 65_536
 _LOG_CARRY_CHARACTERS: Final = 4_096
 _POLL_SECONDS: Final = 0.1
 _STABLE_ID: TypeAdapter[StableId] = TypeAdapter(StableId)
+# A Speak request's worker may run this long (model load and synthesis included).
+SPEECH_DEADLINE_SECONDS: Final = 120.0
+# Ended Speak requests kept in memory, so a resent request or cancel names its outcome.
+MAX_ENDED_SPEECH: Final = 64
 
-type AbsolutePath = Annotated[
-    str, StringConstraints(min_length=1, max_length=4_096), AfterValidator(validate_absolute_path)
-]
 type TerminalFineTuneState = Literal["finished", "failed", "cancelled"]
-type FineTuneJobEvent = FineTuneProgressEvent | FineTuneEvent
+type FineTuneJobEvent = FineTuneProgressEvent | FineTuneEvent | SynthesisEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +166,7 @@ class _Outcome:
     state: TerminalFineTuneState
     error: RecordingError | None = None
     replied: bool = False
+    reply: FineTuneWorkerReply | SpeechWorkerReply | None = None
 
 
 def _interrupted(message: str) -> RecordingError:
@@ -294,8 +321,84 @@ class FineTuneWorkerReply(ContractModel):
     error: RecordingError | None = None
 
 
+class SpeechWorkerRequest(ContractModel):
+    """One Speak request for the worker, with the digests earlier requests verified.
+
+    ``trusted`` is reused only for files whose identity is unchanged
+    (``finetune.FineTuneDigestCache``).
+    """
+
+    schema_version: Literal["cole-voice-lab.finetune-worker/v1"] = (
+        "cole-voice-lab.finetune-worker/v1"
+    )
+    kind: Literal["synthesize"] = "synthesize"
+    generation: StableId
+    operation_id: StableId
+    request_sha256: Sha256
+    command: SynthesizeCommand
+    runtime_root: AbsolutePath
+    # Substitute pretrained-file pins (tests only; the service never sends them).
+    pretrained_pin: FineTunePretrainedPins | None = None
+    trusted: FineTuneTrustedDigests = FineTuneTrustedDigests()
+
+    @model_validator(mode="after")
+    def _command_binding(self) -> SpeechWorkerRequest:
+        if (
+            self.command.operation_id != self.operation_id
+            or canonical_sha256(self.command) != self.request_sha256
+        ):
+            raise ValueError("a Speak worker request binds its exact command")
+        return self
+
+
+class SpeechWorkerResolution(ContractModel):
+    """What the worker resolved: the speaking run (none for base) and the reference."""
+
+    run_id: StableId | None
+    reference_run_id: StableId
+    reference_prompt_id: StableId
+
+
+class SpeechWorkerReply(ContractModel):
+    """The Speak worker's one result: its clip, or its error (with the resolution, if any).
+
+    ``trusted`` is what the worker verified, for the next request.
+    """
+
+    schema_version: Literal["cole-voice-lab.finetune-worker/v1"] = (
+        "cole-voice-lab.finetune-worker/v1"
+    )
+    kind: Literal["synthesis-result"] = "synthesis-result"
+    generation: StableId
+    operation_id: StableId
+    request_sha256: Sha256
+    resolution: SpeechWorkerResolution | None = None
+    clip: SpeechClip | None = None
+    trusted: FineTuneTrustedDigests = FineTuneTrustedDigests()
+    error: RecordingError | None = None
+
+    @model_validator(mode="after")
+    def _one_result(self) -> SpeechWorkerReply:
+        if (self.error is None) == (self.clip is None):
+            raise ValueError("a Speak result names its clip or its error")
+        clip, resolution = self.clip, self.resolution
+        if clip is not None and (
+            resolution is None
+            or clip.operation_id != self.operation_id
+            or clip.model != (resolution.run_id or "base")
+            or clip.reference_run_id != resolution.reference_run_id
+            or clip.reference_prompt_id != resolution.reference_prompt_id
+        ):
+            raise ValueError("a Speak clip belongs to its request and its resolution")
+        return self
+
+
 type FineTuneWorkerMessage = Annotated[
-    FineTuneWorkerRequest | FineTuneWorkerStage | FineTuneWorkerReply,
+    FineTuneWorkerRequest
+    | FineTuneWorkerStage
+    | FineTuneWorkerReply
+    | SpeechWorkerRequest
+    | SpeechWorkerReply,
     Field(discriminator="kind"),
 ]
 _WORKER_MESSAGE: TypeAdapter[FineTuneWorkerMessage] = TypeAdapter(FineTuneWorkerMessage)
@@ -471,7 +574,11 @@ class FineTuneJobQueue:
         write_recording_evidence(path, intent, immutable=True)
         return intent
 
-    def _require_runtime(self) -> None:
+    def require_runtime(self) -> None:
+        """Refuse when no runtime is configured or it has no ``bin/python`` (one ``stat``).
+
+        Raises: ``FineTuneJobError`` FINETUNE.RUNTIME_UNAVAILABLE.
+        """
         if self.runtime_root is None:
             raise FineTuneJobError(
                 "FINETUNE.RUNTIME_UNAVAILABLE",
@@ -487,7 +594,11 @@ class FineTuneJobQueue:
             )
 
     def submit(
-        self, command: FineTuneCommand, *, catalog_reference: CatalogReference | None = None
+        self,
+        command: FineTuneCommand,
+        *,
+        catalog_reference: CatalogReference | None = None,
+        admit: Callable[[], None] | None = None,
     ) -> FineTuneJob:
         """Accept ``command`` as the queued job, or replay the job it already names.
 
@@ -495,7 +606,9 @@ class FineTuneJobQueue:
         the library and the runtime's packages are never read here.
         Params: ``catalog_reference`` is the catalog version the service pinned, recorded in
         the intent so the job trains on exactly it (``None``: the subject's active version
-        when the job starts).
+        when the job starts); ``admit`` is called, under the queue's lock, before a new job
+        is accepted (not for a replay) and refuses it by raising (the supervisor refuses
+        while a Speak request holds the GPU).
         Returns: the new queued job, or the queued, running or terminal job of the same
         operation (an identical resubmit).
         Raises: ``FineTuneJobError`` with RECORDING.INVALID_MESSAGE (the operation already
@@ -528,7 +641,9 @@ class FineTuneJobQueue:
                     "to finish or cancel it",
                     retryable=True,
                 )
-            self._require_runtime()
+            if admit is not None:
+                admit()
+            self.require_runtime()
             free = self._free_bytes(self.layout.root)
             if free < FINETUNE_MIN_FREE_BYTES:
                 raise FineTuneJobError(
@@ -1049,14 +1164,94 @@ def worker_command_marker(layout: AssetLayout, operation_id: str) -> str:
     )
 
 
-class FineTuneSupervisor:
-    """Runs the queue's jobs, one worker process at a time, and answers for their progress.
+@dataclass(frozen=True, slots=True)
+class _Conversation:
+    """How the supervisor follows one worker: its limits, its frames and its idle work.
 
-    The service calls ``submit``, ``cancel`` and ``status`` from its metadata executor; the
-    supervisor thread recovers the job a previous service left running, then starts, watches
-    and ends jobs. Progress goes to ``on_event``; a job's end (its run record and final
-    state, a recovered job's included) goes to ``on_outcome``; both are keyed by the job's
-    operation id. Once supervision has failed, every request is refused.
+    ``worker`` names the worker in failures; ``read`` applies the frames in one chunk and
+    returns the worker's result when it came; ``tick`` runs after every poll.
+    """
+
+    worker: str
+    request: FineTuneWorkerRequest | SpeechWorkerRequest
+    cancel_requested: Callable[[], bool]
+    limit_seconds: float
+    over_limit: Callable[[], RecordingError]
+    stop_signal: signal.Signals
+    read: Callable[[bytes], FineTuneWorkerReply | SpeechWorkerReply | None]
+    tick: Callable[[], None]
+
+
+@dataclass(slots=True)
+class _SpeechJob:
+    """One in-memory Speak request: its command and the state last published for it."""
+
+    command: SynthesizeCommand
+    request_sha256: str
+    event: SynthesisEvent
+    cancel_requested: bool = False
+
+
+def _speech_event(
+    command: SynthesizeCommand, state: SynthesisState, **fields: Any
+) -> SynthesisEvent:
+    return SynthesisEvent(
+        operation_id=command.operation_id,
+        state=state,
+        model=command.model,
+        text=command.text,
+        **fields,
+    )
+
+
+def _speech_outcome(
+    command: SynthesizeCommand, error: RecordingError | None, reply: SpeechWorkerReply | None
+) -> SynthesisEvent:
+    """A Speak request's final event: finished with ``reply``'s clip, failed with ``error``,
+    or cancelled (no error and no clip), naming the resolution the reply carries.
+
+    Raises: ``pydantic.ValidationError`` when the reply contradicts the request.
+    """
+    resolution = None if reply is None else reply.resolution
+    fields: dict[str, Any] = (
+        {}
+        if resolution is None
+        else {
+            "run_id": resolution.run_id,
+            "reference_run_id": resolution.reference_run_id,
+            "reference_prompt_id": resolution.reference_prompt_id,
+        }
+    )
+    clip = None if reply is None else reply.clip
+    if error is None and clip is not None:
+        return _speech_event(
+            command,
+            "finished",
+            relative_path=clip.relative_path,
+            sha256=clip.sha256,
+            frames=clip.frames,
+            sample_rate_hz=clip.sample_rate_hz,
+            seconds=clip.seconds,
+            **fields,
+        )
+    if error is not None:
+        return _speech_event(command, "failed", error=error, **fields)
+    return _speech_event(command, "cancelled", **fields)
+
+
+class FineTuneSupervisor:
+    """Runs the queue's jobs and Speak requests, one worker process at a time.
+
+    The service calls ``submit``, ``cancel``, ``status``, ``synthesize`` and
+    ``cancel_synthesis`` from its metadata executor; the supervisor thread recovers the job
+    a previous service left running, then starts, watches and ends jobs and Speak requests.
+    Both kinds share one GPU slot: a Speak request is refused while a fine-tune is queued or
+    running or another request is active, and a fine-tune while a request is active.
+    Progress goes to ``on_event``; a job's end (its run record and final state, a recovered
+    job's included) goes to ``on_outcome``; both are keyed by the job's operation id. Speak
+    requests live in memory only: every accepted request publishes ``queued``, ``running``
+    and exactly one terminal ``SynthesisEvent`` to ``on_event``, keyed by its operation id.
+    Once supervision has failed, every request is refused.
     """
 
     def __init__(
@@ -1070,6 +1265,7 @@ class FineTuneSupervisor:
         progress_interval: float = FINETUNE_PROGRESS_INTERVAL_SECONDS,
         cancel_grace: float = FINETUNE_CANCEL_GRACE_SECONDS,
         watchdog: float = FINETUNE_WATCHDOG_SECONDS,
+        synthesis_deadline: float = SPEECH_DEADLINE_SECONDS,
         processes: Callable[[], Sequence[ProcessRow]] = process_table,
     ) -> None:
         """Params: ``on_outcome`` hears each job's run summary and final state (default:
@@ -1077,7 +1273,8 @@ class FineTuneSupervisor:
         ``pretrained_pin`` is a test seam: the pretrained-file pins the worker checks the
         runtime against (the recording service never sets it, so its workers use
         ``finetune_pretrained_pins()``); ``cancel_grace`` is how long a signalled group has
-        before it is killed; ``processes`` lists processes for recovery's command-line check.
+        before it is killed; ``synthesis_deadline`` is how long a Speak worker may run;
+        ``processes`` lists processes for recovery's command-line check.
         """
         self.queue = queue
         self.on_event = on_event
@@ -1087,12 +1284,20 @@ class FineTuneSupervisor:
         self.progress_interval = progress_interval
         self.cancel_grace = cancel_grace
         self.watchdog = watchdog
+        self.synthesis_deadline = synthesis_deadline
         self._processes = processes
         self._stop = threading.Event()
         self._mutex = threading.Lock()
         self._process: subprocess.Popen[bytes] | None = None
         self._tracker: FineTuneProgressTracker | None = None
         self._recovering: str | None = None
+        # The GPU slot: the active Speak request, the ended ones (for replay) and the digests
+        # Speak workers verified. Taken before the queue's lock, never after it.
+        self._speech_lock = threading.Lock()
+        self._speech: _SpeechJob | None = None
+        self._speech_ended: OrderedDict[str, _SpeechJob] = OrderedDict()
+        self._digests: OrderedDict[str, FineTuneVerifiedDigest] = OrderedDict()
+        self._probe: FineTuneRuntimeProbe | None = None
         self.fatal_error: BaseException | None = None
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="recording-finetune-supervisor"
@@ -1102,6 +1307,12 @@ class FineTuneSupervisor:
     def worker_pid(self) -> int | None:
         with self._mutex:
             return None if self._process is None else self._process.pid
+
+    @property
+    def trusted_digests(self) -> FineTuneTrustedDigests:
+        """The digests and runtime probe the next Speak worker may reuse."""
+        with self._speech_lock:
+            return FineTuneTrustedDigests(files=tuple(self._digests.values()), probe=self._probe)
 
     def start(self) -> None:
         self._thread.start()
@@ -1128,6 +1339,16 @@ class FineTuneSupervisor:
         if self.fatal_error is not None:
             raise FineTuneJobError("RECORDING.GATE_NOT_READY", SUPERVISION_STOPPED)
 
+    def _refuse_while_speaking(self) -> None:
+        """Called by the queue before it accepts a new job, with ``_speech_lock`` held."""
+        if self._speech is not None:
+            raise FineTuneJobError(
+                "FINETUNE.JOB_ACTIVE",
+                f"Speak request {self._speech.command.operation_id} is "
+                f"{self._speech.event.state}; fine-tune once it has finished or been cancelled",
+                retryable=True,
+            )
+
     def submit(
         self, command: FineTuneCommand, *, catalog_reference: CatalogReference | None = None
     ) -> FineTuneProgressEvent:
@@ -1135,10 +1356,14 @@ class FineTuneSupervisor:
         ``catalog_reference``) and return its state.
 
         Raises: ``FineTuneJobError`` RECORDING.GATE_NOT_READY once supervision has stopped;
-        as ``FineTuneJobQueue.submit``.
+        FINETUNE.JOB_ACTIVE (retryable) while a Speak request is queued or running; as
+        ``FineTuneJobQueue.submit``.
         """
         self._require_supervising()
-        job = self.queue.submit(command, catalog_reference=catalog_reference)
+        with self._speech_lock:
+            job = self.queue.submit(
+                command, catalog_reference=catalog_reference, admit=self._refuse_while_speaking
+            )
         return self._active_event(job) if job.state == "running" else finetune_job_event(job)
 
     def cancel(self, command: CancelFineTuneCommand) -> FineTuneProgressEvent:
@@ -1155,10 +1380,11 @@ class FineTuneSupervisor:
         return self._active_event(job) if job.state == "running" else finetune_job_event(job)
 
     def status(self, command: FineTuneStatusCommand) -> FineTuneStatusEvent:
-        """Whether a runtime is configured, the active job's live progress and the latest run.
+        """Whether a runtime is configured, the active job's live progress and the finished runs.
 
         Never waits for recovery: a job being recovered is reported running with the message
-        ``Checking the last fine-tune``. A latest run that cannot be resolved is reported as
+        ``Checking the last fine-tune``. Finished runs (``finished_finetune_runs``, newest
+        first; the latest is the first) that cannot be resolved are reported as
         ``latest_run_error`` (its ``FineTuneError`` code; an unsafe path as
         RECORDING.SOURCE_CHANGED, a file-system failure as RECORDING.WRITE_FAILED), so
         ``active`` is always answered and a new job can still start.
@@ -1170,10 +1396,10 @@ class FineTuneSupervisor:
         active = None
         if job is not None:
             active = self._active_event(job) if job.state == "running" else finetune_job_event(job)
-        latest_run: FineTuneRunSummary | None = None
+        runs: tuple[FineTuneRunSummary, ...] = ()
         latest_run_error: RecordingError | None = None
         try:
-            latest_run = latest_finished_finetune_run(self.queue.layout)
+            runs = finished_finetune_runs(self.queue.layout)
         except FineTuneError as failure:
             latest_run_error = _latest_run_error(failure.code, failure)
         except (SecurityError, ValueError) as failure:
@@ -1184,9 +1410,126 @@ class FineTuneSupervisor:
             operation_id=command.operation_id,
             runtime_configured=self.queue.runtime_configured,
             active=active,
-            latest_run=latest_run,
+            latest_run=runs[0] if runs else None,
+            finished_runs=runs,
             latest_run_error=latest_run_error,
         )
+
+    def synthesize(self, command: SynthesizeCommand) -> SynthesisEvent:
+        """Accept one Speak request (in memory; the supervisor thread runs it).
+
+        Metadata only: the GPU slot, the runtime's ``bin/python``, whether any run has
+        finished (``run.json`` files only) and whether the request's output directory
+        already exists. Nothing is probed or hashed here; the worker resolves the model and
+        reference. The queued event is also published, keyed by the operation id.
+        Returns: the queued state, or the current state of the same request (an identical
+        resubmit).
+        Raises: ``FineTuneJobError`` RECORDING.GATE_NOT_READY once supervision has stopped or
+        the queue is closed; RECORDING.INVALID_MESSAGE when the operation names another
+        request; FINETUNE.JOB_ACTIVE (retryable) while a fine-tune is queued or running or
+        another Speak request is active; FINETUNE.RUNTIME_UNAVAILABLE; FINETUNE.NO_FINISHED_RUN
+        when no run has finished; FINETUNE.RUN_EXISTS when ``derived/speech/<operation>``
+        exists. Nothing is written for a refusal.
+        """
+        self._require_supervising()
+        request_sha256 = canonical_sha256(command)
+        operation_id = command.operation_id
+        with self._speech_lock:
+            current = self._speech
+            known = (
+                current
+                if current is not None and current.command.operation_id == operation_id
+                else self._speech_ended.get(operation_id)
+            )
+            if known is not None:
+                if known.request_sha256 != request_sha256:
+                    raise FineTuneJobError(
+                        "RECORDING.INVALID_MESSAGE",
+                        f"Speak operation {operation_id} already names another request",
+                    )
+                return known.event
+            if current is not None:
+                raise FineTuneJobError(
+                    "FINETUNE.JOB_ACTIVE",
+                    f"Speak request {current.command.operation_id} is {current.event.state}; "
+                    "wait for it to finish or cancel it",
+                    retryable=True,
+                )
+            training = self.queue.active_job()
+            if training is not None:
+                raise FineTuneJobError(
+                    "FINETUNE.JOB_ACTIVE",
+                    f"fine-tune {training.operation_id} is {training.state}; Speak is "
+                    "available once it has finished or been cancelled",
+                    retryable=True,
+                )
+            self.queue.require_runtime()
+            if self._no_finished_run():
+                raise FineTuneJobError(
+                    "FINETUNE.NO_FINISHED_RUN",
+                    "no fine-tuned model has finished yet; fine-tune once before using Speak",
+                )
+            layout = self.queue.layout
+            if os.path.lexists(confined_path(layout.root, speech_directory(operation_id))):
+                raise FineTuneJobError(
+                    "FINETUNE.RUN_EXISTS",
+                    f"{speech_directory(operation_id)} already exists; each Speak request "
+                    "needs a new operation id",
+                )
+            queued = _speech_event(command, "queued")
+            self._speech = _SpeechJob(command, request_sha256, queued)
+            self.queue.wake.set()
+        # The supervisor thread may already have started it; this reply is still "queued".
+        self._emit(queued)
+        return queued
+
+    def _no_finished_run(self) -> bool:
+        """Whether the run records show that no run has finished (a cheap scan).
+
+        Records that cannot be read are left to the worker, which resolves the request
+        again and names the failure.
+        """
+        try:
+            return not finished_finetune_run_ids(self.queue.layout)
+        except (FineTuneError, SecurityError, OSError):
+            return False
+
+    def cancel_synthesis(self, command: CancelSynthesisCommand) -> SynthesisEvent:
+        """Cancel the Speak request ``command.cancelled_operation_id``.
+
+        Returns: the cancelled state for a queued request (also published); the running
+        state for a running one (its worker's group is killed and the ``cancelled`` event
+        follows once it is gone); an ended request's final state.
+        Raises: ``FineTuneJobError`` RECORDING.GATE_NOT_READY once supervision has stopped;
+        RECORDING.INVALID_TRANSITION when this service has no such request.
+        """
+        self._require_supervising()
+        operation_id = command.cancelled_operation_id
+        with self._speech_lock:
+            job = self._speech
+            if job is None or job.command.operation_id != operation_id:
+                ended = self._speech_ended.get(operation_id)
+                if ended is None:
+                    raise FineTuneJobError(
+                        "RECORDING.INVALID_TRANSITION",
+                        f"no Speak request {operation_id} is queued or running",
+                    )
+                return ended.event
+            if job.event.state == "running":
+                job.cancel_requested = True
+                return job.event
+            cancelled = _speech_event(job.command, "cancelled")
+            self._end_speech_locked(job, cancelled)
+        self._emit(cancelled)
+        return cancelled
+
+    def _end_speech_locked(self, job: _SpeechJob, event: SynthesisEvent) -> None:
+        """Record ``job``'s final ``event`` (``_speech_lock`` held); the slot is free again."""
+        job.event = event
+        self._speech = None
+        self._speech_ended[job.command.operation_id] = job
+        while len(self._speech_ended) > MAX_ENDED_SPEECH:
+            self._speech_ended.popitem(last=False)
 
     # -- supervision (supervisor thread) -------------------------------------------------
 
@@ -1220,10 +1563,14 @@ class FineTuneSupervisor:
             self._recover()
             while not self._stop.is_set():
                 claimed = self.queue.claim()
-                if claimed is None:
-                    self.queue.wake.wait(_POLL_SECONDS)
+                if claimed is not None:
+                    self._run_job(*claimed)
                     continue
-                self._run_job(*claimed)
+                speech = self._start_speech()
+                if speech is not None:
+                    self._run_speech(speech)
+                    continue
+                self.queue.wake.wait(_POLL_SECONDS)
         except BaseException as error:
             self.fatal_error = error
             if self.on_failure is not None:
@@ -1280,7 +1627,7 @@ class FineTuneSupervisor:
                 )
             time.sleep(0.05)
 
-    def _worker_command(self, job: FineTuneJob) -> list[str]:
+    def _worker_command(self, job: FineTuneJob | SynthesizeCommand) -> list[str]:
         return [
             sys.executable,
             "-m",
@@ -1372,6 +1719,33 @@ class FineTuneSupervisor:
                     retryable=False,
                 ),
             )
+
+        def converse(process: subprocess.Popen[bytes]) -> _Outcome | None:
+            recorded = self.queue.record_worker(job.operation_id, process.pid)
+            request = FineTuneWorkerRequest(
+                generation=f"finetune-{uuid4().hex}",
+                operation_id=recorded.operation_id,
+                request_sha256=recorded.request_sha256,
+                run_id=run_id,
+                runtime_root=str(runtime_root),
+                pretrained_pin=self.pretrained_pin,
+            )
+            return self._converse(process, recorded, request, tracker)
+
+        return self._spawn(job, "fine-tune", converse)
+
+    def _spawn(
+        self,
+        job: FineTuneJob | SynthesizeCommand,
+        worker: str,
+        converse: Callable[[subprocess.Popen[bytes]], _Outcome | None],
+    ) -> _Outcome | None:
+        """Start a worker in its own session, follow it with ``converse``, then reap its group.
+
+        Returns: ``converse``'s outcome; a failed one (FINETUNE.INTERRUPTED) when the worker
+        cannot start.
+        Raises: as ``_reap``.
+        """
         try:
             process = subprocess.Popen(
                 self._worker_command(job),
@@ -1383,22 +1757,13 @@ class FineTuneSupervisor:
             )
         except OSError as failure:
             return _Outcome(
-                "failed", _interrupted(f"the fine-tune worker could not start: {failure}")
+                "failed", _interrupted(f"the {worker} worker could not start: {failure}")
             )
         with self._mutex:
             self._process = process
         outcome: _Outcome | None = None
         try:
-            job = self.queue.record_worker(job.operation_id, process.pid)
-            request = FineTuneWorkerRequest(
-                generation=f"finetune-{uuid4().hex}",
-                operation_id=job.operation_id,
-                request_sha256=job.request_sha256,
-                run_id=run_id,
-                runtime_root=str(runtime_root),
-                pretrained_pin=self.pretrained_pin,
-            )
-            outcome = self._converse(process, job, request, tracker)
+            outcome = converse(process)
             return outcome
         finally:
             try:
@@ -1448,20 +1813,56 @@ class FineTuneSupervisor:
         request: FineTuneWorkerRequest,
         tracker: FineTuneProgressTracker,
     ) -> _Outcome | None:
-        """Send the request, follow stage frames and the log, and stop the group on demand.
+        """Follow a fine-tune worker: stage frames, the training log, cancel and watchdog.
 
         A cancellation or the watchdog sends SIGTERM to the group and SIGKILL after
-        ``cancel_grace``; a worker that will not take its request or sends an invalid frame
-        is killed at once. The outcome is returned once the group is gone.
+        ``cancel_grace``.
+        """
+        assert job.run_id is not None
+        decoder = RecordingFrameDecoder()
+        tail = FineTuneLogTail(self.queue.layout, job.run_id)
+
+        def over_limit() -> RecordingError:
+            return _interrupted(
+                f"the fine-tune ran longer than {_duration_text(self.watchdog)} and was stopped"
+            )
+
+        def tick() -> None:
+            if tracker.training:
+                progress = tail.read()
+                if progress is not None:
+                    tracker.training_progress(progress)
+            self._emit(tracker.due())
+
+        return self._follow(
+            process,
+            _Conversation(
+                worker="fine-tune",
+                request=request,
+                cancel_requested=lambda: self.queue.cancel_requested(job.operation_id),
+                limit_seconds=self.watchdog,
+                over_limit=over_limit,
+                stop_signal=signal.SIGTERM,
+                read=lambda chunk: self._frames(decoder, chunk, job, request, tracker),
+                tick=tick,
+            ),
+        )
+
+    def _follow(
+        self, process: subprocess.Popen[bytes], conversation: _Conversation
+    ) -> _Outcome | None:
+        """Send the request, apply the worker's frames and stop its group on demand.
+
+        A cancellation or the time limit sends ``conversation.stop_signal`` to the group and
+        SIGKILL after ``cancel_grace``; a worker that will not take its request or sends an
+        invalid frame is killed at once. The outcome is returned once the group is gone.
+        Returns: ``None`` when the service is stopping.
         """
         assert process.stdin is not None and process.stdout is not None
-        assert job.run_id is not None
         stdin, stdout = process.stdin.fileno(), process.stdout.fileno()
         os.set_blocking(stdin, False)
         os.set_blocking(stdout, False)
-        pending = memoryview(recording_frame_bytes(request))
-        decoder = RecordingFrameDecoder()
-        tail = FineTuneLogTail(self.queue.layout, job.run_id)
+        pending = memoryview(recording_frame_bytes(conversation.request))
         started = time.monotonic()
         ending: _Outcome | None = None
         signalled_at = 0.0
@@ -1474,16 +1875,12 @@ class FineTuneSupervisor:
         while not self._stop.is_set():
             now = time.monotonic()
             if ending is None:
-                if self.queue.cancel_requested(job.operation_id):
-                    stop(_Outcome("cancelled"), signal.SIGTERM)
-                elif now - started > self.watchdog:
-                    message = (
-                        f"the fine-tune ran longer than {_duration_text(self.watchdog)} "
-                        "and was stopped"
-                    )
-                    stop(_Outcome("failed", _interrupted(message)), signal.SIGTERM)
+                if conversation.cancel_requested():
+                    stop(_Outcome("cancelled"), conversation.stop_signal)
+                elif now - started > conversation.limit_seconds:
+                    stop(_Outcome("failed", conversation.over_limit()), conversation.stop_signal)
                 elif pending and now - started > _SEND_DEADLINE_SECONDS:
-                    message = "the fine-tune worker did not accept its request"
+                    message = f"the {conversation.worker} worker did not accept its request"
                     stop(_Outcome("failed", _interrupted(message)), signal.SIGKILL)
             if ending is not None:
                 process.poll()
@@ -1508,16 +1905,17 @@ class FineTuneSupervisor:
                     return _Outcome(
                         "failed",
                         _interrupted(
-                            f"the fine-tune worker stopped without a result (exit status {status})"
+                            f"the {conversation.worker} worker stopped without a result "
+                            f"(exit status {status})"
                         ),
                     )
                 try:
-                    reply = self._frames(decoder, chunk, job, request, tracker)
+                    reply = conversation.read(chunk)
                 except (VoiceLabError, ValueError) as failure:
                     invalid = RecordingError(
                         code="RECORDING.INVALID_MESSAGE",
                         message=_bounded_message(
-                            f"the fine-tune worker sent an invalid message: {failure}"
+                            f"the {conversation.worker} worker sent an invalid message: {failure}"
                         ),
                         retryable=False,
                     )
@@ -1525,13 +1923,12 @@ class FineTuneSupervisor:
                     continue
                 if reply is not None:
                     return _Outcome(
-                        "finished" if reply.error is None else "failed", reply.error, replied=True
+                        "finished" if reply.error is None else "failed",
+                        reply.error,
+                        replied=True,
+                        reply=reply,
                     )
-            if tracker.training:
-                progress = tail.read()
-                if progress is not None:
-                    tracker.training_progress(progress)
-            self._emit(tracker.due())
+            conversation.tick()
         return None
 
     def _frames(
@@ -1545,38 +1942,168 @@ class FineTuneSupervisor:
         """Apply the stage frames in ``chunk``; return the worker's result when it came.
 
         Raises: ``FineTuneJobError`` RECORDING.INVALID_MESSAGE for a request frame, a frame
-        after the result, or one naming another generation, operation, request or run;
-        decoder and validation errors for malformed frames.
+        after the result, or one naming another generation, operation, request or run (or
+        of another job kind); decoder and validation errors for malformed frames.
         """
         reply: FineTuneWorkerReply | None = None
         for payload in decoder.feed(chunk):
-            message = decode_finetune_worker_message(payload)
-            if isinstance(message, FineTuneWorkerRequest) or reply is not None:
-                raise FineTuneJobError(
-                    "RECORDING.INVALID_MESSAGE", "the worker sent a frame out of turn"
-                )
-            if (
-                message.generation != request.generation
-                or message.operation_id != request.operation_id
-            ):
-                raise FineTuneJobError(
-                    "RECORDING.INVALID_MESSAGE", "the frame belongs to another worker or job"
-                )
+            message = _worker_frame(payload, request, after_result=reply is not None)
             if isinstance(message, FineTuneWorkerStage):
                 tracker.stage(message.stage)
                 if message.runtime_link is not None and message.runtime_link != job.runtime_link:
                     job = self.queue.record_runtime_link(job.operation_id, message.runtime_link)
                 continue
-            if message.request_sha256 != request.request_sha256 or message.run_id != request.run_id:
+            if (
+                not isinstance(message, FineTuneWorkerReply)
+                or message.request_sha256 != request.request_sha256
+                or message.run_id != request.run_id
+            ):
                 raise FineTuneJobError(
                     "RECORDING.INVALID_MESSAGE", "the result names another request or run"
                 )
             reply = message
         return reply
 
+    # -- Speak requests (supervisor thread) ----------------------------------------------
+
+    def _start_speech(self) -> _SpeechJob | None:
+        """Mark the queued Speak request running and publish that; ``None`` when none waits."""
+        with self._speech_lock:
+            job = self._speech
+            if job is None or job.event.state != "queued":
+                return None
+            job.event = _speech_event(job.command, "running")
+        self._emit(job.event)
+        return job
+
+    def _run_speech(self, job: _SpeechJob) -> None:
+        """Run one Speak request's worker and publish how it ended.
+
+        A request that did not finish has its output directory removed (it created it; a
+        request refused FINETUNE.RUN_EXISTS did not). When that removal fails the request
+        ends failed with RECORDING.WRITE_FAILED. The service stopping ends nothing.
+        """
+        outcome = self._supervise_speech(job)
+        if outcome is None:
+            return  # the service is stopping; the request dies with it
+        error = outcome.error
+        if outcome.state != "finished" and (error is None or error.code != "FINETUNE.RUN_EXISTS"):
+            try:
+                discard_speech_output(self.queue.layout, job.command.operation_id)
+            except (SecurityError, OSError) as failure:
+                error = error or RecordingError(
+                    code="RECORDING.WRITE_FAILED",
+                    message=_bounded_message(
+                        f"the Speak request stopped but its partial output was not removed: "
+                        f"{failure}"
+                    ),
+                    retryable=False,
+                )
+        reply = outcome.reply
+        event = _speech_outcome(
+            job.command, error, reply if isinstance(reply, SpeechWorkerReply) else None
+        )
+        with self._speech_lock:
+            self._end_speech_locked(job, event)
+        self._emit(event)
+
+    def _supervise_speech(self, job: _SpeechJob) -> _Outcome | None:
+        """Start the Speak worker and follow it: one result, a deadline, cancel by SIGKILL."""
+        runtime_root = self.queue.runtime_root
+        assert runtime_root is not None  # synthesize() refuses a service without a runtime
+        command = job.command
+        request = SpeechWorkerRequest(
+            generation=f"speech-{uuid4().hex}",
+            operation_id=command.operation_id,
+            request_sha256=job.request_sha256,
+            command=command,
+            runtime_root=str(runtime_root),
+            pretrained_pin=self.pretrained_pin,
+            trusted=self.trusted_digests,
+        )
+        decoder = RecordingFrameDecoder()
+
+        def cancel_requested() -> bool:
+            with self._speech_lock:
+                return job.cancel_requested
+
+        def over_limit() -> RecordingError:
+            return RecordingError(
+                code="FINETUNE.SYNTHESIS_DEADLINE",
+                message=_bounded_message(
+                    f"speech synthesis took longer than {_duration_text(self.synthesis_deadline)}"
+                    " and was stopped; try a shorter text or fewer steps"
+                ),
+                retryable=True,
+            )
+
+        def read(chunk: bytes) -> SpeechWorkerReply | None:
+            reply = self._speech_frames(decoder, chunk, request)
+            if reply is not None:
+                clip = reply.clip
+                if clip is not None and (
+                    clip.text != command.text or clip.nfe_steps != command.nfe_steps
+                ):
+                    raise FineTuneJobError(
+                        "RECORDING.INVALID_MESSAGE", "the clip was spoken for another request"
+                    )
+                _speech_outcome(command, reply.error, reply)  # refuses an inconsistent result
+                self._remember_digests(reply.trusted)
+            return reply
+
+        def converse(process: subprocess.Popen[bytes]) -> _Outcome | None:
+            return self._follow(
+                process,
+                _Conversation(
+                    worker="speech",
+                    request=request,
+                    cancel_requested=cancel_requested,
+                    limit_seconds=self.synthesis_deadline,
+                    over_limit=over_limit,
+                    stop_signal=signal.SIGKILL,
+                    read=read,
+                    tick=lambda: None,
+                ),
+            )
+
+        return self._spawn(command, "speech", converse)
+
+    def _speech_frames(
+        self, decoder: RecordingFrameDecoder, chunk: bytes, request: SpeechWorkerRequest
+    ) -> SpeechWorkerReply | None:
+        """The Speak worker's result, once ``chunk`` completes it.
+
+        Raises: ``FineTuneJobError`` RECORDING.INVALID_MESSAGE for any other frame, a frame
+        after the result, or a result naming another generation, operation or request;
+        decoder and validation errors for malformed frames.
+        """
+        reply: SpeechWorkerReply | None = None
+        for payload in decoder.feed(chunk):
+            message = _worker_frame(payload, request, after_result=reply is not None)
+            if (
+                not isinstance(message, SpeechWorkerReply)
+                or message.request_sha256 != request.request_sha256
+            ):
+                raise FineTuneJobError(
+                    "RECORDING.INVALID_MESSAGE", "the result names another request"
+                )
+            reply = message
+        return reply
+
+    def _remember_digests(self, trusted: FineTuneTrustedDigests) -> None:
+        """Keep what a Speak worker verified; newer entries replace older ones per file."""
+        with self._speech_lock:
+            for entry in trusted.files:
+                self._digests.pop(entry.identity.path, None)
+                self._digests[entry.identity.path] = entry
+            while len(self._digests) > MAX_TRUSTED_DIGESTS:
+                self._digests.popitem(last=False)
+            if trusted.probe is not None:
+                self._probe = trusted.probe
+
     def close(self) -> None:
         """Stop supervising: a running worker's group is killed and its job stays running,
-        so the next service marks it interrupted.
+        so the next service marks it interrupted (a Speak request is simply lost).
 
         Raises: ``FineTuneJobError`` RECORDING.WRITE_FAILED when the thread does not stop.
         """
@@ -1588,6 +2115,28 @@ class FineTuneSupervisor:
                 raise FineTuneJobError(
                     "RECORDING.WRITE_FAILED", "the fine-tune supervisor did not stop in time"
                 )
+
+
+def _worker_frame(
+    payload: bytes,
+    request: FineTuneWorkerRequest | SpeechWorkerRequest,
+    *,
+    after_result: bool,
+) -> FineTuneWorkerStage | FineTuneWorkerReply | SpeechWorkerReply:
+    """One frame from ``request``'s worker.
+
+    Raises: ``FineTuneJobError`` RECORDING.INVALID_MESSAGE for a request frame, any frame
+    ``after_result``, or a frame naming another generation or operation; as
+    ``decode_finetune_worker_message``.
+    """
+    message = decode_finetune_worker_message(payload)
+    if isinstance(message, (FineTuneWorkerRequest, SpeechWorkerRequest)) or after_result:
+        raise FineTuneJobError("RECORDING.INVALID_MESSAGE", "the worker sent a frame out of turn")
+    if message.generation != request.generation or message.operation_id != request.operation_id:
+        raise FineTuneJobError(
+            "RECORDING.INVALID_MESSAGE", "the frame belongs to another worker or job"
+        )
+    return message
 
 
 def _catalog_failure(failure: CorpusStoreError, subject_id: str) -> RecordingError:
@@ -1608,6 +2157,94 @@ def _catalog_failure(failure: CorpusStoreError, subject_id: str) -> RecordingErr
     return service_error.recording_error
 
 
+def _worker_failure(failure: Exception, what: str, subject_id: str) -> RecordingError:
+    """A worker's failure as the recording service names it.
+
+    A ``FineTuneJobError`` keeps its error and a ``FineTuneError`` its code; a corpus-store
+    failure is named as the service names it (``CORPUS.*`` or RECORDING.GATE_NOT_READY),
+    changed or unsafe evidence is RECORDING.SOURCE_CHANGED, a file-system failure
+    RECORDING.WRITE_FAILED (retryable), and anything else RECORDING.WRITE_FAILED.
+    Params: ``what`` names the work in the message (``fine-tune``, ``speech``).
+    """
+    if isinstance(failure, FineTuneJobError):
+        return failure.recording_error
+    if isinstance(failure, FineTuneError):
+        return RecordingError(
+            code=failure.code, message=_bounded_message(str(failure)), retryable=False
+        )
+    if isinstance(failure, CorpusStoreError):
+        return _catalog_failure(failure, subject_id)
+    if isinstance(failure, (SecurityError, ContractError)):
+        return RecordingError(
+            code="RECORDING.SOURCE_CHANGED",
+            message=_bounded_message(f"{what} evidence changed or is unsafe: {failure}"),
+            retryable=False,
+        )
+    if isinstance(failure, OSError):
+        return RecordingError(
+            code="RECORDING.WRITE_FAILED",
+            message=_bounded_message(f"{what} could not read or write its files: {failure}"),
+            retryable=True,
+        )
+    return RecordingError(
+        code="RECORDING.WRITE_FAILED",
+        message=_bounded_message(
+            f"{what} failed unexpectedly: {type(failure).__name__}: {failure}"
+        ),
+        retryable=False,
+    )
+
+
+def run_speech_worker_request(
+    layout: AssetLayout, request: SpeechWorkerRequest
+) -> SpeechWorkerReply:
+    """Run one Speak request in this (worker) process and name its outcome.
+
+    Resolves the model and reference (``finetune.resolve_speech_model``), then speaks the
+    text (``finetune.synthesize_speech``) into ``derived/speech/<operation>/``, reusing
+    ``request.trusted`` digests for unchanged files. Never opens the library's take store
+    or corpus store.
+    Returns: the reply: the clip, or the error (``_worker_failure``) with the resolution
+    when the request got that far; either way what this request verified.
+    """
+    command = request.command
+    digests = FineTuneDigestCache(request.trusted)
+    resolution: SpeechResolution | None = None
+    clip: SpeechClip | None = None
+    error: RecordingError | None = None
+    try:
+        resolution = resolve_speech_model(
+            layout, command.model, reference_prompt_id=command.reference_prompt_id
+        )
+        clip = synthesize_speech(
+            layout,
+            resolution,
+            Path(request.runtime_root),
+            operation_id=command.operation_id,
+            text=command.text,
+            nfe_steps=command.nfe_steps,
+            pretrained_pin=request.pretrained_pin,
+            digests=digests,
+        )
+    except Exception as failure:
+        error = _worker_failure(failure, "speech", "")
+    return SpeechWorkerReply(
+        generation=request.generation,
+        operation_id=request.operation_id,
+        request_sha256=request.request_sha256,
+        resolution=None
+        if resolution is None
+        else SpeechWorkerResolution(
+            run_id=resolution.run_id,
+            reference_run_id=resolution.reference_run.run_id,
+            reference_prompt_id=resolution.reference.prompt_id,
+        ),
+        clip=clip,
+        trusted=digests.trusted(),
+        error=error,
+    )
+
+
 def run_finetune_worker_request(
     layout: AssetLayout,
     request: FineTuneWorkerRequest,
@@ -1624,11 +2261,7 @@ def run_finetune_worker_request(
     and ``allow_missing``. Each stage is
     passed to ``emit``. A selection that overlaps a metadata commit is retried for
     ``metadata_retry_seconds``.
-    Returns: the reply; its ``error`` names any failure: a ``FineTuneError`` under its own
-    code, a corpus-store failure as the service names it (``CORPUS.*`` or
-    RECORDING.GATE_NOT_READY), changed or unsafe evidence as RECORDING.SOURCE_CHANGED, a
-    file-system failure as RECORDING.WRITE_FAILED (retryable), and anything else as
-    RECORDING.WRITE_FAILED.
+    Returns: the reply; its ``error`` names any failure (``_worker_failure``).
     """
     subject_id = ""
     error: RecordingError | None = None
@@ -1697,34 +2330,8 @@ def run_finetune_worker_request(
                 if not busy or time.monotonic() >= deadline:
                     raise
                 time.sleep(0.05)  # a Save is committing; selection wrote nothing yet
-    except FineTuneJobError as failure:
-        error = failure.recording_error
-    except FineTuneError as failure:
-        error = RecordingError(
-            code=failure.code, message=_bounded_message(str(failure)), retryable=False
-        )
-    except CorpusStoreError as failure:
-        error = _catalog_failure(failure, subject_id)
-    except (SecurityError, ContractError) as failure:
-        error = RecordingError(
-            code="RECORDING.SOURCE_CHANGED",
-            message=_bounded_message(f"fine-tune evidence changed or is unsafe: {failure}"),
-            retryable=False,
-        )
-    except OSError as failure:
-        error = RecordingError(
-            code="RECORDING.WRITE_FAILED",
-            message=_bounded_message(f"fine-tune could not read or write its files: {failure}"),
-            retryable=True,
-        )
     except Exception as failure:
-        error = RecordingError(
-            code="RECORDING.WRITE_FAILED",
-            message=_bounded_message(
-                f"fine-tune failed unexpectedly: {type(failure).__name__}: {failure}"
-            ),
-            retryable=False,
-        )
+        error = _worker_failure(failure, "fine-tune", subject_id)
     return FineTuneWorkerReply(
         generation=request.generation,
         operation_id=request.operation_id,
@@ -1763,11 +2370,15 @@ def _worker_main(
     requested = False
     done = False
 
-    def run(request: FineTuneWorkerRequest) -> None:
+    def run(request: FineTuneWorkerRequest | SpeechWorkerRequest) -> None:
         try:
-            reply = run_finetune_worker_request(
-                layout, request, emit=lambda stage: outbox.put(recording_frame_bytes(stage))
-            )
+            reply: FineTuneWorkerReply | SpeechWorkerReply
+            if isinstance(request, SpeechWorkerRequest):
+                reply = run_speech_worker_request(layout, request)
+            else:
+                reply = run_finetune_worker_request(
+                    layout, request, emit=lambda stage: outbox.put(recording_frame_bytes(stage))
+                )
             outbox.put(_FinalFrame(recording_frame_bytes(reply)))
         except BaseException as failure:
             outbox.put(failure)
@@ -1800,7 +2411,7 @@ def _worker_main(
             for payload in decoder.feed(chunk):
                 message = decode_finetune_worker_message(payload)
                 if (
-                    not isinstance(message, FineTuneWorkerRequest)
+                    not isinstance(message, (FineTuneWorkerRequest, SpeechWorkerRequest))
                     or requested
                     or message.operation_id != operation_id
                 ):
@@ -1828,6 +2439,8 @@ RECORDING_FINETUNE_JOB_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "finetune-worker-reply": FineTuneWorkerReply,
     "finetune-worker-request": FineTuneWorkerRequest,
     "finetune-worker-stage": FineTuneWorkerStage,
+    "finetune-speech-worker-request": SpeechWorkerRequest,
+    "finetune-speech-worker-reply": SpeechWorkerReply,
 }
 
 
@@ -1838,7 +2451,8 @@ def main(
 
     It must lead its own process group (the supervisor starts it in a new session), because
     it kills that group whenever it stops other than by replying: when the service goes away
-    (stdin ends) and after any failure, so no trainer it started outlives it.
+    (stdin ends) and after any failure, so no trainer or synthesizer it started outlives it.
+    Everything it and its children create is private (umask 077).
     Params: ``kill_group`` stops the whole group, this process included (tests substitute it).
     Returns: 0 after its reply; after a failure it writes one JSON line on stderr naming the
     code (never the request) and, when it leads its group, kills that group; 2 when it does
@@ -1850,6 +2464,7 @@ def main(
     parser.add_argument("--asset-root", type=Path, required=True)
     parser.add_argument("--operation-id", required=True)
     options = parser.parse_args(argv)
+    previous_umask = os.umask(0o077)
     leader = os.getpgrp() == os.getpid()
     try:
         if not leader:
@@ -1881,6 +2496,8 @@ def main(
         if leader:
             kill_group()
         return 2
+    finally:
+        os.umask(previous_umask)
 
 
 if __name__ == "__main__":

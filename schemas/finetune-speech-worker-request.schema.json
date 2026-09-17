@@ -1,0 +1,310 @@
+{
+  "$defs": {
+    "AbsolutePath": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "FineTuneFileIdentity": {
+      "additionalProperties": false,
+      "description": "The stat identity a verified digest is bound to; any change means hash again.",
+      "properties": {
+        "ctime_ns": {
+          "title": "Ctime Ns",
+          "type": "integer"
+        },
+        "device": {
+          "minimum": 0,
+          "title": "Device",
+          "type": "integer"
+        },
+        "inode": {
+          "minimum": 0,
+          "title": "Inode",
+          "type": "integer"
+        },
+        "mtime_ns": {
+          "title": "Mtime Ns",
+          "type": "integer"
+        },
+        "path": {
+          "$ref": "#/$defs/AbsolutePath"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "device",
+        "inode",
+        "size_bytes",
+        "mtime_ns",
+        "ctime_ns"
+      ],
+      "title": "FineTuneFileIdentity",
+      "type": "object"
+    },
+    "FineTunePinnedFile": {
+      "additionalProperties": false,
+      "description": "One pinned runtime file: its exact size and SHA-256.",
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "minimum": 1,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "FineTunePinnedFile",
+      "type": "object"
+    },
+    "FineTunePretrainedPins": {
+      "additionalProperties": false,
+      "description": "The pretrained files a runtime must hold, each pinned by size and SHA-256.\n\n``weights`` is ``pretrained/F5TTS_v1_Base/model_1250000.safetensors``;\n``vocoder_config`` and ``vocoder_model`` are ``pretrained/vocos-mel-24khz/config.yaml``\nand ``pytorch_model.bin``. Only tests substitute them (a stub runtime's few-byte files).",
+      "properties": {
+        "vocoder_config": {
+          "$ref": "#/$defs/FineTunePinnedFile"
+        },
+        "vocoder_model": {
+          "$ref": "#/$defs/FineTunePinnedFile"
+        },
+        "weights": {
+          "$ref": "#/$defs/FineTunePinnedFile"
+        }
+      },
+      "required": [
+        "weights",
+        "vocoder_config",
+        "vocoder_model"
+      ],
+      "title": "FineTunePretrainedPins",
+      "type": "object"
+    },
+    "FineTuneRuntimeProbe": {
+      "additionalProperties": false,
+      "description": "The runtime probe's answer, bound to the interpreter and its site-packages directory.\n\nInstalling or removing a package changes the directory, so a changed identity probes\nthe runtime again.",
+      "properties": {
+        "f5_tts_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "F5 Tts Version",
+          "type": "string"
+        },
+        "package_path": {
+          "$ref": "#/$defs/AbsolutePath"
+        },
+        "python": {
+          "$ref": "#/$defs/FineTuneFileIdentity"
+        },
+        "runtime_root": {
+          "$ref": "#/$defs/AbsolutePath"
+        },
+        "site_packages": {
+          "$ref": "#/$defs/FineTuneFileIdentity"
+        },
+        "torch_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Torch Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime_root",
+        "python",
+        "site_packages",
+        "f5_tts_version",
+        "torch_version",
+        "package_path"
+      ],
+      "title": "FineTuneRuntimeProbe",
+      "type": "object"
+    },
+    "FineTuneTrustedDigests": {
+      "additionalProperties": false,
+      "description": "File digests and a runtime probe verified by an earlier call, keyed by file identity.",
+      "properties": {
+        "files": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FineTuneVerifiedDigest"
+          },
+          "maxItems": 16,
+          "title": "Files",
+          "type": "array"
+        },
+        "probe": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FineTuneRuntimeProbe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "FineTuneTrustedDigests",
+      "type": "object"
+    },
+    "FineTuneVerifiedDigest": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/FineTuneFileIdentity"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "identity",
+        "sha256"
+      ],
+      "title": "FineTuneVerifiedDigest",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "SpeechModelChoice": {
+      "anyOf": [
+        {
+          "enum": [
+            "latest",
+            "base"
+          ],
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/StableId"
+        }
+      ]
+    },
+    "SpeechText": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "SynthesizeCommand": {
+      "additionalProperties": false,
+      "description": "Speak ``text`` with ``model`` (one request at a time, never during a fine-tune).\n\n``reference_prompt_id`` names the reference clip in the reference run's dataset (the\nmodel's run; for ``base`` the newest finished run); absent, the first reference-candidate\nprompt with a clip there is used, else the run's first clip. ``nfe_steps`` trades speed\nfor quality (F5-TTS flow steps). The reply is the request's queued ``SynthesisEvent``;\nlater states arrive as background events whose request id is ``operation_id``.",
+      "properties": {
+        "command": {
+          "const": "synthesize",
+          "default": "synthesize",
+          "title": "Command",
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/SpeechModelChoice"
+        },
+        "nfe_steps": {
+          "default": 32,
+          "maximum": 64,
+          "minimum": 4,
+          "title": "Nfe Steps",
+          "type": "integer"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_prompt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "$ref": "#/$defs/SpeechText"
+        }
+      },
+      "required": [
+        "operation_id",
+        "text",
+        "model"
+      ],
+      "title": "SynthesizeCommand",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One Speak request for the worker, with the digests earlier requests verified.\n\n``trusted`` is reused only for files whose identity is unchanged\n(``finetune.FineTuneDigestCache``).",
+  "properties": {
+    "command": {
+      "$ref": "#/$defs/SynthesizeCommand"
+    },
+    "generation": {
+      "$ref": "#/$defs/StableId"
+    },
+    "kind": {
+      "const": "synthesize",
+      "default": "synthesize",
+      "title": "Kind",
+      "type": "string"
+    },
+    "operation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "pretrained_pin": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FineTunePretrainedPins"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "request_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "runtime_root": {
+      "$ref": "#/$defs/AbsolutePath"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-worker/v1",
+      "default": "cole-voice-lab.finetune-worker/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "trusted": {
+      "$ref": "#/$defs/FineTuneTrustedDigests",
+      "default": {
+        "files": [],
+        "probe": null
+      }
+    }
+  },
+  "required": [
+    "generation",
+    "operation_id",
+    "request_sha256",
+    "command",
+    "runtime_root"
+  ],
+  "title": "SpeechWorkerRequest",
+  "type": "object"
+}

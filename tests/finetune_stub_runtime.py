@@ -23,8 +23,11 @@ STUB_RUNTIME_PYTHON = '''#!{python}
 
 <root>/stub-mode.json, when present, slows or breaks it: probe_seconds (the probe sleeps),
 step_seconds (each training status line waits), fail_training, ignore_sigterm (the trainer
-survives SIGTERM, so only SIGKILL stops it), sample_seconds (synthesis sleeps before writing),
-fail_sampling (synthesis exits 1).
+survives SIGTERM, so only SIGKILL stops it), sample_seconds (sample synthesis sleeps before
+writing), fail_sampling (sample synthesis exits 1), synthesis_seconds (Speak synthesis, the
+job's file_prefix "speech", sleeps before writing), fail_synthesis (Speak synthesis exits 1),
+synthesis_format ([rate, channels, sample width] Speak writes instead of 24000 Hz mono
+16-bit), synthesis_report (a line Speak prints instead of its clip report).
 """
 import json, os, signal, sys, time, wave
 from pathlib import Path
@@ -75,10 +78,14 @@ if script == "f5_finetune_launcher.py":
     print("Saved last checkpoint at update 9")
     sys.exit(0)
 if script == "f5_synthesize.py":
-    time.sleep(MODE.get("sample_seconds", 0))
-    if MODE.get("fail_sampling"):
-        print("Traceback: stub sampling failure", file=sys.stderr); sys.exit(1)
     job = json.loads(Path(argv[1]).read_text())
+    prefix = job.get("file_prefix", "sample")
+    speech = prefix == "speech"
+    time.sleep(MODE.get("synthesis_seconds" if speech else "sample_seconds", 0))
+    if MODE.get("fail_synthesis" if speech else "fail_sampling"):
+        print("Traceback: stub " + ("speech" if speech else "sampling") + " failure",
+              file=sys.stderr); sys.exit(1)
+    rate, channels, width = MODE.get("synthesis_format", [24000, 1, 2]) if speech else [24000, 1, 2]
     out = Path(job["output_directory"]); out.mkdir(parents=True, exist_ok=True)
     assert Path(job["checkpoint_path"]).is_file() and Path(job["reference_audio_path"]).is_file()
     # The pinned vocoder is loaded from the runtime's own copy, as f5_synthesize.py does.
@@ -86,11 +93,14 @@ if script == "f5_synthesize.py":
     assert vocoder.resolve() == (ROOT / "pretrained" / "vocos-mel-24khz").resolve(), vocoder
     assert (vocoder / "config.yaml").is_file() and (vocoder / "pytorch_model.bin").is_file()
     for index, text in enumerate(job["texts"], start=1):
-        path = out / f"sample-{{index:02d}}.wav"
+        path = out / f"{{prefix}}-{{index:02d}}.wav"
         with wave.open(str(path), "wb") as handle:
-            handle.setnchannels(1); handle.setsampwidth(2); handle.setframerate(24000)
-            handle.writeframes(bytes(480))
-        print(json.dumps({{"index": index, "path": str(path), "seconds": 0.01}}))
+            handle.setnchannels(channels); handle.setsampwidth(width); handle.setframerate(rate)
+            handle.writeframes(bytes(240 * channels * width))
+        if speech and "synthesis_report" in MODE:
+            print(MODE["synthesis_report"])
+        else:
+            print(json.dumps({{"index": index, "path": str(path), "seconds": 0.01}}))
     sys.exit(0)
 print("unexpected invocation", argv, file=sys.stderr); sys.exit(3)
 '''

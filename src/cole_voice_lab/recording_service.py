@@ -50,6 +50,7 @@ from .recording_contracts import (
     AnalysisEvent,
     CancelCommand,
     CancelFineTuneCommand,
+    CancelSynthesisCommand,
     CatalogCommand,
     CatalogEvent,
     CatalogReference,
@@ -99,6 +100,7 @@ from .recording_contracts import (
     ServiceRequest,
     ShutdownCommand,
     SnapshotCommand,
+    SynthesizeCommand,
     TakeEvent,
     recording_frame_bytes,
 )
@@ -316,7 +318,21 @@ class RecordingServiceBackend(Protocol):
     ) -> ReliableEvent: ...
 
 
-type FineTuneServiceCommand = FineTuneCommand | CancelFineTuneCommand | FineTuneStatusCommand
+type FineTuneServiceCommand = (
+    FineTuneCommand
+    | CancelFineTuneCommand
+    | FineTuneStatusCommand
+    | SynthesizeCommand
+    | CancelSynthesisCommand
+)
+# Answered by the fine-tune supervisor, before (and without) an open recording context.
+FINETUNE_SERVICE_COMMANDS: tuple[type[FineTuneServiceCommand], ...] = (
+    FineTuneCommand,
+    CancelFineTuneCommand,
+    FineTuneStatusCommand,
+    SynthesizeCommand,
+    CancelSynthesisCommand,
+)
 
 
 def _fine_tune_event(
@@ -326,17 +342,18 @@ def _fine_tune_event(
     *,
     pinned: Callable[[], CatalogReference] | None = None,
 ) -> ReliableEvent:
-    """Answer a fine-tune command from the service's job supervisor (no context needed).
+    """Answer a fine-tune or Speak command from the service's job supervisor (no context).
 
-    Status is read-only; submit and cancel pass the cancellation's commit barrier first.
+    Status is read-only; every other command passes the cancellation's commit barrier first.
     Params: ``pinned`` resolves the catalog version this service pinned (the one the app
-    shows); a submitted job trains on it. Without it (a group-scoped service) the job uses
-    the subject's active version.
-    Returns: a ``FineTuneProgressEvent`` (submit, cancel) or ``FineTuneStatusEvent``.
+    shows); a submitted fine-tune trains on it. Without it (a group-scoped service) the job
+    uses the subject's active version.
+    Returns: a ``FineTuneProgressEvent`` (fine-tune, cancel-fine-tune), a
+    ``FineTuneStatusEvent`` or a ``SynthesisEvent`` (synthesize, cancel-synthesis).
     Raises: ``RecordingServiceError`` RECORDING.GATE_NOT_READY when this service runs no
-    fine-tune jobs, ``pinned``'s errors for a submit, and every job refusal and
+    fine-tune jobs, ``pinned``'s errors for a fine-tune submit, and every job refusal and
     ``FineTuneError`` under its own code (FINETUNE.JOB_ACTIVE,
-    FINETUNE.RUNTIME_UNAVAILABLE, RECORDING.DISK_SPACE, ...).
+    FINETUNE.RUNTIME_UNAVAILABLE, FINETUNE.NO_FINISHED_RUN, RECORDING.DISK_SPACE, ...).
     """
     from .finetune import FineTuneError
     from .recording_finetune_jobs import FineTuneJobError
@@ -354,6 +371,10 @@ def _fine_tune_event(
         cancellation.begin_commit()
         if isinstance(command, FineTuneCommand):
             return jobs.submit(command, catalog_reference=reference)
+        if isinstance(command, SynthesizeCommand):
+            return jobs.synthesize(command)
+        if isinstance(command, CancelSynthesisCommand):
+            return jobs.cancel_synthesis(command)
         return jobs.cancel(command)
     except FineTuneJobError as error:
         refusal = error.recording_error
@@ -441,7 +462,7 @@ class RecordingTakesBackend:
         cancellation.check()
         command = request.data
         try:
-            if isinstance(command, (FineTuneCommand, CancelFineTuneCommand, FineTuneStatusCommand)):
+            if isinstance(command, FINETUNE_SERVICE_COMMANDS):
                 return _fine_tune_event(self.finetune_jobs, command, cancellation)
             if isinstance(command, ReserveTakeCommand):
                 reservation = self.store.reserve(
@@ -736,9 +757,10 @@ class RecordingWorkspaceBackend:
                         cursor=command.cursor, page_size=command.page_size
                     )
                 )
-            if isinstance(command, (FineTuneCommand, CancelFineTuneCommand, FineTuneStatusCommand)):
-                # Fine-tuning reads the library, not the open context: it works before one. A
-                # job trains on the catalog version this process pinned, the one the app shows.
+            if isinstance(command, FINETUNE_SERVICE_COMMANDS):
+                # Fine-tuning and Speak read the library, not the open context: they work
+                # before one. A job trains on the catalog version this process pinned, the one
+                # the app shows.
                 return _fine_tune_event(
                     self.finetune_jobs,
                     command,

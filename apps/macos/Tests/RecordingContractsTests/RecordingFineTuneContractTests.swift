@@ -19,9 +19,9 @@ import Testing
         "FINETUNE.CATALOG_HELD_OUT", "FINETUNE.CHECKPOINT_MISSING", "FINETUNE.CORPUS_INCOMPLETE",
         "FINETUNE.CORPUS_PROJECTION_FAILED", "FINETUNE.DOWNLOADS_NOT_ALLOWED", "FINETUNE.DOWNLOAD_FAILED", "FINETUNE.EMPTY_CORPUS",
         "FINETUNE.FFMPEG_FAILED", "FINETUNE.FFMPEG_UNAVAILABLE", "FINETUNE.INTERRUPTED", "FINETUNE.JOB_ACTIVE",
-        "FINETUNE.PRETRAINED_MISMATCH", "FINETUNE.REFERENCE_MISSING", "FINETUNE.REQUIREMENTS_MISSING", "FINETUNE.RUNTIME_FAILED",
-        "FINETUNE.RUNTIME_UNAVAILABLE", "FINETUNE.RUN_EXISTS", "FINETUNE.SOURCE_CHANGED", "FINETUNE.TRAINING_FAILED",
-        "FINETUNE.UNSUPPORTED_TEXT",
+        "FINETUNE.NO_FINISHED_RUN", "FINETUNE.PRETRAINED_MISMATCH", "FINETUNE.REFERENCE_MISSING",
+        "FINETUNE.REQUIREMENTS_MISSING", "FINETUNE.RUNTIME_FAILED", "FINETUNE.RUNTIME_UNAVAILABLE", "FINETUNE.RUN_EXISTS",
+        "FINETUNE.SOURCE_CHANGED", "FINETUNE.SYNTHESIS_DEADLINE", "FINETUNE.TRAINING_FAILED", "FINETUNE.UNSUPPORTED_TEXT",
     ]
 
     private func validator(_ name: String) throws -> RecordingSchemaValidator {
@@ -71,15 +71,28 @@ import Testing
         .object(["event": .string("fine-tune"), "operation_id": .string("op-fine-tune"), "run": .object(summary)])
     }
 
+    /// A status reply; `finished` defaults to the latest run alone (the service lists it first).
     private func status(active: [String: RecordingJSON]? = nil, latest: [String: RecordingJSON]? = nil,
-                        latestError: RecordingJSON? = nil, configured: Bool = true) -> RecordingJSON {
+                        finished: [[String: RecordingJSON]]? = nil, latestError: RecordingJSON? = nil,
+                        configured: Bool = true) -> RecordingJSON {
         var event: [String: RecordingJSON] = [
             "event": .string("fine-tune-status"), "operation_id": .string("op-fine-tune-status"),
             "runtime_configured": .boolean(configured),
             "active": active.map(RecordingJSON.object) ?? .null, "latest_run": latest.map(RecordingJSON.object) ?? .null,
+            "finished_runs": .array((finished ?? latest.map { [$0] } ?? []).map(RecordingJSON.object)),
         ]
         if let latestError { event["latest_run_error"] = latestError }
         return .object(event)
+    }
+
+    /// A finished run `hoursEarlier` than the default one, with its own id and paths.
+    private func earlierRun(_ id: String, hoursEarlier: Int) -> [String: RecordingJSON] {
+        let root = "derived/finetune/\(id)"
+        return run(["run_id": .string(id), "run_root": .string(root),
+                    "started_at": .string(String(format: "2026-09-16T%02d:00:00Z", 8 - hoursEarlier)),
+                    "finished_at": .string(String(format: "2026-09-16T%02d:00:00Z", 10 - hoursEarlier)),
+                    "finetuned_sample_paths": .array([.string("\(root)/samples/finetuned/sample-01.wav")]),
+                    "base_sample_paths": .array([.string("\(root)/samples/base/sample-01.wav")])])
     }
 
     @Test func progressNamesItsStateEvidence() throws {
@@ -196,6 +209,149 @@ import Testing
         #expect(try !accepts(responses, response(data: .object(unconfigured))))
     }
 
+    @Test func statusListsFinishedRunsNewestFirstWithTheLatestFirst() throws {
+        let responses = try validator("recording-response")
+        let older = earlierRun("finetune-run-98", hoursEarlier: 1)
+        let tied = earlierRun("finetune-run-97", hoursEarlier: 1)
+        let listed = [run(), older, tied]
+        #expect(try accepts(responses, response(data: status(latest: run(), finished: listed))))
+        #expect(try accepts(responses, response(data: status(finished: []))))
+        let thirtyTwo = [run()] + (1..<32).map { earlierRun(String(format: "finetune-run-%02d", 99 - $0), hoursEarlier: min($0, 7)) }
+        let failed = older.merging(noSamples.merging(["status": .string("failed"), "error": .string("Synthetic")]) { $1 }) { $1 }
+        let refused: [(String, RecordingJSON)] = [
+            ("tied runs in the wrong order", status(latest: run(), finished: [run(), tied, older])),
+            ("a run listed twice", status(latest: run(), finished: [run(), older, older])),
+            ("an older run first", status(latest: run(), finished: [older, run()])),
+            ("the latest run is not the first", status(latest: older, finished: listed)),
+            ("finished runs without the latest", status(finished: listed)),
+            ("the latest without finished runs", status(latest: run(), finished: [])),
+            ("a failed run listed", status(latest: run(), finished: [run(), failed])),
+            ("thirty-three runs", status(latest: run(), finished: thirtyTwo + [earlierRun("finetune-run-00", hoursEarlier: 7)])),
+            ("repeated reference prompts", status(latest: run(["reference_prompt_ids": .array([.string("reference-a"), .string("reference-a")])]))),
+        ]
+        for (name, event) in refused {
+            #expect(try !accepts(responses, response(data: event)), "\(name) must fail closed")
+        }
+    }
+
+    // MARK: Speak
+
+    private let speechOperation = "op-speak"
+    private var speechClip: String { "derived/speech/\(speechOperation)/speech-01.wav" }
+
+    /// The latest run spoke two seconds with its reference.
+    private func speech(_ changes: [String: RecordingJSON] = [:]) -> [String: RecordingJSON] {
+        ["event": .string("synthesis"), "operation_id": .string(speechOperation), "state": .string("finished"),
+         "model": .string("latest"), "text": .string("The meeting moved to Thursday."), "run_id": .string(runID),
+         "reference_run_id": .string(runID), "reference_prompt_id": .string("reference-neutral-01"),
+         "relative_path": .string(speechClip), "sha256": .string(String(repeating: "5", count: 64)),
+         "frames": .integer(48_000), "sample_rate_hz": .integer(24_000), "seconds": .number(2)].merging(changes) { $1 }
+    }
+
+    private var unresolved: [String: RecordingJSON] {
+        ["run_id": .null, "reference_run_id": .null, "reference_prompt_id": .null, "relative_path": .null, "sha256": .null,
+         "frames": .null, "sample_rate_hz": .null, "seconds": .null]
+    }
+
+    @Test func speakCommandsBoundTheirTextAndSteps() throws {
+        let requests = try validator("recording-service-request")
+        let speak: [String: RecordingJSON] = ["command": .string("synthesize"), "operation_id": .string(speechOperation),
+                                              "text": .string("Hi."), "model": .string("latest")]
+        let cancel: [String: RecordingJSON] = ["command": .string("cancel-synthesis"), "operation_id": .string("op-cancel-speak"),
+                                               "cancelled_operation_id": .string(speechOperation)]
+        let longest = String(repeating: "é", count: 1_999) + "\n"
+        for command in [speak, cancel,
+                        speak.merging(["model": .string("base"), "reference_prompt_id": .string("reference-neutral-01"),
+                                       "nfe_steps": .integer(4), "text": .string("Line one.\nLine two.")]) { $1 },
+                        speak.merging(["model": .string(runID), "nfe_steps": .integer(64), "text": .string(longest)]) { $1 }] {
+            #expect(try accepts(requests, request(command)))
+            #expect(try !accepts(requests, request(command, takeID: .string("synthetic-take"))), "Speak commands are take-less")
+        }
+        var withoutText = speak
+        withoutText.removeValue(forKey: "text")
+        var withoutModel = speak
+        withoutModel.removeValue(forKey: "model")
+        var withoutTarget = cancel
+        withoutTarget.removeValue(forKey: "cancelled_operation_id")
+        let refused: [(String, [String: RecordingJSON])] = [
+            ("empty text", speak.merging(["text": .string("")]) { $1 }),
+            ("text over 2,000 characters", speak.merging(["text": .string(String(repeating: "é", count: 2_001))]) { $1 }),
+            ("whitespace-only text", speak.merging(["text": .string("  \n \u{3000} ")]) { $1 }),
+            ("a control character", speak.merging(["text": .string("Hello\tthere.")]) { $1 }),
+            ("a format character", speak.merging(["text": .string("Hello\u{200B}there.")]) { $1 }),
+            ("missing text", withoutText),
+            ("too few steps", speak.merging(["nfe_steps": .integer(3)]) { $1 }),
+            ("too many steps", speak.merging(["nfe_steps": .integer(65)]) { $1 }),
+            ("fractional steps", speak.merging(["nfe_steps": .number(32.5)]) { $1 }),
+            ("missing model", withoutModel),
+            ("unstable model", speak.merging(["model": .string("Latest")]) { $1 }),
+            ("unstable reference", speak.merging(["reference_prompt_id": .string("Reference One")]) { $1 }),
+            ("unknown field", speak.merging(["voice": .string("cole")]) { $1 }),
+            ("cancel without its target", withoutTarget),
+        ]
+        for (name, command) in refused {
+            #expect(try !accepts(requests, request(command)), "\(name) must fail closed")
+        }
+    }
+
+    @Test func speakEventsNameTheirStateAndAClipUnderTheirOperation() throws {
+        let responses = try validator("recording-response")
+        let deadline = RecordingJSON.object(["code": .string("FINETUNE.SYNTHESIS_DEADLINE"), "message": .string("Synthetic deadline"),
+                                             "retryable": .boolean(true)])
+        let running = speech(unresolved.merging(["state": .string("running")]) { $1 })
+        let accepted: [(String, [String: RecordingJSON])] = [
+            ("queued", speech(unresolved.merging(["state": .string("queued")]) { $1 })),
+            ("running", running),
+            ("running and resolved", speech(["state": .string("running"), "relative_path": .null, "sha256": .null,
+                                             "frames": .null, "sample_rate_hz": .null, "seconds": .null])),
+            ("finished with the latest run", speech()),
+            ("finished with base", speech(["model": .string("base"), "run_id": .null])),
+            ("finished with a chosen run", speech(["model": .string(runID)])),
+            ("failed", running.merging(["state": .string("failed"), "error": deadline]) { $1 }),
+            ("cancelled", running.merging(["state": .string("cancelled")]) { $1 }),
+            ("integer seconds", speech(["frames": .integer(24_000), "seconds": .integer(1)])),
+        ]
+        for (name, event) in accepted {
+            #expect(try accepts(responses, response(data: .object(event))), "\(name) is a valid Speak event")
+        }
+        let refused: [(String, [String: RecordingJSON])] = [
+            ("finished without its path", speech(["relative_path": .null])),
+            ("finished without its digest", speech(["sha256": .null])),
+            ("finished without its frames", speech(["frames": .null])),
+            ("finished without its rate", speech(["sample_rate_hz": .null])),
+            ("finished without its seconds", speech(["seconds": .null])),
+            ("finished without its reference", speech(["reference_prompt_id": .null])),
+            ("finished without its run", speech(["run_id": .null])),
+            ("base with a run", speech(["model": .string("base")])),
+            ("a chosen run speaking as another", speech(["model": .string("finetune-another-run")])),
+            ("a foreign reference run", speech(["reference_run_id": .string("finetune-another-run")])),
+            ("a clip of another operation", speech(["relative_path": .string("derived/speech/op-other/speech-01.wav")])),
+            ("a clip of a sibling operation", speech(["relative_path": .string("derived/speech/\(speechOperation)-2/speech-01.wav")])),
+            ("the operation directory itself", speech(["relative_path": .string("derived/speech/\(speechOperation)")])),
+            ("a clip escaping its operation", speech(["relative_path": .string("derived/speech/\(speechOperation)/../op-other/speech-01.wav")])),
+            ("an absolute clip", speech(["relative_path": .string("/" + speechClip)])),
+            ("a clip in a run", speech(["relative_path": .string("\(runRoot)/speech-01.wav")])),
+            ("zero frames", speech(["frames": .integer(0)])),
+            ("48 kHz", speech(["sample_rate_hz": .integer(48_000)])),
+            ("seconds disagreeing with frames", speech(["seconds": .number(1)])),
+            ("a short digest", speech(["sha256": .string(String(repeating: "5", count: 63))])),
+            ("running with a clip", speech(["state": .string("running")])),
+            ("failed with a clip", speech(["state": .string("failed"), "error": deadline])),
+            ("failed without an error", running.merging(["state": .string("failed")]) { $1 }),
+            ("cancelled with an error", running.merging(["state": .string("cancelled"), "error": deadline]) { $1 }),
+            ("finished with an error", speech(["error": deadline])),
+            ("queued and resolved", speech(["state": .string("queued"), "relative_path": .null, "sha256": .null,
+                                            "frames": .null, "sample_rate_hz": .null, "seconds": .null])),
+            ("unknown state", running.merging(["state": .string("paused")]) { $1 }),
+            ("whitespace-only text", speech(["text": .string(" \n ")])),
+            ("unstable model", speech(["model": .string("Base")])),
+        ]
+        for (name, event) in refused {
+            #expect(try !accepts(responses, response(data: .object(event))), "\(name) must fail closed")
+        }
+        #expect(try !accepts(responses, response(data: .object(speech()), takeID: .string("synthetic-take"))), "Speak events are take-less")
+    }
+
     @Test func commandsAreTakeLessAndBounded() throws {
         let requests = try validator("recording-service-request")
         let fineTune: [String: RecordingJSON] = ["command": .string("fine-tune"), "operation_id": .string("op-fine-tune"), "allow_missing": .boolean(true)]
@@ -230,7 +386,7 @@ import Testing
 
     @Test func everyFineTuneFailureIsAWireErrorCode() throws {
         let responses = try validator("recording-response")
-        #expect(fineTuneCodes.count == 20)
+        #expect(fineTuneCodes.count == 22)
         for code in fineTuneCodes {
             let error = RecordingJSON.object(["code": .string(code), "message": .string("Synthetic"), "retryable": .boolean(false)])
             #expect(try accepts(responses, response(error: error)), "\(code) is a wire error code")

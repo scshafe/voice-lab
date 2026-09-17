@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "SpeechText": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One Speak request's result: what spoke, with which reference, and the clip it wrote.\n\nWritten last, as ``derived/speech/<operation_id>/speech.json`` beside the clip\n(``speech-01.wav``, 0600, 24 kHz 16-bit mono). ``model`` is ``base`` (the pinned\npretrained weights) or the fine-tuned run's id; the reference clip is\n``reference_prompt_id``'s normalized training copy in ``reference_run_id``'s dataset (the\nmodel's own run, or the newest finished run for ``base``). Relative paths only. A\nlistening aid: never a reference, dataset or promotion artifact.",
+  "properties": {
+    "checkpoint_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "frames": {
+      "maximum": 28800000,
+      "minimum": 1,
+      "title": "Frames",
+      "type": "integer"
+    },
+    "model": {
+      "$ref": "#/$defs/StableId"
+    },
+    "nfe_steps": {
+      "maximum": 64,
+      "minimum": 4,
+      "title": "Nfe Steps",
+      "type": "integer"
+    },
+    "operation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "reference_audio_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "reference_prompt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "reference_run_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "relative_path": {
+      "$ref": "#/$defs/RelativePath"
+    },
+    "sample_rate_hz": {
+      "const": 24000,
+      "default": 24000,
+      "title": "Sample Rate Hz",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-speech/v1",
+      "default": "cole-voice-lab.finetune-speech/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "seconds": {
+      "exclusiveMinimum": 0.0,
+      "title": "Seconds",
+      "type": "number"
+    },
+    "sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "text": {
+      "$ref": "#/$defs/SpeechText"
+    },
+    "use_ema": {
+      "title": "Use Ema",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "operation_id",
+    "model",
+    "reference_run_id",
+    "reference_prompt_id",
+    "reference_audio_sha256",
+    "checkpoint_sha256",
+    "use_ema",
+    "nfe_steps",
+    "text",
+    "relative_path",
+    "sha256",
+    "frames",
+    "seconds",
+    "created_at"
+  ],
+  "title": "SpeechClip",
+  "type": "object"
+}

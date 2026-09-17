@@ -26,6 +26,7 @@ from .models import (
     PromptSuitePurpose,
     Sha256,
     StableId,
+    has_hidden_control,
 )
 from .paths import validate_relative_path
 
@@ -114,6 +115,7 @@ type ErrorCode = Literal[
     "FINETUNE.FFMPEG_UNAVAILABLE",
     "FINETUNE.INTERRUPTED",
     "FINETUNE.JOB_ACTIVE",
+    "FINETUNE.NO_FINISHED_RUN",
     "FINETUNE.PRETRAINED_MISMATCH",
     "FINETUNE.REFERENCE_MISSING",
     "FINETUNE.REQUIREMENTS_MISSING",
@@ -121,6 +123,7 @@ type ErrorCode = Literal[
     "FINETUNE.RUNTIME_UNAVAILABLE",
     "FINETUNE.RUN_EXISTS",
     "FINETUNE.SOURCE_CHANGED",
+    "FINETUNE.SYNTHESIS_DEADLINE",
     "FINETUNE.TRAINING_FAILED",
     "FINETUNE.UNSUPPORTED_TEXT",
 ]
@@ -1202,10 +1205,78 @@ class CancelFineTuneCommand(ContractModel):
 
 
 class FineTuneStatusCommand(ContractModel):
-    """Ask whether fine-tuning is available, which job is active and which run is latest."""
+    """Ask whether fine-tuning is available, which job is active and which runs have finished."""
 
     command: Literal["fine-tune-status"] = "fine-tune-status"
     operation_id: StableId
+
+
+# Speak: one utterance per request, spoken by a fine-tuned run or the pinned base model.
+SPEECH_OUTPUT_ROOT: Final = "derived/speech"
+SPEECH_MAX_TEXT_CHARACTERS: Final = 2_000
+SPEECH_MIN_NFE_STEPS: Final = 4
+SPEECH_MAX_NFE_STEPS: Final = 64
+SPEECH_DEFAULT_NFE_STEPS: Final = 32
+SPEECH_SAMPLE_RATE_HZ: Final = 24_000
+# A clip's stated length may differ from frames / rate by at most this much (rounding).
+SPEECH_SECONDS_TOLERANCE: Final = 0.001
+
+
+def _speech_text(value: str) -> str:
+    if not value.strip():
+        raise ValueError("speech text must contain more than whitespace")
+    if has_hidden_control(value):
+        raise ValueError("speech text cannot contain format or control characters (newline aside)")
+    return value
+
+
+# 1-2,000 characters (code points), not only whitespace, no format or control character
+# except a newline (the prompt-suite/v2 text rule, models.has_hidden_control).
+type SpeechText = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=SPEECH_MAX_TEXT_CHARACTERS),
+    AfterValidator(_speech_text),
+]
+# "latest" (the newest finished fine-tune), "base" (the pinned pretrained weights) or the id
+# of a finished fine-tune run. A run named "latest" or "base" cannot be chosen by its id.
+type SpeechModelChoice = Literal["latest", "base"] | StableId
+
+
+def speech_directory(operation_id: str) -> str:
+    """The asset-root-relative directory one Speak request writes: ``derived/speech/<op>``."""
+    return f"{SPEECH_OUTPUT_ROOT}/{operation_id}"
+
+
+def _under_speech_directory(relative_path: str, operation_id: str) -> bool:
+    return relative_path.startswith(speech_directory(operation_id) + "/")
+
+
+class SynthesizeCommand(ContractModel):
+    """Speak ``text`` with ``model`` (one request at a time, never during a fine-tune).
+
+    ``reference_prompt_id`` names the reference clip in the reference run's dataset (the
+    model's run; for ``base`` the newest finished run); absent, the first reference-candidate
+    prompt with a clip there is used, else the run's first clip. ``nfe_steps`` trades speed
+    for quality (F5-TTS flow steps). The reply is the request's queued ``SynthesisEvent``;
+    later states arrive as background events whose request id is ``operation_id``.
+    """
+
+    command: Literal["synthesize"] = "synthesize"
+    operation_id: StableId
+    text: SpeechText
+    model: SpeechModelChoice
+    reference_prompt_id: StableId | None = None
+    nfe_steps: int = Field(
+        default=SPEECH_DEFAULT_NFE_STEPS, ge=SPEECH_MIN_NFE_STEPS, le=SPEECH_MAX_NFE_STEPS
+    )
+
+
+class CancelSynthesisCommand(ContractModel):
+    """Stop the Speak request ``cancelled_operation_id`` (its worker's whole process group)."""
+
+    command: Literal["cancel-synthesis"] = "cancel-synthesis"
+    operation_id: StableId
+    cancelled_operation_id: StableId
 
 
 type RecorderCommand = Annotated[
@@ -1238,6 +1309,8 @@ type ServiceCommand = Annotated[
     | FineTuneCommand
     | CancelFineTuneCommand
     | FineTuneStatusCommand
+    | SynthesizeCommand
+    | CancelSynthesisCommand
     | SnapshotCommand
     | ShutdownCommand,
     Field(discriminator="command"),
@@ -1791,7 +1864,9 @@ class FineTuneRunSummary(ContractModel):
 
     Paths are relative to the asset root, and every sample lies under ``run_root``. Only a
     finished run has samples (``finetuned`` from the trained checkpoint, ``base`` from the
-    pretrained weights, for comparison).
+    pretrained weights, for comparison). ``reference_prompt_ids`` are the run's
+    reference-candidate prompts that have a clip in its dataset, in catalog order: the
+    reference choices Speak offers for this run (empty: Speak uses the run's first clip).
     """
 
     run_id: StableId
@@ -1804,6 +1879,7 @@ class FineTuneRunSummary(ContractModel):
     retained_seconds: float = Field(ge=0.0, allow_inf_nan=False)
     finetuned_sample_paths: tuple[RelativePath, ...] = Field(default=(), max_length=64)
     base_sample_paths: tuple[RelativePath, ...] = Field(default=(), max_length=64)
+    reference_prompt_ids: tuple[StableId, ...] = Field(default=(), max_length=64)
     error: str | None = Field(default=None, min_length=1, max_length=4_096)
 
     @model_validator(mode="after")
@@ -1819,6 +1895,8 @@ class FineTuneRunSummary(ContractModel):
             raise ValueError("only a finished run has samples")
         if not all(path.startswith(self.run_root + "/") for path in samples):
             raise ValueError("run samples must lie under the run's directory")
+        if len(set(self.reference_prompt_ids)) != len(self.reference_prompt_ids):
+            raise ValueError("a run names each reference prompt once")
         return self
 
 
@@ -1830,12 +1908,17 @@ class FineTuneEvent(ContractModel):
     run: FineTuneRunSummary
 
 
-class FineTuneStatusEvent(ContractModel):
-    """Reply to ``fine-tune-status``: the runtime, the active job and the latest finished run.
+MAX_FINISHED_RUNS: Final = 32
 
-    ``active`` is always reported. When the latest finished run cannot be resolved (an
-    unreadable or invalid ``run.json`` under ``derived/finetune``), ``latest_run`` is absent
-    and ``latest_run_error`` names why; a new job can still be started.
+
+class FineTuneStatusEvent(ContractModel):
+    """Reply to ``fine-tune-status``: the runtime, the active job and the finished runs.
+
+    ``active`` is always reported. ``finished_runs`` are the newest finished runs (at most
+    32, newest first: latest finish time, then greater run id) and ``latest_run`` is the
+    first of them. When they cannot be resolved (an unreadable or invalid ``run.json`` under
+    ``derived/finetune``), both are absent and ``latest_run_error`` names why; a new job can
+    still be started.
     """
 
     event: Literal["fine-tune-status"] = "fine-tune-status"
@@ -1843,6 +1926,7 @@ class FineTuneStatusEvent(ContractModel):
     runtime_configured: bool
     active: FineTuneProgressEvent | None = None
     latest_run: FineTuneRunSummary | None = None
+    finished_runs: tuple[FineTuneRunSummary, ...] = Field(default=(), max_length=MAX_FINISHED_RUNS)
     latest_run_error: RecordingError | None = None
 
     @model_validator(mode="after")
@@ -1853,6 +1937,85 @@ class FineTuneStatusEvent(ContractModel):
             raise ValueError("the latest run is a finished run")
         if self.latest_run is not None and self.latest_run_error is not None:
             raise ValueError("the latest run is either resolved or unresolved, never both")
+        if any(run.status != "finished" for run in self.finished_runs):
+            raise ValueError("finished runs are finished runs")
+        order: list[tuple[datetime, str]] = []
+        for run in self.finished_runs:
+            assert run.finished_at is not None  # FineTuneRunSummary: a finished run is dated
+            order.append((run.finished_at, run.run_id))
+        if any(newer <= older for newer, older in zip(order, order[1:], strict=False)):
+            raise ValueError("finished runs are listed newest first, each once")
+        first = self.finished_runs[0] if self.finished_runs else None
+        if self.latest_run != first:
+            raise ValueError("the latest run is the first finished run")
+        return self
+
+
+type SynthesisState = Literal["queued", "running", "finished", "failed", "cancelled"]
+
+
+class SynthesisEvent(ContractModel):
+    """Where one Speak request stands: the ``synthesize`` reply and its background events.
+
+    ``model`` and ``text`` repeat the request. ``run_id`` (the fine-tuned run that spoke;
+    never for ``base``), ``reference_run_id`` and ``reference_prompt_id`` are known once the
+    worker has resolved the request, so a queued request names none. A finished request
+    names its clip: ``relative_path`` under ``derived/speech/<operation_id>/``, a private
+    24 kHz 16-bit mono WAV whose ``frames`` come from its header, ``seconds`` =
+    ``frames / sample_rate_hz``, and ``sha256`` binding its bytes. ``error`` is present
+    exactly when the request failed; a cancelled request carries none.
+    """
+
+    event: Literal["synthesis"] = "synthesis"
+    operation_id: StableId
+    state: SynthesisState
+    model: SpeechModelChoice
+    text: SpeechText
+    run_id: StableId | None = None
+    reference_run_id: StableId | None = None
+    reference_prompt_id: StableId | None = None
+    relative_path: RelativePath | None = None
+    sha256: Sha256 | None = None
+    frames: int | None = Field(default=None, ge=1, le=MAX_RECORDING_FRAMES)
+    sample_rate_hz: Literal[24_000] | None = None
+    seconds: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
+    error: RecordingError | None = None
+
+    @model_validator(mode="after")
+    def _state_evidence(self) -> SynthesisEvent:
+        if (self.state == "failed") != (self.error is not None):
+            raise ValueError("a failed synthesis names its error; other states carry none")
+        clip = (self.relative_path, self.sha256, self.frames, self.sample_rate_hz, self.seconds)
+        resolution = (self.run_id, self.reference_run_id, self.reference_prompt_id)
+        if self.state == "finished":
+            if any(value is None for value in clip):
+                raise ValueError("a finished synthesis names its clip")
+            if self.reference_run_id is None or self.reference_prompt_id is None:
+                raise ValueError("a finished synthesis names its reference")
+            if (self.run_id is None) != (self.model == "base"):
+                raise ValueError("a finished synthesis names its run unless the base model spoke")
+        elif any(value is not None for value in clip):
+            raise ValueError("only a finished synthesis names a clip")
+        if self.state == "queued" and any(value is not None for value in resolution):
+            raise ValueError("a queued synthesis has not been resolved")
+        if self.model == "base" and self.run_id is not None:
+            raise ValueError("the base model speaks without a run")
+        if self.model not in {"latest", "base"} and self.run_id not in {None, self.model}:
+            raise ValueError("a chosen run speaks as itself")
+        speaker, reference = self.run_id, self.reference_run_id
+        if speaker is not None and reference is not None and speaker != reference:
+            raise ValueError("a fine-tuned run speaks with its own reference")
+        if self.relative_path is not None and not _under_speech_directory(
+            self.relative_path, self.operation_id
+        ):
+            raise ValueError("a synthesized clip lies under derived/speech/<operation id>/")
+        if (
+            self.frames is not None
+            and self.seconds is not None
+            and self.sample_rate_hz is not None
+            and abs(self.seconds - self.frames / self.sample_rate_hz) > SPEECH_SECONDS_TOLERANCE
+        ):
+            raise ValueError("a clip lasts its frames at its sample rate")
         return self
 
 
@@ -2057,6 +2220,7 @@ type ReliableEvent = Annotated[
     | FineTuneProgressEvent
     | FineTuneEvent
     | FineTuneStatusEvent
+    | SynthesisEvent
     | RecoveryEvent
     | RecoveryInventoryEvent
     | RecoveryInventoryChangedEvent

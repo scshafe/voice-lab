@@ -1,0 +1,435 @@
+{
+  "$defs": {
+    "AbsolutePath": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "ErrorCode": {
+      "enum": [
+        "RECORDING.INVALID_MESSAGE",
+        "RECORDING.VERSION_MISMATCH",
+        "RECORDING.BUILD_MISMATCH",
+        "RECORDING.STALE_REVISION",
+        "RECORDING.STALE_GENERATION",
+        "RECORDING.OWNERSHIP_CONFLICT",
+        "RECORDING.INVALID_TRANSITION",
+        "RECORDING.DEVICE_UNAVAILABLE",
+        "RECORDING.PERMISSION_DENIED",
+        "RECORDING.PLAYBACK_ACTIVE",
+        "RECORDING.DISK_SPACE",
+        "RECORDING.WRITE_FAILED",
+        "RECORDING.WAVEFORM_CACHE_UNAVAILABLE",
+        "RECORDING.CONTINUITY_FAILED",
+        "RECORDING.CAPTURE_OVERFLOW",
+        "RECORDING.PARENT_LOST",
+        "RECORDING.SOURCE_CHANGED",
+        "RECORDING.HISTORY_UNKNOWN",
+        "RECORDING.GATE_NOT_READY",
+        "RECORDING.ANALYSIS_FAILED",
+        "RECORDING.PLAYBACK_FAILED",
+        "RECORDING.EDIT_FAILED",
+        "RECORDING.PACKAGE_INCOMPLETE",
+        "RECORDING.CANCELLED",
+        "CORPUS.NO_ACTIVE_CATALOG",
+        "CORPUS.SNAPSHOT_MISMATCH",
+        "CORPUS.STORE_MISSING",
+        "FINETUNE.CATALOG_HELD_OUT",
+        "FINETUNE.CHECKPOINT_MISSING",
+        "FINETUNE.CORPUS_INCOMPLETE",
+        "FINETUNE.CORPUS_PROJECTION_FAILED",
+        "FINETUNE.DOWNLOADS_NOT_ALLOWED",
+        "FINETUNE.DOWNLOAD_FAILED",
+        "FINETUNE.EMPTY_CORPUS",
+        "FINETUNE.FFMPEG_FAILED",
+        "FINETUNE.FFMPEG_UNAVAILABLE",
+        "FINETUNE.INTERRUPTED",
+        "FINETUNE.JOB_ACTIVE",
+        "FINETUNE.NO_FINISHED_RUN",
+        "FINETUNE.PRETRAINED_MISMATCH",
+        "FINETUNE.REFERENCE_MISSING",
+        "FINETUNE.REQUIREMENTS_MISSING",
+        "FINETUNE.RUNTIME_FAILED",
+        "FINETUNE.RUNTIME_UNAVAILABLE",
+        "FINETUNE.RUN_EXISTS",
+        "FINETUNE.SOURCE_CHANGED",
+        "FINETUNE.SYNTHESIS_DEADLINE",
+        "FINETUNE.TRAINING_FAILED",
+        "FINETUNE.UNSUPPORTED_TEXT"
+      ],
+      "type": "string"
+    },
+    "FineTuneFileIdentity": {
+      "additionalProperties": false,
+      "description": "The stat identity a verified digest is bound to; any change means hash again.",
+      "properties": {
+        "ctime_ns": {
+          "title": "Ctime Ns",
+          "type": "integer"
+        },
+        "device": {
+          "minimum": 0,
+          "title": "Device",
+          "type": "integer"
+        },
+        "inode": {
+          "minimum": 0,
+          "title": "Inode",
+          "type": "integer"
+        },
+        "mtime_ns": {
+          "title": "Mtime Ns",
+          "type": "integer"
+        },
+        "path": {
+          "$ref": "#/$defs/AbsolutePath"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "device",
+        "inode",
+        "size_bytes",
+        "mtime_ns",
+        "ctime_ns"
+      ],
+      "title": "FineTuneFileIdentity",
+      "type": "object"
+    },
+    "FineTuneRuntimeProbe": {
+      "additionalProperties": false,
+      "description": "The runtime probe's answer, bound to the interpreter and its site-packages directory.\n\nInstalling or removing a package changes the directory, so a changed identity probes\nthe runtime again.",
+      "properties": {
+        "f5_tts_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "F5 Tts Version",
+          "type": "string"
+        },
+        "package_path": {
+          "$ref": "#/$defs/AbsolutePath"
+        },
+        "python": {
+          "$ref": "#/$defs/FineTuneFileIdentity"
+        },
+        "runtime_root": {
+          "$ref": "#/$defs/AbsolutePath"
+        },
+        "site_packages": {
+          "$ref": "#/$defs/FineTuneFileIdentity"
+        },
+        "torch_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Torch Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime_root",
+        "python",
+        "site_packages",
+        "f5_tts_version",
+        "torch_version",
+        "package_path"
+      ],
+      "title": "FineTuneRuntimeProbe",
+      "type": "object"
+    },
+    "FineTuneTrustedDigests": {
+      "additionalProperties": false,
+      "description": "File digests and a runtime probe verified by an earlier call, keyed by file identity.",
+      "properties": {
+        "files": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FineTuneVerifiedDigest"
+          },
+          "maxItems": 16,
+          "title": "Files",
+          "type": "array"
+        },
+        "probe": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FineTuneRuntimeProbe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "FineTuneTrustedDigests",
+      "type": "object"
+    },
+    "FineTuneVerifiedDigest": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/FineTuneFileIdentity"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "identity",
+        "sha256"
+      ],
+      "title": "FineTuneVerifiedDigest",
+      "type": "object"
+    },
+    "RecordingError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Details",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "RecordingError",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "SpeechClip": {
+      "additionalProperties": false,
+      "description": "One Speak request's result: what spoke, with which reference, and the clip it wrote.\n\nWritten last, as ``derived/speech/<operation_id>/speech.json`` beside the clip\n(``speech-01.wav``, 0600, 24 kHz 16-bit mono). ``model`` is ``base`` (the pinned\npretrained weights) or the fine-tuned run's id; the reference clip is\n``reference_prompt_id``'s normalized training copy in ``reference_run_id``'s dataset (the\nmodel's own run, or the newest finished run for ``base``). Relative paths only. A\nlistening aid: never a reference, dataset or promotion artifact.",
+      "properties": {
+        "checkpoint_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "created_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "frames": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "model": {
+          "$ref": "#/$defs/StableId"
+        },
+        "nfe_steps": {
+          "maximum": 64,
+          "minimum": 4,
+          "title": "Nfe Steps",
+          "type": "integer"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_audio_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "reference_prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_run_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "relative_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "sample_rate_hz": {
+          "const": 24000,
+          "default": 24000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.finetune-speech/v1",
+          "default": "cole-voice-lab.finetune-speech/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Seconds",
+          "type": "number"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "text": {
+          "$ref": "#/$defs/SpeechText"
+        },
+        "use_ema": {
+          "title": "Use Ema",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "operation_id",
+        "model",
+        "reference_run_id",
+        "reference_prompt_id",
+        "reference_audio_sha256",
+        "checkpoint_sha256",
+        "use_ema",
+        "nfe_steps",
+        "text",
+        "relative_path",
+        "sha256",
+        "frames",
+        "seconds",
+        "created_at"
+      ],
+      "title": "SpeechClip",
+      "type": "object"
+    },
+    "SpeechText": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "SpeechWorkerResolution": {
+      "additionalProperties": false,
+      "description": "What the worker resolved: the speaking run (none for base) and the reference.",
+      "properties": {
+        "reference_prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_run_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "run_id",
+        "reference_run_id",
+        "reference_prompt_id"
+      ],
+      "title": "SpeechWorkerResolution",
+      "type": "object"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The Speak worker's one result: its clip, or its error (with the resolution, if any).\n\n``trusted`` is what the worker verified, for the next request.",
+  "properties": {
+    "clip": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpeechClip"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "generation": {
+      "$ref": "#/$defs/StableId"
+    },
+    "kind": {
+      "const": "synthesis-result",
+      "default": "synthesis-result",
+      "title": "Kind",
+      "type": "string"
+    },
+    "operation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "request_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "resolution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpeechWorkerResolution"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-worker/v1",
+      "default": "cole-voice-lab.finetune-worker/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "trusted": {
+      "$ref": "#/$defs/FineTuneTrustedDigests",
+      "default": {
+        "files": [],
+        "probe": null
+      }
+    }
+  },
+  "required": [
+    "generation",
+    "operation_id",
+    "request_sha256"
+  ],
+  "title": "SpeechWorkerReply",
+  "type": "object"
+}

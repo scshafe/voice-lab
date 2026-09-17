@@ -752,6 +752,7 @@
         "FINETUNE.FFMPEG_UNAVAILABLE",
         "FINETUNE.INTERRUPTED",
         "FINETUNE.JOB_ACTIVE",
+        "FINETUNE.NO_FINISHED_RUN",
         "FINETUNE.PRETRAINED_MISMATCH",
         "FINETUNE.REFERENCE_MISSING",
         "FINETUNE.REQUIREMENTS_MISSING",
@@ -759,6 +760,7 @@
         "FINETUNE.RUNTIME_UNAVAILABLE",
         "FINETUNE.RUN_EXISTS",
         "FINETUNE.SOURCE_CHANGED",
+        "FINETUNE.SYNTHESIS_DEADLINE",
         "FINETUNE.TRAINING_FAILED",
         "FINETUNE.UNSUPPORTED_TEXT"
       ],
@@ -933,7 +935,7 @@
     },
     "FineTuneRunSummary": {
       "additionalProperties": false,
-      "description": "One training run as the app sees it: ``finetune.FineTuneRun`` without absolute paths.\n\nPaths are relative to the asset root, and every sample lies under ``run_root``. Only a\nfinished run has samples (``finetuned`` from the trained checkpoint, ``base`` from the\npretrained weights, for comparison).",
+      "description": "One training run as the app sees it: ``finetune.FineTuneRun`` without absolute paths.\n\nPaths are relative to the asset root, and every sample lies under ``run_root``. Only a\nfinished run has samples (``finetuned`` from the trained checkpoint, ``base`` from the\npretrained weights, for comparison). ``reference_prompt_ids`` are the run's\nreference-candidate prompts that have a clip in its dataset, in catalog order: the\nreference choices Speak offers for this run (empty: Speak uses the run's first clip).",
       "properties": {
         "base_sample_paths": {
           "default": [],
@@ -989,6 +991,15 @@
           "minimum": 1,
           "title": "Prompt Count",
           "type": "integer"
+        },
+        "reference_prompt_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "maxItems": 64,
+          "title": "Reference Prompt Ids",
+          "type": "array"
         },
         "retained_seconds": {
           "minimum": 0.0,
@@ -1047,7 +1058,7 @@
     },
     "FineTuneStatusEvent": {
       "additionalProperties": false,
-      "description": "Reply to ``fine-tune-status``: the runtime, the active job and the latest finished run.\n\n``active`` is always reported. When the latest finished run cannot be resolved (an\nunreadable or invalid ``run.json`` under ``derived/finetune``), ``latest_run`` is absent\nand ``latest_run_error`` names why; a new job can still be started.",
+      "description": "Reply to ``fine-tune-status``: the runtime, the active job and the finished runs.\n\n``active`` is always reported. ``finished_runs`` are the newest finished runs (at most\n32, newest first: latest finish time, then greater run id) and ``latest_run`` is the\nfirst of them. When they cannot be resolved (an unreadable or invalid ``run.json`` under\n``derived/finetune``), both are absent and ``latest_run_error`` names why; a new job can\nstill be started.",
       "properties": {
         "active": {
           "anyOf": [
@@ -1065,6 +1076,15 @@
           "default": "fine-tune-status",
           "title": "Event",
           "type": "string"
+        },
+        "finished_runs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FineTuneRunSummary"
+          },
+          "maxItems": 32,
+          "title": "Finished Runs",
+          "type": "array"
         },
         "latest_run": {
           "anyOf": [
@@ -3004,6 +3024,7 @@
           "review": "#/$defs/ReviewEvent",
           "review-action": "#/$defs/ReviewActionEvent",
           "saved": "#/$defs/SaveEvent",
+          "synthesis": "#/$defs/SynthesisEvent",
           "take": "#/$defs/TakeEvent",
           "transition": "#/$defs/RecordingTransition",
           "waveform-cache": "#/$defs/WaveformCacheEvent"
@@ -3070,6 +3091,9 @@
         },
         {
           "$ref": "#/$defs/FineTuneStatusEvent"
+        },
+        {
+          "$ref": "#/$defs/SynthesisEvent"
         },
         {
           "$ref": "#/$defs/RecoveryEvent"
@@ -3245,9 +3269,176 @@
       "pattern": "^[0-9a-f]{64}$",
       "type": "string"
     },
+    "SpeechModelChoice": {
+      "anyOf": [
+        {
+          "enum": [
+            "latest",
+            "base"
+          ],
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/StableId"
+        }
+      ]
+    },
+    "SpeechText": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "type": "string"
+    },
     "StableId": {
       "maxLength": 128,
       "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "SynthesisEvent": {
+      "additionalProperties": false,
+      "description": "Where one Speak request stands: the ``synthesize`` reply and its background events.\n\n``model`` and ``text`` repeat the request. ``run_id`` (the fine-tuned run that spoke;\nnever for ``base``), ``reference_run_id`` and ``reference_prompt_id`` are known once the\nworker has resolved the request, so a queued request names none. A finished request\nnames its clip: ``relative_path`` under ``derived/speech/<operation_id>/``, a private\n24 kHz 16-bit mono WAV whose ``frames`` come from its header, ``seconds`` =\n``frames / sample_rate_hz``, and ``sha256`` binding its bytes. ``error`` is present\nexactly when the request failed; a cancelled request carries none.",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "event": {
+          "const": "synthesis",
+          "default": "synthesis",
+          "title": "Event",
+          "type": "string"
+        },
+        "frames": {
+          "anyOf": [
+            {
+              "maximum": 28800000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frames"
+        },
+        "model": {
+          "$ref": "#/$defs/SpeechModelChoice"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_prompt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reference_run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "relative_path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RelativePath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sample_rate_hz": {
+          "anyOf": [
+            {
+              "const": 24000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Rate Hz"
+        },
+        "seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seconds"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "$ref": "#/$defs/SynthesisState"
+        },
+        "text": {
+          "$ref": "#/$defs/SpeechText"
+        }
+      },
+      "required": [
+        "operation_id",
+        "state",
+        "model",
+        "text"
+      ],
+      "title": "SynthesisEvent",
+      "type": "object"
+    },
+    "SynthesisState": {
+      "enum": [
+        "queued",
+        "running",
+        "finished",
+        "failed",
+        "cancelled"
+      ],
       "type": "string"
     },
     "TakeEvent": {

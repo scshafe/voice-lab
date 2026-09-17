@@ -5,13 +5,16 @@ fine-tuned or base F5-TTS checkpoint. Input is one JSON job file:
 
   {"checkpoint_path": "...", "vocab_path": "...", "vocoder_path": "...", "use_ema": true,
    "device": "mps"|"cpu", "nfe_steps": 32, "reference_audio_path": "...",
-   "reference_text": "...", "output_directory": "...", "texts": ["...", ...]}
+   "reference_text": "...", "output_directory": "...", "file_prefix": "sample",
+   "texts": ["...", ...]}
 
 ``vocoder_path`` is the runtime's pinned Vocos directory (``config.yaml`` and
-``pytorch_model.bin``); it is loaded locally, never from Hugging Face.
+``pytorch_model.bin``); it is loaded locally, never from Hugging Face. ``file_prefix``
+(default ``sample``; Speak uses ``speech``) names the clips.
 
-Writes ``sample-NN.wav`` (24 kHz mono) into ``output_directory`` and prints one JSON line
-per sample: {"index": N, "path": "...", "seconds": S}. Idempotent for the same job.
+Writes ``<file_prefix>-NN.wav`` (24 kHz mono 16-bit PCM) into ``output_directory`` and
+prints one JSON line per clip: {"index": N, "path": "...", "seconds": S}. The caller checks
+each clip's header. Idempotent for the same job.
 """
 
 from __future__ import annotations
@@ -60,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     output_directory = Path(job["output_directory"])
     output_directory.mkdir(parents=True, exist_ok=True)
+    prefix = str(job.get("file_prefix", "sample"))
     reference_audio, reference_text = preprocess_ref_audio_text(
         job["reference_audio_path"], job["reference_text"], show_info=lambda *_: None
     )
@@ -75,8 +79,8 @@ def main(argv: list[str] | None = None) -> int:
             device=device,
             show_info=lambda *_: None,
         )
-        path = output_directory / f"sample-{index:02d}.wav"
-        sf.write(str(path), wave, sample_rate)
+        path = output_directory / f"{prefix}-{index:02d}.wav"
+        sf.write(str(path), wave, sample_rate, subtype="PCM_16")
         print(
             json.dumps({"index": index, "path": str(path), "seconds": len(wave) / sample_rate}),
             flush=True,

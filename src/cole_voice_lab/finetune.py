@@ -7,8 +7,12 @@ A take counts for a prompt under the coverage rule (its recorded prompt, or an e
 revision a published catalog's keep-recordings alias accepts); the transcript is always the
 current prompt text. Every artifact is bound by SHA-256 so a run can be reproduced and
 audited. ``run_finetune_pipeline`` is the one select → dataset → train → sample chain; the
-CLI and the recording service's job worker both call it, and ``latest_finished_finetune_run``
-is the one rule for "the latest model".
+CLI and the recording service's job worker both call it, and ``finished_finetune_run_ids``
+is the one ordering of finished runs ("the latest model" is its first). Speak requests
+(``resolve_speech_model`` → ``synthesize_speech``) speak one text with a finished run or the
+pinned base weights into ``derived/speech/<operation id>/``, through the same synthesizer
+core as the listening samples; ``FineTuneDigestCache`` lets repeated requests reuse the
+digests of unchanged runtime files and checkpoints instead of hashing gigabytes again.
 Related: prompt_coverage.py (readers), recording_index.py (retained predicate),
 recording_finetune_jobs.py (the service's job queue and worker), docs/FINETUNE.md
 (operator guide), DECISIONS.md D-016.
@@ -23,18 +27,33 @@ import os
 import pwd
 import re
 import shutil
+import stat
 import subprocess
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Final, Literal, cast
+from typing import IO, TYPE_CHECKING, Annotated, Final, Literal, cast
 
-from pydantic import BaseModel, Field, TypeAdapter, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from .audio import CANONICAL_SAMPLE_RATE_HZ
-from .canonical import canonical_sha256, open_regular_no_follow, sha256_file, write_canonical_json
+from .canonical import (
+    canonical_sha256,
+    open_regular_no_follow,
+    sha256_file,
+    sha256_stream,
+    write_canonical_json,
+)
 from .corpus_store import CorpusSnapshotSecurityError, require_referenced_snapshot
 from .errors import SecurityError, VoiceLabError
 from .models import (
@@ -46,10 +65,16 @@ from .models import (
     StableId,
     utc_now,
 )
-from .paths import AssetLayout, confined_path
+from .paths import AssetLayout, confined_path, validate_absolute_path
 from .prompt_coverage import coverage_catalog, subject_native_takes
 from .recording_contracts import (
     FINETUNE_MAX_EPOCHS,
+    MAX_FINISHED_RUNS,
+    MAX_RECORDING_FRAMES,
+    SPEECH_DEFAULT_NFE_STEPS,
+    SPEECH_MAX_NFE_STEPS,
+    SPEECH_MIN_NFE_STEPS,
+    SPEECH_SECONDS_TOLERANCE,
     CatalogReference,
     CatalogSnapshot,
     FineTuneRunSummary,
@@ -58,7 +83,9 @@ from .recording_contracts import (
     RecordingHistoryEntry,
     RecordingTake,
     RelativePath,
+    SpeechText,
     UtcTimestamp,
+    speech_directory,
 )
 from .recording_discovery_contracts import (
     DiscoveryAlias,
@@ -95,8 +122,9 @@ type FineTuneSourceKind = Literal["native", "legacy"]
 type FineTuneDatePrecision = Literal["take", "session", "unknown"]
 # Every fine-tune failure code. The recording service sends these under their own code, so
 # recording_contracts.ErrorCode lists exactly this set (tests/test_finetune.py checks it).
-# JOB_ACTIVE and INTERRUPTED belong to the service's job path (the CLI also refuses
-# JOB_ACTIVE); a cancelled job carries no error at all.
+# JOB_ACTIVE, INTERRUPTED and SYNTHESIS_DEADLINE belong to the service's job path (the CLI
+# also refuses JOB_ACTIVE); NO_FINISHED_RUN refuses Speak before any fine-tune finished; a
+# cancelled job carries no error at all.
 type FineTuneErrorCode = Literal[
     "FINETUNE.CATALOG_HELD_OUT",
     "FINETUNE.CHECKPOINT_MISSING",
@@ -109,6 +137,7 @@ type FineTuneErrorCode = Literal[
     "FINETUNE.FFMPEG_UNAVAILABLE",
     "FINETUNE.INTERRUPTED",
     "FINETUNE.JOB_ACTIVE",
+    "FINETUNE.NO_FINISHED_RUN",
     "FINETUNE.PRETRAINED_MISMATCH",
     "FINETUNE.REFERENCE_MISSING",
     "FINETUNE.REQUIREMENTS_MISSING",
@@ -116,8 +145,12 @@ type FineTuneErrorCode = Literal[
     "FINETUNE.RUNTIME_UNAVAILABLE",
     "FINETUNE.RUN_EXISTS",
     "FINETUNE.SOURCE_CHANGED",
+    "FINETUNE.SYNTHESIS_DEADLINE",
     "FINETUNE.TRAINING_FAILED",
     "FINETUNE.UNSUPPORTED_TEXT",
+]
+type AbsolutePath = Annotated[
+    str, StringConstraints(min_length=1, max_length=4_096), AfterValidator(validate_absolute_path)
 ]
 
 
@@ -877,7 +910,162 @@ def _run_runtime(
     return output
 
 
-def _require_pinned_file(path: Path, pin: FineTunePinnedFile, what: str) -> str:
+class FineTuneFileIdentity(ContractModel):
+    """The stat identity a verified digest is bound to; any change means hash again."""
+
+    path: AbsolutePath
+    device: int = Field(ge=0)
+    inode: int = Field(ge=0)
+    size_bytes: int = Field(ge=0)
+    mtime_ns: int
+    ctime_ns: int
+
+
+class FineTuneVerifiedDigest(ContractModel):
+    identity: FineTuneFileIdentity
+    sha256: Sha256
+
+
+class FineTuneRuntimeProbe(ContractModel):
+    """The runtime probe's answer, bound to the interpreter and its site-packages directory.
+
+    Installing or removing a package changes the directory, so a changed identity probes
+    the runtime again.
+    """
+
+    runtime_root: AbsolutePath
+    python: FineTuneFileIdentity
+    site_packages: FineTuneFileIdentity
+    f5_tts_version: str = Field(min_length=1, max_length=64)
+    torch_version: str = Field(min_length=1, max_length=64)
+    package_path: AbsolutePath
+
+
+MAX_TRUSTED_DIGESTS: Final = 16
+
+
+class FineTuneTrustedDigests(ContractModel):
+    """File digests and a runtime probe verified by an earlier call, keyed by file identity."""
+
+    files: tuple[FineTuneVerifiedDigest, ...] = Field(default=(), max_length=MAX_TRUSTED_DIGESTS)
+    probe: FineTuneRuntimeProbe | None = None
+
+    @model_validator(mode="after")
+    def _one_digest_per_file(self) -> FineTuneTrustedDigests:
+        paths = [entry.identity.path for entry in self.files]
+        if len(paths) != len(set(paths)):
+            raise ValueError("trusted digests name each file once")
+        return self
+
+
+def _file_identity(path: Path) -> FineTuneFileIdentity:
+    """``path``'s own identity (a link's, not its target's).
+
+    Raises: ``OSError`` (``FileNotFoundError``) when it does not exist.
+    """
+    metadata = os.stat(path, follow_symlinks=False)
+    return FineTuneFileIdentity(
+        path=str(path),
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        size_bytes=metadata.st_size,
+        mtime_ns=metadata.st_mtime_ns,
+        ctime_ns=metadata.st_ctime_ns,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ProbeAnswer:
+    f5_tts_version: str
+    torch_version: str
+    package_path: Path
+
+
+class FineTuneDigestCache:
+    """Digests (and the runtime probe) reused while the files they describe are unchanged.
+
+    Built from what an earlier call verified; ``trusted()`` is what this one verified, for
+    the next call. A digest is reused only while the file's identity (device, inode, size,
+    mtime, ctime) equals the recorded one. Anything else is hashed again, so a changed file
+    is always noticed: a pinned file must still match its pin and a checkpoint its run
+    record. The recording service keeps one per process so Speak requests do not re-hash
+    the 1.35 GB base weights or a 2.7 GB checkpoint.
+    """
+
+    def __init__(self, trusted: FineTuneTrustedDigests | None = None) -> None:
+        known = FineTuneTrustedDigests() if trusted is None else trusted
+        self._trusted = {entry.identity.path: entry for entry in known.files}
+        self._trusted_probe = known.probe
+        self._verified: dict[str, FineTuneVerifiedDigest] = {}
+        self._probe: FineTuneRuntimeProbe | None = None
+
+    def sha256(self, path: Path) -> str:
+        """``path``'s SHA-256: the trusted digest while its identity is unchanged, else hashed.
+
+        ``path``'s directories are resolved (the key); its last component is not, so a link
+        in its place is refused.
+        Raises: ``SecurityError`` when the file is a link or not a regular file; ``OSError``
+        when it is missing or unreadable; ``FineTuneError`` FINETUNE.SOURCE_CHANGED when it
+        changed while it was being hashed.
+        """
+        target = path.parent.resolve() / path.name
+        key = str(target)
+        before = _file_identity(target)
+        known = self._verified.get(key) or self._trusted.get(key)
+        if known is not None and known.identity == before:
+            self._verified[key] = known
+            return known.sha256
+        digest, _ = sha256_file(target)
+        after = _file_identity(target)
+        if after != before:
+            raise FineTuneError(
+                "FINETUNE.SOURCE_CHANGED", f"{target} changed while it was being hashed"
+            )
+        self._verified[key] = FineTuneVerifiedDigest(identity=after, sha256=digest)
+        return digest
+
+    def runtime_probe(
+        self, root: Path, python: Path, probe: Callable[[], _ProbeAnswer]
+    ) -> _ProbeAnswer:
+        """The runtime probe's answer: the trusted one while the interpreter and its
+        site-packages directory are unchanged, else ``probe()``'s (then recorded)."""
+        for known in (self._probe, self._trusted_probe):
+            if known is not None and self._probe_current(known, root, python):
+                self._probe = known
+                return _ProbeAnswer(
+                    known.f5_tts_version, known.torch_version, Path(known.package_path)
+                )
+        answer = probe()
+        self._probe = FineTuneRuntimeProbe(
+            runtime_root=str(root),
+            python=_file_identity(python.resolve()),
+            site_packages=_file_identity(answer.package_path.parent),
+            f5_tts_version=answer.f5_tts_version,
+            torch_version=answer.torch_version,
+            package_path=str(answer.package_path),
+        )
+        return answer
+
+    @staticmethod
+    def _probe_current(known: FineTuneRuntimeProbe, root: Path, python: Path) -> bool:
+        """Whether ``known`` still describes ``root``'s python (which exists)."""
+        package = Path(known.package_path)
+        return (
+            known.runtime_root == str(root)
+            and known.python == _file_identity(python.resolve())
+            and package.is_dir()
+            and known.site_packages == _file_identity(package.parent)
+        )
+
+    def trusted(self) -> FineTuneTrustedDigests:
+        """What this cache verified (the newest ``MAX_TRUSTED_DIGESTS`` files) and its probe."""
+        files = tuple(self._verified.values())[-MAX_TRUSTED_DIGESTS:]
+        return FineTuneTrustedDigests(files=files, probe=self._probe)
+
+
+def _require_pinned_file(
+    path: Path, pin: FineTunePinnedFile, what: str, digests: FineTuneDigestCache
+) -> str:
     """``path``'s digest once its size and SHA-256 equal ``pin``.
 
     Raises: ``FineTuneError`` FINETUNE.PRETRAINED_MISMATCH naming ``what`` and ``path``,
@@ -889,7 +1077,7 @@ def _require_pinned_file(path: Path, pin: FineTunePinnedFile, what: str) -> str:
             f"{what} at {path} is {path.stat().st_size} bytes, not the pinned {pin.size_bytes}",
         )
     try:
-        digest, _ = sha256_file(path)
+        digest = digests.sha256(path)
     except SecurityError as error:
         raise FineTuneError(
             "FINETUNE.PRETRAINED_MISMATCH",
@@ -902,36 +1090,19 @@ def _require_pinned_file(path: Path, pin: FineTunePinnedFile, what: str) -> str:
     return digest
 
 
-def describe_finetune_runtime(
-    runtime_root: Path,
-    *,
-    pretrained_pin: FineTunePretrainedPins | None = None,
-) -> FineTuneRuntime:
-    """Bind a runtime directory: its python, installed F5-TTS, and the pinned pretrained files.
+def _probe_runtime(python: Path) -> _ProbeAnswer:
+    """Ask the runtime's python for its F5-TTS and torch versions and the package directory.
 
-    Every pinned file is checked here, before any dataset is written: missing files first,
-    then each file's size and digest (the 1.35 GB weights last), so a runtime without the
-    vocoder fails in seconds instead of after training.
-    Params: ``pretrained_pin`` substitutes the pins (tests only; ``None`` is
-    ``finetune_pretrained_pins()``).
-    Raises: ``FineTuneError`` FINETUNE.RUNTIME_UNAVAILABLE when ``<root>/bin/python`` or the
-    package is missing, or a Vocos vocoder file is missing (the message names it and the
-    fetch command); FINETUNE.PRETRAINED_MISMATCH when the F5-TTS v1 Base weights are missing,
-    or any pinned file's size or SHA-256 differs from its pin.
+    Raises: ``FineTuneError`` FINETUNE.RUNTIME_UNAVAILABLE when the probe cannot run or its
+    answer is unusable; FINETUNE.RUNTIME_FAILED when it exits non-zero.
     """
-    root = Path(runtime_root).expanduser().resolve()
-    python = root / "bin" / "python"
-    if not python.is_file():
-        raise FineTuneError(
-            "FINETUNE.RUNTIME_UNAVAILABLE", f"no runtime python at {python}; provision it first"
-        )
     probe = _run_runtime(python, ["-c", _RUNTIME_PROBE], cwd=None, log=None, what="runtime probe")
     try:
         described = json.loads(probe.strip().splitlines()[-1])
-        package_path = Path(str(described["package_path"]))
-        f5_version, torch_version = (
-            str(described["f5_tts_version"]),
-            str(described["torch_version"]),
+        answer = _ProbeAnswer(
+            f5_tts_version=str(described["f5_tts_version"]),
+            torch_version=str(described["torch_version"]),
+            package_path=Path(str(described["package_path"])),
         )
     except (ValueError, KeyError, IndexError) as error:
         raise FineTuneError(
@@ -939,11 +1110,44 @@ def describe_finetune_runtime(
         ) from error
     # A relative or repr-like package path would make data/ and ckpts/ resolve against the
     # caller's working directory (observed once as a stray "MultiplexedPath(…" tree).
+    package_path = answer.package_path
     if not package_path.is_absolute() or not package_path.is_dir():
         raise FineTuneError(
             "FINETUNE.RUNTIME_UNAVAILABLE",
             f"runtime probe named a package path that is not an absolute directory: {package_path}",
         )
+    return answer
+
+
+def describe_finetune_runtime(
+    runtime_root: Path,
+    *,
+    pretrained_pin: FineTunePretrainedPins | None = None,
+    digests: FineTuneDigestCache | None = None,
+) -> FineTuneRuntime:
+    """Bind a runtime directory: its python, installed F5-TTS, and the pinned pretrained files.
+
+    Every pinned file is checked here, before any dataset is written: missing files first,
+    then each file's size and digest (the 1.35 GB weights last), so a runtime without the
+    vocoder fails in seconds instead of after training.
+    Params: ``pretrained_pin`` substitutes the pins (tests only; ``None`` is
+    ``finetune_pretrained_pins()``); ``digests`` supplies digests and a probe answer an
+    earlier call verified (reused only for unchanged files; ``None`` probes and hashes
+    everything) and records what this call verified.
+    Raises: ``FineTuneError`` FINETUNE.RUNTIME_UNAVAILABLE when ``<root>/bin/python`` or the
+    package is missing, or a Vocos vocoder file is missing (the message names it and the
+    fetch command); FINETUNE.PRETRAINED_MISMATCH when the F5-TTS v1 Base weights are missing,
+    or any pinned file's size or SHA-256 differs from its pin; FINETUNE.SOURCE_CHANGED when
+    a file changed while it was hashed.
+    """
+    root = Path(runtime_root).expanduser().resolve()
+    python = root / "bin" / "python"
+    if not python.is_file():
+        raise FineTuneError(
+            "FINETUNE.RUNTIME_UNAVAILABLE", f"no runtime python at {python}; provision it first"
+        )
+    cache = FineTuneDigestCache() if digests is None else digests
+    answer = cache.runtime_probe(root, python, lambda: _probe_runtime(python))
     pins = finetune_pretrained_pins() if pretrained_pin is None else pretrained_pin
     pretrained = root / "pretrained" / FINETUNE_PRETRAINED_FILE
     vocoder = root / "pretrained" / FINETUNE_VOCODER_DIRECTORY
@@ -964,19 +1168,19 @@ def describe_finetune_runtime(
                 f"fetch-pretrained --runtime-root {root} --allow-downloads`",
             )
     for path, pin, what in checked:
-        _require_pinned_file(path, pin, what)
-    digest = _require_pinned_file(pretrained, pins.weights, "the F5-TTS v1 Base weights")
+        _require_pinned_file(path, pin, what, cache)
+    digest = _require_pinned_file(pretrained, pins.weights, "the F5-TTS v1 Base weights", cache)
     return FineTuneRuntime(
         root=root,
         identity=FineTuneRuntimeIdentity(
             runtime_root=str(root),
-            python_sha256=sha256_file(python.resolve())[0],
-            f5_tts_version=f5_version,
-            torch_version=torch_version,
+            python_sha256=cache.sha256(python.resolve()),
+            f5_tts_version=answer.f5_tts_version,
+            torch_version=answer.torch_version,
             pretrained_path=str(pretrained),
             pretrained_sha256=digest,
         ),
-        package_path=package_path,
+        package_path=answer.package_path,
     )
 
 
@@ -1222,6 +1426,164 @@ FINETUNE_DEFAULT_SAMPLE_TEXTS: Final = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _SynthesizedAudio:
+    """One clip the synthesizer wrote, checked: private 24 kHz 16-bit mono PCM."""
+
+    relative_path: str
+    sha256: str
+    frames: int
+    text: str
+
+    @property
+    def seconds(self) -> float:
+        return self.frames / FINETUNE_SAMPLE_RATE_HZ
+
+
+def _checked_clip(path: Path) -> tuple[int, str]:
+    """Make one synthesized clip private (0600), then return its header frames and SHA-256.
+
+    Raises: ``FineTuneError`` FINETUNE.RUNTIME_FAILED when it is not a regular PCM WAV file,
+    is not 24 kHz 16-bit mono (the message names what it is), or is empty or truncated.
+    """
+    try:
+        with open_regular_no_follow(path) as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            with wave.open(stream, "rb") as handle:
+                frames = handle.getnframes()
+                rate, channels, width = (
+                    handle.getframerate(),
+                    handle.getnchannels(),
+                    handle.getsampwidth(),
+                )
+                data = handle.readframes(frames)
+            stream.seek(0)
+            digest, _ = sha256_stream(stream)
+    except (SecurityError, wave.Error, EOFError) as error:
+        raise FineTuneError(
+            "FINETUNE.RUNTIME_FAILED",
+            f"the synthesizer wrote {path.name}, which is not a PCM WAV file: {error}",
+        ) from error
+    if (rate, channels, width) != (FINETUNE_SAMPLE_RATE_HZ, 1, 2):
+        raise FineTuneError(
+            "FINETUNE.RUNTIME_FAILED",
+            f"the synthesizer wrote {path.name} as {rate} Hz, {channels} channel(s), "
+            f"{8 * width}-bit; it must be {FINETUNE_SAMPLE_RATE_HZ} Hz mono 16-bit",
+        )
+    if frames < 1 or len(data) != frames * channels * width:
+        raise FineTuneError(
+            "FINETUNE.RUNTIME_FAILED",
+            f"the synthesizer wrote {path.name} empty or truncated ({frames} frames declared, "
+            f"{len(data) // 2} present)",
+        )
+    return frames, digest
+
+
+def _reported_clips(output: str, directory: Path, prefix: str, count: int) -> list[Path]:
+    """The clip paths the synthesizer printed, one per text, each exactly where it belongs.
+
+    Raises: ``FineTuneError`` FINETUNE.RUNTIME_FAILED for an unreadable report, a clip it
+    did not ask for, or a missing one.
+    """
+    reported: dict[int, Path] = {}
+    for line in output.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            item = json.loads(line)
+            index, path = item["index"], item["path"]
+        except (ValueError, KeyError) as error:
+            raise FineTuneError(
+                "FINETUNE.RUNTIME_FAILED", f"the synthesizer printed an unreadable report: {error}"
+            ) from error
+        expected = (
+            directory / f"{prefix}-{index:02d}.wav"
+            if type(index) is int and 1 <= index <= count
+            else None
+        )
+        if expected is None or index in reported or path != str(expected):
+            raise FineTuneError(
+                "FINETUNE.RUNTIME_FAILED",
+                f"the synthesizer reported clip {index!r} at {path!r}, which it was not asked for",
+            )
+        reported[index] = expected
+    if len(reported) != count:
+        raise FineTuneError(
+            "FINETUNE.RUNTIME_FAILED", f"synthesizer reported {len(reported)} of {count} samples"
+        )
+    return [reported[index] for index in range(1, count + 1)]
+
+
+def _synthesize(
+    layout: AssetLayout,
+    runtime: FineTuneRuntime,
+    *,
+    checkpoint: Path,
+    reference_audio: Path,
+    reference_text: str,
+    output_directory: Path,
+    texts: tuple[str, ...],
+    file_prefix: str,
+    use_ema: bool,
+    nfe_steps: int,
+    device: Literal["mps", "cpu"],
+    synthesizer: Path | None,
+    what: str,
+    keep_job: bool,
+) -> tuple[_SynthesizedAudio, ...]:
+    """Run the synthesizer once for ``texts``; return its checked clips, in order.
+
+    Writes ``job.json`` (absolute paths) into ``output_directory`` and removes it afterwards
+    unless ``keep_job``; the clips are ``<file_prefix>-NN.wav`` there, each made 0600 and
+    checked from its header. The synthesizer loads the runtime's pinned Vocos vocoder.
+    Raises: ``FineTuneError`` FINETUNE.RUNTIME_FAILED (the synthesizer failed, or wrote or
+    reported something other than the clips asked for), FINETUNE.RUNTIME_UNAVAILABLE.
+    """
+    vocab = runtime.data_directory / _F5_PRETRAINED_VOCAB_DATASET / "vocab.txt"
+    if not vocab.is_file():
+        vocab = runtime.pretrained_vocab_path
+    job = {
+        "checkpoint_path": str(checkpoint),
+        "vocab_path": str(vocab),
+        "vocoder_path": str(runtime.vocoder_path),
+        "use_ema": use_ema,
+        "device": device,
+        "nfe_steps": nfe_steps,
+        "reference_audio_path": str(reference_audio),
+        "reference_text": reference_text,
+        "output_directory": str(output_directory),
+        "file_prefix": file_prefix,
+        "texts": list(texts),
+    }
+    job_path = output_directory / "job.json"
+    write_canonical_json(job_path, job)
+    try:
+        output = _run_runtime(
+            runtime.python,
+            [str(synthesizer or resource_path("f5_synthesize.py")), str(job_path)],
+            cwd=output_directory,
+            log=None,
+            what=what,
+        )
+    finally:
+        if not keep_job:
+            job_path.unlink(missing_ok=True)
+    clips: list[_SynthesizedAudio] = []
+    for index, path in enumerate(
+        _reported_clips(output, output_directory, file_prefix, len(texts)), start=1
+    ):
+        frames, digest = _checked_clip(path)
+        clips.append(
+            _SynthesizedAudio(
+                relative_path=path.relative_to(layout.root).as_posix(),
+                sha256=digest,
+                frames=frames,
+                text=texts[index - 1],
+            )
+        )
+    return tuple(clips)
+
+
 def synthesize_finetune_samples(
     layout: AssetLayout,
     dataset: FineTuneDataset,
@@ -1236,6 +1598,7 @@ def synthesize_finetune_samples(
     nfe_steps: int = 32,
     device: Literal["mps", "cpu"] = "mps",
     synthesizer: Path | None = None,
+    digests: FineTuneDigestCache | None = None,
     clock: Callable[[], datetime] = utc_now,
 ) -> FineTuneSampleSet:
     """Generate ``texts`` with ``checkpoint`` (fine-tuned or the pinned base) into ``output_root``.
@@ -1243,8 +1606,14 @@ def synthesize_finetune_samples(
     The reference is the dataset's normalized copy of ``reference_prompt_id`` with its exact
     prompt text. The synthesizer loads the runtime's pinned Vocos vocoder from
     ``runtime.vocoder_path`` (the job's ``vocoder_path``), never from a download cache.
-    Writes ``sample-NN.wav`` and ``samples.json``. Raises FINETUNE.RUNTIME_FAILED
-    with the synthesizer's last output when generation fails.
+    Writes ``sample-NN.wav`` (0600, 24 kHz 16-bit mono, checked from the header), the
+    synthesizer's ``job.json`` and ``samples.json``.
+    Params: ``digests`` supplies the checkpoint's digest when an earlier call verified the
+    unchanged file (``None`` hashes it).
+    Raises: ``FineTuneError`` FINETUNE.REFERENCE_MISSING, FINETUNE.SOURCE_CHANGED (the
+    reference clip changed), FINETUNE.CHECKPOINT_MISSING, FINETUNE.RUNTIME_FAILED with the
+    synthesizer's last output when generation fails or with the observed format when a
+    sample is not 24 kHz 16-bit mono.
     """
     layout = AssetLayout.validate(layout.root)
     clip = next((item for item in dataset.clips if item.prompt_id == reference_prompt_id), None)
@@ -1259,66 +1628,95 @@ def synthesize_finetune_samples(
     checkpoint = checkpoint.expanduser().resolve()
     if not checkpoint.is_file():
         raise FineTuneError("FINETUNE.CHECKPOINT_MISSING", f"no checkpoint at {checkpoint}")
-    vocab = runtime.data_directory / _F5_PRETRAINED_VOCAB_DATASET / "vocab.txt"
-    if not vocab.is_file():
-        vocab = runtime.pretrained_vocab_path
     output_directory = confined_path(layout.root, output_root)
     output_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    job = {
-        "checkpoint_path": str(checkpoint),
-        "vocab_path": str(vocab),
-        "vocoder_path": str(runtime.vocoder_path),
-        "use_ema": use_ema,
-        "device": device,
-        "nfe_steps": nfe_steps,
-        "reference_audio_path": str(reference_audio),
-        "reference_text": clip.text,
-        "output_directory": str(output_directory),
-        "texts": list(texts),
-    }
-    job_path = output_directory / "job.json"
-    write_canonical_json(job_path, job)
-    output = _run_runtime(
-        runtime.python,
-        [str(synthesizer or resource_path("f5_synthesize.py")), str(job_path)],
-        cwd=output_directory,
-        log=None,
+    samples = _synthesize(
+        layout,
+        runtime,
+        checkpoint=checkpoint,
+        reference_audio=reference_audio,
+        reference_text=clip.text,
+        output_directory=output_directory,
+        texts=texts,
+        file_prefix="sample",
+        use_ema=use_ema,
+        nfe_steps=nfe_steps,
+        device=device,
+        synthesizer=synthesizer,
         what=f"sample synthesis for {label}",
+        keep_job=True,
     )
-    samples: list[FineTuneSample] = []
-    for line in output.splitlines():
-        if not line.startswith("{"):
-            continue
-        reported = json.loads(line)
-        path = Path(str(reported["path"]))
-        samples.append(
-            FineTuneSample(
-                index=int(reported["index"]),
-                relative_path=path.relative_to(layout.root).as_posix(),
-                sha256=sha256_file(path)[0],
-                seconds=float(reported["seconds"]),
-                text=texts[int(reported["index"]) - 1],
-            )
-        )
-    if len(samples) != len(texts):
-        raise FineTuneError(
-            "FINETUNE.RUNTIME_FAILED",
-            f"synthesizer reported {len(samples)} of {len(texts)} samples",
-        )
+    cache = FineTuneDigestCache() if digests is None else digests
     sample_set = FineTuneSampleSet(
         label=label,
         checkpoint_path=str(checkpoint),
-        checkpoint_sha256=sha256_file(checkpoint)[0],
+        checkpoint_sha256=cache.sha256(checkpoint),
         use_ema=use_ema,
         nfe_steps=nfe_steps,
         device=device,
         reference_prompt_id=reference_prompt_id,
         reference_audio_sha256=clip.sha256,
-        samples=tuple(samples),
+        samples=tuple(
+            FineTuneSample(
+                index=index,
+                relative_path=sample.relative_path,
+                sha256=sample.sha256,
+                seconds=sample.seconds,
+                text=sample.text,
+            )
+            for index, sample in enumerate(samples, start=1)
+        ),
         created_at=clock(),
     )
     write_canonical_json(output_directory / "samples.json", sample_set)
     return sample_set
+
+
+FINETUNE_SPEECH_SCHEMA: Final = "cole-voice-lab.finetune-speech/v1"
+SPEECH_CLIP_FILE: Final = "speech-01.wav"
+SPEECH_RECORD_FILE: Final = "speech.json"
+
+
+class SpeechClip(ContractModel):
+    """One Speak request's result: what spoke, with which reference, and the clip it wrote.
+
+    Written last, as ``derived/speech/<operation_id>/speech.json`` beside the clip
+    (``speech-01.wav``, 0600, 24 kHz 16-bit mono). ``model`` is ``base`` (the pinned
+    pretrained weights) or the fine-tuned run's id; the reference clip is
+    ``reference_prompt_id``'s normalized training copy in ``reference_run_id``'s dataset (the
+    model's own run, or the newest finished run for ``base``). Relative paths only. A
+    listening aid: never a reference, dataset or promotion artifact.
+    """
+
+    schema_version: Literal["cole-voice-lab.finetune-speech/v1"] = FINETUNE_SPEECH_SCHEMA
+    operation_id: StableId
+    model: StableId
+    reference_run_id: StableId
+    reference_prompt_id: StableId
+    reference_audio_sha256: Sha256
+    checkpoint_sha256: Sha256
+    use_ema: bool
+    nfe_steps: int = Field(ge=SPEECH_MIN_NFE_STEPS, le=SPEECH_MAX_NFE_STEPS)
+    text: SpeechText
+    relative_path: RelativePath
+    sha256: Sha256
+    frames: int = Field(ge=1, le=MAX_RECORDING_FRAMES)
+    sample_rate_hz: Literal[24_000] = FINETUNE_SAMPLE_RATE_HZ
+    seconds: float = Field(gt=0.0, allow_inf_nan=False)
+    created_at: UtcTimestamp
+
+    @model_validator(mode="after")
+    def _bound_clip(self) -> SpeechClip:
+        if self.relative_path != f"{speech_directory(self.operation_id)}/{SPEECH_CLIP_FILE}":
+            raise ValueError("a speech clip lies at derived/speech/<operation id>/speech-01.wav")
+        if self.model not in {"base", self.reference_run_id}:
+            raise ValueError("a fine-tuned run speaks with its own reference")
+        if abs(self.seconds - self.frames / self.sample_rate_hz) > SPEECH_SECONDS_TOLERANCE:
+            raise ValueError("a clip lasts its frames at its sample rate")
+        return self
+
+
+FINETUNE_SCHEMA_MODELS["finetune-speech"] = SpeechClip
 
 
 def release_finetune_runtime_link(link: Path, checkpoints: Path) -> bool:
@@ -1441,7 +1839,11 @@ def run_finetune_pipeline(
     report("selecting", None)
     corpus = select_finetune_corpus(layout, catalog, subject_id, reference=reference)
     require_complete_corpus(corpus, allow_missing=allow_missing)
-    runtime = describe_finetune_runtime(runtime_root, pretrained_pin=pretrained_pin)
+    # The base samples reuse the weights' digest the runtime check just verified.
+    digests = FineTuneDigestCache()
+    runtime = describe_finetune_runtime(
+        runtime_root, pretrained_pin=pretrained_pin, digests=digests
+    )
     link = runtime.checkpoints_directory / run_id
     run_root = f"{output_root}/{run_id}"
     report("dataset", link)
@@ -1477,6 +1879,7 @@ def run_finetune_pipeline(
             use_ema=ema,
             nfe_steps=nfe_steps,
             device=device,
+            digests=digests,
         )
 
     finetuned = samples(
@@ -1509,29 +1912,44 @@ def _read_finetune_record[ModelT: BaseModel](path: Path, model: type[ModelT]) ->
         ) from error
 
 
-# FineTuneRunSummary bounds each sample list; the default sentences are three.
-_MAX_SUMMARY_SAMPLES: Final = 64
+def load_finetune_dataset(
+    layout: AssetLayout, run_root: str
+) -> tuple[FineTuneDataset, FineTuneCorpus]:
+    """A run directory's ``dataset/dataset.json`` and the ``dataset/corpus.json`` it binds.
 
-
-def finetune_run_summary(layout: AssetLayout, run_root: str) -> FineTuneRunSummary:
-    """The app's view of one run: ``run.json`` plus its dataset, corpus and samples.
-
-    ``prompt_count`` is the dataset's clip count and ``retained_seconds`` the corpus's
-    retained audio (neither is in ``run.json``). Sample paths come from
-    ``samples/{finetuned,base}/samples.json`` and only for a finished run; a finished run
-    whose sampling never completed has none. Every path is asset-root-relative.
-    Params: ``run_root`` is the run's asset-root-relative directory
-    (``derived/finetune/<run id>``).
-    Returns: the summary.
+    Needs no ``run.json`` (``voice-lab finetune train`` reads a dataset before its run
+    exists).
+    Params: ``run_root`` is the asset-root-relative run directory.
     Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when a record is missing, unreadable
-    or invalid, or when ``run.json``, ``dataset/dataset.json`` and ``dataset/corpus.json``
-    do not bind each other and ``run_root``; ``SecurityError``/``ValueError`` for an unsafe
+    or invalid, or the dataset does not bind the corpus; ``SecurityError``/``ValueError``
+    for an unsafe ``run_root``.
+    """
+    directory = confined_path(layout.root, run_root) / "dataset"
+    dataset = _read_finetune_record(directory / "dataset.json", FineTuneDataset)
+    corpus = _read_finetune_record(directory / "corpus.json", FineTuneCorpus)
+    if canonical_sha256(corpus) != dataset.corpus_sha256:
+        raise FineTuneError(
+            "FINETUNE.SOURCE_CHANGED",
+            f"fine-tune dataset {run_root}/dataset does not match its corpus record",
+        )
+    return dataset, corpus
+
+
+def load_finetune_run_inputs(
+    layout: AssetLayout, run_root: str
+) -> tuple[FineTuneRun, FineTuneDataset, FineTuneCorpus]:
+    """One run's ``run.json`` with the dataset and corpus it was trained on, bound together.
+
+    Params: ``run_root`` is the asset-root-relative run directory
+    (``derived/finetune/<run id>``).
+    Returns: the run, its dataset and its corpus.
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when a record is missing, unreadable
+    or invalid, or ``run.json``, ``dataset/dataset.json`` and ``dataset/corpus.json`` do not
+    bind each other and ``run_root``; ``SecurityError``/``ValueError`` for an unsafe
     ``run_root``.
     """
-    directory = confined_path(layout.root, run_root)
-    run = _read_finetune_record(directory / "run.json", FineTuneRun)
-    dataset = _read_finetune_record(directory / "dataset" / "dataset.json", FineTuneDataset)
-    corpus = _read_finetune_record(directory / "dataset" / "corpus.json", FineTuneCorpus)
+    run = _read_finetune_record(confined_path(layout.root, run_root) / "run.json", FineTuneRun)
+    dataset, corpus = load_finetune_dataset(layout, run_root)
     if (
         run.run_root != run_root
         or canonical_sha256(dataset) != run.dataset_sha256
@@ -1542,6 +1960,45 @@ def finetune_run_summary(layout: AssetLayout, run_root: str) -> FineTuneRunSumma
             "FINETUNE.SOURCE_CHANGED",
             f"fine-tune run {run_root} does not match its dataset and corpus records",
         )
+    return run, dataset, corpus
+
+
+def speech_reference_candidates(
+    dataset: FineTuneDataset, corpus: FineTuneCorpus
+) -> tuple[str, ...]:
+    """The reference choices Speak offers for a run, in catalog order.
+
+    Returns: the prompt ids of ``corpus`` entries whose prompt is a reference candidate and
+    that have a clip in ``dataset``.
+    """
+    clips = {clip.prompt_id for clip in dataset.clips}
+    return tuple(
+        entry.prompt_id
+        for entry in corpus.entries
+        if entry.prompt.reference_candidate and entry.prompt_id in clips
+    )
+
+
+# FineTuneRunSummary bounds each sample and reference list; the default sentences are three.
+_MAX_SUMMARY_SAMPLES: Final = 64
+
+
+def finetune_run_summary(layout: AssetLayout, run_root: str) -> FineTuneRunSummary:
+    """The app's view of one run: ``run.json`` plus its dataset, corpus and samples.
+
+    ``prompt_count`` is the dataset's clip count, ``retained_seconds`` the corpus's retained
+    audio (neither is in ``run.json``) and ``reference_prompt_ids`` the run's Speak
+    reference choices (``speech_reference_candidates``). Sample paths come from
+    ``samples/{finetuned,base}/samples.json`` and only for a finished run; a finished run
+    whose sampling never completed has none. Every path is asset-root-relative.
+    Params: ``run_root`` is the run's asset-root-relative directory
+    (``derived/finetune/<run id>``).
+    Returns: the summary.
+    Raises: as ``load_finetune_run_inputs``; ``FineTuneError`` FINETUNE.SOURCE_CHANGED when
+    a samples record is unreadable or invalid, or the summary breaks its contract.
+    """
+    run, dataset, corpus = load_finetune_run_inputs(layout, run_root)
+    directory = confined_path(layout.root, run_root)
     sample_paths: dict[str, tuple[str, ...]] = {"finetuned": (), "base": ()}
     if run.status == "finished":
         for label in sample_paths:
@@ -1563,6 +2020,9 @@ def finetune_run_summary(layout: AssetLayout, run_root: str) -> FineTuneRunSumma
             retained_seconds=round(corpus.retained_seconds, 3),
             finetuned_sample_paths=sample_paths["finetuned"],
             base_sample_paths=sample_paths["base"],
+            reference_prompt_ids=speech_reference_candidates(dataset, corpus)[
+                :_MAX_SUMMARY_SAMPLES
+            ],
             error=run.error,
         )
     except ValueError as error:
@@ -1574,24 +2034,24 @@ def finetune_run_summary(layout: AssetLayout, run_root: str) -> FineTuneRunSumma
 _RUN_DIRECTORY_NAME: TypeAdapter[StableId] = TypeAdapter(StableId)
 
 
-def latest_finished_finetune_run(
+def finished_finetune_run_ids(
     layout: AssetLayout, *, output_root: str = FINETUNE_OUTPUT_ROOT
-) -> FineTuneRunSummary | None:
-    """The newest finished run under ``<output_root>``: the one resolver of "the latest model".
+) -> tuple[str, ...]:
+    """Every finished run under ``<output_root>``, newest first: the one run ordering.
 
     Every real directory whose name is a stable id and that holds a ``run.json`` is a run
     (a ``finetune dataset`` directory without one is not). Newest means the latest
-    ``finished_at``; equal times are ordered by run id, the greater winning. The recording
-    service's fine-tune status and the Speak page use this same rule.
-    Returns: the summary of that run, or ``None`` when no run has finished.
-    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when a ``run.json`` is unreadable,
-    invalid or names another run or directory, and as ``finetune_run_summary`` for the
-    chosen run; ``SecurityError`` when ``output_root`` has a symlink component.
+    ``finished_at``; equal times are ordered by run id, the greater first. Only ``run.json``
+    files are read, so this is cheap.
+    Returns: the run ids.
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when any ``run.json`` is unreadable,
+    invalid or names another run or directory; ``SecurityError`` when ``output_root`` has a
+    symlink component.
     """
     root = confined_path(layout.root, output_root)
     if not root.is_dir():
-        return None
-    latest: tuple[datetime, str] | None = None
+        return ()
+    finished: list[tuple[datetime, str]] = []
     with os.scandir(root) as entries:
         for entry in entries:
             if not entry.is_dir(follow_symlinks=False):
@@ -1612,12 +2072,289 @@ def latest_finished_finetune_run(
             if run.status != "finished":
                 continue
             assert run.finished_at is not None  # FineTuneRun: finished runs are dated
-            candidate = (run.finished_at, run.run_id)
-            if latest is None or candidate > latest:
-                latest = candidate
-    if latest is None:
-        return None
-    return finetune_run_summary(layout, f"{output_root}/{latest[1]}")
+            finished.append((run.finished_at, run.run_id))
+    return tuple(run_id for _, run_id in sorted(finished, reverse=True))
+
+
+def finished_finetune_runs(
+    layout: AssetLayout,
+    *,
+    limit: int = MAX_FINISHED_RUNS,
+    output_root: str = FINETUNE_OUTPUT_ROOT,
+) -> tuple[FineTuneRunSummary, ...]:
+    """The newest ``limit`` finished runs, newest first (``finished_finetune_run_ids``).
+
+    The recording service's fine-tune status lists them for the Speak page's model choice.
+    Returns: their summaries (``finetune_run_summary``).
+    Raises: ``ValueError`` when ``limit`` is below 1; as ``finished_finetune_run_ids``, and
+    as ``finetune_run_summary`` for each listed run.
+    """
+    if limit < 1:
+        raise ValueError("list at least one finished run")
+    run_ids = finished_finetune_run_ids(layout, output_root=output_root)[:limit]
+    return tuple(finetune_run_summary(layout, f"{output_root}/{run_id}") for run_id in run_ids)
+
+
+def latest_finished_finetune_run(
+    layout: AssetLayout, *, output_root: str = FINETUNE_OUTPUT_ROOT
+) -> FineTuneRunSummary | None:
+    """The newest finished run: the one resolver of "the latest model".
+
+    Returns: the first of ``finished_finetune_runs``, or ``None`` when no run has finished.
+    Raises: as ``finished_finetune_runs``.
+    """
+    runs = finished_finetune_runs(layout, limit=1, output_root=output_root)
+    return runs[0] if runs else None
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechResolution:
+    """What a Speak request resolved to: the model that speaks and its reference clip.
+
+    ``run`` is the fine-tuned run that speaks (``None`` for the base weights);
+    ``reference_run`` is the run whose dataset holds ``reference`` (the model's own run, or
+    the newest finished run for ``base``).
+    """
+
+    run: FineTuneRun | None
+    reference_run: FineTuneRun
+    dataset: FineTuneDataset
+    reference: FineTuneDatasetClip
+
+    @property
+    def model(self) -> str:
+        """``base`` or the speaking run's id."""
+        return "base" if self.run is None else self.run.run_id
+
+    @property
+    def run_id(self) -> str | None:
+        return None if self.run is None else self.run.run_id
+
+
+def _no_finished_run(message: str) -> FineTuneError:
+    return FineTuneError("FINETUNE.NO_FINISHED_RUN", message)
+
+
+def resolve_speech_model(
+    layout: AssetLayout,
+    model: str,
+    *,
+    reference_prompt_id: str | None = None,
+    output_root: str = FINETUNE_OUTPUT_ROOT,
+) -> SpeechResolution:
+    """Resolve a Speak model choice and its reference clip.
+
+    ``latest`` is the first of ``finished_finetune_run_ids``; ``base`` is the pinned
+    pretrained weights with the reference from that same newest finished run (a reference
+    needs recorded audio); anything else names a finished run. The reference is
+    ``reference_prompt_id``'s clip in the reference run's dataset, else the first
+    reference-candidate prompt with a clip there (``speech_reference_candidates``), else the
+    run's first clip.
+    Returns: the resolution; every record in it was read and bound here.
+    Raises: ``FineTuneError`` FINETUNE.NO_FINISHED_RUN when no run has finished (whatever
+    was chosen) or the named run is missing or not finished; FINETUNE.REFERENCE_MISSING when
+    ``reference_prompt_id`` has no clip in the reference run's dataset;
+    FINETUNE.SOURCE_CHANGED as ``finished_finetune_run_ids`` and
+    ``load_finetune_run_inputs``; ``SecurityError`` for a symlinked run directory;
+    ``ValueError`` when ``model`` is neither keyword nor a stable id.
+    """
+    if model in {"latest", "base"}:
+        run_ids = finished_finetune_run_ids(layout, output_root=output_root)
+        if not run_ids:
+            raise _no_finished_run(
+                "no fine-tuned model has finished yet; fine-tune once before using Speak"
+            )
+        run_id = run_ids[0]
+    else:
+        run_id = _RUN_DIRECTORY_NAME.validate_python(model)
+    run_root = f"{output_root}/{run_id}"
+    if not os.path.lexists(confined_path(layout.root, run_root) / "run.json"):
+        if not finished_finetune_run_ids(layout, output_root=output_root):
+            raise _no_finished_run(
+                f"no fine-tuned model has finished yet, so {run_id} cannot speak; fine-tune "
+                "once before using Speak"
+            )
+        raise _no_finished_run(f"there is no fine-tune run {run_id} in {output_root}")
+    run, dataset, corpus = load_finetune_run_inputs(layout, run_root)
+    if run.run_id != run_id:
+        raise FineTuneError(
+            "FINETUNE.SOURCE_CHANGED", f"fine-tune record {run_root}/run.json names {run.run_id}"
+        )
+    if run.status != "finished":
+        raise _no_finished_run(f"fine-tune run {run_id} is {run.status}, not finished")
+    clips = {clip.prompt_id: clip for clip in dataset.clips}
+    if reference_prompt_id is not None:
+        reference = clips.get(reference_prompt_id)
+        if reference is None:
+            raise FineTuneError(
+                "FINETUNE.REFERENCE_MISSING",
+                f"{reference_prompt_id} has no recording in fine-tune run {run_id}; choose one "
+                "of its reference prompts",
+            )
+    else:
+        candidates = speech_reference_candidates(dataset, corpus)
+        reference = clips[candidates[0]] if candidates else dataset.clips[0]
+    return SpeechResolution(
+        run=None if model == "base" else run,
+        reference_run=run,
+        dataset=dataset,
+        reference=reference,
+    )
+
+
+_SPEECH_TEXT: TypeAdapter[SpeechText] = TypeAdapter(SpeechText)
+
+
+def synthesize_speech(
+    layout: AssetLayout,
+    resolution: SpeechResolution,
+    runtime_root: Path,
+    *,
+    operation_id: str,
+    text: str,
+    nfe_steps: int = SPEECH_DEFAULT_NFE_STEPS,
+    use_ema: bool = True,
+    device: Literal["mps", "cpu"] = "mps",
+    pretrained_pin: FineTunePretrainedPins | None = None,
+    digests: FineTuneDigestCache | None = None,
+    synthesizer: Path | None = None,
+    clock: Callable[[], datetime] = utc_now,
+) -> SpeechClip:
+    """Speak ``text`` with ``resolution``'s model into ``derived/speech/<operation_id>/``.
+
+    Creates that directory (0700; it must not exist), checks the runtime
+    (``describe_finetune_runtime``), the checkpoint (a fine-tuned run's recorded
+    ``model_last.pt``, which must still hash to its record; the pinned weights for
+    ``base``) and the reference clip (its dataset digest), runs the synthesizer core once,
+    and writes ``speech-01.wav`` (0600, 24 kHz 16-bit mono, frames from its header) and,
+    last, ``speech.json``. A failure can leave partial output behind:
+    ``discard_speech_output`` removes it (the recording service does after every request
+    that did not finish).
+    Params: ``digests`` supplies digests an earlier request verified and records this
+    request's (``None``: hash everything); ``pretrained_pin`` substitutes the pins (tests
+    only).
+    Returns: the clip record.
+    Raises: ``FineTuneError`` FINETUNE.UNSUPPORTED_TEXT for text Speak refuses,
+    FINETUNE.RUN_EXISTS when the operation's directory exists, FINETUNE.CHECKPOINT_MISSING
+    when the run records no ``model_last.pt`` or it is gone, FINETUNE.SOURCE_CHANGED when
+    the checkpoint or the reference clip no longer matches its record, every
+    ``describe_finetune_runtime`` failure, and FINETUNE.RUNTIME_FAILED from the
+    synthesizer; ``ValueError`` for an invalid ``operation_id`` or ``nfe_steps``;
+    ``SecurityError`` for a symlinked path.
+    """
+    layout = AssetLayout.validate(layout.root)
+    operation_id = _RUN_DIRECTORY_NAME.validate_python(operation_id)
+    if not SPEECH_MIN_NFE_STEPS <= nfe_steps <= SPEECH_MAX_NFE_STEPS:
+        raise ValueError(
+            f"nfe_steps must be {SPEECH_MIN_NFE_STEPS} to {SPEECH_MAX_NFE_STEPS}, not {nfe_steps}"
+        )
+    try:
+        text = _SPEECH_TEXT.validate_python(text)
+    except ValidationError as error:
+        raise FineTuneError(
+            "FINETUNE.UNSUPPORTED_TEXT", f"Speak cannot say this text: {error.errors()[0]['msg']}"
+        ) from error
+    cache = FineTuneDigestCache() if digests is None else digests
+    directory = confined_path(layout.root, speech_directory(operation_id))
+    directory.parent.mkdir(mode=0o700, exist_ok=True)  # confined_path refused any link
+    try:
+        directory.mkdir(mode=0o700)
+    except FileExistsError as error:
+        raise FineTuneError(
+            "FINETUNE.RUN_EXISTS",
+            f"{speech_directory(operation_id)} already exists; each Speak request needs a new "
+            "operation id",
+        ) from error
+    runtime = describe_finetune_runtime(runtime_root, pretrained_pin=pretrained_pin, digests=cache)
+    if resolution.run is None:
+        checkpoint = runtime.pretrained_path
+        checkpoint_sha256 = cache.sha256(checkpoint)
+    else:
+        run = resolution.run
+        recorded = next((item for item in run.checkpoints if item.kind == "last"), None)
+        expected = f"{run.run_root}/checkpoints/model_last.pt"
+        if recorded is None or recorded.relative_path != expected:
+            raise FineTuneError(
+                "FINETUNE.CHECKPOINT_MISSING", f"fine-tune run {run.run_id} records no {expected}"
+            )
+        checkpoint = confined_path(layout.root, recorded.relative_path)
+        if not checkpoint.is_file():
+            raise FineTuneError("FINETUNE.CHECKPOINT_MISSING", f"no checkpoint at {checkpoint}")
+        checkpoint_sha256 = cache.sha256(checkpoint)
+        if checkpoint_sha256 != recorded.sha256:
+            raise FineTuneError(
+                "FINETUNE.SOURCE_CHANGED",
+                f"{recorded.relative_path} changed since fine-tune run {run.run_id} finished",
+            )
+    reference = resolution.reference
+    dataset_root = confined_path(layout.root, resolution.dataset.dataset_root, must_exist=True)
+    reference_audio = confined_path(dataset_root, reference.relative_path)
+    what = (
+        f"the reference clip {reference.prompt_id} of fine-tune run "
+        f"{resolution.reference_run.run_id}"
+    )
+    try:
+        reference_sha256 = sha256_file(reference_audio)[0]
+    except SecurityError as error:
+        raise FineTuneError(
+            "FINETUNE.SOURCE_CHANGED", f"{what} is missing or not a regular file: {error}"
+        ) from error
+    if reference_sha256 != reference.sha256:
+        raise FineTuneError("FINETUNE.SOURCE_CHANGED", f"{what} changed since packing")
+    (spoken,) = _synthesize(
+        layout,
+        runtime,
+        checkpoint=checkpoint,
+        reference_audio=reference_audio,
+        reference_text=reference.text,
+        output_directory=directory,
+        texts=(text,),
+        file_prefix="speech",
+        use_ema=use_ema,
+        nfe_steps=nfe_steps,
+        device=device,
+        synthesizer=synthesizer,
+        what=f"speech synthesis with {resolution.model}",
+        keep_job=False,
+    )
+    clip = SpeechClip(
+        operation_id=operation_id,
+        model=resolution.model,
+        reference_run_id=resolution.reference_run.run_id,
+        reference_prompt_id=reference.prompt_id,
+        reference_audio_sha256=reference.sha256,
+        checkpoint_sha256=checkpoint_sha256,
+        use_ema=use_ema,
+        nfe_steps=nfe_steps,
+        text=text,
+        relative_path=spoken.relative_path,
+        sha256=spoken.sha256,
+        frames=spoken.frames,
+        seconds=spoken.seconds,
+        created_at=clock(),
+    )
+    write_canonical_json(directory / SPEECH_RECORD_FILE, clip)
+    return clip
+
+
+def discard_speech_output(layout: AssetLayout, operation_id: str) -> bool:
+    """Remove ``derived/speech/<operation_id>/`` and everything in it.
+
+    The recording service calls it for a Speak request that did not finish (failed,
+    cancelled or past its deadline), whose directory only that request created.
+    Returns: whether a directory was removed.
+    Raises: ``SecurityError`` when the path or a directory above it is a link or the path is
+    not a directory; ``OSError`` when it cannot be removed; ``ValueError`` for an invalid
+    ``operation_id``.
+    """
+    operation_id = _RUN_DIRECTORY_NAME.validate_python(operation_id)
+    directory = confined_path(layout.root, speech_directory(operation_id))
+    if not os.path.lexists(directory):
+        return False
+    if not stat.S_ISDIR(os.lstat(directory).st_mode):
+        raise SecurityError(f"{directory} is not a directory")
+    shutil.rmtree(directory)
+    return True
 
 
 # Provisioning: one venv from the pinned requirements plus the two pinned Hugging Face files.

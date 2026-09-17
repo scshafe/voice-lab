@@ -139,6 +139,7 @@ struct RecordingFineTuneTests {
         var event: [String: RecordingJSON] = [
             "event": .string("fine-tune-status"), "operation_id": .string(operation),
             "runtime_configured": .boolean(configured), "active": active ?? .null, "latest_run": latest ?? .null,
+            "finished_runs": .array(latest.map { [$0] } ?? []),
         ]
         if let latestError { event["latest_run_error"] = failure("FINETUNE.SOURCE_CHANGED", latestError) }
         return .object(event)

@@ -733,13 +733,14 @@ def _finetune_dataset(options: argparse.Namespace) -> int:
 
 
 def _finetune_load_run_inputs(layout: AssetLayout, run_root: str) -> tuple[Any, Any]:
-    from .finetune import FineTuneCorpus, FineTuneDataset
+    """A run directory's corpus and dataset (``finetune.load_finetune_dataset``).
 
-    dataset_directory = layout.root / run_root / "dataset"
-    dataset = _read_bounded_contract(dataset_directory / "dataset.json", FineTuneDataset)
-    corpus = _read_bounded_contract(dataset_directory / "corpus.json", FineTuneCorpus)
-    if canonical_sha256(corpus) != dataset.corpus_sha256:
-        raise VoiceLabError(f"{dataset_directory}: corpus.json does not match dataset.json")
+    ``train`` reads them before the run's ``run.json`` exists, so no run record is required.
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED for a missing, invalid or unbound record.
+    """
+    from .finetune import load_finetune_dataset
+
+    dataset, corpus = load_finetune_dataset(layout, run_root)
     return corpus, dataset
 
 

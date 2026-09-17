@@ -37,6 +37,7 @@ from cole_voice_lab.recording_contracts import (
     FRAME_PREFIX_BYTES,
     MAX_CATALOG_SUITE_BYTES,
     MAX_CONTROL_FRAME_BYTES,
+    MAX_FINISHED_RUNS,
     MAX_RECORDING_FRAMES,
     MAX_RECORDING_REVISION,
     MAX_TELEMETRY_FRAME_BYTES,
@@ -86,6 +87,8 @@ from cole_voice_lab.recording_contracts import (
     ReservationEvent,
     SaveEvent,
     ServiceRequest,
+    SynthesisEvent,
+    SynthesizeCommand,
     WaveformBucket,
     WaveformSnapshot,
     catalog_snapshot_path,
@@ -1251,6 +1254,7 @@ def generate_recording_conformance_fixtures(directory: Path) -> None:
         + catalog_event_cases()
         + prompt_equality_cases()
         + finetune_cases()
+        + speech_cases()
     ):
         filename = f"{'valid' if valid else 'invalid'}-{case}.json"
         _write_fixture(directory / filename, payload)
@@ -1844,6 +1848,29 @@ def synthetic_finetune_run(**changes: Any) -> FineTuneRunSummary:
     return FineTuneRunSummary.model_validate(payload | changes)
 
 
+def synthetic_finished_runs(count: int) -> tuple[FineTuneRunSummary, ...]:
+    """``count`` finished runs, newest first: an hour apart, except that the last two finish
+    together (the greater run id first)."""
+    newest = datetime(2026, 9, 16, 10, 0, tzinfo=UTC)
+    runs = [synthetic_finetune_run()]
+    for index in range(1, count):
+        tie = count > 2 and index == count - 1
+        finished = newest - timedelta(hours=index - 1 if tie else index)
+        run_id = f"finetune-run-{99 - index:02d}"
+        root = f"derived/finetune/{run_id}"
+        runs.append(
+            synthetic_finetune_run(
+                run_id=run_id,
+                run_root=root,
+                started_at=finished - timedelta(minutes=30),
+                finished_at=finished,
+                finetuned_sample_paths=(f"{root}/samples/finetuned/sample-01.wav",),
+                base_sample_paths=(f"{root}/samples/base/sample-01.wav",),
+            )
+        )
+    return tuple(runs)
+
+
 def synthetic_finetune_progress(**changes: Any) -> FineTuneProgressEvent:
     """A synthetic job in its training stage, pass 30 of 120."""
     payload: dict[str, Any] = {
@@ -1979,6 +2006,43 @@ def finetune_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
                     runtime_configured=True,
                     active=progress,
                     latest_run=finished_run,
+                    finished_runs=(finished_run,),
+                )
+            ),
+        ),
+        (
+            "status-finished-runs-newest-first",
+            "recording-response",
+            response(
+                FineTuneStatusEvent(
+                    operation_id="op-fine-tune-status",
+                    runtime_configured=True,
+                    latest_run=finished_run,
+                    finished_runs=synthetic_finished_runs(3),
+                )
+            ),
+        ),
+        (
+            "status-most-finished-runs",
+            "recording-response",
+            response(
+                FineTuneStatusEvent(
+                    operation_id="op-fine-tune-status",
+                    runtime_configured=True,
+                    latest_run=finished_run,
+                    finished_runs=synthetic_finished_runs(MAX_FINISHED_RUNS),
+                )
+            ),
+        ),
+        (
+            "run-reference-prompts",
+            "recording-response",
+            response(
+                FineTuneEvent(
+                    operation_id="op-fine-tune",
+                    run=synthetic_finetune_run(
+                        reference_prompt_ids=("reference-neutral-01", "reference-warm-01")
+                    ),
                 )
             ),
         ),
@@ -2046,6 +2110,10 @@ def finetune_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
     training = response(progress)
     finished = response(FineTuneEvent(operation_id="op-fine-tune", run=finished_run))
     status = next(payload for name, _, payload in valid if name == "status-active")
+    listed = next(
+        payload for name, _, payload in valid if name == "status-finished-runs-newest-first"
+    )
+    most = next(payload for name, _, payload in valid if name == "status-most-finished-runs")
     command = request(command="fine-tune", operation_id="op-fine-tune", allow_missing=True)
     run = ("data", "run")
     unsampled = without_samples(finished, *run)
@@ -2249,6 +2317,88 @@ def finetune_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
             ),
         ),
         (
+            "status-finished-runs-out-of-order",
+            "recording-response",
+            changed(
+                listed,
+                ("data", "finished_runs"),
+                [listed["data"]["finished_runs"][index] for index in (0, 2, 1)],
+            ),
+        ),
+        (
+            "status-finished-run-repeated",
+            "recording-response",
+            changed(listed, ("data", "finished_runs", 2), listed["data"]["finished_runs"][1]),
+        ),
+        (
+            "status-latest-not-first",
+            "recording-response",
+            changed(listed, ("data", "latest_run"), listed["data"]["finished_runs"][1]),
+        ),
+        (
+            "status-finished-runs-without-latest",
+            "recording-response",
+            changed(listed, ("data", "latest_run"), None),
+        ),
+        (
+            "status-latest-without-finished-runs",
+            "recording-response",
+            changed(listed, ("data", "finished_runs"), []),
+        ),
+        (
+            "status-finished-run-failed",
+            "recording-response",
+            changed(
+                changed(
+                    without_samples(listed, "data", "finished_runs", 2),
+                    ("data", "finished_runs", 2, "status"),
+                    "failed",
+                ),
+                ("data", "finished_runs", 2, "error"),
+                "Synthetic",
+            ),
+        ),
+        (
+            "status-too-many-finished-runs",
+            "recording-response",
+            changed(
+                most,
+                ("data", "finished_runs"),
+                [
+                    *most["data"]["finished_runs"],
+                    synthetic_finished_runs(MAX_FINISHED_RUNS + 1)[-1].model_dump(mode="json"),
+                ],
+            ),
+        ),
+        (
+            "status-latest-run-error-with-finished-runs",
+            "recording-response",
+            changed(
+                changed(listed, ("data", "latest_run"), None),
+                ("data", "latest_run_error"),
+                {"code": "FINETUNE.SOURCE_CHANGED", "message": "Synthetic", "retryable": False},
+            ),
+        ),
+        (
+            "run-reference-prompt-repeated",
+            "recording-response",
+            changed(finished, (*run, "reference_prompt_ids"), ["reference-a", "reference-a"]),
+        ),
+        (
+            "run-reference-prompt-unstable",
+            "recording-response",
+            changed(finished, (*run, "reference_prompt_ids"), ["Reference A"]),
+        ),
+        (
+            "run-too-many-reference-prompts",
+            "recording-response",
+            changed(
+                finished,
+                (*run, "reference_prompt_ids"),
+                [f"reference-{index:02d}" for index in range(65)],
+            ),
+        ),
+        (
             "status-latest-run-error-unknown-code",
             "recording-response",
             changed(
@@ -2342,6 +2492,381 @@ def finetune_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
     )
 
 
+SPEECH_OPERATION = "op-speak"
+SPEECH_CLIP = f"derived/speech/{SPEECH_OPERATION}/speech-01.wav"
+
+
+def synthetic_speech(**changes: Any) -> SynthesisEvent:
+    """A finished Speak request: the latest run spoke two seconds with its reference."""
+    payload: dict[str, Any] = {
+        "operation_id": SPEECH_OPERATION,
+        "state": "finished",
+        "model": "latest",
+        "text": "The meeting moved to Thursday.",
+        "run_id": FINETUNE_RUN_ID,
+        "reference_run_id": FINETUNE_RUN_ID,
+        "reference_prompt_id": "reference-neutral-01",
+        "relative_path": SPEECH_CLIP,
+        "sha256": "5" * 64,
+        "frames": 48_000,
+        "sample_rate_hz": 24_000,
+        "seconds": 2.0,
+    }
+    return SynthesisEvent.model_validate(payload | changes)
+
+
+def speech_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
+    """Speak commands and events: take-less, bounded text, clips under their operation."""
+    values = synthetic_contracts()
+    response_meta = values["recording-response"].meta.model_copy(update={"take_id": None})
+    request_meta = values["recording-service-request"].meta.model_dump(mode="json")
+    deadline = RecordingError(
+        code="FINETUNE.SYNTHESIS_DEADLINE", message="Synthetic deadline", retryable=True
+    )
+    unfinished = {
+        "run_id": None,
+        "reference_run_id": None,
+        "reference_prompt_id": None,
+        "relative_path": None,
+        "sha256": None,
+        "frames": None,
+        "sample_rate_hz": None,
+        "seconds": None,
+    }
+    resolved = unfinished | {
+        "run_id": FINETUNE_RUN_ID,
+        "reference_run_id": FINETUNE_RUN_ID,
+        "reference_prompt_id": "reference-neutral-01",
+    }
+
+    def response(event: SynthesisEvent) -> dict[str, Any]:
+        return RecordingResponse(data=event, error=None, meta=response_meta).model_dump(mode="json")
+
+    def request(**data: Any) -> dict[str, Any]:
+        return {"data": data, "error": None, "meta": request_meta | {"take_id": None}}
+
+    longest = ("é" * 1_999) + "\n"
+    speak = request(command="synthesize", operation_id=SPEECH_OPERATION, text="Hi.", model="latest")
+    valid: list[tuple[str, str, dict[str, Any]]] = [
+        ("synthesize-latest", "recording-service-request", speak),
+        (
+            "synthesize-base-with-reference",
+            "recording-service-request",
+            request(
+                command="synthesize",
+                operation_id=SPEECH_OPERATION,
+                text="Line one.\nLine two.",
+                model="base",
+                reference_prompt_id="reference-neutral-01",
+                nfe_steps=4,
+            ),
+        ),
+        (
+            "synthesize-run-longest",
+            "recording-service-request",
+            request(
+                command="synthesize",
+                operation_id=SPEECH_OPERATION,
+                text=longest,
+                model=FINETUNE_RUN_ID,
+                nfe_steps=64,
+            ),
+        ),
+        (
+            "cancel-synthesis",
+            "recording-service-request",
+            request(
+                command="cancel-synthesis",
+                operation_id="op-cancel-speak",
+                cancelled_operation_id=SPEECH_OPERATION,
+            ),
+        ),
+        ("queued", "recording-response", response(synthetic_speech(state="queued", **unfinished))),
+        (
+            "running",
+            "recording-response",
+            response(synthetic_speech(state="running", **unfinished)),
+        ),
+        (
+            "running-resolved",
+            "recording-response",
+            response(synthetic_speech(state="running", **resolved)),
+        ),
+        ("finished-latest", "recording-response", response(synthetic_speech())),
+        (
+            "finished-base",
+            "recording-response",
+            response(synthetic_speech(model="base", run_id=None)),
+        ),
+        (
+            "finished-run",
+            "recording-response",
+            response(synthetic_speech(model=FINETUNE_RUN_ID)),
+        ),
+        (
+            "failed",
+            "recording-response",
+            response(synthetic_speech(state="failed", error=deadline, **unfinished)),
+        ),
+        (
+            "failed-resolved",
+            "recording-response",
+            response(synthetic_speech(state="failed", error=deadline, **resolved)),
+        ),
+        (
+            "cancelled",
+            "recording-response",
+            response(synthetic_speech(state="cancelled", **unfinished)),
+        ),
+    ]
+
+    absent = object()
+
+    def changed(payload: dict[str, Any], path: tuple[Any, ...], value: Any) -> dict[str, Any]:
+        result = copy.deepcopy(payload)
+        target = result
+        for key in path[:-1]:
+            target = target[key]
+        if value is absent:
+            del target[path[-1]]
+        else:
+            target[path[-1]] = value
+        return result
+
+    def text(value: Any) -> dict[str, Any]:
+        return changed(speak, ("data", "text"), value)
+
+    finished = response(synthetic_speech())
+    running = response(synthetic_speech(state="running", **unfinished))
+    base = response(synthetic_speech(model="base", run_id=None))
+    chosen = response(synthetic_speech(model=FINETUNE_RUN_ID))
+    cancel = next(payload for name, _, payload in valid if name == "cancel-synthesis")
+
+    def event(field: str, value: Any, payload: dict[str, Any] = finished) -> dict[str, Any]:
+        return changed(payload, ("data", field), value)
+
+    invalid: list[tuple[str, str, dict[str, Any]]] = [
+        ("synthesize-empty-text", "recording-service-request", text("")),
+        ("synthesize-text-over", "recording-service-request", text("é" * 2_001)),
+        ("synthesize-whitespace-text", "recording-service-request", text("  \n \u3000 ")),
+        ("synthesize-control-character", "recording-service-request", text("Hello\tthere.")),
+        ("synthesize-format-character", "recording-service-request", text("Hello\u200bthere.")),
+        ("synthesize-text-absent", "recording-service-request", text(absent)),
+        (
+            "synthesize-nfe-under",
+            "recording-service-request",
+            changed(speak, ("data", "nfe_steps"), 3),
+        ),
+        (
+            "synthesize-nfe-over",
+            "recording-service-request",
+            changed(speak, ("data", "nfe_steps"), 65),
+        ),
+        (
+            "synthesize-nfe-float",
+            "recording-service-request",
+            changed(speak, ("data", "nfe_steps"), 32.5),
+        ),
+        (
+            "synthesize-model-absent",
+            "recording-service-request",
+            changed(speak, ("data", "model"), absent),
+        ),
+        (
+            "synthesize-model-unstable",
+            "recording-service-request",
+            changed(speak, ("data", "model"), "Latest"),
+        ),
+        (
+            "synthesize-reference-unstable",
+            "recording-service-request",
+            changed(speak, ("data", "reference_prompt_id"), "Reference One"),
+        ),
+        (
+            "synthesize-unknown-field",
+            "recording-service-request",
+            changed(speak, ("data", "voice"), "cole"),
+        ),
+        (
+            "synthesize-take-bound",
+            "recording-service-request",
+            changed(speak, ("meta", "take_id"), "take-a"),
+        ),
+        (
+            "cancel-synthesis-without-target",
+            "recording-service-request",
+            changed(cancel, ("data", "cancelled_operation_id"), absent),
+        ),
+        ("finished-without-path", "recording-response", event("relative_path", None)),
+        ("finished-without-sha256", "recording-response", event("sha256", None)),
+        ("finished-without-frames", "recording-response", event("frames", None)),
+        ("finished-without-rate", "recording-response", event("sample_rate_hz", None)),
+        ("finished-without-seconds", "recording-response", event("seconds", None)),
+        ("finished-without-reference", "recording-response", event("reference_prompt_id", None)),
+        (
+            "finished-without-reference-run",
+            "recording-response",
+            event("reference_run_id", None, base),
+        ),
+        ("finished-latest-without-run", "recording-response", event("run_id", None)),
+        ("finished-base-with-run", "recording-response", event("model", "base")),
+        (
+            "finished-run-speaking-as-another",
+            "recording-response",
+            event("model", "finetune-another-run"),
+        ),
+        (
+            "finished-with-foreign-reference",
+            "recording-response",
+            event("reference_run_id", "finetune-another-run"),
+        ),
+        (
+            "finished-chosen-run-with-foreign-reference",
+            "recording-response",
+            event("reference_run_id", "finetune-another-run", chosen),
+        ),
+        (
+            "path-outside-operation",
+            "recording-response",
+            event("relative_path", "derived/speech/op-other/speech-01.wav"),
+        ),
+        (
+            "path-in-sibling-operation",
+            "recording-response",
+            event("relative_path", f"derived/speech/{SPEECH_OPERATION}-2/speech-01.wav"),
+        ),
+        (
+            "path-is-operation",
+            "recording-response",
+            event("relative_path", f"derived/speech/{SPEECH_OPERATION}"),
+        ),
+        (
+            "path-escaping-operation",
+            "recording-response",
+            event("relative_path", f"derived/speech/{SPEECH_OPERATION}/../op-other/speech-01.wav"),
+        ),
+        ("path-absolute", "recording-response", event("relative_path", "/" + SPEECH_CLIP)),
+        (
+            "path-in-run",
+            "recording-response",
+            event("relative_path", f"{FINETUNE_RUN_ROOT}/speech-01.wav"),
+        ),
+        ("frames-zero", "recording-response", event("frames", 0)),
+        (
+            "frames-over",
+            "recording-response",
+            changed(
+                event("frames", MAX_RECORDING_FRAMES + 1),
+                ("data", "seconds"),
+                (MAX_RECORDING_FRAMES + 1) / 24_000,
+            ),
+        ),
+        ("frames-float", "recording-response", event("frames", 48_000.5)),
+        ("rate-48k", "recording-response", event("sample_rate_hz", 48_000)),
+        ("seconds-disagree", "recording-response", event("seconds", 1.0)),
+        ("seconds-zero", "recording-response", event("seconds", 0.0)),
+        ("sha256-short", "recording-response", event("sha256", "5" * 63)),
+        ("running-with-clip", "recording-response", event("state", "running")),
+        (
+            "failed-with-clip",
+            "recording-response",
+            changed(event("state", "failed"), ("data", "error"), deadline.model_dump(mode="json")),
+        ),
+        ("failed-without-error", "recording-response", event("state", "failed", running)),
+        (
+            "cancelled-with-error",
+            "recording-response",
+            changed(
+                event("state", "cancelled", running),
+                ("data", "error"),
+                deadline.model_dump(mode="json"),
+            ),
+        ),
+        (
+            "finished-with-error",
+            "recording-response",
+            event("error", deadline.model_dump(mode="json")),
+        ),
+        (
+            "queued-resolved",
+            "recording-response",
+            changed(
+                changed(
+                    changed(event("state", "queued", running), ("data", "run_id"), FINETUNE_RUN_ID),
+                    ("data", "reference_run_id"),
+                    FINETUNE_RUN_ID,
+                ),
+                ("data", "reference_prompt_id"),
+                "reference-neutral-01",
+            ),
+        ),
+        ("unknown-state", "recording-response", event("state", "paused", running)),
+        ("text-absent", "recording-response", event("text", absent)),
+        ("text-whitespace", "recording-response", event("text", " \n ")),
+        ("text-over", "recording-response", event("text", "x" * 2_001)),
+        ("take-bound", "recording-response", changed(finished, ("meta", "take_id"), "take-a")),
+        ("model-unstable", "recording-response", event("model", "Base")),
+    ]
+    nonfinite = NonCanonicalFixture(finished)
+    nonfinite["data"] = finished["data"] | {"seconds": float("inf")}
+    return (
+        [(f"speak-{name}", model, True, "shared", payload) for name, model, payload in valid]
+        + [(f"speak-{name}", model, False, "shared", payload) for name, model, payload in invalid]
+        + [("speak-nonfinite-seconds", "recording-response", False, "shared", nonfinite)]
+    )
+
+
+@pytest.mark.parametrize("case", speech_cases(), ids=lambda case: case[0])
+def test_speech_messages_bound_their_text_state_and_clip(case: Any) -> None:
+    _, name, valid, _, payload = case
+    encoded = json.dumps(payload)
+    if valid:
+        message = RECORDING_SCHEMA_MODELS[name].model_validate_json(encoded)
+        assert message.meta.take_id is None
+    else:
+        with pytest.raises(ValidationError):
+            RECORDING_SCHEMA_MODELS[name].model_validate_json(encoded)
+
+
+def test_speech_rules_name_what_is_wrong() -> None:
+    for changes, message in (
+        ({"relative_path": None}, "names its clip"),
+        ({"reference_prompt_id": None}, "names its reference"),
+        ({"run_id": None}, "names its run unless the base model spoke"),
+        ({"state": "running"}, "only a finished synthesis names a clip"),
+        ({"state": "failed"}, "names its error"),
+        ({"model": "finetune-other"}, "speaks as itself"),
+        ({"reference_run_id": "finetune-other"}, "its own reference"),
+        ({"relative_path": "derived/speech/op-other/speech-01.wav"}, "derived/speech"),
+        ({"seconds": 3.0}, "frames at its sample rate"),
+        ({"text": "   "}, "more than whitespace"),
+        ({"text": "a\x00b"}, "control characters"),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            synthetic_speech(**changes)
+    with pytest.raises(ValidationError, match="the base model speaks without a run"):
+        synthetic_speech(
+            state="running",
+            model="base",
+            relative_path=None,
+            sha256=None,
+            frames=None,
+            sample_rate_hz=None,
+            seconds=None,
+        )
+    with pytest.raises(ValidationError, match="has not been resolved"):
+        synthetic_speech(
+            state="queued",
+            relative_path=None,
+            sha256=None,
+            frames=None,
+            sample_rate_hz=None,
+            seconds=None,
+        )
+    command = SynthesizeCommand(operation_id="op", text="Hi.", model="base")
+    assert (command.nfe_steps, command.reference_prompt_id) == (32, None)
+
+
 @pytest.mark.parametrize("case", finetune_cases(), ids=lambda case: case[0])
 def test_finetune_messages_bind_their_state_and_relative_run_paths(case: Any) -> None:
     _, name, valid, _, payload = case
@@ -2356,7 +2881,7 @@ def test_finetune_messages_bind_their_state_and_relative_run_paths(case: Any) ->
 
 def test_every_finetune_code_is_a_valid_wire_error() -> None:
     names = {name for name, *_ in finetune_cases()}
-    assert len(FINETUNE_WIRE_CODES) == 20
+    assert len(FINETUNE_WIRE_CODES) == 22
     for code in FINETUNE_WIRE_CODES:
         assert f"finetune-error-{code.lower().replace('.', '-').replace('_', '-')}" in names
     assert {
@@ -2364,6 +2889,8 @@ def test_every_finetune_code_is_a_valid_wire_error() -> None:
         "FINETUNE.JOB_ACTIVE",
         "FINETUNE.INTERRUPTED",
         "FINETUNE.RUNTIME_UNAVAILABLE",
+        "FINETUNE.NO_FINISHED_RUN",
+        "FINETUNE.SYNTHESIS_DEADLINE",
     } <= set(FINETUNE_WIRE_CODES)
     # A cancelled job carries no error, so no code names a cancellation.
     assert "FINETUNE.CANCELLED" not in FINETUNE_WIRE_CODES

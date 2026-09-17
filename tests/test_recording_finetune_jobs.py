@@ -302,6 +302,7 @@ def test_a_job_runs_from_queued_to_finished_with_rate_limited_progress(
     assert runtime_link(library, run_id).is_symlink()  # a finished run keeps its link
     after = status(supervisor)
     assert after.active is None and after.latest_run == summary
+    assert after.finished_runs == (summary,)
     assert terminal(queue, "tune-1").state == "finished"
     assert supervisor.submit(command(epochs=3)) == finished
     assert supervisor.submit(command("tune-2")).state == "queued"
@@ -1863,11 +1864,12 @@ def test_an_unresolvable_latest_run_is_named_in_the_status(
     def broken(*args: Any, **kwargs: Any) -> None:
         raise failure
 
-    monkeypatch.setattr(jobs_module, "latest_finished_finetune_run", broken)
+    monkeypatch.setattr(jobs_module, "finished_finetune_runs", broken)
     queue = queue_for(library)
     try:
         answer = status(FineTuneSupervisor(queue))
         assert answer.latest_run is None and answer.latest_run_error is not None
+        assert answer.finished_runs == ()
         assert answer.latest_run_error.code == code
         assert answer.latest_run_error.message.endswith(str(failure))
     finally:
@@ -1982,6 +1984,7 @@ def test_both_backends_answer_fine_tune_commands_without_an_open_context(
         assert execute(workspace, command("tune-5")).state == "queued"
         damaged = execute(workspace, FineTuneStatusCommand(operation_id="s"))
         assert isinstance(damaged, FineTuneStatusEvent) and damaged.latest_run is None
+        assert damaged.finished_runs == ()
         assert damaged.active is not None and damaged.active.operation_id == "tune-5"
         error = damaged.latest_run_error
         assert error is not None and error.code == "FINETUNE.SOURCE_CHANGED"

@@ -14,7 +14,7 @@
 
 ## Steps
 
-- [ ] **Step 1: Synthesis contract and service handler**
+- [x] **Step 1: Synthesis contract and service handler**
   - `recording_contracts.py`: `SynthesizeCommand` (operation_id, text 1–2,000 chars, model `latest`|`base`|run_id, reference_prompt_id optional, nfe_steps 4–64) and `SynthesisEvent` (operation_id, state queued|running|finished|failed, run_id, relative_path, sha256, frames, sample_rate_hz, seconds, error); add both to the unions and the conformance fixtures (invalid: finished without a path, text over the bound).
   - `recording_service.py`: resolve the model (`latest` = newest `derived/finetune/*/run.json` with status finished; `base` = pinned weights; explicit run id), resolve the reference (`reference_prompt_id` or the first `reference_candidate` prompt with a clip in that run's dataset), call `synthesize_finetune_samples` off the control thread, one synthesis at a time with a 120 s deadline, output under `derived/finetune/<run-id>/speech/<operation-id>/`, events queued → running → finished/failed.
   - Tests in `tests/test_recording_service.py`: `latest` resolution order, base fallback, missing runtime refusal, text bounds, one-at-a-time, reference default.

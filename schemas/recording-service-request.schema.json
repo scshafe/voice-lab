@@ -102,6 +102,30 @@
       "title": "CancelFineTuneCommand",
       "type": "object"
     },
+    "CancelSynthesisCommand": {
+      "additionalProperties": false,
+      "description": "Stop the Speak request ``cancelled_operation_id`` (its worker's whole process group).",
+      "properties": {
+        "cancelled_operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "command": {
+          "const": "cancel-synthesis",
+          "default": "cancel-synthesis",
+          "title": "Command",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "cancelled_operation_id"
+      ],
+      "title": "CancelSynthesisCommand",
+      "type": "object"
+    },
     "CaptureContinuityEvidence": {
       "additionalProperties": false,
       "description": "Successful native input continuity bound to one exact, privately saved WAV.",
@@ -553,7 +577,7 @@
     },
     "FineTuneStatusCommand": {
       "additionalProperties": false,
-      "description": "Ask whether fine-tuning is available, which job is active and which run is latest.",
+      "description": "Ask whether fine-tuning is available, which job is active and which runs have finished.",
       "properties": {
         "command": {
           "const": "fine-tune-status",
@@ -1385,6 +1409,7 @@
         "mapping": {
           "cancel": "#/$defs/CancelCommand",
           "cancel-fine-tune": "#/$defs/CancelFineTuneCommand",
+          "cancel-synthesis": "#/$defs/CancelSynthesisCommand",
           "catalog": "#/$defs/CatalogCommand",
           "continue-legacy-recording": "#/$defs/ContinueLegacyRecordingCommand",
           "decision": "#/$defs/DecisionCommand",
@@ -1404,7 +1429,8 @@
           "review-take": "#/$defs/ReviewTakeCommand",
           "save": "#/$defs/SaveTakeCommand",
           "shutdown": "#/$defs/ShutdownCommand",
-          "snapshot": "#/$defs/SnapshotCommand"
+          "snapshot": "#/$defs/SnapshotCommand",
+          "synthesize": "#/$defs/SynthesizeCommand"
         },
         "propertyName": "command"
       },
@@ -1470,6 +1496,12 @@
           "$ref": "#/$defs/FineTuneStatusCommand"
         },
         {
+          "$ref": "#/$defs/SynthesizeCommand"
+        },
+        {
+          "$ref": "#/$defs/CancelSynthesisCommand"
+        },
+        {
           "$ref": "#/$defs/SnapshotCommand"
         },
         {
@@ -1507,10 +1539,75 @@
       "title": "SnapshotCommand",
       "type": "object"
     },
+    "SpeechModelChoice": {
+      "anyOf": [
+        {
+          "enum": [
+            "latest",
+            "base"
+          ],
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/StableId"
+        }
+      ]
+    },
+    "SpeechText": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "type": "string"
+    },
     "StableId": {
       "maxLength": 128,
       "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
       "type": "string"
+    },
+    "SynthesizeCommand": {
+      "additionalProperties": false,
+      "description": "Speak ``text`` with ``model`` (one request at a time, never during a fine-tune).\n\n``reference_prompt_id`` names the reference clip in the reference run's dataset (the\nmodel's run; for ``base`` the newest finished run); absent, the first reference-candidate\nprompt with a clip there is used, else the run's first clip. ``nfe_steps`` trades speed\nfor quality (F5-TTS flow steps). The reply is the request's queued ``SynthesisEvent``;\nlater states arrive as background events whose request id is ``operation_id``.",
+      "properties": {
+        "command": {
+          "const": "synthesize",
+          "default": "synthesize",
+          "title": "Command",
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/SpeechModelChoice"
+        },
+        "nfe_steps": {
+          "default": 32,
+          "maximum": 64,
+          "minimum": 4,
+          "title": "Nfe Steps",
+          "type": "integer"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_prompt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "$ref": "#/$defs/SpeechText"
+        }
+      },
+      "required": [
+        "operation_id",
+        "text",
+        "model"
+      ],
+      "title": "SynthesizeCommand",
+      "type": "object"
     },
     "UtcTimestamp": {
       "format": "date-time",

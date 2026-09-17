@@ -303,10 +303,51 @@ enum RecordingSemanticValidator {
             try require(samples.isEmpty || status == "finished", "Only a finished run has samples")
             // Python str.startswith compares code points, never canonical equivalence.
             try require(samples.allSatisfy { $0.unicodeScalars.starts(with: (root + "/").unicodeScalars) }, "Run samples must lie under the run's directory")
+            try unique(field("reference_prompt_ids"), title: title)
         case "FineTuneStatusEvent":
             try require(!present("active") || ["queued", "running"].contains(string("active.state")), "The active fine-tune is queued or running")
             try require(!present("latest_run") || string("latest_run.status") == "finished", "The latest run is a finished run")
             try require(!(present("latest_run") && present("latest_run_error")), "The latest run is either resolved or unresolved, never both")
+            // Mirrors Python: newest first by finish time, then the greater run id (code points).
+            let runs = field("finished_runs").array ?? []
+            try require(runs.allSatisfy { lookup($0, "status") == .string("finished") }, "Finished runs are finished runs")
+            let order = runs.map { (timestamp(lookup($0, "finished_at").string ?? ""), lookup($0, "run_id").string ?? "") }
+            try require(zip(order, order.dropFirst()).allSatisfy { newer, older in
+                guard let newerDate = newer.0, let olderDate = older.0 else { return false }
+                return newerDate > olderDate
+                    || (newerDate == olderDate && older.1.unicodeScalars.lexicographicallyPrecedes(newer.1.unicodeScalars))
+            }, "Finished runs are listed newest first, each once")
+            try require(pythonEqual(field("latest_run"), runs.first ?? .null), "The latest run is the first finished run")
+        case "SynthesizeCommand":
+            try require(speechText(string("text")), "Speech text needs more than whitespace and no format or control character")
+        case "SynthesisEvent":
+            // Mirrors Python SynthesisEvent; absent and null read alike.
+            let state = string("state")
+            let model = string("model")
+            let clip = ["relative_path", "sha256", "frames", "sample_rate_hz", "seconds"]
+            try require(speechText(string("text")), "Speech text needs more than whitespace and no format or control character")
+            try require((state == "failed") == present("error"), "A failed synthesis names its error; other states carry none")
+            if state == "finished" {
+                try require(clip.allSatisfy(present), "A finished synthesis names its clip")
+                try require(present("reference_run_id") && present("reference_prompt_id"), "A finished synthesis names its reference")
+                try require(present("run_id") != (model == "base"), "A finished synthesis names its run unless the base model spoke")
+            } else {
+                try require(!clip.contains(where: present), "Only a finished synthesis names a clip")
+            }
+            try require(state != "queued" || !["run_id", "reference_run_id", "reference_prompt_id"].contains(where: present),
+                        "A queued synthesis has not been resolved")
+            try require(model != "base" || !present("run_id"), "The base model speaks without a run")
+            try require(["latest", "base"].contains(model) || !present("run_id") || pythonEqual(field("run_id"), field("model")),
+                        "A chosen run speaks as itself")
+            try require(!present("run_id") || !present("reference_run_id") || pythonEqual(field("run_id"), field("reference_run_id")),
+                        "A fine-tuned run speaks with its own reference")
+            let directory = "derived/speech/" + string("operation_id") + "/"
+            try require(!present("relative_path") || string("relative_path").unicodeScalars.starts(with: directory.unicodeScalars),
+                        "A synthesized clip lies under derived/speech/<operation id>/")
+            if clip.allSatisfy(present) {
+                try require(abs(number("seconds") - number("frames") / number("sample_rate_hz")) <= speechSecondsTolerance,
+                            "A clip lasts its frames at its sample rate")
+            }
         case "RecorderRequest", "ServiceRequest":
             let command = string("data.command")
             let expected: RecordingJSON = switch command {
@@ -397,6 +438,17 @@ enum RecordingSemanticValidator {
 
     static func timestamp(_ value: String) -> Date? {
         RecordingTimestamp.parse(value)
+    }
+
+    /// Mirrors Python recording_contracts.SPEECH_SECONDS_TOLERANCE.
+    static let speechSecondsTolerance = 0.001
+
+    /// Mirrors Python SpeechText: more than whitespace, and no format or control character
+    /// except a newline (models.has_hidden_control).
+    static func speechText(_ text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !text.unicodeScalars.contains { scalar in
+            scalar.properties.generalCategory == .format || (scalar.properties.generalCategory == .control && scalar != "\n")
+        }
     }
 
     static func relativePath(_ value: String) throws {
