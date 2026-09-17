@@ -278,7 +278,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - Add contract tests, each with valid cases and cases that are invalid for exactly one reason.
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_storage_contracts.py tests/test_schema.py && .venv/bin/python -I -B -m cole_voice_lab.schema --check && .venv/bin/mypy src/cole_voice_lab`
 
-- [ ] **Step 3: Local blob and ref stores, and the storage conformance suite**
+- [x] **Step 3: Local blob and ref stores, and the storage conformance suite**
   - Add `storage_local.py` and `tests/storage_conformance.py`. The suite covers:
     - putting the same bytes twice, and bytes over the size limit;
     - write-once behaviour under concurrent writer processes;

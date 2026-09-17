@@ -7,12 +7,10 @@ package. Rich take dates/edit decisions are local provenance, never v1 payload.
 
 from __future__ import annotations
 
-import ctypes
 import fcntl
 import hashlib
 import os
 import stat
-import sys
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
@@ -22,7 +20,14 @@ from uuid import uuid4
 
 from pydantic import Field, TypeAdapter, model_validator
 
-from .canonical import canonical_json_bytes, canonical_sha256, open_regular_no_follow, sha256_stream
+from .canonical import (
+    NoReplaceRenameUnsupportedPlatformError,
+    canonical_json_bytes,
+    canonical_sha256,
+    open_regular_no_follow,
+    rename_no_replace,
+    sha256_stream,
+)
 from .capture import expected_recording_paths, finalize_capture_session
 from .diagnostic_roots import require_catalog_root
 from .errors import ContractError, SecurityError
@@ -192,32 +197,17 @@ class RecordingPackageFinalization(ContractModel):
 def _publish_without_replace(source: Path, destination: Path) -> None:
     """Atomically publish a private completed inode/directory without replacing any entry.
 
-    macOS sys/stdio.h defines renamex_np and RENAME_EXCL (0x4). Linux exposes
-    the equivalent renameat2 RENAME_NOREPLACE operation. Never emulate this with
-    an existence check followed by a replacing rename.
+    ``canonical.rename_no_replace`` does the rename (never an existence check followed by a
+    replacing rename). A platform without a no-replace rename is refused as this module's
+    ``RecordingPackageError``; every other failure is the ``OSError`` the rename raised
+    (``FileExistsError`` when ``destination`` exists).
     """
-    library = ctypes.CDLL(None, use_errno=True)
-    if sys.platform == "darwin":
-        rename = library.renamex_np
-        rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
-        rename.restype = ctypes.c_int
-        result = rename(os.fsencode(source), os.fsencode(destination), 0x4)
-    elif sys.platform.startswith("linux"):
-        rename = library.renameat2
-        rename.argtypes = (
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        )
-        rename.restype = ctypes.c_int
-        result = rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1)
-    else:
-        raise RecordingPackageError("atomic native package publication is unavailable on this OS")
-    if result != 0:
-        number = ctypes.get_errno()
-        raise OSError(number, os.strerror(number), str(destination))
+    try:
+        rename_no_replace(source, destination)
+    except NoReplaceRenameUnsupportedPlatformError as error:
+        raise RecordingPackageError(
+            "atomic native package publication is unavailable on this OS"
+        ) from error
 
 
 def _original_identity(relative: str, metadata: os.stat_result) -> RecordingFileIdentity:

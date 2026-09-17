@@ -28,6 +28,8 @@ SEEDERS = ("scripts/verify_native_bridge.py", "scripts/verify_native_workspace.p
 # root and the seeders (e.g. the vault server may import the local store once it exists).
 ADAPTERS: dict[str, tuple[str, ...]] = {
     "cole_voice_lab.corpus_store_sqlite": (),
+    # The vault server (Step 7) serves the local stores.
+    "cole_voice_lab.storage_local": ("src/cole_voice_lab/storage_server.py",),
 }
 IMPORT_CALLS = frozenset({"import_module", "__import__", "run_module"})
 

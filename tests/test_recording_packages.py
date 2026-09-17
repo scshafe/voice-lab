@@ -774,6 +774,43 @@ def test_atomic_package_publication_preserves_a_conflicting_destination(
         )
 
 
+def test_package_publication_keeps_its_own_refusal_on_an_unsupported_platform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import cole_voice_lab.canonical as canonical
+    from cole_voice_lab.recording_packages import RecordingPackageError, _publish_without_replace
+
+    source = tmp_path / "source"
+    source.write_text("new synthetic")
+    monkeypatch.setattr(canonical, "_system_platform", lambda: "plan9")
+    with pytest.raises(RecordingPackageError, match="unavailable on this OS"):
+        _publish_without_replace(source, tmp_path / "destination")
+    assert source.read_text() == "new synthetic"
+
+
+def test_package_publication_reports_a_refused_rename_flag_as_an_os_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import ctypes
+    import errno
+
+    import cole_voice_lab.canonical as canonical
+    from cole_voice_lab.recording_packages import RecordingPackageError, _publish_without_replace
+
+    def refused(*_arguments: object) -> int:
+        ctypes.set_errno(errno.EINVAL)
+        return -1
+
+    library = type("Library", (), {})()
+    library.renameat2 = refused
+    monkeypatch.setattr(canonical, "_system_platform", lambda: "linux")
+    monkeypatch.setattr(canonical, "_c_library", lambda: library)
+    with pytest.raises(OSError) as caught:
+        _publish_without_replace(tmp_path / "source", tmp_path / "destination")
+    assert caught.value.errno == errno.EINVAL
+    assert not isinstance(caught.value, RecordingPackageError)
+
+
 def test_remove_after_package_registration_before_projection_stays_removed(
     package_rig: Any,
 ) -> None:
