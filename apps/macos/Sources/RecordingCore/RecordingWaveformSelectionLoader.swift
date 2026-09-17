@@ -18,7 +18,7 @@ public enum RecordingWaveformSelectionLoader {
     private static func prepare(_ source: RecordingPlaybackSource, processGeneration: String,
                                 diagnosticContext: RecordingDiagnosticContext?, diagnosticSink: RecordingDiagnosticSink?) throws -> RecordingWaveformCache {
         let path = source.assetRoot.appendingPathComponent(source.relativePath).path
-        let lease = try RecordingPrivateFile.openReadOnly(path, maximumBytes: source.frameCount * 3 + 1_048_576,
+        let lease = try RecordingPrivateFile.openReadOnly(path, maximumBytes: source.format.maximumFileBytes(frameCount: source.frameCount),
             diagnosticContext: diagnosticContext, diagnosticSink: diagnosticSink)
         if let identity = source.fileIdentity { try lease.validate(expectedIdentity: identity, relativePath: source.relativePath) }
         let cacheSpan = RecordingDiagnosticSpan("waveform.cache_load", context: diagnosticContext, sink: diagnosticSink)

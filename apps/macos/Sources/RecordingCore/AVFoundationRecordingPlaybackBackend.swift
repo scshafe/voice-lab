@@ -54,7 +54,7 @@ public actor AVFoundationRecordingPlaybackBackend: RecordingPlaybackBackend {
             try Task.checkCancellation()
             try Self.validateAssetRoot(source.assetRoot)
             let path = source.assetRoot.appendingPathComponent(source.relativePath).path
-            let lease = try RecordingPrivateFile.openReadOnly(path, maximumBytes: source.frameCount * 3 + 1_048_576,
+            let lease = try RecordingPrivateFile.openReadOnly(path, maximumBytes: source.format.maximumFileBytes(frameCount: source.frameCount),
                 diagnosticContext: diagnosticContext, diagnosticSink: sink)
             if let expected = source.fileIdentity { try lease.validate(expectedIdentity: expected, relativePath: source.relativePath) }
             guard try lease.sha256() == source.sourceSHA256 else {
@@ -72,10 +72,13 @@ public actor AVFoundationRecordingPlaybackBackend: RecordingPlaybackBackend {
                 opened = try AVAudioFile(forReading: URL(fileURLWithPath: verified.path), commonFormat: .pcmFormatFloat32, interleaved: false)
                 openSpan.finish()
             } catch { openSpan.finish(.failure, error: error); throw error }
+            // The file must be exactly the declared layout: a take (48 kHz/24-bit) or a Speak
+            // clip (24 kHz/16-bit), integer PCM, mono, with the authorized frame count.
             let format = opened.fileFormat.streamDescription.pointee
-            guard opened.length == source.frameCount, format.mSampleRate == 48_000,
-                  format.mChannelsPerFrame == 1, format.mBitsPerChannel == 24,
-                  format.mFormatID == kAudioFormatLinearPCM else {
+            let declared = source.format
+            guard opened.length == source.frameCount, format.mSampleRate == declared.sampleRate,
+                  format.mChannelsPerFrame == declared.channels, format.mBitsPerChannel == declared.bitsPerSample,
+                  format.mFormatID == kAudioFormatLinearPCM, format.mFormatFlags & kAudioFormatFlagIsFloat == 0 else {
                 throw RecordingContractError(code: "RECORDING.SOURCE_CHANGED", message: "Selected playback format or frame count differs from its validated source")
             }
             try verified.validateUnchanged()

@@ -164,6 +164,52 @@ public final class RecordingServiceClient: Sendable {
         .object(["command": .string("fine-tune-status"), "operation_id": .string(operationID)])
     }
 
+    /// F5 flow steps the service uses when a Speak request names none.
+    public static let speechDefaultSteps = 32
+
+    /// Speak `text` with `model` ("latest", "base" or a finished run id), using the reference
+    /// clip `referencePromptID` (nil: the service picks the run's first reference prompt).
+    /// Submit-only, like `fineTune`: the reply is the request's queued SynthesisEvent, and its
+    /// later states arrive as unsolicited events whose request id is `operationID`, so this
+    /// request names a different `requestID`. It shares the fine-tune deadline, since it waits
+    /// in the same metadata queue as Save.
+    /// Throws: RECORDING.INVALID_MESSAGE when `requestID` equals `operationID` or the command
+    /// breaks the request schema (text over 2,000 characters, a tab, steps outside 4...64);
+    /// the service's refusal is the reply's error (FINETUNE.JOB_ACTIVE,
+    /// FINETUNE.RUNTIME_UNAVAILABLE, FINETUNE.NO_FINISHED_RUN, ...).
+    public func synthesize(operationID: String, requestID: String, text: String, model: String,
+                           referencePromptID: String?, nfeSteps: Int = speechDefaultSteps) async throws -> RecordingWireEnvelope {
+        guard requestID != operationID else {
+            throw RecordingContractError(code: "RECORDING.INVALID_MESSAGE",
+                                         message: "A Speak request id must differ from its operation id")
+        }
+        return try await command(Self.synthesizeCommand(operationID: operationID, text: text, model: model,
+                                                        referencePromptID: referencePromptID, nfeSteps: nfeSteps),
+                                 takeID: nil, requestID: requestID, timeout: Self.fineTuneRequestTimeout)
+    }
+
+    /// Stop the Speak request `cancelledOperationID`. The reply is that request's state:
+    /// cancelled when it was queued; running when it runs (a cancelled event follows once its
+    /// worker is gone); its final state when it had already ended.
+    /// Throws: the service's refusal is the reply's error (RECORDING.INVALID_TRANSITION when the
+    /// service has no such request).
+    public func cancelSynthesis(operationID: String, cancelledOperationID: String) async throws -> RecordingWireEnvelope {
+        try await command(Self.cancelSynthesisCommand(operationID: operationID, cancelledOperationID: cancelledOperationID),
+                          takeID: nil, timeout: Self.fineTuneRequestTimeout)
+    }
+
+    static func synthesizeCommand(operationID: String, text: String, model: String,
+                                  referencePromptID: String?, nfeSteps: Int) -> RecordingJSON {
+        .object(["command": .string("synthesize"), "operation_id": .string(operationID), "text": .string(text),
+                 "model": .string(model), "reference_prompt_id": referencePromptID.map(RecordingJSON.string) ?? .null,
+                 "nfe_steps": .integer(Int64(nfeSteps))])
+    }
+
+    static func cancelSynthesisCommand(operationID: String, cancelledOperationID: String) -> RecordingJSON {
+        .object(["command": .string("cancel-synthesis"), "operation_id": .string(operationID),
+                 "cancelled_operation_id": .string(cancelledOperationID)])
+    }
+
     /// Bounded recovery. A single-take re-check names its take; a page sweep names none,
     /// and the two are mutually exclusive in the contract.
     public func recover(operationID: String, takeID: String? = nil,

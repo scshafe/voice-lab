@@ -293,6 +293,8 @@ extension RecordingWorkspaceModel {
         Task { [weak self] in
             guard let self else { return }
             do { try await review.playback.shutdown() } catch { review.report(error) }
+            // Speak's output ends too; a failed stop stays on its controller and holds Record back.
+            do { try await speak.playback.shutdown() } catch { speak.reportPlayback(error) }
         }
     }
 

@@ -334,8 +334,12 @@ extension RecordingWorkspaceModel {
         }
         Task { [weak self] in
             guard let self else { return }
-            do { try await review.playback.shutdown(); close(); closeHandler?(); closeCancellationHandler = nil }
-            catch { closeCancellationHandler?(); closeCancellationHandler = nil; review.report(error) }
+            // Each transport's failed stop keeps the window open and is shown where it belongs.
+            do { try await review.playback.shutdown() }
+            catch { closeCancellationHandler?(); closeCancellationHandler = nil; review.report(error); return }
+            do { try await speak.playback.shutdown() }
+            catch { closeCancellationHandler?(); closeCancellationHandler = nil; speak.reportPlayback(error); return }
+            close(); closeHandler?(); closeCancellationHandler = nil
         }
     }
 

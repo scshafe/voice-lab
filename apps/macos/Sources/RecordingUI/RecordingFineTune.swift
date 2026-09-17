@@ -37,6 +37,9 @@ public struct RecordingFineTuneRunSummary: Equatable, Sendable {
     public let retainedSeconds: Double
     public let finetunedSamplePaths: [String]
     public let baseSamplePaths: [String]
+    /// The run's reference-candidate prompts with a clip in its dataset, in catalog order: the
+    /// reference clips Speak offers for this run.
+    public let referencePromptIDs: [String]
     public let error: String?
 
     /// The service's `FineTuneRunSummary`, already validated on the wire; nil for any other shape.
@@ -56,6 +59,7 @@ public struct RecordingFineTuneRunSummary: Equatable, Sendable {
         self.retainedSeconds = retainedSeconds
         self.finetunedSamplePaths = (object["finetuned_sample_paths"]?.array ?? []).compactMap(\.string)
         self.baseSamplePaths = (object["base_sample_paths"]?.array ?? []).compactMap(\.string)
+        self.referencePromptIDs = (object["reference_prompt_ids"]?.array ?? []).compactMap(\.string)
         self.error = object["error"]?.string
     }
 }
@@ -185,6 +189,7 @@ extension RecordingWorkspaceModel {
     static let fineTuneCancelHelp = "Stop the fine-tune. Your recordings are not affected. Quitting the app also stops it."
     /// The quit confirmation while a job is queued or running.
     public static let quitDuringFineTuneMessage = "A fine-tune is running. Quitting stops it, and the partial run is discarded."
+    public static let fineTuneWaitForSpeakReason = "Wait for Speak to finish"
 
     func fineTuneTransport() -> RecordingFineTuneRequests? {
         if let fineTuneRequests { return fineTuneRequests }
@@ -230,6 +235,8 @@ extension RecordingWorkspaceModel {
         case false?: return "Fine-tuning is not set up: this app has no F5 runtime to train with"
         case true?: break
         }
+        // Speak and fine-tuning share the GPU; the service refuses a job while Speak runs.
+        if speak.isGenerating { return Self.fineTuneWaitForSpeakReason }
         if state.showsStop { return "Finish the current take before fine-tuning" }
         if state.phase == .saving {
             // A trim save (an `edit-` operation) and a take's Save share the saving phase.
@@ -408,7 +415,10 @@ extension RecordingWorkspaceModel {
         guard let operation = fineTune.operationID, event["operation_id"]?.string == operation,
               let run = event["run"].flatMap(RecordingFineTuneRunSummary.init) else { return }
         fineTune.run = run
-        if run.status == "finished" { fineTune.latestRun = run }
+        if run.status == "finished" {
+            fineTune.latestRun = run
+            speak.learnFinishedRun(run)
+        }
     }
 
     private func applyFineTuneStatus(_ event: [String: RecordingJSON]) {
@@ -427,6 +437,8 @@ extension RecordingWorkspaceModel {
         if current {
             fineTune.latestRunError = event["latest_run_error"]?.object?["message"]?.string
         }
+        // The same reply lists the finished runs Speak offers.
+        speak.applyRunList(event, current: current)
         guard let active = event["active"]?.object, let job = active["operation_id"]?.string else { return }
         if job != fineTune.operationID {
             guard current else { return }

@@ -94,6 +94,7 @@ enum RecordingApplicationEntry {
                 result["error_code"] = state.errorCode.map(RecordingJSON.string) ?? .string("RECORDING.GATE_NOT_READY")
             }
             try await session.model.review.playback.shutdown()
+            try await session.model.speak.playback.shutdown()
             session.model.close()
             result["channels_closed"] = .boolean(true)
         } catch {

@@ -32,7 +32,8 @@ final class RecordingApplicationSession: ObservableObject {
         let connected = RecordingWorkspaceModel(configuration: configuration,
             permissionStatus: { synthetic ? .granted : RecordingMicrophonePermission.current() },
             permissionRequest: { if synthetic { return false }; return await RecordingMicrophonePermission.request() },
-            reviewBackend: AVFoundationRecordingPlaybackBackend(mode: synthetic ? .offline : .device))
+            reviewBackend: AVFoundationRecordingPlaybackBackend(mode: synthetic ? .offline : .device),
+            speechBackend: AVFoundationRecordingPlaybackBackend(mode: synthetic ? .offline : .device))
         model = connected
         connected.observeSystemLifecycle(center: NSWorkspace.shared.notificationCenter)
         // Automated synthetic fixtures never post announcements or invoke VoiceOver.

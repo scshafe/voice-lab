@@ -36,6 +36,8 @@ public final class RecordingWorkspaceModel: ObservableObject {
     }
     public let waveform: RecordingWaveformModel
     public let review: RecordingReviewController
+    /// The Speak page's state and its own playback transport (RecordingSpeakModel.swift).
+    public let speak: RecordingSpeakModel
     @Published public internal(set) var reviewConfirmation: RecordingReviewConfirmation?
     @Published public var decisionReason = ""
     var reviewOperationID: String?
@@ -186,6 +188,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
                 permissionStatus: @escaping @Sendable () -> RecordingMicrophonePermission = { RecordingMicrophonePermission.current() },
                 permissionRequest: @escaping @Sendable () async -> Bool = { await RecordingMicrophonePermission.request() },
                 reviewBackend: any RecordingPlaybackBackend = AVFoundationRecordingPlaybackBackend(),
+                speechBackend: (any RecordingPlaybackBackend)? = nil,
                 diagnosticSink: RecordingDiagnosticSink? = nil,
                 beforeCapture: @escaping @MainActor () async throws -> Void = {},
                 afterCaptureStopped: @escaping @MainActor () -> Void = {}) {
@@ -193,6 +196,9 @@ public final class RecordingWorkspaceModel: ObservableObject {
         catalogSHA256 = nil; recorderGeneration = configuration.recorder.processGeneration
         self.diagnosticSink = diagnosticSink
         review = RecordingReviewController(backend: reviewBackend, diagnosticSink: diagnosticSink)
+        // Without an explicit backend, a synthetic session never opens an output device.
+        let synthetic = configuration.recorder.arguments.contains("--synthetic-pcm")
+        speak = RecordingSpeakModel(backend: speechBackend ?? AVFoundationRecordingPlaybackBackend(mode: synthetic ? .offline : .device))
         recorder = RecorderClient(configuration: configuration.recorder)
         service = RecordingServiceClient(configuration: configuration.service, diagnosticSink: diagnosticSink)
         self.permissionStatus = permissionStatus; self.permissionRequest = permissionRequest
@@ -200,6 +206,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
         waveform = RecordingWaveformModel(takeID: "unselected", processGeneration: configuration.recorder.processGeneration, hostClockComparable: true)
         // The Library waits for the service's catalog (`connect`); the configuration names none.
         state.permission = permissionStatus()
+        speak.workspace = self
     }
 
     /// Coherent disabled workspace for missing or invalid launch configuration.
@@ -207,18 +214,22 @@ public final class RecordingWorkspaceModel: ObservableObject {
         configuration = nil; recorder = nil; service = nil; diagnosticSink = nil
         catalogSHA256 = nil; recorderGeneration = "unconfigured"
         review = RecordingReviewController(backend: AVFoundationRecordingPlaybackBackend(mode: .offline))
+        speak = RecordingSpeakModel(backend: AVFoundationRecordingPlaybackBackend(mode: .offline))
         permissionStatus = { .denied }; permissionRequest = { false }
         beforeCapture = {}; afterCaptureStopped = {}
         waveform = RecordingWaveformModel(takeID: "unselected", processGeneration: "unconfigured", hostClockComparable: false)
         state.phase = .recoverableError; state.status = message; state.errorCode = "RECORDING.INVALID_MESSAGE"
+        speak.workspace = self
     }
 
     /// Inert fixture adapter for the original shell harness; it cannot create process clients.
     /// A synthetic `catalog` replaces the one-prompt fixture so library tests can cover many prompts.
-    public init(fixture: RecordingShellState, catalog: RecordingJSON? = nil) {
+    public init(fixture: RecordingShellState, catalog: RecordingJSON? = nil,
+                speechBackend: any RecordingPlaybackBackend = AVFoundationRecordingPlaybackBackend(mode: .offline)) {
         configuration = nil; recorder = nil; service = nil; diagnosticSink = nil
         catalogSHA256 = Self.fixtureCatalogSHA256; recorderGeneration = "synthetic-generation"
         review = RecordingReviewController(backend: AVFoundationRecordingPlaybackBackend(mode: .offline))
+        speak = RecordingSpeakModel(backend: speechBackend)
         permissionStatus = { .denied }; permissionRequest = { false }
         beforeCapture = {}; afterCaptureStopped = {}
         waveform = RecordingWaveformModel(takeID: "synthetic-take", processGeneration: "synthetic-generation", hostClockComparable: false)
@@ -235,6 +246,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
         state.phase = fixture.phase; state.status = fixture.phase.status
         state.deviceReason = "Synthetic fixture · microphone remains closed"
         state.selection = .object(["take_id": .string("synthetic-take"), "prompt_id": .string(prompts.first?.id ?? "natural-reading")])
+        speak.workspace = self
     }
 
     /// Fixture adapter for the service bootstrap: a workspace whose service handshake finished
@@ -244,11 +256,13 @@ public final class RecordingWorkspaceModel: ObservableObject {
         configuration = nil; recorder = nil; service = nil; diagnosticSink = nil
         catalogSHA256 = nil; recorderGeneration = "synthetic-generation"
         review = RecordingReviewController(backend: AVFoundationRecordingPlaybackBackend(mode: .offline))
+        speak = RecordingSpeakModel(backend: AVFoundationRecordingPlaybackBackend(mode: .offline))
         permissionStatus = { .granted }; permissionRequest = { false }
         beforeCapture = {}; afterCaptureStopped = {}
         waveform = RecordingWaveformModel(takeID: "unselected", processGeneration: "synthetic-generation", hostClockComparable: false)
         contextRequests = requests; fixtureContextTarget = target
         state.serviceReady = true; state.permission = .granted
+        speak.workspace = self
     }
 
     /// Library rows (§6.4): search, status and labels combine with AND; selected labels with OR.
@@ -293,9 +307,12 @@ public final class RecordingWorkspaceModel: ObservableObject {
         guard state.phase == .recoverableError else { return "Preparing catalog" }
         return catalogSHA256 == nil ? "Catalog unavailable" : "Recording library unavailable"
     }
-    public var canRecord: Bool { state.canRecord && !audioReconnectRequired && !processChannelFailed && review.playback.failure == nil }
+    public var canRecord: Bool {
+        state.canRecord && !audioReconnectRequired && !processChannelFailed && review.playback.failure == nil && speak.captureBlocker == nil
+    }
     public var recordUnavailableReason: String {
-        review.playback.failure?.message ?? (processChannelFailed ? Self.processChannelFailedReason : state.recordUnavailableReason)
+        review.playback.failure?.message ?? speak.captureBlocker
+            ?? (processChannelFailed ? Self.processChannelFailedReason : state.recordUnavailableReason)
     }
     public var canSave: Bool { (selectedReview == nil || selectedReview?.originalKind == "native-original") && state.phase == .draftReview && selectedDecision == "draft" && waveformReady && !state.registrationPending && !state.navigationPending && review.fieldError == nil }
     public var canContinueMissing: Bool { state.canNavigate && state.contextReady && state.historyCompleteness == "complete" }
@@ -524,7 +541,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
                     guard granted else { throw RecordingContractError(code: "RECORDING.PERMISSION_DENIED", message: "Microphone permission was not granted") }
                 }
                 guard !stopRequested, startOperationID == operation else { cancelBeforeInput(); return }
-                try await review.playback.beginCapture()
+                try await beginCaptureInterlock()
                 try await beforeCapture()
                 guard !stopRequested else { cancelBeforeInput(); return }
                 let response = try result(await service.reserve(groupID: groupID, recorderGeneration: configuration.recorder.processGeneration, selection: selection, operationID: operation))
@@ -668,17 +685,30 @@ public final class RecordingWorkspaceModel: ObservableObject {
     private func consumeChannels(recorder: RecorderClient, service: RecordingServiceClient) {
         consume(recorder.channel.events) { $0.handleRecorder($1) }
         consume(recorder.channel.telemetry) { try $0.handleTelemetry($1) }
-        consume(service.channel.events) { $0.handleService($1) }
+        consumeService(service.channel.events)
+    }
+
+    /// The service's stream. When it ends, the service is gone, and a Speak request still
+    /// running went with it (the service keeps those in memory only).
+    @discardableResult
+    func consumeService(_ stream: AsyncThrowingStream<RecordingWireEnvelope, Error>) -> Task<Void, Never> {
+        consume(stream, apply: { $0.handleService($1) }, closed: { $0.speak.serviceChannelClosed() })
     }
 
     /// A channel stream ends with an error only once its channel closed or stopped applying.
     /// A request failing on the same closure resumes separately; either order ends unavailable.
     @discardableResult
     func consume(_ stream: AsyncThrowingStream<RecordingWireEnvelope, Error>,
-                 apply: @escaping @MainActor @Sendable (RecordingWorkspaceModel, RecordingWireEnvelope) throws -> Void) -> Task<Void, Never> {
+                 apply: @escaping @MainActor @Sendable (RecordingWorkspaceModel, RecordingWireEnvelope) throws -> Void,
+                 closed: @escaping @MainActor @Sendable (RecordingWorkspaceModel) -> Void = { _ in }) -> Task<Void, Never> {
         let consumer = Task { [weak self] in
             do { for try await event in stream { guard let self else { return }; try apply(self, event) } }
-            catch { self?.processChannelFailed = true; self?.fail(error, phase: .recoverableError) }
+            catch {
+                guard let self else { return }
+                processChannelFailed = true
+                fail(error, phase: .recoverableError)
+                closed(self)
+            }
         }
         consumers.append(consumer)
         return consumer
@@ -806,6 +836,8 @@ public final class RecordingWorkspaceModel: ObservableObject {
         if event.data == .null {
             if event.error != .null, event.meta.request_id == Self.fineTuneSupervisorRequestID {
                 applyFineTuneSupervisorError(event.error)
+                // Speak requests run under the same supervisor.
+                if let message = event.error.object?["message"]?.string { speak.supervisorFailed(message) }
             }
             return
         }
@@ -835,6 +867,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
                 Task { [weak self] in await self?.refreshRecoveryInventory() }
             }
         case "fine-tune-progress", "fine-tune", "fine-tune-status": applyFineTuneEvent(event.data)
+        case "synthesis": speak.applySynthesisEvent(event.data)
         case "history": applyHistory(event.data)
         case "derivative": handleDerivative(event.data)
         case "review-action": handleLegacyReviewAction(event.data)
@@ -952,13 +985,16 @@ public final class RecordingWorkspaceModel: ObservableObject {
         captureStopped()
         var updated = state; updated.phase = .ready; updated.activeOperationID = nil; updated.status = "Recording cancelled before input opened"; publish(updated)
     }
-    func result(_ response: RecordingWireEnvelope) throws -> RecordingWireEnvelope {
+    func result(_ response: RecordingWireEnvelope) throws -> RecordingWireEnvelope { try Self.result(response) }
+    /// The response, or its error as a thrown RecordingContractError.
+    static func result(_ response: RecordingWireEnvelope) throws -> RecordingWireEnvelope {
         if response.error != .null { throw RecordingContractError(code: response.error.object?["code"]?.string ?? "RECORDING.INVALID_MESSAGE", message: response.error.object?["message"]?.string ?? "Local recording operation failed") }
         return response
     }
     private func invalid(_ message: String) -> RecordingContractError { .init(code: "RECORDING.INVALID_MESSAGE", message: message) }
     func newOperation(_ purpose: String) -> String { purpose + "-" + UUID().uuidString.lowercased() }
-    func errorMessage(_ error: Error) -> String {
+    func errorMessage(_ error: Error) -> String { Self.errorMessage(error) }
+    static func errorMessage(_ error: Error) -> String {
         if let error = error as? RecordingContractError { return error.message }
         if let error = error as? NativeCaptureFailure { return error.message }
         return "Local recording operation failed; inspect recovery details"
@@ -981,8 +1017,22 @@ public final class RecordingWorkspaceModel: ObservableObject {
     }
 
     private func captureStopped() {
-        review.playback.endCapture()
+        endCaptureInterlock()
         afterCaptureStopped()
+    }
+
+    /// Capture owns the audio output: the review transport, then Speak's, stop first. Either
+    /// one failing (its output did not stop, or it needs recovery) refuses the capture.
+    func beginCaptureInterlock() async throws {
+        try await review.playback.beginCapture()
+        try await speak.playback.beginCapture()
+    }
+
+    /// Capture released the audio output; a Speak clip that finished meanwhile loads now.
+    func endCaptureInterlock() {
+        review.playback.endCapture()
+        speak.playback.endCapture()
+        speak.captureEnded()
     }
 
     public func close() {
@@ -995,6 +1045,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
         statusHoldTask?.cancel(); statusHoldTask = nil
         fineTuneOutcomeHoldTask?.cancel(); fineTuneOutcomeHoldTask = nil
         reviewTask?.cancel(); reviewTask = nil
+        speak.close()
         for consumer in consumers { consumer.cancel() }
         consumers.removeAll(); recorder?.channel.close(); service?.channel.close()
     }

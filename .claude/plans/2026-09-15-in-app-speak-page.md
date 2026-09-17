@@ -20,7 +20,7 @@
   - Tests in `tests/test_recording_service.py`: `latest` resolution order, base fallback, missing runtime refusal, text bounds, one-at-a-time, reference default.
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_recording_contracts.py tests/test_recording_service.py -k "synthes or contract" && .venv/bin/python -I -B -m cole_voice_lab.schema --check && scripts/verify-native-recording --suite contracts`
 
-- [ ] **Step 2: Swift client and Speak model**
+- [x] **Step 2: Swift client and Speak model**
   - `RecordingServiceClient.synthesize(operationID:text:model:referencePromptID:nfeSteps:)`. `RecordingUI/RecordingSpeakModel.swift`: text, model choice (list built from the service's finished runs plus Base), reference choice, generating flag with cancel, this session's clips (path, sha256, seconds, text), playback through a second `RecordingPlaybackController` that yields to capture (Speak is disabled while recording and cannot start while a take is being saved).
   - Tests: `apps/macos/Tests/RecordingWorkspaceTests/RecordingSpeakModelTests.swift` (event application, phase transitions, interlock, model list ordering).
   - Verify: `cd apps/macos && swift test --filter RecordingSpeakModelTests`

@@ -63,30 +63,41 @@ private func source(_ id: String = "take", frames: Int64 = 4800) throws -> Recor
     try RecordingPlaybackSource(takeID: id, sourceSHA256: String(repeating: "a", count: 64), assetRoot: URL(fileURLWithPath: "/private/tmp/synthetic-playback"), relativePath: "tmp/\(id).wav", frameCount: frames)
 }
 
+/// A private asset root holding one mono PCM WAV written in `format`, and the source that
+/// declares it. `declared` lets a test declare the file as another format.
 private struct AudioFixture {
     let root: URL
     let source: RecordingPlaybackSource
     let bytes: Data
     let samples: [Int32]
-    init(frames: Int = 4800) throws {
+    /// Full scale of one sample in the written format.
+    let fullScale: Float
+    init(frames: Int = 4800, format: RecordingPlaybackFormat = .capture, declared: RecordingPlaybackFormat? = nil) throws {
         let temporary = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
         defer { free(temporary) }
         root = URL(fileURLWithPath: String(cString: temporary), isDirectory: true).appendingPathComponent("cole-playback-\(UUID().uuidString.lowercased())", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        samples = (0..<frames).map { Int32(($0 % 127) * 4000 - 252_000) }
+        let width = Int(format.bytesPerFrame)
+        let (step, offset): (Int, Int) = format == .capture ? (4000, 252_000) : (500, 31_500)
+        samples = (0..<frames).map { (index: Int) -> Int32 in Int32((index % 127) * step - offset) }
+        fullScale = format == .capture ? 8_388_608 : 32_768
         var wav = Data("RIFF".utf8)
         func u32(_ value: UInt32) { var little = value.littleEndian; withUnsafeBytes(of: &little) { wav.append(contentsOf: $0) } }
         func u16(_ value: UInt16) { var little = value.littleEndian; withUnsafeBytes(of: &little) { wav.append(contentsOf: $0) } }
-        u32(UInt32(36 + frames * 3)); wav.append(Data("WAVEfmt ".utf8)); u32(16)
-        u16(1); u16(1); u32(48_000); u32(144_000); u16(3); u16(24)
-        wav.append(Data("data".utf8)); u32(UInt32(frames * 3))
-        for sample in samples { wav.append(contentsOf: [UInt8(truncatingIfNeeded: sample), UInt8(truncatingIfNeeded: sample >> 8), UInt8(truncatingIfNeeded: sample >> 16)]) }
+        let rate = UInt32(format.sampleRate)
+        u32(UInt32(36 + frames * width)); wav.append(Data("WAVEfmt ".utf8)); u32(16)
+        u16(1); u16(1); u32(rate); u32(rate * UInt32(width)); u16(UInt16(width)); u16(UInt16(format.bitsPerSample))
+        wav.append(Data("data".utf8)); u32(UInt32(frames * width))
+        var pcm = [UInt8](); pcm.reserveCapacity(frames * width)
+        for sample in samples { for byte in 0..<width { pcm.append(UInt8(truncatingIfNeeded: sample >> (8 * byte))) } }
+        wav.append(contentsOf: pcm)
         bytes = wav
         let file = root.appendingPathComponent("original.wav")
         try wav.write(to: file, options: .withoutOverwriting)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         let digest = SHA256.hash(data: wav).map { String(format: "%02x", $0) }.joined()
-        source = try RecordingPlaybackSource(takeID: "synthetic", sourceSHA256: digest, assetRoot: root, relativePath: "original.wav", frameCount: Int64(frames))
+        source = try RecordingPlaybackSource(takeID: "synthetic", sourceSHA256: digest, assetRoot: root, relativePath: "original.wav",
+                                             frameCount: Int64(frames), format: declared ?? format)
     }
     func remove() throws { try FileManager.default.removeItem(at: root) }
 }
@@ -215,7 +226,7 @@ private struct AudioFixture {
             playhead.append(try #require(await backend.position()))
         }
         #expect(rendered.count == 2000)
-        for (index, sample) in rendered.enumerated() { #expect(abs(sample - Float(fixture.samples[123 + index]) / 8_388_608) < 0.000001) }
+        for (index, sample) in rendered.enumerated() { #expect(abs(sample - Float(fixture.samples[123 + index]) / fixture.fullScale) < 0.000001) }
         // The playhead follows the actual player clock from the segment start. The three
         // interior probes are strictly inside the retained range, so a frozen clock or a
         // playhead that only reports its clamp cannot satisfy them.
@@ -290,6 +301,79 @@ private struct AudioFixture {
         let linked = try RecordingPlaybackSource(takeID: "alias", sourceSHA256: fixture.source.sourceSHA256, assetRoot: fixture.root, relativePath: "alias.wav", frameCount: 4800)
         await #expect(throws: RecordingContractError.self) { try await backend.load(linked, generation: 2) }
         #expect(throws: RecordingContractError.self) { try RecordingPlaybackSource(takeID: "bad", sourceSHA256: fixture.source.sourceSHA256, assetRoot: fixture.root, relativePath: "../original.wav", frameCount: 4800) }
+        try await backend.stop()
+    }
+
+    // MARK: declared formats
+
+    @Test func aSourceDeclaresCaptureUnlessItNamesSpeech() throws {
+        #expect(RecordingPlaybackFormat.capture.sampleRate == 48_000 && RecordingPlaybackFormat.capture.bitsPerSample == 24)
+        #expect(RecordingPlaybackFormat.capture.channels == 1 && RecordingPlaybackFormat.capture.bytesPerFrame == 3)
+        #expect(RecordingPlaybackFormat.speech.sampleRate == 24_000 && RecordingPlaybackFormat.speech.bitsPerSample == 16)
+        #expect(RecordingPlaybackFormat.speech.channels == 1 && RecordingPlaybackFormat.speech.bytesPerFrame == 2)
+        #expect(RecordingPlaybackFormat.capture.maximumFileBytes(frameCount: 4800) == 14_400 + 1_048_576)
+        #expect(RecordingPlaybackFormat.speech.maximumFileBytes(frameCount: 4800) == 9_600 + 1_048_576)
+        #expect(try source().format == .capture, "existing callers keep the capture format")
+        let speech = try RecordingPlaybackSource(takeID: "speak-one", sourceSHA256: String(repeating: "a", count: 64),
+            assetRoot: URL(fileURLWithPath: "/private/tmp/synthetic-playback"), relativePath: "derived/speech/speak-one/speech-01.wav",
+            frameCount: 24_000, format: .speech)
+        let undeclared = try RecordingPlaybackSource(takeID: "speak-one", sourceSHA256: speech.sourceSHA256,
+            assetRoot: speech.assetRoot, relativePath: speech.relativePath, frameCount: 24_000)
+        #expect(speech.format == .speech && undeclared.format == .capture && speech != undeclared)
+    }
+
+    @Test func actualOfflineEngineRendersASpeechClipAtItsOwnRate() async throws {
+        let fixture = try AudioFixture(frames: 2400, format: .speech)
+        defer { try? fixture.remove() }
+        let backend = AVFoundationRecordingPlaybackBackend(mode: .offline)
+        try await backend.load(fixture.source, generation: 1)
+        try await backend.play(from: 100, through: 1100, generation: 2)
+        var rendered: [Float] = []
+        while rendered.count < 1000 {
+            rendered.append(contentsOf: try await backend.renderOffline(frames: UInt32(min(512, 1000 - rendered.count))))
+        }
+        #expect(rendered.count == 1000)
+        for (index, sample) in rendered.enumerated() { #expect(abs(sample - Float(fixture.samples[100 + index]) / fixture.fullScale) < 0.000001) }
+        #expect(await backend.position() == 1100)
+        try await backend.stop()
+        #expect(try Data(contentsOf: fixture.root.appendingPathComponent("original.wav")) == fixture.bytes)
+    }
+
+    @Test(arguments: [(RecordingPlaybackFormat.speech, RecordingPlaybackFormat.capture), (.capture, .speech)])
+    func aFileOfTheOtherFormatIsRefused(written: RecordingPlaybackFormat, declared: RecordingPlaybackFormat) async throws {
+        let fixture = try AudioFixture(frames: 4800, format: written, declared: declared)
+        defer { try? fixture.remove() }
+        let backend = AVFoundationRecordingPlaybackBackend(mode: .offline)
+        do {
+            try await backend.load(fixture.source, generation: 1)
+            Issue.record("A \(written) file declared as \(declared) was accepted")
+        } catch let error as RecordingContractError {
+            #expect(error.code == "RECORDING.SOURCE_CHANGED")
+            #expect(error.message == "Selected playback format or frame count differs from its validated source", "\(error)")
+        }
+        await #expect(throws: RecordingContractError.self) { try await backend.play(from: 0, through: 4800, generation: 2) }
+        // The same file declared as what it is plays.
+        let honest = try RecordingPlaybackSource(takeID: "synthetic", sourceSHA256: fixture.source.sourceSHA256, assetRoot: fixture.root,
+                                                 relativePath: "original.wav", frameCount: 4800, format: written)
+        try await backend.load(honest, generation: 3)
+        try await backend.stop()
+    }
+
+    @Test func theFileSizeBoundFollowsTheDeclaredFormat() async throws {
+        // 1,100,000 capture frames are 3,300,044 bytes: inside the capture bound (3,300,000 + 1 MiB)
+        // and past the speech bound for the same frame count (2,200,000 + 1 MiB).
+        let fixture = try AudioFixture(frames: 1_100_000, format: .capture, declared: .speech)
+        defer { try? fixture.remove() }
+        let backend = AVFoundationRecordingPlaybackBackend(mode: .offline)
+        do {
+            try await backend.load(fixture.source, generation: 1)
+            Issue.record("A file past the speech size bound was opened")
+        } catch let error as RecordingContractError {
+            #expect(error.code == "RECORDING.SOURCE_CHANGED" && error.context["boundary"] == "input-identity", "\(error)")
+        }
+        let capture = try RecordingPlaybackSource(takeID: "synthetic", sourceSHA256: fixture.source.sourceSHA256, assetRoot: fixture.root,
+                                                  relativePath: "original.wav", frameCount: 1_100_000)
+        try await backend.load(capture, generation: 2)
         try await backend.stop()
     }
 }
