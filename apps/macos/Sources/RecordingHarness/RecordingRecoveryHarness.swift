@@ -28,8 +28,8 @@ extension RecordingHarness {
         try await observer.wait {
             model.canRecord && model.state.historyCompleteness == "complete" && model.recoveryScanState == "complete"
         }
-        model.selectPrompt("package-reading-one")
-        try await observer.wait { model.state.prompt?.id == "package-reading-one" && !model.state.navigationPending }
+        model.selectPrompt("verified-reading-one")
+        try await observer.wait { model.state.prompt?.id == "verified-reading-one" && !model.state.navigationPending }
 
         let beforeCapture = model.transitions.count
         model.record()
@@ -80,7 +80,7 @@ extension RecordingHarness {
         let report: RecordingJSON = .object([
             "suite": .string("recovery-zero-frame"),
             "take_id": .string(takeID),
-            "prompt_id": .string("package-reading-one"),
+            "prompt_id": .string("verified-reading-one"),
             "ready_after_stop_ns": .integer(Int64(readyNanoseconds)),
             "ready_bound_ns": .integer(Int64(readyBoundSeconds) * 1_000_000_000),
             "record_enabled_after_recheck": .boolean(true),
@@ -112,8 +112,8 @@ extension RecordingHarness {
         await model.connect()
         try await observer.wait { model.canRecord && model.state.historyCompleteness == "complete" }
 
-        model.selectPrompt("package-reading-one")
-        try await observer.wait { model.state.prompt?.id == "package-reading-one" && !model.state.navigationPending }
+        model.selectPrompt("verified-reading-one")
+        try await observer.wait { model.state.prompt?.id == "verified-reading-one" && !model.state.navigationPending }
         model.record()
         try await observer.wait { model.waveform.snapshot?.writtenFrames == 4801 }
         guard let takeID = model.state.takeID else { throw recoveryError("Capture never reserved a take identity") }
@@ -126,7 +126,7 @@ extension RecordingHarness {
             "suite": .string("recovery-crash"),
             "group_id": .string(model.state.groupID ?? "unknown"),
             "take_id": .string(takeID),
-            "prompt_id": .string("package-reading-one"),
+            "prompt_id": .string("verified-reading-one"),
             "helper_failure_code": .string(model.state.errorCode ?? "none"),
             "savable_after_failed_seal": .boolean(model.canSave),
             "microphone_opened": .boolean(false),
@@ -187,8 +187,8 @@ extension RecordingHarness {
         guard before == after else { throw recoveryError("Explicit recovery changed a settled result") }
 
         // The workspace stays fully usable: a new capture records, seals and saves normally.
-        model.selectPrompt("package-reading-two")
-        try await observer.wait { model.state.prompt?.id == "package-reading-two" && !model.state.navigationPending }
+        model.selectPrompt("verified-reading-two")
+        try await observer.wait { model.state.prompt?.id == "verified-reading-two" && !model.state.navigationPending }
         model.record()
         try await observer.wait { model.waveform.snapshot?.writtenFrames == 4801 }
         model.stop()
@@ -196,13 +196,13 @@ extension RecordingHarness {
         guard let savedTakeID = model.state.takeID else { throw recoveryError("Post-recovery capture lost its identity") }
         model.save(advance: false)
         try await observer.wait { model.state.phase == .ready && !model.state.navigationPending }
-        guard model.state.prompt?.id == "package-reading-two" else {
+        guard model.state.prompt?.id == "verified-reading-two" else {
             throw recoveryError("Save after recovery did not retain its exact prompt")
         }
 
         // Sleep ends an active capture explicitly and never resumes it by itself.
-        model.selectPrompt("package-reading-three")
-        try await observer.wait { model.state.prompt?.id == "package-reading-three" && !model.state.navigationPending }
+        model.selectPrompt("verified-reading-three")
+        try await observer.wait { model.state.prompt?.id == "verified-reading-three" && !model.state.navigationPending }
         model.record()
         // Sleep must interrupt a capture that is genuinely open, not one still starting up:
         // a startup cancellation is a different path and would prove nothing about sleep.

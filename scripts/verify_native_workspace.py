@@ -17,7 +17,9 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canonical_json
 from cole_voice_lab.corpus_store import open_corpus_store
@@ -91,16 +93,16 @@ def desktop_session_catalog(catalog: PromptSuite) -> PromptSuite:
     )
 
 
-def package_catalog() -> PromptSuite:
-    """A compact catalog whose every prompt is recorded, so packages cover it exactly."""
+def verified_catalog() -> PromptSuite:
+    """A compact catalog for suites whose takes must pass independent verification."""
 
     return PromptSuite(
         schema_version=PROMPT_SUITE_V2,
-        suite_id="synthetic-package",
+        suite_id="synthetic-verified",
         purpose="capture-pilot",
         prompts=(
             Prompt(
-                prompt_id="package-room-tone",
+                prompt_id="verified-room-tone",
                 instructions="Remain still and quiet. Do not speak.",
                 category="room-tone",
                 style="Keep the room quiet",
@@ -108,8 +110,8 @@ def package_catalog() -> PromptSuite:
             ),
             *(
                 Prompt(
-                    prompt_id=f"package-reading-{name}",
-                    text=f"Synthetic package reading {name}.",
+                    prompt_id=f"verified-reading-{name}",
+                    text=f"Synthetic verified reading {name}.",
                     category="neutral",
                     style="Speak naturally",
                     expected_seconds=1.0,
@@ -120,8 +122,9 @@ def package_catalog() -> PromptSuite:
     )
 
 
-def package_pcm() -> bytes:
-    """One exact 480-frame period, so repeated chunks stay continuous and unclipped."""
+def verified_pcm() -> bytes:
+    """One exact 480-frame sine period: repeated chunks stay continuous and unclipped, so a
+    take recorded from it passes independent verification (the transport pattern does not)."""
 
     return b"".join(
         round(2_000_000 * math.sin(index * math.tau / 480)).to_bytes(3, "little", signed=True)
@@ -170,6 +173,197 @@ def workspace_catalog() -> PromptSuite:
             ),
         ),
     )
+
+
+SERVICE_MODULE_ARGUMENTS = ("-m", "cole_voice_lab.recording_service")
+SYNTHETIC_DEVICE = CaptureDevice(
+    backend="coreaudio",
+    device_id="synthetic-coreaudio-uid",
+    display_name="Synthetic UMIK-1",
+)
+
+
+def private_fixture_root(root: Path, *, package: Path) -> Path:
+    """Resolve and create an empty private (0700) fixture root outside any source checkout.
+
+    Raises: ``ValueError`` when the root lies inside the working directory or ``package``,
+    is not private, or is not empty.
+    """
+
+    root = root.resolve()
+    if root.is_relative_to(Path.cwd().resolve()) or root.is_relative_to(package.resolve()):
+        raise ValueError("Workspace fixture instances must remain outside source checkouts")
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if root.stat().st_mode & 0o077:
+        raise ValueError("Workspace fixtures require a private external root")
+    if any(root.iterdir()):
+        raise ValueError("Workspace evidence destination must be empty")
+    return root
+
+
+def write_recording_schemas(root: Path) -> Path:
+    """Write every recording wire schema under ``root/schemas``; return that directory."""
+
+    schemas = root / "schemas"
+    schemas.mkdir(mode=0o700)
+    for name, model in RECORDING_SCHEMA_MODELS.items():
+        write_canonical_json(schemas / f"{name}.schema.json", model.model_json_schema())
+    return schemas
+
+
+@dataclass(frozen=True)
+class NativeBuilds:
+    """The built helper and harness, with the identities the fixture configuration pins."""
+
+    helper: Path
+    harness: Path
+    recorder: RecordingBuildIdentity
+    client: RecordingBuildIdentity
+
+
+def native_builds(package: Path, binary_directory: Path) -> NativeBuilds:
+    """Identify the helper and harness in ``binary_directory`` built from ``package``."""
+
+    source_identity = canonical_sha256(
+        [
+            (str(path.relative_to(package)), sha256_file(path)[0])
+            for path in sorted((package / "Sources").rglob("*"))
+            if path.is_file()
+        ]
+    )
+    swift_version = subprocess.check_output(["xcrun", "swift", "--version"], text=True)
+    native_environment = canonical_sha256({"swift": swift_version, "synthetic": True})
+    helper = (binary_directory / "ColeVoiceRecorderHelper").resolve()
+    harness = (binary_directory / "RecordingHarness").resolve()
+    return NativeBuilds(
+        helper=helper,
+        harness=harness,
+        recorder=RecordingBuildIdentity(
+            build_id="synthetic-workspace-helper",
+            source_sha256=source_identity,
+            executable_sha256=sha256_file(helper)[0],
+            environment_sha256=native_environment,
+        ),
+        client=RecordingBuildIdentity(
+            build_id="synthetic-workspace-ui",
+            source_sha256=source_identity,
+            executable_sha256=sha256_file(harness)[0],
+            environment_sha256=native_environment,
+        ),
+    )
+
+
+def fixture_environment() -> dict[str, str]:
+    """The environment both fixture peers run with: this process's PATH, HOME, TMPDIR and
+    PYTHONPATH (when set), unbuffered."""
+
+    environment = {
+        key: os.environ[key]
+        for key in ["PATH", "HOME", "TMPDIR", "PYTHONPATH"]
+        if key in os.environ
+    }
+    environment["PYTHONUNBUFFERED"] = "1"
+    return environment
+
+
+def isolated_service_runtime(
+    root: Path, wrapper: Path, module: str, environment: dict[str, str]
+) -> RecordingBuildIdentity:
+    """Copy the service package plus one test-only wrapper into ``root/python-runtime``.
+
+    The wrapper becomes ``cole_voice_lab.<module>``; ``environment["PYTHONPATH"]`` is pointed
+    at the copy, and the service build identity is computed from the copy, exactly as the
+    service will compute its own.
+    Returns: that build identity.
+    """
+
+    from cole_voice_lab import corpus_store, recording_index, recording_service, sqlite_migrations
+
+    runtime = root / "python-runtime"
+    package_copy = runtime / "cole_voice_lab"
+    shutil.copytree(
+        Path(recording_service.__file__).resolve().parent,
+        package_copy,
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    # Match wheel resources before fingerprinting the isolated fixture runtime.
+    migrations = package_copy / "resources/recording_migrations"
+    migrations.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for relative, _, _ in recording_index.recording_index_migration_resources():
+        name = Path(relative).name
+        (migrations / name).write_bytes(recording_index._migration_bytes(name))
+    # The service build identity fingerprints the corpus store migration too.
+    for relative, _, _ in corpus_store.corpus_store_migration_resources():
+        name = Path(relative).name
+        (migrations / name).write_bytes(sqlite_migrations.migration_bytes(name))
+    shutil.copy2(wrapper, package_copy / f"{module}.py")
+    environment["PYTHONPATH"] = str(runtime)
+    identity_data = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from cole_voice_lab import recording_service; "
+                "print(recording_service.recording_service_build_identity().model_dump_json())"
+            ),
+        ],
+        env=environment,
+    )
+    return RecordingBuildIdentity.model_validate_json(identity_data)
+
+
+def application_configuration(
+    root: Path,
+    assets: AssetLayout,
+    schemas: Path,
+    *,
+    purpose: str,
+    builds: NativeBuilds,
+    helper_arguments: list[str],
+    service_build: RecordingBuildIdentity,
+    service_arguments: list[str],
+    environment: dict[str, str],
+    capture_device: CaptureDevice = SYNTHETIC_DEVICE,
+) -> dict[str, Any]:
+    """The recording-application/v2 configuration of a fixture root.
+
+    Writes the three build identity files under ``root`` and returns the configuration; the
+    caller writes it. It names no catalog: the service pins the store's active version.
+    """
+
+    for name, identity in [
+        ("recorder", builds.recorder),
+        ("client", builds.client),
+        ("service", service_build),
+    ]:
+        write_canonical_json(root / f"{name}-build.json", identity)
+    return {
+        "schema_version": "cole-voice-lab.recording-application/v2",
+        "asset_root": str(assets.root),
+        "schema_directory": str(schemas),
+        "client_build": builds.client.model_dump(mode="json"),
+        "client_build_path": str(root / "client-build.json"),
+        "purpose": purpose,
+        "subject_id": SUBJECT,
+        "capture_device": capture_device.model_dump(mode="json"),
+        "capture_host": "synthetic-host",
+        "pilot_approval_path": None,
+        "pilot_approval_sha256": None,
+        "recorder": {
+            "executable": str(builds.helper),
+            "arguments": helper_arguments,
+            "environment": environment,
+            "build": builds.recorder.model_dump(mode="json"),
+            "build_identity_path": str(root / "recorder-build.json"),
+        },
+        "service": {
+            "executable": str(Path(sys.executable).absolute()),
+            "arguments": service_arguments,
+            "environment": environment,
+            "build": service_build.model_dump(mode="json"),
+            "build_identity_path": str(root / "service-build.json"),
+        },
+    }
 
 
 def wait_for_released_locks(
@@ -235,7 +429,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("transport", "review", "review-legacy", "recovery"),
+        choices=("transport", "review", "review-legacy", "recovery", "finetune"),
         default="transport",
     )
     parser.add_argument("--accepted-legacy", action="store_true")
@@ -249,118 +443,41 @@ def main() -> None:
     )
     options = parser.parse_args()
     os.umask(0o077)
-    root = options.output.resolve()
-    if root.is_relative_to(Path.cwd().resolve()) or root.is_relative_to(options.package.resolve()):
-        raise ValueError("Workspace fixture instances must remain outside source checkouts")
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if root.stat().st_mode & 0o077:
-        raise ValueError("Workspace fixtures require a private external root")
-    if any(root.iterdir()):
-        raise ValueError("Workspace evidence destination must be empty")
+    root = private_fixture_root(options.output, package=options.package)
+    if options.suite == "finetune":
+        from native_finetune_fixture import run_finetune_suite
+
+        run_finetune_suite(root, package=options.package, binary_directory=options.binary_directory)
+        return
     assets = AssetLayout.initialize(root / "assets")
-    schemas = root / "schemas"
-    schemas.mkdir(mode=0o700)
-    for name, model in RECORDING_SCHEMA_MODELS.items():
-        write_canonical_json(schemas / f"{name}.schema.json", model.model_json_schema())
+    schemas = write_recording_schemas(root)
     verified_signal = options.suite == "recovery"
-    catalog = package_catalog() if verified_signal else workspace_catalog()
+    catalog = verified_catalog() if verified_signal else workspace_catalog()
     # The transport harness requires the app to record against exactly this reference.
     write_canonical_json(root / "catalog-reference.json", seed_active_catalog(assets, catalog))
     if options.suite == "review-legacy":
         from native_review_fixture import create_legacy
 
         create_legacy(assets, desktop_session_catalog(catalog), accepted=options.accepted_legacy)
-    device = CaptureDevice(
-        backend="coreaudio",
-        device_id="synthetic-coreaudio-uid",
-        display_name="Synthetic UMIK-1",
-    )
-    source_identity = canonical_sha256(
-        [
-            (str(path.relative_to(options.package)), sha256_file(path)[0])
-            for path in sorted((options.package / "Sources").rglob("*"))
-            if path.is_file()
-        ]
-    )
-    swift_version = subprocess.check_output(["xcrun", "swift", "--version"], text=True)
-    native_environment = canonical_sha256({"swift": swift_version, "synthetic": True})
-    helper = (options.binary_directory / "ColeVoiceRecorderHelper").resolve()
-    harness = (options.binary_directory / "RecordingHarness").resolve()
-    recorder_build = RecordingBuildIdentity(
-        build_id="synthetic-workspace-helper",
-        source_sha256=source_identity,
-        executable_sha256=sha256_file(helper)[0],
-        environment_sha256=native_environment,
-    )
-    client_build = RecordingBuildIdentity(
-        build_id="synthetic-workspace-ui",
-        source_sha256=source_identity,
-        executable_sha256=sha256_file(harness)[0],
-        environment_sha256=native_environment,
-    )
-    environment = {
-        key: os.environ[key]
-        for key in ["PATH", "HOME", "TMPDIR", "PYTHONPATH"]
-        if key in os.environ
-    }
-    environment["PYTHONUNBUFFERED"] = "1"
+    builds = native_builds(options.package, options.binary_directory)
+    harness = builds.harness
+    environment = fixture_environment()
 
     service_build = recording_service_build_identity()
-    service_arguments = [
-        "-m",
-        "cole_voice_lab.recording_service",
-        "--native-workspace",
-        "--subject-id",
-        SUBJECT,
-    ]
+    service_arguments = [*SERVICE_MODULE_ARGUMENTS, "--native-workspace", "--subject-id", SUBJECT]
     if options.suite == "recovery":
         # The helper's seal barrier reads this FIFO. Recovery needs that fault hook, not the
         # service-side barrier fixture, so the ordinary canonical service stays in place.
         os.mkfifo(root / "seal-release.fifo", 0o600)
     if options.delayed:
-        from cole_voice_lab import (
-            corpus_store,
-            recording_index,
-            recording_service,
-            sqlite_migrations,
+        service_build = isolated_service_runtime(
+            root,
+            Path(__file__).resolve().parents[1] / "tests/native_workspace_service_fixture.py",
+            "_synthetic_workspace_fixture",
+            environment,
         )
-
-        runtime = root / "python-runtime"
-        package_copy = runtime / "cole_voice_lab"
-        shutil.copytree(
-            Path(recording_service.__file__).resolve().parent,
-            package_copy,
-            ignore=shutil.ignore_patterns("__pycache__"),
-        )
-        # Match wheel resources before fingerprinting the isolated fixture runtime.
-        migrations = package_copy / "resources/recording_migrations"
-        migrations.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for relative, _, _ in recording_index.recording_index_migration_resources():
-            name = Path(relative).name
-            (migrations / name).write_bytes(recording_index._migration_bytes(name))
-        # The service build identity fingerprints the corpus store migration too.
-        for relative, _, _ in corpus_store.corpus_store_migration_resources():
-            name = Path(relative).name
-            (migrations / name).write_bytes(sqlite_migrations.migration_bytes(name))
-        fixture_source = (
-            Path(__file__).resolve().parents[1] / "tests/native_workspace_service_fixture.py"
-        )
-        shutil.copy2(fixture_source, package_copy / "_synthetic_workspace_fixture.py")
-        environment["PYTHONPATH"] = str(runtime)
         for barrier in ["seal", "save", "analysis"]:
             os.mkfifo(root / f"{barrier}-release.fifo", 0o600)
-        identity_data = subprocess.check_output(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "from cole_voice_lab import recording_service; "
-                    "print(recording_service.recording_service_build_identity().model_dump_json())"
-                ),
-            ],
-            env=environment,
-        )
-        service_build = RecordingBuildIdentity.model_validate_json(identity_data)
         service_arguments = [
             "-m",
             "cole_voice_lab._synthetic_workspace_fixture",
@@ -371,16 +488,10 @@ def main() -> None:
             SUBJECT,
         ]
 
-    for name, identity in [
-        ("recorder", recorder_build),
-        ("client", client_build),
-        ("service", service_build),
-    ]:
-        write_canonical_json(root / f"{name}-build.json", identity)
     pcm = root / "pattern.pcm"
-    # Package preparation needs takes that actually pass independent verification; the
-    # three-sample transport pattern is two-thirds full-scale and fails the clipping check.
-    pcm.write_bytes(package_pcm() if verified_signal else PATTERN_PCM)
+    # Recovery needs takes that actually pass independent verification; the three-sample
+    # transport pattern is two-thirds full-scale and fails the clipping check.
+    pcm.write_bytes(verified_pcm() if verified_signal else PATTERN_PCM)
     helper_arguments = [
         "--synthetic-pcm",
         str(pcm),
@@ -391,34 +502,17 @@ def main() -> None:
     ]
     if options.delayed or options.suite == "recovery":
         helper_arguments += ["--synthetic-seal-barrier-directory", str(root)]
-    # The configuration names no catalog: the service pins the store's active version.
-    configuration = {
-        "schema_version": "cole-voice-lab.recording-application/v2",
-        "asset_root": str(assets.root),
-        "schema_directory": str(schemas),
-        "client_build": client_build.model_dump(mode="json"),
-        "client_build_path": str(root / "client-build.json"),
-        "purpose": catalog.purpose,
-        "subject_id": SUBJECT,
-        "capture_device": device.model_dump(mode="json"),
-        "capture_host": "synthetic-host",
-        "pilot_approval_path": None,
-        "pilot_approval_sha256": None,
-        "recorder": {
-            "executable": str(helper),
-            "arguments": helper_arguments,
-            "environment": environment,
-            "build": recorder_build.model_dump(mode="json"),
-            "build_identity_path": str(root / "recorder-build.json"),
-        },
-        "service": {
-            "executable": str(Path(sys.executable).absolute()),
-            "arguments": service_arguments,
-            "environment": environment,
-            "build": service_build.model_dump(mode="json"),
-            "build_identity_path": str(root / "service-build.json"),
-        },
-    }
+    configuration = application_configuration(
+        root,
+        assets,
+        schemas,
+        purpose=catalog.purpose,
+        builds=builds,
+        helper_arguments=helper_arguments,
+        service_build=service_build,
+        service_arguments=service_arguments,
+        environment=environment,
+    )
     config_file = root / "recording-application.json"
     write_canonical_json(config_file, configuration)
     if options.suite == "recovery":

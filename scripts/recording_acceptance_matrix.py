@@ -102,10 +102,10 @@ PARITY_ROWS: tuple[dict[str, Any], ...] = (
         "evidence": {"kind": "artifact", "path": "review-legacy/native/legacy-review-report.json"},
     },
     {
-        "id": "package_compatibility",
+        "id": "finetune_from_recordings",
         "section": "9",
-        "requirement": "Lab packages are prepared from verified takes and refuse otherwise",
-        "evidence": {"kind": "identity", "key": "package_preparation"},
+        "requirement": "Fine-tune model trains on the latest kept takes, shows progress, cancels",
+        "evidence": {"kind": "identity", "key": "finetune"},
     },
     {
         "id": "recovery_after_crash",
