@@ -14,7 +14,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
 - Several Macs or writers sharing one library.
 - A second off-site copy (Decision 5).
 - The 1,000-take acceptance track and the physical-test roots.
-- The pending combined build, install and physical check of the corpus-store, pipeline and Speak plans. That work comes before Step 1.
+- The pending combined build, install and physical check of the corpus-store, pipeline and Speak plans. ~~That work comes before Step 1.~~ Cole chose on 2026-09-17 to start the vault first (the UMIK-1 was not attached); that build will be made later from the finished vault commit.
 
 ## Context
 
@@ -470,6 +470,17 @@ Every piece of code that stores or reads the lab's data depends on storage and c
 7. **New dependency.** Allow downloading `cryptography` (exact version, hash-locked, used only for vault encryption)?
    - The alternative is a signed Swift helper using CryptoKit. It would keep the key out of Python but takes more work.
 
+### Cole's answers (2026-09-17)
+
+0. A copy. The Mac keeps the working database; the vault holds encrypted copies. No live remote catalog.
+1. Yes: a standing `VaultDestinationApproval` with a 12-month expiry, plus a ledger entry before each upload. Fine-tune checkpoints and datasets are a separate opt-in class; it is built now, and Cole decides at deployment whether to opt in. Vault storage does not require an approved consent record; D-020 must say why.
+2. Accepted: login Keychain plus an offline recovery sheet.
+3. Apply the tag and access rules at deployment. No Tailnet Lock for now.
+4. Speak clips stay on the Mac only.
+5. No second copy in this plan.
+6. Runs are removed from the Mac only by an explicit command per run, after verification.
+7. Yes: download `cryptography`, exact version, hash-locked, as the optional `vault` extra.
+
 ## Review
 
 The first draft was reviewed on 2026-09-17 by `rigorous-architect` (the storage boundary) and `doddy` (the trust boundary). The revision made these changes:
@@ -490,3 +501,5 @@ The first draft was reviewed on 2026-09-17 by `rigorous-architect` (the storage 
   - Local copies are removed only after verification by download.
   - Copying takes no writer locks.
   - Swift contract twins ship in the step that changes each wire contract.
+
+**Amended 2026-09-17:** Cole answered Decisions 0–7 (recorded above) and chose to start before the pending combined build, which will be made from the finished vault commit.
