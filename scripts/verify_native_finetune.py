@@ -202,7 +202,7 @@ def verify(
         "transport.fine-tune",
     ]
     assert report["fixed_geometry"] is True
-    assert report["microphone_opened"] is False and report["window_shown"] is False
+    assert report["visible_windows"] == 0, "the harness showed a window"
 
     # The unavailable root: the control explained itself and nothing was submitted.
     missing = json.loads(

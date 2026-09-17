@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import select
+import shutil
 import signal
 import stat
 import subprocess
@@ -26,8 +27,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from finetune_speech_runs import sized_catalog, write_wav
 from finetune_speech_runs import write_speech_run as shared_speech_run
-from finetune_speech_runs import write_wav
 from finetune_stub_runtime import stub_finetune_runtime, write_stub_mode
 from native_finetune_service_fixture import format_pins
 from test_pilot_v2_coverage import SUBJECT, released_pilot_v2
@@ -47,10 +48,12 @@ from cole_voice_lab.finetune import (
     FineTuneError,
     FineTunePretrainedPins,
     FineTuneRun,
+    FineTuneSummaryCache,
     FineTuneTrustedDigests,
     SpeechClip,
     describe_finetune_runtime,
     discard_speech_output,
+    discard_unfinished_speech,
     finished_finetune_run_ids,
     finished_finetune_runs,
     latest_finished_finetune_run,
@@ -65,6 +68,7 @@ from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import (
     CancelSynthesisCommand,
     FineTuneCommand,
+    FineTuneStatusCommand,
     RecordingError,
     RecordingResponse,
     SaveEvent,
@@ -75,12 +79,17 @@ from cole_voice_lab.recording_contracts import (
 )
 from cole_voice_lab.recording_finetune_jobs import (
     FINETUNE_WORKER_MODULE,
+    SPEECH_ACTIVE_MARKER,
+    SUPERVISION_FAILURE,
+    SUPERVISION_STOPPED,
     FineTuneJobError,
     FineTuneJobQueue,
     FineTuneSupervisor,
+    SpeechActiveMarker,
     SpeechWorkerReply,
     SpeechWorkerRequest,
     SpeechWorkerResolution,
+    active_speech_request,
     decode_finetune_worker_message,
     process_table,
     run_speech_worker_request,
@@ -93,6 +102,7 @@ from cole_voice_lab.recording_service import (
     RecordingWorkspaceBackend,
     recording_service_build_identity,
 )
+from cole_voice_lab.recording_takes import write_recording_evidence
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 # Catalog order: a reference candidate without a recording, one with, then a plain prompt.
@@ -197,6 +207,152 @@ def test_finished_runs_are_ordered_newest_first_and_limited(speech: Speech) -> N
     assert latest is not None and latest.reference_prompt_ids == ("reference-warm-01",)
     with pytest.raises(ValueError, match="at least one"):
         finished_finetune_runs(layout, limit=0)
+
+
+def test_status_rereads_only_the_runs_whose_records_changed(
+    speech: Speech, speaking: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    layout = speech.layout
+    catalog = sized_catalog()
+    prompts = tuple(prompt.prompt_id for prompt in catalog.prompts)
+    run_ids = [f"finetune-{index:02d}" for index in range(33)]
+    # 32 finished runs of the published corpus's size: 1,886 corpus entries, 34 clips.
+    for index, run_id in enumerate(run_ids[:32]):
+        shared_speech_run(
+            layout,
+            run_id,
+            catalog=catalog,
+            subject_id=SUBJECT,
+            started_at=START,
+            finished_at=START + timedelta(minutes=index + 1),
+            entries=prompts,
+            clips=prompts[:34],
+            samples=True,
+        )
+    runs_root = speech.path("derived/finetune")
+    corpus = runs_root / "finetune-07" / "dataset" / "corpus.json"
+    assert corpus.stat().st_size > 1_000_000
+    reads: list[str] = []
+    original = finetune_module._read_finetune_record
+
+    def counted(path: Path, model: Any) -> Any:
+        reads.append(path.relative_to(runs_root).as_posix())
+        return original(path, model)
+
+    monkeypatch.setattr(finetune_module, "_read_finetune_record", counted)
+    supervisor = supervisor_for(speech, speaking)
+    scan = sorted(f"{run_id}/run.json" for run_id in run_ids[:32])
+
+    def status(expected_reads: list[str]) -> tuple[Any, float]:
+        reads.clear()
+        started = time.perf_counter()
+        event = supervisor.status(FineTuneStatusCommand(operation_id="status-1"))
+        seconds = time.perf_counter() - started
+        assert sorted(reads) == sorted(expected_reads)
+        return event, seconds
+
+    def records(run_id: str) -> list[str]:
+        return [
+            f"{run_id}/{name}"
+            for name in (
+                "run.json",
+                "dataset/dataset.json",
+                "dataset/corpus.json",
+                "samples/finetuned/samples.json",
+                "samples/base/samples.json",
+            )
+        ]
+
+    everything = [read for run_id in run_ids[:32] for read in records(run_id)]
+    first, first_seconds = status(scan + everything)
+    assert [run.run_id for run in first.finished_runs] == run_ids[31::-1]
+    assert first.finished_runs[0].reference_prompt_ids == ("sentence-0000", "sentence-0001")
+    # Unchanged records are not read again; only the run ordering reads each run.json.
+    second, second_seconds = status(scan)
+    assert second == first
+    assert second_seconds * 4 < first_seconds
+    # A record replaced by an identical copy is a new file: that run is read again.
+    copy = corpus.with_name("corpus-copy.json")
+    shutil.copy2(corpus, copy)
+    os.replace(copy, corpus)
+    assert status(scan + records("finetune-07"))[0] == first
+    # A damaged record fails every reply until it is repaired.
+    intact = corpus.read_bytes()
+    corpus.write_bytes(intact[:-40])
+    for _ in range(2):
+        damaged, _ = status(scan + records("finetune-07")[:3])
+        assert damaged.finished_runs == () and damaged.latest_run is None
+        assert damaged.latest_run_error is not None
+        assert damaged.latest_run_error.code == "FINETUNE.SOURCE_CHANGED"
+    corpus.write_bytes(intact)
+    assert status(scan + records("finetune-07"))[0] == first
+    # A newer run joins the listing and the oldest leaves it; only the new run is read.
+    shared_speech_run(
+        layout,
+        run_ids[32],
+        catalog=catalog,
+        subject_id=SUBJECT,
+        started_at=START,
+        finished_at=START + timedelta(minutes=40),
+        entries=prompts[:34],
+        clips=prompts[:34],
+    )
+    newer, _ = status([*scan, f"{run_ids[32]}/run.json", *records(run_ids[32])[:3]])
+    assert [run.run_id for run in newer.finished_runs] == run_ids[:0:-1]
+    assert status([*scan, f"{run_ids[32]}/run.json"])[0] == newer
+    write_canonical_json(
+        tmp_path / "status-cost-evidence.json",
+        {
+            "synthetic_only": True,
+            "finished_runs": 32,
+            "corpus_bytes": len(intact),
+            "first_status_seconds": round(first_seconds, 4),
+            "repeated_status_seconds": round(second_seconds, 4),
+        },
+    )
+
+
+def test_a_summary_is_kept_only_while_its_records_can_be_identified_and_held_still(
+    speech: Speech, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = speech.layout
+    run = write_speech_run(layout, "finetune-a")
+    cache = FineTuneSummaryCache()
+    summaries: list[str] = []
+    original = finetune_module.finetune_run_summary
+
+    def counted(layout: AssetLayout, run_root: str) -> Any:
+        summaries.append(run_root)
+        return original(layout, run_root)
+
+    monkeypatch.setattr(finetune_module, "finetune_run_summary", counted)
+    roots = (run.run_root,)
+    # A samples path that cannot be looked up (a file where a directory belongs) is read
+    # every time, never kept.
+    (speech.path(run.run_root) / "samples").write_bytes(b"not a directory")
+    first = cache.summaries(layout, roots)
+    assert cache.summaries(layout, roots) == first and summaries == [run.run_root] * 2
+    (speech.path(run.run_root) / "samples").unlink()
+    # A record that changes while the summary is read is not kept either.
+    corpus = speech.path(run.run_root) / "dataset" / "corpus.json"
+
+    def changing(layout: AssetLayout, run_root: str) -> Any:
+        summary = counted(layout, run_root)
+        os.utime(corpus, ns=(time.time_ns(), time.time_ns() + len(summaries) * 1_000_000_000))
+        return summary
+
+    monkeypatch.setattr(finetune_module, "finetune_run_summary", changing)
+    summaries.clear()
+    cache.summaries(layout, roots)
+    cache.summaries(layout, roots)
+    assert summaries == [run.run_root] * 2
+    monkeypatch.setattr(finetune_module, "finetune_run_summary", counted)
+    summaries.clear()
+    kept = cache.summaries(layout, roots)
+    assert cache.summaries(layout, roots) == kept and summaries == [run.run_root]
+    # Runs that are no longer listed are dropped.
+    assert cache.summaries(layout, ()) == ()
+    assert cache.summaries(layout, roots) == kept and summaries == [run.run_root] * 2
 
 
 def test_run_inputs_load_bound_together_or_not_at_all(speech: Speech) -> None:
@@ -456,6 +612,7 @@ def test_a_changed_or_missing_checkpoint_or_reference_is_refused(speech: Speech)
             "which it was not asked for",
         ),
         ({"synthesis_report": "done"}, "synthesizer reported 0 of 1 samples"),
+        ({"synthesis_leaves_work": True}, "left its work directory"),
     ],
 )
 def test_a_synthesizer_that_writes_or_reports_the_wrong_audio_fails_by_name(
@@ -512,6 +669,102 @@ def test_discarding_speech_output_removes_only_a_real_directory(speech: Speech) 
     with pytest.raises(SecurityError):
         discard_speech_output(layout, "speak-1")
     assert elsewhere.is_dir()
+
+
+def unfinished_request(speech: Speech, operation_id: str) -> Path:
+    """What a request cut short by a service stop leaves: its job, a partial clip, the
+    synthesizer's work directory with F5's reference copy, and a writer's temporary file."""
+    directory = speech.path(f"derived/speech/{operation_id}")
+    (directory / "synthesis-tmp" / "nested").mkdir(parents=True)
+    (directory / "job.json").write_text('{"text": "Hello."}')
+    (directory / "speech-01.wav").write_bytes(b"RIFF partial")
+    (directory / ".speech.json.tmp-0123456789abcdef").write_bytes(b"{")
+    (directory / "synthesis-tmp" / "tmpabc123.wav").write_bytes(b"reference copy")
+    (directory / "synthesis-tmp" / "nested" / "tmp.bin").write_bytes(b"library scratch")
+    return directory
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["stray-file", "linked-job", "linked-copy", "work-file", "top-file", "top-link", "bad-name"],
+)
+def test_speech_output_that_speak_did_not_write_is_left_in_place(
+    speech: Speech, damage: str
+) -> None:
+    layout = speech.layout
+    assert discard_unfinished_speech(layout) == ()  # no derived/speech yet
+    finished = speech.path("derived/speech/speak-0")
+    finished.mkdir(parents=True)
+    (finished / "speech.json").write_text("{}")
+    (finished / "notes.txt").write_text("a finished request is never touched")
+    unfinished_request(speech, "speak-1")
+    damaged = unfinished_request(speech, "speak-2")
+    root = speech.path("derived/speech")
+    if damage == "stray-file":
+        (damaged / "notes.txt").write_text("not Speak's")
+    elif damage == "linked-job":
+        (damaged / "job.json").unlink()
+        (damaged / "job.json").symlink_to(finished / "notes.txt")
+    elif damage == "linked-copy":
+        (damaged / "synthesis-tmp" / "tmpabc123.wav").unlink()
+        (damaged / "synthesis-tmp" / "tmpabc123.wav").symlink_to(finished / "notes.txt")
+    elif damage == "work-file":
+        shutil.rmtree(damaged / "synthesis-tmp")
+        (damaged / "synthesis-tmp").write_bytes(b"not a directory")
+    elif damage == "top-file":
+        (root / ".DS_Store").write_bytes(b"Finder")
+    elif damage == "top-link":
+        (root / "speak-9").symlink_to(finished)
+    else:
+        (root / "Speak Two").mkdir()
+    top_level = damage in {"top-file", "top-link", "bad-name"}
+    kept = (
+        "speak-2"
+        if not top_level
+        else {"top-file": ".DS_Store", "top-link": "speak-9"}.get(damage, "Speak Two")
+    )
+
+    def snapshot() -> list[str]:
+        return sorted(
+            str(path.relative_to(root))
+            for path in root.rglob("*")
+            if path.relative_to(root).parts[0] == kept
+        )
+
+    before = snapshot()
+    removed = discard_unfinished_speech(layout)
+    # Only request directories that hold exactly what Speak writes are removed; anything
+    # else (a damaged request directory, an entry not named like a request) stays whole.
+    assert removed == (("speak-1", "speak-2") if top_level else ("speak-1",))
+    assert (root / kept).exists() or (root / kept).is_symlink()
+    assert snapshot() == before
+    assert (finished / "notes.txt").exists()
+
+
+def test_a_finder_file_inside_an_unfinished_request_does_not_keep_it(speech: Speech) -> None:
+    directory = unfinished_request(speech, "speak-1")
+    (directory / ".DS_Store").write_bytes(b"Finder")
+    assert discard_unfinished_speech(speech.layout) == ("speak-1",)
+    assert not directory.exists()
+
+
+def test_unfinished_speech_is_removed_and_finished_speech_is_kept(speech: Speech) -> None:
+    layout = speech.layout
+    finished = speech.path("derived/speech/speak-0")
+    finished.mkdir(parents=True)
+    (finished / "speech.json").write_text("{}")
+    (finished / "speech-01.wav").write_bytes(b"RIFF clip")
+    unfinished_request(speech, "speak-1")
+    speech.path("derived/speech/speak-2").mkdir()  # created, nothing written yet
+    assert discard_unfinished_speech(layout) == ("speak-1", "speak-2")
+    assert sorted(path.name for path in speech.path("derived/speech").iterdir()) == ["speak-0"]
+    assert sorted(path.name for path in finished.iterdir()) == ["speech-01.wav", "speech.json"]
+    assert discard_unfinished_speech(layout) == ()
+    speech.path("derived/speech/speak-0").rename(speech.path("derived/speech-moved"))
+    speech.path("derived/speech").rmdir()
+    speech.path("derived/speech").symlink_to(speech.path("derived/speech-moved"))
+    with pytest.raises(SecurityError):
+        discard_unfinished_speech(layout)
 
 
 # -- digests verified once --------------------------------------------------------------------
@@ -695,7 +948,12 @@ def supervisor_for(speech: Speech, jobs: Any, **options: Any) -> FineTuneSupervi
 
 def speech_group(speech: Speech, operation_id: str) -> int:
     """The worker group of ``operation_id``'s Speak request, once its synthesizer runs."""
-    marker = worker_command_marker(speech.layout, operation_id)
+    return speech_group_of(speech.layout, operation_id)
+
+
+def speech_group_of(layout: AssetLayout, operation_id: str) -> int:
+    """The worker group of ``operation_id``'s Speak request in ``layout``, once it synthesizes."""
+    marker = worker_command_marker(layout, operation_id)
     found: list[int] = []
 
     def synthesizing() -> bool:
@@ -855,10 +1113,13 @@ def test_a_speak_request_past_its_deadline_is_killed_with_its_output(
     group = speech_group(speech, "speak-1")
     failed = events.wait_for(said("failed"), timeout=30)
     assert failed.error is not None and failed.error.code == "FINETUNE.SYNTHESIS_DEADLINE"
-    assert failed.error.message.startswith("speech synthesis took longer than 1.5 seconds")
+    assert failed.error.message == (
+        "speech synthesis took longer than 1.5 seconds and was stopped; try a shorter text"
+    )
     assert failed.error.retryable
     wait_until(lambda: live_group(group) == [], timeout=10)
     assert not speech.path("derived/speech/speak-1").exists()
+    assert not speech.path(SPEECH_ACTIVE_MARKER).exists()
     assert supervisor.fatal_error is None
 
 
@@ -1109,10 +1370,224 @@ def test_a_stopping_service_ends_no_speak_request_and_leaves_no_worker(
     supervisor.synthesize(say())
     supervisor.start()
     group = speech_group(speech, "speak-1")
+    assert active_speech_request(speech.layout) is not None
     supervisors.remove(supervisor)
     supervisor.close()
     assert live_group(group) == []
     assert [event.state for event in events.events] == ["queued", "running"]
+    assert not speech.path(SPEECH_ACTIVE_MARKER).exists()
+
+
+def dead_pid() -> int:
+    """The pid of a process that has already exited and been reaped."""
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    return gone.pid
+
+
+def test_a_running_speak_request_is_marked_until_its_group_is_gone(
+    speech: Speech, speaking: Any
+) -> None:
+    write_speech_run(speech.layout, "finetune-a")
+    marker = speech.path(SPEECH_ACTIVE_MARKER)
+    _queue, events, _ = speaking
+    supervisor = supervisor_for(speech, speaking)
+    speech.mode(synthesis_seconds=60)
+    supervisor.synthesize(say())
+    assert not marker.exists()  # a queued request has not taken the GPU yet
+    supervisor.start()
+    group = speech_group(speech, "speak-1")
+    running = active_speech_request(speech.layout)
+    assert running is not None
+    assert (running.operation_id, running.pid) == ("speak-1", os.getpid())
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
+    # The synthesizer keeps F5's reference copy in its private work directory meanwhile.
+    work = speech.path("derived/speech/speak-1/synthesis-tmp")
+    wait_until(lambda: (work / "tmpreference.wav").exists())
+    assert stat.S_IMODE(work.stat().st_mode) == 0o700
+    assert [path.name for path in work.iterdir()] == ["tmpreference.wav"]
+    supervisor.cancel_synthesis(hush())
+    events.wait_for(said("cancelled"), timeout=30)
+    assert live_group(group) == [] and not marker.exists()
+    speech.mode()
+    supervisor.synthesize(say("speak-2"))
+    events.wait_for(said("running", operation_id="speak-2"))
+    events.wait_for(said("finished", operation_id="speak-2"))
+    assert not marker.exists() and active_speech_request(speech.layout) is None
+    assert sorted(path.name for path in speech.path("derived/speech/speak-2").iterdir()) == [
+        "speech-01.wav",
+        "speech.json",
+    ]
+
+
+def test_supervision_start_clears_what_a_stopped_service_left_of_speak(
+    speech: Speech, speaking: Any
+) -> None:
+    write_speech_run(speech.layout, "finetune-a")
+    layout = speech.layout
+    marker = speech.path(SPEECH_ACTIVE_MARKER)
+    stale = SpeechActiveMarker(operation_id="speak-0", pid=dead_pid(), started_at=START)
+    write_recording_evidence(marker, stale)
+    assert active_speech_request(layout) is None  # its service is gone
+    unfinished = unfinished_request(speech, "speak-0")
+    finished = speech.path("derived/speech/speak-9")
+    finished.mkdir()
+    (finished / "speech.json").write_text("{}")
+    _queue, events, _ = speaking
+    supervisor = supervisor_for(speech, speaking)
+    supervisor.start()
+    wait_until(lambda: not marker.exists() and not unfinished.exists())
+    assert finished.is_dir() and supervisor.fatal_error is None
+    assert supervisor.synthesize(say()).state == "queued"
+    events.wait_for(said("finished"))
+    supervisor.close()
+    # A marker whose service still lives is left for this service's next request to replace.
+    live = stale.model_copy(update={"pid": os.getpid()})
+    write_recording_evidence(marker, live)
+    again = supervisor_for(speech, speaking)
+    again.start()
+    assert again.synthesize(say("speak-2")).state == "queued"
+    events.wait_for(said("running", operation_id="speak-2"))
+    assert again.fatal_error is None
+    events.wait_for(said("finished", operation_id="speak-2"))
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("damage", "code", "message"),
+    [
+        (
+            "marker",
+            "RECORDING.SOURCE_CHANGED",
+            f"fine-tune supervision stopped: {SPEECH_ACTIVE_MARKER} is damaged (invalid "
+            "versioned recording evidence); remove it, then restart the app",
+        ),
+        (
+            "unreadable",
+            "RECORDING.WRITE_FAILED",
+            "fine-tune supervision stopped: unfinished Speak output could not be cleared",
+        ),
+    ],
+)
+def test_supervision_does_not_start_over_speak_output_it_cannot_explain(
+    speech: Speech, speaking: Any, damage: str, code: str, message: str
+) -> None:
+    write_speech_run(speech.layout, "finetune-a")
+    directory = unfinished_request(speech, "speak-1")
+    if damage == "marker":
+        path = speech.path(SPEECH_ACTIVE_MARKER)
+        path.write_text("{}")
+        path.chmod(0o600)
+    else:
+        directory.chmod(0o000)
+    failures: list[RecordingError] = []
+    supervisor = supervisor_for(speech, speaking, on_failure=failures.append)
+    try:
+        supervisor.start()
+        wait_until(lambda: bool(failures))
+    finally:
+        directory.chmod(0o700)
+    assert failures[0].code == code and failures[0].message.startswith(message)
+    assert not failures[0].retryable
+    assert directory.is_dir()  # nothing it cannot explain is removed
+    with pytest.raises(FineTuneJobError) as refused_request:
+        supervisor.synthesize(say("speak-2"))
+    error = refused_request.value.recording_error
+    assert (error.code, error.message) == ("RECORDING.GATE_NOT_READY", SUPERVISION_STOPPED)
+
+
+def test_supervision_starts_and_keeps_speak_output_it_does_not_recognise(
+    speech: Speech, speaking: Any
+) -> None:
+    write_speech_run(speech.layout, "finetune-a")
+    directory = unfinished_request(speech, "speak-1")
+    (directory / "notes.txt").write_text("not Speak's")
+    stray = speech.path("derived/speech/.DS_Store")
+    stray.write_bytes(b"Finder")
+    _queue, events, _ = speaking
+    failures: list[RecordingError] = []
+    supervisor = supervisor_for(speech, speaking, on_failure=failures.append)
+    supervisor.start()
+    assert supervisor.synthesize(say("speak-2")).state == "queued"
+    events.wait_for(said("finished", operation_id="speak-2"))
+    assert failures == [] and supervisor.fatal_error is None
+    assert sorted(path.name for path in directory.iterdir()) == sorted(
+        [
+            ".speech.json.tmp-0123456789abcdef",
+            "job.json",
+            "notes.txt",
+            "speech-01.wav",
+            "synthesis-tmp",
+        ]
+    )
+    assert stray.read_bytes() == b"Finder"
+
+
+def test_a_speak_marker_that_cannot_be_written_or_removed_is_named(
+    speech: Speech, speaking: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_speech_run(speech.layout, "finetune-a")
+    marker = speech.path(SPEECH_ACTIVE_MARKER)
+    _queue, events, _ = speaking
+    failures: list[RecordingError] = []
+    supervisor = supervisor_for(speech, speaking, on_failure=failures.append)
+    supervisor.start()
+    supervisor.synthesize(say("speak-1"))
+    events.wait_for(said("finished", operation_id="speak-1"))
+    marker.mkdir()  # a marker that cannot be written: the request fails without a worker
+    supervisor.synthesize(say("speak-2"))
+    failed = events.wait_for(said("failed", operation_id="speak-2"))
+    assert failed.error.code == "RECORDING.WRITE_FAILED" and failed.error.retryable
+    assert failed.error.message.startswith("Speak could not record that it is running")
+    assert not speech.path("derived/speech/speak-2").exists()
+    assert [event.state for _, request, event in events.items if request == "speak-2"] == [
+        "queued",
+        "failed",
+    ]
+    marker.rmdir()
+    assert supervisor.fatal_error is None and not failures
+
+    def stuck(path: Path) -> None:
+        raise OSError("synthetic unremovable marker")
+
+    monkeypatch.setattr(jobs_module, "_remove_evidence", stuck)
+    supervisor.synthesize(say("speak-3"))
+    wait_until(lambda: bool(failures))
+    assert failures[0].message == SUPERVISION_FAILURE
+    assert str(supervisor.fatal_error) == "synthetic unremovable marker"
+    # The marker stays, so command-line training keeps waiting until the app restarts.
+    assert active_speech_request(speech.layout) is not None
+    assert not any(said("finished", operation_id="speak-3")(event) for event in events.events)
+
+
+def test_a_speak_group_that_outlives_sigkill_stops_supervision(
+    speech: Speech, speaking: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_speech_run(speech.layout, "finetune-a")
+    speech.mode(synthesis_seconds=60)
+    kill_wait = 1.0
+    monkeypatch.setattr(jobs_module, "_KILL_WAIT_SECONDS", kill_wait)
+    monkeypatch.setattr(jobs_module, "_GROUP_STOP_SECONDS", 0.2)
+    _queue, events, _ = speaking
+    failures: list[RecordingError] = []
+    supervisor = supervisor_for(speech, speaking, on_failure=failures.append)
+    supervisor.synthesize(say())
+    supervisor.start()
+    group = speech_group(speech, "speak-1")
+    # The group is killed for real, but the supervisor is told it never goes away.
+    monkeypatch.setattr(FineTuneSupervisor, "_group_alive", lambda self, pgid: True)
+    asked = time.monotonic()
+    assert supervisor.cancel_synthesis(hush()).state == "running"
+    wait_until(lambda: bool(failures), timeout=20)
+    assert time.monotonic() - asked >= kill_wait
+    assert failures[0].message == SUPERVISION_FAILURE
+    assert str(supervisor.fatal_error) == f"the fine-tune worker group {group} did not stop"
+    wait_until(lambda: live_group(group) == [], timeout=10)
+    # Nothing claims the request ended, and the GPU stays marked busy for the command line.
+    assert [event.state for event in events.events] == ["queued", "running"]
+    assert active_speech_request(speech.layout) is not None
+    with pytest.raises(FineTuneJobError, match="supervision stopped"):
+        supervisor.synthesize(say("speak-2"))
 
 
 def test_only_the_newest_ended_requests_are_remembered(speech: Speech, speaking: Any) -> None:
@@ -1363,32 +1838,26 @@ def test_the_workspace_backend_answers_speak_commands_without_an_open_context(
         workspace.index.close()
 
 
-def test_a_real_service_speaks_while_a_take_is_saved(package_rig: Any, tmp_path: Path) -> None:
-    rig, analysis, _packages = package_rig
-    layout = rig.layout
-    write_speech_run(layout, "finetune-a")
-    runtime, pin = stub_finetune_runtime(tmp_path.resolve() / "runtime", {"synthesis_seconds": 3})
-    # A separate unsaved draft makes the concurrent Save a real durable mutation.
-    rig.now = utc_now() - timedelta(seconds=5)
-    rig.store.clock = lambda: rig.now
-    draft = rig.seal(rig.reserve("service-draft", "synthetic-0001"), "service-draft-seal")
-    rig.store.clock = utc_now
-    analysis.close()
-    build = recording_service_build_identity()
+def start_speech_service(
+    rig: Any, runtime: Path, pin: FineTunePretrainedPins, tmp_path: Path
+) -> subprocess.Popen[bytes]:
+    """The real group-scoped recording service for ``rig``'s library, with ``runtime``.
+
+    The shipped service never overrides the pins; the test-only wrapper hands the stub's pins
+    to its supervisor and runs the unchanged service.
+    """
     own, client = tmp_path / "service-build.json", tmp_path / "client-build.json"
-    write_canonical_json(own, build)
+    write_canonical_json(own, recording_service_build_identity())
     write_canonical_json(client, build_identity())
     group = rig.store.get_group(rig.group_id)
-    # The shipped service never overrides the pins; the test-only wrapper hands the stub's
-    # pins to its supervisor and runs the unchanged service.
-    process = subprocess.Popen(
+    return subprocess.Popen(
         [
             sys.executable,
             str(REPOSITORY / "tests" / "native_finetune_service_fixture.py"),
             "--test-pretrained-pins",
             format_pins(pin),
             "--asset-root",
-            str(layout.root),
+            str(rig.layout.root),
             "--catalog-sha256",
             group.catalog_sha256,
             "--recording-group-id",
@@ -1406,6 +1875,105 @@ def test_a_real_service_speaks_while_a_take_is_saved(package_rig: Any, tmp_path:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+
+
+def test_a_killed_service_leaves_speak_output_that_the_next_start_removes(
+    package_rig: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from cole_voice_lab.cli import main as voice_lab
+
+    rig, analysis, _packages = package_rig
+    layout = rig.layout
+    write_speech_run(layout, "finetune-a")
+    runtime, pin = stub_finetune_runtime(tmp_path.resolve() / "runtime", {"synthesis_seconds": 60})
+    analysis.close()
+    finished = layout.root / "derived/speech/speak-done"
+    finished.mkdir(parents=True)
+    (finished / "speech.json").write_text("{}")
+    (finished / "speech-01.wav").write_bytes(b"RIFF finished clip")
+    process = start_speech_service(rig, runtime, pin, tmp_path)
+    assert process.stdin is not None and process.stdout is not None
+    group_id: int | None = None
+    directory = layout.root / "derived/speech/speak-1"
+    command = [
+        "finetune",
+        "synthesize",
+        "--asset-root",
+        str(layout.root),
+        "--run-id",
+        "finetune-a",
+        "--runtime-root",
+        str(runtime),
+    ]
+    try:
+        process.stdin.write(
+            recording_frame_bytes(handshake(service=recording_service_build_identity()))
+        )
+        process.stdin.write(recording_frame_bytes(request(say(), request_id="speak-request")))
+        process.stdin.flush()
+        group_id = speech_group_of(layout, "speak-1")
+        marker = active_speech_request(layout)
+        assert marker is not None and (marker.operation_id, marker.pid) == ("speak-1", process.pid)
+        wait_until(lambda: (directory / "synthesis-tmp" / "tmpreference.wav").exists())
+        # Command-line synthesis waits while the app speaks.
+        assert voice_lab(command) == 2
+        assert capsys.readouterr().err.startswith(
+            "voice-lab: FINETUNE.JOB_ACTIVE: the recording app's Speak request speak-1 is running"
+        )
+        assert sorted(path.name for path in directory.iterdir()) == ["job.json", "synthesis-tmp"]
+        # The service is killed; its worker notices and kills its own group.
+        process.kill()
+        process.wait(timeout=10)
+        wait_until(lambda: live_group(group_id) == [], timeout=10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        process.stdin.close()
+        process.stdout.close()
+        assert process.stderr is not None
+        process.stderr.close()
+        if group_id is not None:
+            for row in live_group(group_id):
+                os.kill(row.pid, signal.SIGKILL)
+    # What the killed request left: its job (absolute paths and the text), F5's reference copy
+    # and a marker whose service is gone, which no longer holds the command line back.
+    assert sorted(path.name for path in directory.iterdir()) == ["job.json", "synthesis-tmp"]
+    assert (directory / "synthesis-tmp" / "tmpreference.wav").is_file()
+    assert (layout.root / SPEECH_ACTIVE_MARKER).exists()
+    assert active_speech_request(layout) is None
+    assert voice_lab(command) == 2
+    assert "FINETUNE.PRETRAINED_MISMATCH" in capsys.readouterr().err  # it reached the runtime
+    # The next service start removes both before any request runs; finished clips stay.
+    group = rig.store.get_group(rig.group_id)
+    queue = FineTuneJobQueue(layout, subject_id=group.subject_id, runtime_root=runtime)
+    events = Events()
+    supervisor = FineTuneSupervisor(queue, on_event=events, pretrained_pin=pin)
+    try:
+        supervisor.start()
+        wait_until(
+            lambda: not directory.exists() and not (layout.root / SPEECH_ACTIVE_MARKER).exists()
+        )
+        assert supervisor.fatal_error is None
+        assert sorted(path.name for path in finished.iterdir()) == ["speech-01.wav", "speech.json"]
+    finally:
+        supervisor.close()
+        queue.close()
+
+
+def test_a_real_service_speaks_while_a_take_is_saved(package_rig: Any, tmp_path: Path) -> None:
+    rig, analysis, _packages = package_rig
+    layout = rig.layout
+    write_speech_run(layout, "finetune-a")
+    runtime, pin = stub_finetune_runtime(tmp_path.resolve() / "runtime", {"synthesis_seconds": 3})
+    # A separate unsaved draft makes the concurrent Save a real durable mutation.
+    rig.now = utc_now() - timedelta(seconds=5)
+    rig.store.clock = lambda: rig.now
+    draft = rig.seal(rig.reserve("service-draft", "synthetic-0001"), "service-draft-seal")
+    rig.store.clock = utc_now
+    analysis.close()
+    build = recording_service_build_identity()
+    process = start_speech_service(rig, runtime, pin, tmp_path)
     assert process.stdin is not None and process.stdout is not None
     responses: list[RecordingResponse] = []
 

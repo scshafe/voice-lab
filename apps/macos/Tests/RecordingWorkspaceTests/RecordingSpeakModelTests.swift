@@ -53,7 +53,7 @@ struct RecordingSpeakModelTests {
     static let warm = "reference-warm-02"
     static let text = "The meeting moved to Thursday."
     static let clipSHA256 = String(repeating: "5", count: 64)
-    static let deadline = "speech synthesis took longer than 2 min and was stopped; try a shorter text or fewer steps"
+    static let deadline = "speech synthesis took longer than 2 min and was stopped; try a shorter text"
     static let supervisorFailure = "fine-tune supervision stopped; restart the app to recover the job"
 
     private static let repository = URL(fileURLWithPath: #filePath)
@@ -413,7 +413,12 @@ struct RecordingSpeakModelTests {
         #expect(saving.speak.unavailableReason == RecordingSpeakModel.savingReason)
         let (registering, _) = await workspace(ScriptedSpeak(), phase: .draftReview)
         registering.state.registrationPending = true
-        #expect(registering.speak.unavailableReason == RecordingSpeakModel.savingReason)
+        #expect(registering.speak.unavailableReason == RecordingSpeakModel.registeringReason)
+        #expect(RecordingSpeakModel.registeringReason == "Wait for the take to finish registering")
+        // A Save in progress is named first.
+        let (savingRegistered, _) = await workspace(ScriptedSpeak(), phase: .saving)
+        savingRegistered.state.registrationPending = true
+        #expect(savingRegistered.speak.unavailableReason == RecordingSpeakModel.savingReason)
         for phase in [RecordingShellPhase.ready, .draftReview, .recoverableError] {
             let (model, _) = await workspace(ScriptedSpeak(), phase: phase)
             #expect(model.speak.canSpeak && model.speak.unavailableReason == nil, "\(phase) does not block Speak")

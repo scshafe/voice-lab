@@ -12,7 +12,10 @@ is the one ordering of finished runs ("the latest model" is its first). Speak re
 (``resolve_speech_model`` → ``synthesize_speech``) speak one text with a finished run or the
 pinned base weights into ``derived/speech/<operation id>/``, through the same synthesizer
 core as the listening samples; ``FineTuneDigestCache`` lets repeated requests reuse the
-digests of unchanged runtime files and checkpoints instead of hashing gigabytes again.
+digests of unchanged runtime files and checkpoints instead of hashing gigabytes again, and
+``FineTuneSummaryCache`` lets repeated status replies reuse the summaries of unchanged runs.
+``discard_unfinished_speech`` removes what an interrupted Speak request left. The synthesizer
+keeps F5-TTS's temporary files in a private work directory inside its output directory.
 Related: prompt_coverage.py (readers), recording_index.py (retained predicate),
 recording_finetune_jobs.py (the service's job queue and worker), docs/FINETUNE.md
 (operator guide), DECISIONS.md D-016.
@@ -29,6 +32,7 @@ import re
 import shutil
 import stat
 import subprocess
+import threading
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -74,6 +78,7 @@ from .recording_contracts import (
     SPEECH_DEFAULT_NFE_STEPS,
     SPEECH_MAX_NFE_STEPS,
     SPEECH_MIN_NFE_STEPS,
+    SPEECH_OUTPUT_ROOT,
     SPEECH_SECONDS_TOLERANCE,
     CatalogReference,
     CatalogSnapshot,
@@ -1426,6 +1431,13 @@ FINETUNE_DEFAULT_SAMPLE_TEXTS: Final = (
 )
 
 
+# The synthesizer's input, written into its output directory (absolute paths and the texts).
+SYNTHESIS_JOB_FILE: Final = "job.json"
+# The synthesizer's private temporary directory inside its output directory: F5-TTS writes a
+# converted copy of the reference clip to the temporary directory and never removes it.
+SYNTHESIS_WORK_DIRECTORY: Final = "synthesis-tmp"
+
+
 @dataclass(frozen=True, slots=True)
 class _SynthesizedAudio:
     """One clip the synthesizer wrote, checked: private 24 kHz 16-bit mono PCM."""
@@ -1535,13 +1547,17 @@ def _synthesize(
 
     Writes ``job.json`` (absolute paths) into ``output_directory`` and removes it afterwards
     unless ``keep_job``; the clips are ``<file_prefix>-NN.wav`` there, each made 0600 and
-    checked from its header. The synthesizer loads the runtime's pinned Vocos vocoder.
-    Raises: ``FineTuneError`` FINETUNE.RUNTIME_FAILED (the synthesizer failed, or wrote or
-    reported something other than the clips asked for), FINETUNE.RUNTIME_UNAVAILABLE.
+    checked from its header. The synthesizer loads the runtime's pinned Vocos vocoder and
+    keeps its temporary files (F5-TTS's converted reference copy) in its private work
+    directory, ``output_directory/synthesis-tmp``, which it removes before it exits.
+    Raises: ``FineTuneError`` FINETUNE.RUNTIME_FAILED (the synthesizer failed, left its work
+    directory behind, or wrote or reported something other than the clips asked for),
+    FINETUNE.RUNTIME_UNAVAILABLE.
     """
     vocab = runtime.data_directory / _F5_PRETRAINED_VOCAB_DATASET / "vocab.txt"
     if not vocab.is_file():
         vocab = runtime.pretrained_vocab_path
+    work_directory = output_directory / SYNTHESIS_WORK_DIRECTORY
     job = {
         "checkpoint_path": str(checkpoint),
         "vocab_path": str(vocab),
@@ -1552,10 +1568,11 @@ def _synthesize(
         "reference_audio_path": str(reference_audio),
         "reference_text": reference_text,
         "output_directory": str(output_directory),
+        "work_directory": str(work_directory),
         "file_prefix": file_prefix,
         "texts": list(texts),
     }
-    job_path = output_directory / "job.json"
+    job_path = output_directory / SYNTHESIS_JOB_FILE
     write_canonical_json(job_path, job)
     try:
         output = _run_runtime(
@@ -1568,6 +1585,12 @@ def _synthesize(
     finally:
         if not keep_job:
             job_path.unlink(missing_ok=True)
+    if os.path.lexists(work_directory):
+        raise FineTuneError(
+            "FINETUNE.RUNTIME_FAILED",
+            f"{what} left its work directory {work_directory} behind; it may hold a copy of "
+            "the reference clip",
+        )
     clips: list[_SynthesizedAudio] = []
     for index, path in enumerate(
         _reported_clips(output, output_directory, file_prefix, len(texts)), start=1
@@ -1607,13 +1630,14 @@ def synthesize_finetune_samples(
     prompt text. The synthesizer loads the runtime's pinned Vocos vocoder from
     ``runtime.vocoder_path`` (the job's ``vocoder_path``), never from a download cache.
     Writes ``sample-NN.wav`` (0600, 24 kHz 16-bit mono, checked from the header), the
-    synthesizer's ``job.json`` and ``samples.json``.
+    synthesizer's ``job.json`` and ``samples.json``; the synthesizer's temporary work
+    directory must be gone when it exits.
     Params: ``digests`` supplies the checkpoint's digest when an earlier call verified the
     unchanged file (``None`` hashes it).
     Raises: ``FineTuneError`` FINETUNE.REFERENCE_MISSING, FINETUNE.SOURCE_CHANGED (the
     reference clip changed), FINETUNE.CHECKPOINT_MISSING, FINETUNE.RUNTIME_FAILED with the
-    synthesizer's last output when generation fails or with the observed format when a
-    sample is not 24 kHz 16-bit mono.
+    synthesizer's last output when generation fails, when it left its work directory, or
+    with the observed format when a sample is not 24 kHz 16-bit mono.
     """
     layout = AssetLayout.validate(layout.root)
     clip = next((item for item in dataset.clips if item.prompt_id == reference_prompt_id), None)
@@ -2076,15 +2100,105 @@ def finished_finetune_run_ids(
     return tuple(run_id for _, run_id in sorted(finished, reverse=True))
 
 
+# The records a run summary is read from, relative to the run directory.
+_SUMMARY_RECORDS: Final = (
+    "run.json",
+    "dataset/dataset.json",
+    "dataset/corpus.json",
+    "samples/finetuned/samples.json",
+    "samples/base/samples.json",
+)
+# A file's identity: device, inode, type and mode, size, modification and change times.
+type _RecordIdentity = tuple[int, int, int, int, int, int] | None
+
+
+def _record_identities(directory: Path) -> tuple[_RecordIdentity, ...] | None:
+    """The identity of each summary record under ``directory`` (``None`` when absent).
+
+    Returns: ``None`` when a record's identity cannot be read at all (reading the record
+    then names the failure).
+    """
+    identities: list[_RecordIdentity] = []
+    for relative in _SUMMARY_RECORDS:
+        try:
+            found = os.lstat(directory / relative)
+        except FileNotFoundError:
+            identities.append(None)
+            continue
+        except OSError:
+            return None
+        identities.append(
+            (
+                found.st_dev,
+                found.st_ino,
+                found.st_mode,
+                found.st_size,
+                found.st_mtime_ns,
+                found.st_ctime_ns,
+            )
+        )
+    return tuple(identities)
+
+
+class FineTuneSummaryCache:
+    """Run summaries, reused while the records they were read from are unchanged.
+
+    A finished run's ``run.json``, ``dataset/dataset.json``, ``dataset/corpus.json`` and
+    ``samples/{finetuned,base}/samples.json`` rarely change, but a published catalog's corpus
+    record is over a megabyte, so re-reading 32 runs for every status reply takes about a
+    second. An entry is used only while every one of those files (or its absence) has the
+    identity it had when the summary was read: device, inode, mode, size, modification and
+    change time. A summary is kept only when no record changed while it was read, and only
+    for the runs of the latest listing. A record that cannot be read is never cached, so a
+    damaged record fails every reply until it is repaired. Thread-safe.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: dict[str, tuple[tuple[_RecordIdentity, ...], FineTuneRunSummary]] = {}
+
+    def summaries(
+        self, layout: AssetLayout, run_roots: tuple[str, ...]
+    ) -> tuple[FineTuneRunSummary, ...]:
+        """The summaries of ``run_roots``, in order; entries for other runs are dropped.
+
+        Raises: as ``finetune_run_summary`` for a run whose records changed, were never read
+        or cannot be identified.
+        """
+        with self._lock:
+            known = {root: self._entries[root] for root in run_roots if root in self._entries}
+        result: list[FineTuneRunSummary] = []
+        fresh: dict[str, tuple[tuple[_RecordIdentity, ...], FineTuneRunSummary]] = {}
+        for run_root in run_roots:
+            directory = confined_path(layout.root, run_root)
+            before = _record_identities(directory)
+            entry = known.get(run_root)
+            if before is not None and entry is not None and entry[0] == before:
+                summary = entry[1]
+            else:
+                summary = finetune_run_summary(layout, run_root)
+                if before is None or _record_identities(directory) != before:
+                    result.append(summary)
+                    continue
+            fresh[run_root] = (before, summary)
+            result.append(summary)
+        with self._lock:
+            self._entries = fresh
+        return tuple(result)
+
+
 def finished_finetune_runs(
     layout: AssetLayout,
     *,
     limit: int = MAX_FINISHED_RUNS,
     output_root: str = FINETUNE_OUTPUT_ROOT,
+    summaries: FineTuneSummaryCache | None = None,
 ) -> tuple[FineTuneRunSummary, ...]:
     """The newest ``limit`` finished runs, newest first (``finished_finetune_run_ids``).
 
     The recording service's fine-tune status lists them for the Speak page's model choice.
+    Params: ``summaries`` reuses the summaries of runs whose records are unchanged (``None``
+    reads every run).
     Returns: their summaries (``finetune_run_summary``).
     Raises: ``ValueError`` when ``limit`` is below 1; as ``finished_finetune_run_ids``, and
     as ``finetune_run_summary`` for each listed run.
@@ -2092,7 +2206,10 @@ def finished_finetune_runs(
     if limit < 1:
         raise ValueError("list at least one finished run")
     run_ids = finished_finetune_run_ids(layout, output_root=output_root)[:limit]
-    return tuple(finetune_run_summary(layout, f"{output_root}/{run_id}") for run_id in run_ids)
+    run_roots = tuple(f"{output_root}/{run_id}" for run_id in run_ids)
+    if summaries is not None:
+        return summaries.summaries(layout, run_roots)
+    return tuple(finetune_run_summary(layout, run_root) for run_root in run_roots)
 
 
 def latest_finished_finetune_run(
@@ -2355,6 +2472,93 @@ def discard_speech_output(layout: AssetLayout, operation_id: str) -> bool:
         raise SecurityError(f"{directory} is not a directory")
     shutil.rmtree(directory)
     return True
+
+
+# What a Speak request can leave in its directory before speech.json: the synthesizer's job,
+# the clip, and the canonical writer's temporary files (for job.json and speech.json).
+_UNFINISHED_SPEECH_FILES: Final = frozenset({SYNTHESIS_JOB_FILE, SPEECH_CLIP_FILE})
+_CANONICAL_TEMPORARY: Final = re.compile(r"\.(?:job|speech)\.json\.tmp-[0-9a-f]{16}")
+
+
+def _raise(error: OSError) -> None:
+    raise error
+
+
+_FINDER_METADATA: Final = ".DS_Store"
+
+
+def _unfinished_speech_problem(directory: Path) -> str | None:
+    """Why ``directory`` holds more than an unfinished Speak request writes, or ``None``.
+
+    The work directory may hold regular files and real directories (whatever F5-TTS and its
+    libraries write as temporary files); everything else must be one of the known files or
+    Finder's ``.DS_Store`` (written when the folder is viewed).
+    """
+    with os.scandir(directory) as entries:
+        names = sorted(entry.name for entry in entries)
+    for name in names:
+        mode = os.lstat(directory / name).st_mode
+        if name == SYNTHESIS_WORK_DIRECTORY and stat.S_ISDIR(mode):
+            for current, directories, files in os.walk(directory / name, onerror=_raise):
+                for member in sorted(directories + files):
+                    member_mode = os.lstat(Path(current) / member).st_mode
+                    if not (stat.S_ISDIR(member_mode) or stat.S_ISREG(member_mode)):
+                        where = (Path(current) / member).relative_to(directory).as_posix()
+                        return f"holds {where}, which is neither a regular file nor a directory"
+        elif (
+            name in _UNFINISHED_SPEECH_FILES
+            or name == _FINDER_METADATA
+            or (_CANONICAL_TEMPORARY.fullmatch(name))
+        ):
+            if not stat.S_ISREG(mode):
+                return f"holds {name}, which is not a regular file"
+        else:
+            return f"holds {name}, which Speak does not write"
+    return None
+
+
+def discard_unfinished_speech(layout: AssetLayout) -> tuple[str, ...]:
+    """Remove every Speak request directory that a stopped service left without its record.
+
+    A request cut short by a service stop or crash leaves ``derived/speech/<operation id>/``
+    without ``speech.json``, possibly holding ``job.json`` (absolute paths and the text), a
+    partial ``speech-01.wav`` and the synthesizer's work directory (a copy of the reference
+    clip). The recording service calls this when fine-tune supervision starts, before any
+    request runs. A directory with ``speech.json`` is a finished request and is never
+    touched. Only what an unfinished request writes is ever removed: an entry of
+    ``derived/speech`` that is not a directory named like an operation id (a Finder
+    ``.DS_Store``, a folder Cole made), and a directory without ``speech.json`` that holds
+    anything else (a link, another file), are left in place untouched. Nothing reads
+    them: the app lists only the clips of its own session.
+    Returns: the operation ids whose directories were removed, sorted.
+    Raises: ``SecurityError`` when ``derived/speech`` or a directory above it is a link, or
+    ``derived/speech`` is not a directory; ``OSError`` when a directory cannot be read or
+    removed.
+    """
+    root = confined_path(layout.root, SPEECH_OUTPUT_ROOT)
+    if not os.path.lexists(root):
+        return ()
+    if not stat.S_ISDIR(os.lstat(root).st_mode):
+        raise SecurityError(f"{root} is not a directory")
+    with os.scandir(root) as entries:
+        names = sorted(entry.name for entry in entries)
+    unfinished: list[str] = []
+    for name in names:
+        directory = root / name
+        try:
+            _RUN_DIRECTORY_NAME.validate_python(name)
+        except ValueError:
+            continue
+        if not stat.S_ISDIR(os.lstat(directory).st_mode):
+            continue
+        if os.path.lexists(directory / SPEECH_RECORD_FILE):
+            continue
+        if _unfinished_speech_problem(directory) is not None:
+            continue
+        unfinished.append(name)
+    for name in unfinished:
+        shutil.rmtree(root / name)
+    return tuple(unfinished)
 
 
 # Provisioning: one venv from the pinned requirements plus the two pinned Hugging Face files.

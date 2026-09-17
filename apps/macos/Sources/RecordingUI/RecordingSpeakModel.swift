@@ -151,6 +151,7 @@ public final class RecordingSpeakModel: ObservableObject {
     public static let fineTuneActiveReason = "Speak is unavailable while a fine-tune runs"
     public static let recordingReason = "Speak is unavailable while recording"
     public static let savingReason = "Wait for the take to finish saving before using Speak"
+    public static let registeringReason = "Wait for the take to finish registering"
     public static let generatingReason = "Speak is already generating"
     public static let cancellingReason = "Speak is being cancelled"
     public static let emptyTextReason = "Type the words to speak"
@@ -296,14 +297,16 @@ public final class RecordingSpeakModel: ObservableObject {
     public var canSpeak: Bool { unavailableReason == nil }
 
     /// Why Speak cannot start now, first reason first: the service, the models, a fine-tune,
-    /// recording or saving, a request already running, then the text.
+    /// recording, saving, a stopped take still being registered, a request already running,
+    /// then the text.
     public var unavailableReason: String? {
         if let blocker = serviceBlocker { return blocker }
         if let blocker = modelBlocker { return blocker }
         if let workspace {
             if workspace.fineTune.isActive { return Self.fineTuneActiveReason }
             if workspace.state.showsStop { return Self.recordingReason }
-            if workspace.state.phase == .saving || workspace.state.registrationPending { return Self.savingReason }
+            if workspace.state.phase == .saving { return Self.savingReason }
+            if workspace.state.registrationPending { return Self.registeringReason }
         }
         if let request, request.phase.isActive { return request.cancelRequested ? Self.cancellingReason : Self.generatingReason }
         return textProblem

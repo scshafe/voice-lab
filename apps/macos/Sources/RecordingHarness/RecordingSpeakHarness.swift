@@ -318,7 +318,8 @@ extension RecordingHarness {
                                 "notice": .string(speak.saveNotice ?? "")]),
             "announcements": .array(announcements.map(RecordingJSON.string)),
             "fixed_geometry": .boolean(true), "speak_page_region_probes": .integer(0),
-            "microphone_opened": .boolean(false), "window_shown": .boolean(false),
+            // Measured here; the microphone is kept closed by the synthetic-PCM guard above.
+            "visible_windows": .integer(Int64(NSApplication.shared.windows.filter { $0.isVisible }.count)),
         ])
         try report.transportData().write(to: directory.appendingPathComponent("speak-report.json"), options: .atomic)
         print(String(decoding: try report.transportData(), as: UTF8.self))

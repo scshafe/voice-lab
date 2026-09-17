@@ -810,6 +810,9 @@ def test_synthesized_samples_are_bound_to_checkpoint_and_reference(
     )
     job = json.loads((layout.root / "derived/finetune/s/samples/base/job.json").read_text())
     assert job["vocoder_path"] == str(runtime.vocoder_path)
+    work = layout.root / "derived/finetune/s/samples/base/synthesis-tmp"
+    # The synthesizer's private temporary directory is inside the output and gone afterwards.
+    assert job["work_directory"] == str(work) and not os.path.lexists(work)
     assert (
         samples.checkpoint_sha256 == pin.weights.sha256
         and samples.reference_audio_sha256 == dataset.clips[0].sha256
@@ -832,6 +835,173 @@ def test_synthesized_samples_are_bound_to_checkpoint_and_reference(
             reference_prompt_id="not-a-prompt",
         )
     assert failure.value.code == "FINETUNE.REFERENCE_MISSING"
+    # A synthesizer that leaves its work directory (a copy of the reference) fails by name.
+    (root / "stub-mode.json").write_text(json.dumps({"synthesis_leaves_work": True}))
+    with pytest.raises(FineTuneError) as left:
+        synthesize_finetune_samples(
+            layout,
+            dataset,
+            runtime,
+            runtime.pretrained_path,
+            "derived/finetune/s/samples/left",
+            label="left",
+            reference_prompt_id=spoken(1),
+            texts=("Hello there.",),
+        )
+    assert left.value.code == "FINETUNE.RUNTIME_FAILED"
+    assert "sample synthesis for left left its work directory" in str(left.value)
+    assert (layout.root / "derived/finetune/s/samples/left/synthesis-tmp").is_dir()
+
+
+FAKE_F5_PACKAGE = {
+    "f5_tts/__init__.py": "",
+    "f5_tts/configs/F5TTS_v1_Base.yaml": "model: {arch: {}}\n",
+    "f5_tts/model/__init__.py": "class DiT:\n    pass\n",
+    "f5_tts/infer/__init__.py": "",
+    # F5-TTS 1.1.22's preprocess_ref_audio_text: a named temporary file deleted on leaving the
+    # block, whose path the converted reference copy is then written to and never removed.
+    "f5_tts/infer/utils_infer.py": """
+import json, os, tempfile
+
+def load_vocoder(**kwargs):
+    return "vocoder"
+
+def load_model(*args, **kwargs):
+    return "model"
+
+def preprocess_ref_audio_text(path, text, show_info=print):
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete_on_close=False) as handle:
+        temp_path = handle.name
+    with open(path, "rb") as source, open(temp_path, "wb") as copy:
+        copy.write(source.read())
+    directory = os.path.dirname(temp_path)
+    with open(os.environ["FAKE_F5_REPORT"], "w") as report:
+        json.dump({"temp_path": temp_path, "tempdir": tempfile.gettempdir(),
+                   "TMPDIR": os.environ.get("TMPDIR"),
+                   "mode": os.stat(directory).st_mode & 0o777}, report)
+    return temp_path, text
+
+def infer_process(reference_audio, reference_text, text, model, vocoder, **kwargs):
+    assert os.path.exists(reference_audio)
+    if text == "fail":
+        raise RuntimeError("synthetic inference failure")
+    return [0] * 240, 24000, None
+""",
+    "soundfile/__init__.py": """
+import wave as _wave
+
+def write(path, samples, rate, subtype):
+    assert subtype == "PCM_16"
+    with _wave.open(path, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(bytes(2 * len(samples)))
+""",
+    "omegaconf/__init__.py": """
+import os
+from types import SimpleNamespace
+
+class OmegaConf:
+    @staticmethod
+    def load(path):
+        assert os.path.exists(path), path
+        return SimpleNamespace(model=SimpleNamespace(arch={}))
+""",
+}
+# Runs a resource script with the fake packages first on the path, isolated from the
+# environment's Python settings.
+RUN_WITH_FAKES = (
+    "import runpy, sys; sys.path.insert(0, sys.argv[1]); script = sys.argv[2]; "
+    "sys.argv = [script, *sys.argv[3:]]; runpy.run_path(script, run_name='__main__')"
+)
+
+
+def test_the_synthesizer_keeps_f5_temporary_copies_in_its_private_work_directory(
+    tmp_path: Path,
+) -> None:
+    import subprocess
+    import sys
+
+    from finetune_speech_runs import write_wav
+
+    from cole_voice_lab.resources import resource_path
+
+    fakes = tmp_path / "fakes"
+    for relative, text in FAKE_F5_PACKAGE.items():
+        (fakes / relative).parent.mkdir(parents=True, exist_ok=True)
+        (fakes / relative).write_text(text)
+    system_temporary = tmp_path / "system-tmp"
+    system_temporary.mkdir()
+    reference = tmp_path / "reference.wav"
+    write_wav(reference)
+    report = tmp_path / "report.json"
+
+    def synthesize(name: str, texts: list[str], **changes: str) -> subprocess.CompletedProcess[str]:
+        output = tmp_path / name
+        output.mkdir(mode=0o700, exist_ok=True)
+        job = {
+            "checkpoint_path": str(tmp_path / "model.pt"),
+            "vocab_path": str(tmp_path / "vocab.txt"),
+            "vocoder_path": str(tmp_path / "vocos"),
+            "use_ema": True,
+            "device": "cpu",
+            "nfe_steps": 4,
+            "reference_audio_path": str(reference),
+            "reference_text": "Reference words.",
+            "output_directory": str(output),
+            "work_directory": str(output / "synthesis-tmp"),
+            "file_prefix": "speech",
+            "texts": texts,
+        } | changes
+        job_path = output / "job.json"
+        job_path.write_text(json.dumps(job))
+        report.unlink(missing_ok=True)
+        return subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                RUN_WITH_FAKES,
+                str(fakes),
+                str(resource_path("f5_synthesize.py")),
+                str(job_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=os.environ | {"TMPDIR": str(system_temporary), "FAKE_F5_REPORT": str(report)},
+        )
+
+    spoken_job = synthesize("spoken", ["Hello there."])
+    assert spoken_job.returncode == 0, spoken_job.stderr
+    work = tmp_path / "spoken" / "synthesis-tmp"
+    seen = json.loads(report.read_text())
+    # F5's temporary copy was written inside the private work directory, not the system's.
+    assert Path(seen["temp_path"]).parent == work and seen["mode"] == 0o700
+    assert seen["tempdir"] == seen["TMPDIR"] == str(work)
+    assert not os.path.lexists(work) and not os.path.lexists(seen["temp_path"])
+    assert list(system_temporary.iterdir()) == []
+    clip = tmp_path / "spoken" / "speech-01.wav"
+    assert json.loads(spoken_job.stdout) == {"index": 1, "path": str(clip), "seconds": 0.01}
+    # A failed synthesis removes its work directory too.
+    failed = synthesize("failed", ["fail"])
+    assert failed.returncode != 0 and "synthetic inference failure" in failed.stderr
+    assert Path(json.loads(report.read_text())["temp_path"]).parent.name == "synthesis-tmp"
+    assert not os.path.lexists(tmp_path / "failed" / "synthesis-tmp")
+    assert list(system_temporary.iterdir()) == []
+    # A work directory an interrupted run left is replaced, then removed.
+    stale = tmp_path / "spoken" / "synthesis-tmp"
+    stale.mkdir()
+    (stale / "tmpold.wav").write_bytes(b"old copy")
+    again = synthesize("spoken", ["Hello again."])
+    assert again.returncode == 0, again.stderr
+    assert not os.path.lexists(stale)
+    # The work directory must lie directly in the output directory.
+    outside = synthesize("outside", ["Hello."], work_directory=str(tmp_path / "elsewhere"))
+    assert outside.returncode != 0 and "work_directory must lie directly in" in outside.stderr
+    assert not (tmp_path / "elsewhere").exists() and not report.exists()
 
 
 def test_cli_corpus_reports_the_latest_takes_and_refuses_an_incomplete_corpus(
@@ -1142,6 +1312,7 @@ def test_cli_training_refuses_while_the_apps_job_is_active(
     for command in (
         ["finetune", "run", *base, "--catalog", "pilot-v2", "--allow-missing", *runtime],
         ["finetune", "train", *base, "--run-id", "r", *runtime],
+        ["finetune", "synthesize", *base, "--run-id", "r", *runtime],
     ):
         assert main(command) == 2
         error = capsys.readouterr().err
@@ -1151,6 +1322,65 @@ def test_cli_training_refuses_while_the_apps_job_is_active(
     assert not (layout.root / "derived/finetune").exists()
     after = sorted(path.name for path in (layout.root / "provenance/finetune-jobs").iterdir())
     assert after == before  # read only
+
+
+def test_cli_gpu_work_refuses_while_the_app_speaks(
+    native_coverage: NativeCoverage,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+    import sys
+
+    from cole_voice_lab.errors import SecurityError
+    from cole_voice_lab.recording_finetune_jobs import (
+        SPEECH_ACTIVE_MARKER,
+        FineTuneJobQueue,
+        SpeechActiveMarker,
+        active_speech_request,
+    )
+    from cole_voice_lab.recording_takes import write_recording_evidence
+
+    layout = native_coverage.rig.layout
+    assert active_speech_request(layout) is None  # no queue directory yet
+    FineTuneJobQueue(layout, subject_id=SUBJECT, runtime_root=None).close()
+    marker = layout.root / SPEECH_ACTIVE_MARKER
+    live = SpeechActiveMarker(operation_id="speak-7", pid=os.getpid(), started_at=START)
+    write_recording_evidence(marker, live)
+    assert active_speech_request(layout) == live
+
+    def reached(*args: Any, **kwargs: Any) -> None:
+        raise FineTuneError("FINETUNE.RUNTIME_UNAVAILABLE", "synthetic: the runtime was reached")
+
+    monkeypatch.setattr(finetune_module, "describe_finetune_runtime", reached)
+    runtime = ["--runtime-root", str(tmp_path / "runtime")]
+    base = ["--asset-root", str(layout.root)]
+    commands = (
+        ["finetune", "run", *base, "--catalog", "pilot-v2", "--allow-missing", *runtime],
+        ["finetune", "train", *base, "--run-id", "r", *runtime],
+        ["finetune", "synthesize", *base, "--run-id", "r", *runtime],
+    )
+    for command in commands:
+        assert main(command) == 2
+        assert capsys.readouterr().err.startswith(
+            "voice-lab: FINETUNE.JOB_ACTIVE: the recording app's Speak request speak-7 is running"
+        )
+    assert marker.read_bytes() == canonical_json_bytes(live) + b"\n"  # read only
+    # A marker whose service is gone refuses nothing.
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    write_recording_evidence(marker, live.model_copy(update={"pid": gone.pid}))
+    assert active_speech_request(layout) is None
+    for command in commands:
+        assert main(command) == 2
+        assert "FINETUNE.JOB_ACTIVE" not in capsys.readouterr().err
+    # A damaged marker is refused by name, never ignored.
+    marker.chmod(0o644)
+    with pytest.raises(SecurityError):
+        active_speech_request(layout)
+    assert main(commands[2]) == 2
+    assert "recording evidence must be one private regular file" in capsys.readouterr().err
 
 
 def test_runtime_link_is_released_only_when_it_points_at_this_run(tmp_path: Path) -> None:

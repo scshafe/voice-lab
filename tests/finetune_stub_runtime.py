@@ -27,11 +27,14 @@ survives SIGTERM, so only SIGKILL stops it), sample_seconds (sample synthesis sl
 writing), fail_sampling (sample synthesis exits 1), synthesis_seconds (Speak synthesis, the
 job's file_prefix "speech", sleeps before writing), fail_synthesis (Speak synthesis exits 1),
 synthesis_format ([rate, channels, sample width] Speak writes instead of 24000 Hz mono
-16-bit), synthesis_report (a line Speak prints instead of its clip report). A Speak clip's
+16-bit), synthesis_report (a line Speak prints instead of its clip report),
+synthesis_leaves_work (synthesis leaves its work directory behind). A Speak clip's
 240 frames follow a pattern set by its text, so different texts give different clips;
-listening samples are silent.
+listening samples are silent. Like f5_synthesize.py, synthesis creates the job's private
+work_directory first, puts a copy of the reference clip there (F5-TTS's converted copy)
+before it sleeps, and removes the directory before it exits.
 """
-import json, os, signal, sys, time, wave
+import json, os, shutil, signal, sys, time, wave
 from pathlib import Path
 
 ROOT = Path({root!r})
@@ -83,12 +86,20 @@ if script == "f5_synthesize.py":
     job = json.loads(Path(argv[1]).read_text())
     prefix = job.get("file_prefix", "sample")
     speech = prefix == "speech"
+    out = Path(job["output_directory"]); out.mkdir(parents=True, exist_ok=True)
+    work = Path(job["work_directory"])
+    assert work.parent == out, work
+    if work.exists():
+        shutil.rmtree(work)  # an interrupted earlier synthesis left it
+    work.mkdir(mode=0o700)
+    (work / "tmpreference.wav").write_bytes(Path(job["reference_audio_path"]).read_bytes())
     time.sleep(MODE.get("synthesis_seconds" if speech else "sample_seconds", 0))
+    if not MODE.get("synthesis_leaves_work"):
+        shutil.rmtree(work)
     if MODE.get("fail_synthesis" if speech else "fail_sampling"):
         print("Traceback: stub " + ("speech" if speech else "sampling") + " failure",
               file=sys.stderr); sys.exit(1)
     rate, channels, width = MODE.get("synthesis_format", [24000, 1, 2]) if speech else [24000, 1, 2]
-    out = Path(job["output_directory"]); out.mkdir(parents=True, exist_ok=True)
     assert Path(job["checkpoint_path"]).is_file() and Path(job["reference_audio_path"]).is_file()
     # The pinned vocoder is loaded from the runtime's own copy, as f5_synthesize.py does.
     vocoder = Path(job["vocoder_path"])

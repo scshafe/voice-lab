@@ -4,7 +4,8 @@
 ``corpus.json``, ``dataset.json``, a checkpoint and ``run.json``) without training anything,
 so Speak can resolve models and reference clips against it. The clips are 24 kHz 16-bit mono
 WAV files with a fixed nonzero pattern; the checkpoint is a few bytes, which the stub runtime
-(``finetune_stub_runtime.py``) accepts.
+(``finetune_stub_runtime.py``) accepts. ``sized_catalog`` builds a catalog as large as the
+published corpus (1,886 prompts), so status tests can write runs of realistic size.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canonical_json
 from cole_voice_lab.finetune import (
+    FINETUNE_DEFAULT_SAMPLE_TEXTS,
     FINETUNE_OUTPUT_ROOT,
     FineTuneCheckpoint,
     FineTuneCorpus,
@@ -24,12 +26,42 @@ from cole_voice_lab.finetune import (
     FineTuneHyperparameters,
     FineTuneRun,
     FineTuneRuntimeIdentity,
+    FineTuneSample,
+    FineTuneSampleSet,
 )
 from cole_voice_lab.models import Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import CatalogReference
 
 CLIP_FRAMES = 2_400
+# The published cole-corpus catalog: pilot prompts plus the Harvard and CMU ARCTIC sentences.
+PUBLISHED_CORPUS_PROMPTS = 1_886
+
+
+def sized_catalog(prompt_count: int = PUBLISHED_CORPUS_PROMPTS) -> PromptSuite:
+    """A capture catalog of ``prompt_count`` spoken sentences of ordinary length.
+
+    The first two prompts are reference candidates (``sentence-0000``, ``sentence-0001``).
+    """
+
+    return PromptSuite(
+        suite_id="sized-corpus",
+        purpose="capture-corpus",
+        prompts=tuple(
+            Prompt(
+                prompt_id=f"sentence-{index:04d}",
+                text=(
+                    f"Sentence {index} is read at an easy pace, the way the published corpus "
+                    "lists its Harvard and ARCTIC lines."
+                ),
+                category="reference" if index < 2 else "neutral",
+                style="plain reading",
+                reference_candidate=index < 2,
+                expected_seconds=4.0,
+            )
+            for index in range(prompt_count)
+        ),
+    )
 
 
 def write_wav(path: Path, frames: int = CLIP_FRAMES) -> None:
@@ -76,12 +108,15 @@ def write_speech_run(
     status: str = "finished",
     checkpoint: bool = True,
     catalog_reference: CatalogReference | None = None,
+    samples: bool = False,
 ) -> FineTuneRun:
     """Write ``derived/finetune/<run_id>`` as a trained run of ``catalog``'s prompts.
 
     Params: ``entries`` are the corpus's prompt ids (catalog order) and ``clips`` those with a
     dataset clip; ``finished_at`` is ``None`` only for a running run; ``checkpoint=False``
-    leaves the run without weights.
+    leaves the run without weights; ``samples`` also writes the fine-tuned and base
+    listening-sample records (``samples/<label>/samples.json``, three samples each; the
+    sample audio itself is not written).
     Returns: the run record written.
     Raises: ``StopIteration`` when an entry names no prompt of ``catalog``;
     ``pydantic.ValidationError`` for an inconsistent run.
@@ -164,5 +199,31 @@ def write_speech_run(
         finished_at=finished_at,
         error="stopped" if status == "failed" else None,
     )
+    if samples:
+        for label in ("finetuned", "base"):
+            write_canonical_json(
+                directory / "samples" / label / "samples.json",
+                FineTuneSampleSet(
+                    label=label,
+                    checkpoint_path=f"/synthetic/{label}/model.pt",
+                    checkpoint_sha256="7" * 64,
+                    use_ema=True,
+                    nfe_steps=32,
+                    device="mps",
+                    reference_prompt_id=dataset.clips[0].prompt_id,
+                    reference_audio_sha256=dataset.clips[0].sha256,
+                    samples=tuple(
+                        FineTuneSample(
+                            index=index,
+                            relative_path=f"{run_root}/samples/{label}/sample-{index:02d}.wav",
+                            sha256="8" * 64,
+                            seconds=4.5,
+                            text=text,
+                        )
+                        for index, text in enumerate(FINETUNE_DEFAULT_SAMPLE_TEXTS, start=1)
+                    ),
+                    created_at=finished_at or started_at,
+                ),
+            )
     write_canonical_json(directory / "run.json", run)
     return run

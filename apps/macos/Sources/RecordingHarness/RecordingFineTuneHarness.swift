@@ -147,7 +147,8 @@ extension RecordingHarness {
             ]),
             "finished": finished, "cancelled": cancelled,
             "slots": .array(slots.map(RecordingJSON.string)),
-            "fixed_geometry": .boolean(true), "microphone_opened": .boolean(false), "window_shown": .boolean(false),
+            "fixed_geometry": .boolean(true),
+            "visible_windows": .integer(Int64(NSApplication.shared.windows.filter { $0.isVisible }.count)),
         ])
         try report.transportData().write(to: directory.appendingPathComponent("finetune-report.json"), options: .atomic)
         print(String(decoding: try report.transportData(), as: UTF8.self))

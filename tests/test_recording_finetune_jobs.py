@@ -44,6 +44,7 @@ from cole_voice_lab.recording_contracts import (
     FineTuneProgressEvent,
     FineTuneStatusCommand,
     FineTuneStatusEvent,
+    RecordingError,
     RecordingResponse,
     SaveEvent,
     ShutdownCommand,
@@ -754,6 +755,7 @@ result = dict(base, kind="result", request_sha256=request["request_sha256"],
               run_id=request["run_id"])
 frames = {
     "exit": b"",
+    "quiet": b"",
     "garbage": (5).to_bytes(4, "big") + b"nope!",
     "foreign-stage": frame(dict(base, kind="stage", stage="dataset", generation="other")),
     "foreign-result": frame(dict(result, run_id="another-run")),
@@ -1759,6 +1761,50 @@ def test_a_worker_group_that_will_not_stop_stops_supervision(
     assert not any(progress("failed")(event) for event in events.events)
     with pytest.raises(FineTuneJobError, match="supervision stopped"):
         supervisor.submit(command("tune-2"))  # no second job while the old group lives
+
+
+def test_a_cancelled_group_that_outlives_sigkill_stops_supervision(
+    library: Library, jobs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue, events, supervisors = jobs
+    failures: list[Any] = []
+    monkeypatch.setattr(
+        FineTuneSupervisor,
+        "_worker_command",
+        lambda self, job: [sys.executable, "-c", FAKE_WORKER, "quiet"],
+    )
+    kill_wait = 1.0
+    monkeypatch.setattr(jobs_module, "_KILL_WAIT_SECONDS", kill_wait)
+    monkeypatch.setattr(jobs_module, "_GROUP_STOP_SECONDS", 0.2)
+    supervisor = supervise(
+        library, queue, events, supervisors, on_failure=failures.append, cancel_grace=0.5
+    )
+    supervisor.submit(command())
+    supervisor.start()
+    wait_until(lambda: (job := queue.active_job()) is not None and job.worker_pid is not None)
+    job = queue.active_job()
+    assert job is not None and job.worker_pid is not None
+    # The group is killed for real, but the supervisor is told it never goes away.
+    monkeypatch.setattr(FineTuneSupervisor, "_group_alive", lambda self, pgid: True)
+    asked = time.monotonic()
+    assert supervisor.cancel(cancel()).message == CANCELLING_MESSAGE
+    wait_until(lambda: bool(failures), timeout=20)
+    waited = time.monotonic() - asked
+    assert waited >= 0.5 + kill_wait  # SIGTERM, the grace period, SIGKILL, then the wait
+    assert isinstance(supervisor.fatal_error, FineTuneJobError)
+    assert (
+        str(supervisor.fatal_error) == f"the fine-tune worker group {job.worker_pid} did not stop"
+    )
+    assert failures == [
+        RecordingError(code="RECORDING.WRITE_FAILED", message=SUPERVISION_FAILURE, retryable=True)
+    ]
+    assert live_group(job.worker_pid) == []
+    # The job is left running for the next service, and nothing claims it ended.
+    active = queue.active_job()
+    assert active is not None and active.state == "running" and active.cancel_requested
+    assert not any(progress("cancelled")(event) for event in events.events)
+    with pytest.raises(FineTuneJobError, match="supervision stopped"):
+        supervisor.submit(command("tune-2"))
 
 
 def test_a_failing_worker_kills_its_own_group_only_when_it_leads_it(

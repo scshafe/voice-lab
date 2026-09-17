@@ -38,6 +38,7 @@ from cole_voice_lab.recording_contracts import SPEECH_OUTPUT_ROOT, speech_direct
 from cole_voice_lab.recording_finetune_jobs import (
     CANCELLED_BY_OPERATOR,
     FINETUNE_JOBS_ROOT,
+    SPEECH_ACTIVE_MARKER,
     FineTuneJob,
     FineTuneJobHead,
     FineTuneJobIntent,
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
 FIRST_REFERENCE_PROMPT_ID = "finetune-reference"
 DEADLINE_MESSAGE = (
     f"speech synthesis took longer than {_duration_text(SPEECH_TEST_DEADLINE_SECONDS)}"
-    " and was stopped; try a shorter text or fewer steps"
+    " and was stopped; try a shorter text"
 )
 # Which run spoke and whose reference each request used (model, run, reference run, prompt).
 EXPECTED_SPEAKERS = {
@@ -210,6 +211,8 @@ def verify(root: Path, prepared: NativeSpeakFixture) -> dict[str, object]:
     ended = read_recording_evidence(jobs / "terminal" / f"{job}.json", FineTuneJob)
     assert ended.state == "cancelled" and ended.run_id is not None and ended.run_root is not None
     assert read_recording_evidence(jobs / "head.json", FineTuneJobHead).job is None
+    # Every Speak request ended, so none is marked running for command-line training.
+    assert not os.path.lexists(layout.root / SPEECH_ACTIVE_MARKER), "a Speak marker remains"
     stopped = FineTuneRun.model_validate_json(
         (layout.root / ended.run_root / "run.json").read_bytes()
     )
@@ -259,7 +262,7 @@ def verify(root: Path, prepared: NativeSpeakFixture) -> dict[str, object]:
     assert "Speech ready, under 0.1 seconds" in announcements
     assert DEADLINE_MESSAGE in announcements
     assert report["fixed_geometry"] is True and report["speak_page_region_probes"] == 0
-    assert report["microphone_opened"] is False and report["window_shown"] is False
+    assert report["visible_windows"] == 0, "the harness showed a window"
 
     _require_no_fixture_processes(layout.root, fixture.runtime_root)
     evidence: dict[str, object] = {

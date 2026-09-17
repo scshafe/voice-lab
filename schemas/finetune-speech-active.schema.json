@@ -1,0 +1,41 @@
+{
+  "$defs": {
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The Speak request the recording service is running, for command-line training to see.\n\nWritten (0600) at ``provenance/finetune-jobs/speech-active.json`` just before the\nrequest's worker starts and removed once the worker's whole process group is gone.\n``pid`` is the recording service's process: a marker whose service is gone is stale.",
+  "properties": {
+    "operation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "pid": {
+      "minimum": 1,
+      "title": "Pid",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-speech-active/v1",
+      "default": "cole-voice-lab.finetune-speech-active/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "started_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    }
+  },
+  "required": [
+    "operation_id",
+    "pid",
+    "started_at"
+  ],
+  "title": "SpeechActiveMarker",
+  "type": "object"
+}
