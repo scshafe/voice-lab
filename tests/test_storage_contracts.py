@@ -51,6 +51,7 @@ from cole_voice_lab.storage_contracts import (
     UtcTimestamp,
     VaultAccessRecord,
     VaultNamespaceConfig,
+    VaultRequestRecord,
     keychain_item_names,
     ledger_entry_digest,
     manifest_digest,
@@ -760,6 +761,21 @@ def access_record() -> Payload:
     }
 
 
+def request_record() -> Payload:
+    return {
+        "time": TIME,
+        "endpoint": "voice-lab-vault.colobus-stargazer.ts.net",
+        "namespace": "cole",
+        "operation": "get-blob",
+        "ref": HELLO_SHA256,
+        "bytes": 5,
+        "status": 200,
+        "code": None,
+        "attempt": 1,
+        "node_stable_id": "nodeAbc123",
+    }
+
+
 # One valid payload per registered schema name, plus the models that are never stored on
 # their own: the ledger's embedded destination and a generation's plan.
 SYNTHETIC: dict[str, Build] = {
@@ -773,6 +789,7 @@ SYNTHETIC: dict[str, Build] = {
     "replication-ledger-entry": completed_entry,
     "vault-server-config": server_config,
     "vault-access-record": access_record,
+    "vault-request-record": request_record,
 }
 CONTRACTS: dict[type[ContractModel], Build] = {
     **{STORAGE_SCHEMA_MODELS[name]: build for name, build in SYNTHETIC.items()},
@@ -790,6 +807,7 @@ TIMESTAMP_FIELDS = [
     (ReplicationState, "updated_at"),
     (LedgerEntry, "recorded_at"),
     (VaultAccessRecord, "time"),
+    (VaultRequestRecord, "time"),
 ]
 
 
@@ -1864,3 +1882,47 @@ def test_a_ledger_entry_is_named_by_the_digest_of_its_canonical_json() -> None:
     changed = validate(LedgerEntry, started_entry() | {"byte_count": 2047})
     assert ledger_entry_digest(changed) != digest
     assert digest not in {manifest_digest(validate(LibraryManifest, manifest()))}
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        request_record,
+        lambda: request_record() | {"status": None, "code": "STORAGE.UNAVAILABLE", "bytes": 0},
+        lambda: (
+            request_record()
+            | {"operation": "swap-ref", "ref": "libraries/cole-self/head", "bytes": 0}
+        ),
+        lambda: request_record() | {"status": 409, "code": "STORAGE.CONFLICT", "bytes": 0},
+        lambda: request_record() | {"attempt": 16, "node_stable_id": None},
+    ],
+)
+def test_a_valid_request_record_is_accepted(build: Build) -> None:
+    record = validate(VaultRequestRecord, build())
+    assert (record.code is None) == (record.status is not None and record.status < 400)
+
+
+@pytest.mark.parametrize(
+    ("model", "build", "changes", "message"),
+    cases(
+        VaultRequestRecord,
+        (request_record, {"code": "STORAGE.NOT_FOUND"}, "a code is recorded exactly"),
+        (request_record, {"status": None}, "a code is recorded exactly"),
+        (request_record, {"status": 404}, "a code is recorded exactly"),
+        (request_record, {"operation": "read-ref"}, "only a blob operation sends or receives"),
+        (request_record, {"operation": "health"}, "Input should be"),
+        (request_record, {"attempt": 0}, "greater than or equal to 1"),
+        (request_record, {"attempt": 17}, "less than or equal to 16"),
+        (request_record, {"status": 99, "code": "STORAGE.PROTOCOL"}, "greater than or equal to"),
+        (request_record, {"namespace": "Cole"}, PATTERN),
+        (request_record, {"node_stable_id": "node!"}, PATTERN),
+        (request_record, {"ref": None}, "Input should be a valid string"),
+        (request_record, {"endpoint": ""}, "at least 1 character"),
+        (request_record, {"bytes": -1}, "greater than or equal to 0"),
+    ),
+)
+def test_an_invalid_request_record_is_refused(
+    model: type[ContractModel], build: Build, changes: Payload, message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        validate(model, build() | changes)

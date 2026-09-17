@@ -53,6 +53,9 @@ MAX_VAULT_WORKERS: Final = 64
 DEFAULT_VAULT_WORKERS: Final = 8
 MAX_VAULT_REQUEST_TIMEOUT_SECONDS: Final = 600
 DEFAULT_VAULT_REQUEST_TIMEOUT_SECONDS: Final = 120
+# How often the Mac's client may send one request: a first try and a few retries of what may
+# pass by itself. It bounds the ``attempt`` a request record carries.
+MAX_VAULT_ATTEMPTS: Final = 16
 # The largest manifest (its canonical JSON) a generation stores or a reader accepts: far above
 # a real library's (tens of thousands of entries are a few tens of MiB) and small enough to
 # assemble in memory.
@@ -152,6 +155,22 @@ def library_head_ref(library_id: str) -> str:
     Raises: ``StorageNameError`` when ``library_id`` is not a valid library id.
     """
     return validate_ref_name(f"libraries/{validate_library_id(library_id)}/head")
+
+
+def validate_tailnet_endpoint(endpoint: str) -> str:
+    """Return ``endpoint`` when it can name the vault's node on the tailnet.
+
+    Params: ``endpoint``, for example ``voice-lab-vault.colobus-stargazer.ts.net``.
+    Returns: ``endpoint`` unchanged.
+    Raises: ``StorageNameError`` unless it is a lowercase DNS name of two or more labels
+    whose last label holds a letter, at most ``MAX_DNS_NAME_LENGTH`` characters, with no
+    scheme, port, path or trailing dot; an ``http://`` string and an IP literal are refused,
+    so a client can only ever speak TLS to a name.
+    """
+    problem = _endpoint_problem("tailnet-vault", endpoint)
+    if problem is not None:
+        raise StorageNameError(f"{problem}: {endpoint!r:.120}")
+    return endpoint
 
 
 class KeychainItemNames(NamedTuple):
@@ -368,6 +387,10 @@ type VaultScope = Literal["read", "write", "none"]
 type VaultOperation = Literal[
     "put-blob", "has-blob", "get-blob", "read-ref", "swap-ref", "health", "refused"
 ]
+# What the Mac's client asks for: the five store operations alone. It never calls the health
+# endpoint, and a request it refuses before sending is no request.
+type VaultRequestOperation = Literal["put-blob", "has-blob", "get-blob", "read-ref", "swap-ref"]
+type VaultAttempt = Annotated[int, Field(ge=1, le=MAX_VAULT_ATTEMPTS)]
 
 
 class BlobRef(ContractModel):
@@ -817,6 +840,43 @@ class VaultAccessRecord(ContractModel):
         return self
 
 
+class VaultRequestRecord(ContractModel):
+    """One attempt the Mac's vault client made, written where the Mac can audit it.
+
+    It records what was asked of which vault and how the attempt ended, never a credential:
+    no token, no token hash and no byte of any blob. ``endpoint`` is the name the client
+    spoke to (and the ``Host`` it sent), ``node_stable_id`` the tailnet node the identity
+    check accepted, which is null when no identity was checked. ``ref`` is the blob digest or
+    ref name the request named. ``attempt`` counts from 1 for every send of one call, so a
+    retried call writes one record per attempt. ``status`` is the HTTP status that arrived,
+    and is null when no answer did; ``code`` is the ``STORAGE.*`` failure the attempt ended
+    with, recorded exactly when the attempt failed. ``bytes`` counts the blob bytes sent or
+    received, so only a blob operation has any.
+    """
+
+    time: UtcTimestamp
+    endpoint: Endpoint
+    namespace: Namespace
+    operation: VaultRequestOperation
+    ref: AccessedName
+    bytes: StorageCounter
+    status: HttpStatus | None
+    code: StorageCodeText | None
+    attempt: VaultAttempt
+    node_stable_id: NodeStableId | None
+
+    @model_validator(mode="after")
+    def _the_record_answers_one_attempt(self) -> Self:
+        if (self.code is not None) != (self.status is None or self.status >= 400):
+            raise ValueError(
+                "a code is recorded exactly for an attempt that failed: one with no answer, "
+                "or one answered with a status of 400 or more"
+            )
+        if self.bytes > 0 and self.operation not in {"put-blob", "get-blob"}:
+            raise ValueError("only a blob operation sends or receives bytes")
+        return self
+
+
 STORAGE_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "storage-blob-ref": BlobRef,
     "storage-ref-value": RefValue,
@@ -828,4 +888,5 @@ STORAGE_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "replication-ledger-entry": LedgerEntry,
     "vault-server-config": VaultServerConfig,
     "vault-access-record": VaultAccessRecord,
+    "vault-request-record": VaultRequestRecord,
 }

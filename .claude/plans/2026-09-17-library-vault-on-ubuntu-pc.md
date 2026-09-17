@@ -333,7 +333,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - Tests use `http.client` on loopback. One test checks that the server imports no recording or catalog module.
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_storage_server.py`
 
-- [ ] **Step 8: HTTP client with the tailnet identity check**
+- [x] **Step 8: HTTP client with the tailnet identity check**
   - Add `storage_http_client.py`, with:
     - the `tailscale whois` check behind an injectable resolver;
     - connecting to the address that was checked;

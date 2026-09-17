@@ -34,6 +34,8 @@ ADAPTERS: dict[str, tuple[str, ...]] = {
     "cole_voice_lab.storage_local": ("src/cole_voice_lab/storage_server.py",),
     # The sealed store and the library key; library copies reach it only through the binding.
     "cole_voice_lab.storage_sealing": (),
+    # The Mac's vault client (Step 8); the binding builds it, nothing else may.
+    "cole_voice_lab.storage_http_client": (),
 }
 # Third-party packages only one module may import (the vault's encryption).
 EXCLUSIVE_PACKAGES: dict[str, str] = {"cryptography": "src/cole_voice_lab/storage_sealing.py"}
@@ -398,6 +400,44 @@ def test_the_replication_modules_load_no_adapter_even_indirectly() -> None:
         *EXCLUSIVE_PACKAGES,
     }
     assert forbidden & loaded == set()
+
+
+def loaded_modules(code: str) -> set[str]:
+    """The ``cole_voice_lab`` modules a fresh interpreter loads when it runs ``code``."""
+    probe = (
+        "import sys\n"
+        f"{code}"
+        "print('\\n'.join(sorted(name for name in sys.modules"
+        " if name.partition('.')[0] == 'cole_voice_lab')))\n"
+    )
+    return set(
+        subprocess.run(
+            [sys.executable, "-I", "-B", "-c", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=60,
+        ).stdout.split()
+    )
+
+
+def test_the_vault_client_loads_no_other_adapter_and_nothing_of_the_lab() -> None:
+    """The Mac's client takes ports: it reaches the tailnet without the key, store or lab."""
+    loaded = loaded_modules("import cole_voice_lab.storage_http_client\n")
+    assert loaded == {
+        "cole_voice_lab",
+        "cole_voice_lab.canonical",
+        "cole_voice_lab.errors",
+        "cole_voice_lab.models",
+        "cole_voice_lab.paths",
+        "cole_voice_lab.storage_contracts",
+        "cole_voice_lab.storage_http_client",
+        "cole_voice_lab.storage_ports",
+    }
+    assert {adapter for adapter in ADAPTERS if adapter != "cole_voice_lab.storage_http_client"} & (
+        loaded
+    ) == set()
 
 
 @pytest.mark.parametrize(

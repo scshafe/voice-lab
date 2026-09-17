@@ -6,11 +6,13 @@ capabilities, and offers hooks that damage or inspect the files behind the store
 checks run for every spec. A check that needs a capability or a hook is its own test, which
 starts by requiring them, so a spec without one reports it SKIPPED with a reason naming the
 capability; no assertion is dropped inside a test that passes. Specs: ``local`` (the local
-store) and ``sealed-local`` (the sealed store over the local store, with a fixed synthetic
-test key; its refs are random, its largest put is ``MAX_SEALED_PLAINTEXT_BYTES``, and its
-hooks damage the ciphertext files of the local store underneath). Step 8 adds the HTTP specs
-by appending a ``SpecFactory`` to ``SPECS``; an HTTP spec's hooks act on its server's backing
-directory, and after a damage hook every store it opens must be built on the damaged backing.
+store), ``sealed-local`` (the sealed store over the local store, with a fixed synthetic test
+key; its refs are random, its largest put is ``MAX_SEALED_PLAINTEXT_BYTES``, and its hooks
+damage the ciphertext files of the local store underneath), ``http`` (the vault client
+against a ``storage_server`` on the loopback, whose hooks act on the server's backing
+directory and whose refusals never name it) and ``sealed-http`` (the sealed store over that
+client: what the Mac really pushes). A later step appends its own ``SpecFactory`` to
+``SPECS``.
 
 Collected by pytest through ``python_files`` (pyproject). Multi-process checks spawn children
 that run the module-level ``_..._in_child`` functions and synchronize only through barriers,
@@ -27,6 +29,7 @@ import os
 import shutil
 import socket
 import stat
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, chdir, contextmanager
 from dataclasses import dataclass, field
@@ -38,6 +41,8 @@ import pytest
 
 from cole_voice_lab import storage_local
 from cole_voice_lab.canonical import canonical_json_bytes
+from cole_voice_lab.storage_contracts import VaultNamespaceConfig, VaultServerConfig
+from cole_voice_lab.storage_http_client import VaultConnection
 from cole_voice_lab.storage_local import LocalBlobStore, LocalRefStore
 from cole_voice_lab.storage_ports import (
     MAX_BLOB_BYTES,
@@ -55,6 +60,13 @@ from cole_voice_lab.storage_sealing import (
     LibraryKey,
     SealedBlobStore,
     open_sealed_blob,
+)
+from cole_voice_lab.storage_server import (
+    LOOPBACK_HOST,
+    NAMESPACES_DIRECTORY,
+    VaultServer,
+    hash_token,
+    new_token,
 )
 
 CONTEXT = multiprocessing.get_context("spawn")
@@ -485,6 +497,239 @@ def sealed_local_spec(base: Path) -> Iterator[SealedLocalSpec]:
         yield SealedLocalSpec(root=local.root, scratch=local.scratch)
 
 
+# -- the HTTP specs over a loopback vault server ------------------------------------------
+
+HTTP_NAMESPACE = "conformance"
+# Room for every blob a check stores, including the 16 MiB one, with nothing to spare for a
+# quota check: the server's own tests cover the quota.
+HTTP_QUOTA_BYTES = 256 * 1024 * 1024
+HTTP_TIMEOUT_SECONDS = 60.0
+# The servers this process runs, by port, so a spec can reach the one behind it. A spawned
+# child finds none: it is a client of the parent's server and opens no store of its own.
+SERVERS: dict[int, VaultServer] = {}
+
+
+def no_sleep(_seconds: float) -> None:
+    """The client's backoff, for a spec that must not spend real time on a retry."""
+
+
+@dataclass(frozen=True)
+class RefusingStore:
+    """The stores of a namespace whose backing refused to be opened again.
+
+    A server whose backing has been damaged under it cannot build its stores, and every
+    request it is given then fails with what the backing refused. Standing in for both stores
+    keeps that refusal behind the server, where a client sees the vault's own sanitized
+    answer instead of a refusal raised in the test process.
+    """
+
+    error: StorageError
+
+    def put(self, data: bytes) -> BlobRef:
+        raise self.error
+
+    def has(self, ref: BlobRef) -> bool:
+        raise self.error
+
+    def get(self, ref: BlobRef) -> bytes:
+        raise self.error
+
+    def read(self, name: str) -> RefValue | None:
+        raise self.error
+
+    def swap(self, name: str, *, expected_version: int | None, target: BlobRef) -> RefValue:
+        raise self.error
+
+
+@dataclass(frozen=True)
+class HttpSpec(LocalSpec):
+    """``HttpBlobStore`` and ``HttpRefStore`` against a vault server on the loopback.
+
+    The server keeps the local stores of one namespace, so the damage and inspection hooks are
+    the local ones acting on its backing directory. Opening a store here also builds the
+    server's stores again, which is what makes a damaged backing visible to a fresh store (and
+    what sweeps crash leftovers); a refusal names paths on the server, so it never reaches the
+    client (capability: errors_name_backing_paths). It pickles into a spawned child as the
+    port and the token string, never as a connection or a server.
+    """
+
+    port: int
+    token: str
+    namespace: str = HTTP_NAMESPACE
+    name: ClassVar[str] = "http"
+    errors_name_backing_paths: ClassVar[bool] = False
+
+    def client(self) -> VaultConnection:
+        return VaultConnection.loopback_for_tests(
+            self.port,
+            self.namespace,
+            lambda: self.token,
+            timeout=HTTP_TIMEOUT_SECONDS,
+            sleep=no_sleep,
+        )
+
+    def reopen_server_stores(self) -> None:
+        """Build the server's stores again, as opening a local store would; a child has none.
+
+        A rebuild the backing refuses is left for the server to raise, not raised here: both
+        stores become ``RefusingStore``s, so every operation on a store opened afterwards
+        crosses the wire and comes back as the vault's own answer. Without that, a problem no
+        already-open store can see (``foreign-root-entry``, ``foreign-temporary-entry``) would
+        be checked entirely inside this process, against no client and no server at all.
+        """
+        server = SERVERS.get(self.port)
+        if server is None:
+            return
+        namespace = server.namespaces[self.namespace]
+        blobs: Any
+        refs: Any
+        try:
+            blobs = LocalBlobStore(self.root)
+            refs = LocalRefStore(self.root)
+        except StorageError as error:
+            # One refusal stands for both: the rebuild is all of the namespace or none of it.
+            blobs = refs = RefusingStore(error)
+        namespace.blobs = blobs
+        namespace.refs = refs
+
+    def open_blob_store(self) -> BlobStore:
+        self.reopen_server_stores()
+        return self.client().blob_store()
+
+    def open_ref_store(self) -> RefStore:
+        self.reopen_server_stores()
+        return self.client().ref_store()
+
+    def leave_crash_leftovers(self) -> CrashLeftovers:
+        """What a vault server that died mid-put and mid-swap leaves in its backing."""
+        return LocalSpec(root=self.root, scratch=self.scratch).leave_crash_leftovers()
+
+    @contextmanager
+    def paused_put(self, data: bytes) -> Iterator[PausedPut]:
+        """A put from another process, held in the server's worker after its temporary."""
+        paused = threading.Event()
+        resume = threading.Event()
+        results = CONTEXT.Queue()
+        with paused_publish(paused, resume):
+            child = start_child(_put_in_child_at_once, self, data, results)
+            outcome = PausedPut(data)
+            try:
+                assert paused.wait(timeout=CHILD_TIMEOUT_SECONDS), "the writer never paused"
+                yield outcome
+            except BaseException:
+                resume.set()
+                child.kill()
+                child.join()
+                raise
+            resume.set()
+            outcome.outcome = results.get(timeout=CHILD_TIMEOUT_SECONDS)
+            finish(child)
+
+
+@dataclass(frozen=True)
+class SealedHttpSpec(HttpSpec):
+    """``SealedBlobStore`` over the HTTP blob store: what the Mac really pushes to a vault."""
+
+    name: ClassVar[str] = "sealed-http"
+    deterministic_refs: ClassVar[bool] = False
+    max_put_bytes: ClassVar[int] = MAX_SEALED_PLAINTEXT_BYTES
+
+    def open_blob_store(self) -> BlobStore:
+        return SealedBlobStore(
+            super().open_blob_store(), key=sealed_test_key(), library_id=SEALED_LIBRARY
+        )
+
+
+@contextmanager
+def paused_publish(paused: threading.Event, resume: threading.Event) -> Iterator[None]:
+    """Hold the next blob publish in this process (a server worker's) until ``resume``.
+
+    Only the first publish waits, so the writer that is meant to win the race is not held
+    behind the one that is meant to lose it.
+    """
+    publish = storage_local.rename_no_replace_at
+    armed = threading.Event()
+    armed.set()
+    lock = threading.Lock()
+
+    def pause_then_publish(
+        source_directory: int, source: str, target_directory: int, target: str
+    ) -> None:
+        with lock:
+            first = armed.is_set()
+            armed.clear()
+        if first:
+            paused.set()
+            if not resume.wait(timeout=CHILD_TIMEOUT_SECONDS):
+                raise TimeoutError("the test never resumed the paused writer")
+        publish(source_directory, source, target_directory, target)
+
+    storage_local.rename_no_replace_at = pause_then_publish
+    try:
+        yield
+    finally:
+        resume.set()
+        storage_local.rename_no_replace_at = publish
+
+
+@contextmanager
+def loopback_vault(base: Path) -> Iterator[tuple[Path, int, str]]:
+    """One vault server on the loopback with fresh tokens; yields its namespace root and port."""
+    read_token, write_token = new_token(), new_token()
+    config = VaultServerConfig(
+        namespaces=(
+            VaultNamespaceConfig(
+                name=HTTP_NAMESPACE,
+                read_token_sha256=hash_token(read_token),
+                write_token_sha256=hash_token(write_token),
+                quota_bytes=HTTP_QUOTA_BYTES,
+            ),
+        ),
+        max_workers=8,
+        request_timeout_seconds=int(HTTP_TIMEOUT_SECONDS),
+    )
+    data_root = base / "vault-data"
+    server = VaultServer(
+        (LOOPBACK_HOST, 0),
+        config=config,
+        data_root=data_root,
+        access_log=base / "vault-access.jsonl",
+        provision=True,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+    )
+    thread.start()
+    SERVERS[port] = server
+    try:
+        yield data_root / NAMESPACES_DIRECTORY / HTTP_NAMESPACE, port, write_token
+    finally:
+        SERVERS.pop(port, None)
+        server.shutdown()
+        thread.join(timeout=CHILD_TIMEOUT_SECONDS)
+        server.server_close()
+
+
+@contextmanager
+def http_spec(base: Path) -> Iterator[HttpSpec]:
+    scratch = base / "http-scratch"
+    scratch.mkdir(mode=0o700)
+    try:
+        with loopback_vault(base) as (root, port, token):
+            yield HttpSpec(root=root, scratch=scratch, port=port, token=token)
+    finally:
+        restore_access(base)
+
+
+@contextmanager
+def sealed_http_spec(base: Path) -> Iterator[SealedHttpSpec]:
+    with http_spec(base) as plain:
+        yield SealedHttpSpec(
+            root=plain.root, scratch=plain.scratch, port=plain.port, token=plain.token
+        )
+
+
 @dataclass(frozen=True)
 class SpecFactory:
     """A named way to build a spec in a private base directory (and tear it down after)."""
@@ -496,6 +741,8 @@ class SpecFactory:
 SPECS: list[SpecFactory] = [
     SpecFactory("local", local_spec),
     SpecFactory("sealed-local", sealed_local_spec),
+    SpecFactory("http", http_spec),
+    SpecFactory("sealed-http", sealed_http_spec),
 ]
 
 
@@ -668,6 +915,11 @@ def _put_paused_in_child(
         publish(source_directory, source, target_directory, target)
 
     storage_local.rename_no_replace_at = pause_then_publish
+    report(results, lambda: spec.open_blob_store().put(data).model_dump_json())
+
+
+def _put_in_child_at_once(spec: StorageSpec, data: bytes, results: Any) -> None:
+    """Put ``data`` from another process, with nothing to wait for but the store itself."""
     report(results, lambda: spec.open_blob_store().put(data).model_dump_json())
 
 
@@ -1156,7 +1408,9 @@ def refuse_on_unsafe_backing(
     existing = operations(lambda: before_blobs, lambda: before_refs)
     integrity = refusal.code == "STORAGE.INTEGRITY"
     refused: list[tuple[Operation, StorageError]] = []
-    for table, names in ((fresh, refusal.fresh), (existing, refusal.existing)):
+    # The stores opened before the damage go first: opening a fresh one may replace what a
+    # server behind the spec holds, and then nothing already open would be left to check.
+    for table, names in ((existing, refusal.existing), (fresh, refusal.fresh)):
         for name in sorted(expected_refusals(spec, names)):
             refused.append((name, storage_failure(refusal.code, table[name], integrity=integrity)))
             assert still_unsafe(), name
@@ -1167,8 +1421,16 @@ def refuse_on_unsafe_backing(
 def test_an_unsafe_backing_is_refused_and_left_alone(
     spec: StorageSpec, problem: BackingProblem
 ) -> None:
-    backing_root(spec)
-    assert refuse_on_unsafe_backing(spec, problem)
+    root = backing_root(spec)
+    refusals = refuse_on_unsafe_backing(spec, problem)
+
+    assert refusals
+    if not spec.errors_name_backing_paths:
+        # The oracle for that capability, and for where the refusal came from: a store's own
+        # refusal names the directory it refused, so a refusal that does not name it is the
+        # one the server sanitized and sent back.
+        for name, error in refusals:
+            assert str(root) not in str(error), (name, str(error))
 
 
 @pytest.mark.parametrize("problem", list(REFUSALS))

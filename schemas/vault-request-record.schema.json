@@ -1,0 +1,124 @@
+{
+  "$defs": {
+    "AccessedName": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Endpoint": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "HttpStatus": {
+      "maximum": 599,
+      "minimum": 100,
+      "type": "integer"
+    },
+    "Namespace": {
+      "pattern": "^[a-z][a-z0-9-]{0,62}$",
+      "type": "string"
+    },
+    "NodeStableId": {
+      "pattern": "^[A-Za-z0-9]{1,64}$",
+      "type": "string"
+    },
+    "StorageCodeText": {
+      "pattern": "^STORAGE\\.[A-Z][A-Z0-9_]{0,30}$",
+      "type": "string"
+    },
+    "StorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "VaultAttempt": {
+      "maximum": 16,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "VaultRequestOperation": {
+      "enum": [
+        "put-blob",
+        "has-blob",
+        "get-blob",
+        "read-ref",
+        "swap-ref"
+      ],
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One attempt the Mac's vault client made, written where the Mac can audit it.\n\nIt records what was asked of which vault and how the attempt ended, never a credential:\nno token, no token hash and no byte of any blob. ``endpoint`` is the name the client\nspoke to (and the ``Host`` it sent), ``node_stable_id`` the tailnet node the identity\ncheck accepted, which is null when no identity was checked. ``ref`` is the blob digest or\nref name the request named. ``attempt`` counts from 1 for every send of one call, so a\nretried call writes one record per attempt. ``status`` is the HTTP status that arrived,\nand is null when no answer did; ``code`` is the ``STORAGE.*`` failure the attempt ended\nwith, recorded exactly when the attempt failed. ``bytes`` counts the blob bytes sent or\nreceived, so only a blob operation has any.",
+  "properties": {
+    "attempt": {
+      "$ref": "#/$defs/VaultAttempt"
+    },
+    "bytes": {
+      "$ref": "#/$defs/StorageCounter"
+    },
+    "code": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StorageCodeText"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "endpoint": {
+      "$ref": "#/$defs/Endpoint"
+    },
+    "namespace": {
+      "$ref": "#/$defs/Namespace"
+    },
+    "node_stable_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NodeStableId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "$ref": "#/$defs/VaultRequestOperation"
+    },
+    "ref": {
+      "$ref": "#/$defs/AccessedName"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HttpStatus"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "time": {
+      "$ref": "#/$defs/UtcTimestamp"
+    }
+  },
+  "required": [
+    "time",
+    "endpoint",
+    "namespace",
+    "operation",
+    "ref",
+    "bytes",
+    "status",
+    "code",
+    "attempt",
+    "node_stable_id"
+  ],
+  "title": "VaultRequestRecord",
+  "type": "object"
+}
