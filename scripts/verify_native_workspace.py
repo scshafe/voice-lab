@@ -235,7 +235,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("transport", "review", "review-legacy", "package-preparation", "recovery"),
+        choices=("transport", "review", "review-legacy", "recovery"),
         default="transport",
     )
     parser.add_argument("--accepted-legacy", action="store_true")
@@ -262,7 +262,7 @@ def main() -> None:
     schemas.mkdir(mode=0o700)
     for name, model in RECORDING_SCHEMA_MODELS.items():
         write_canonical_json(schemas / f"{name}.schema.json", model.model_json_schema())
-    verified_signal = options.suite in {"package-preparation", "recovery"}
+    verified_signal = options.suite == "recovery"
     catalog = package_catalog() if verified_signal else workspace_catalog()
     # The transport harness requires the app to record against exactly this reference.
     write_canonical_json(root / "catalog-reference.json", seed_active_catalog(assets, catalog))
@@ -483,18 +483,12 @@ def main() -> None:
         subprocess.run(
             [str(harness), options.suite, str(config_file), str(root / "native")],
             check=True,
-            # Four real captures, their independent analysis jobs and one package worker
-            # do not fit the interactive-suite budget.
-            timeout=240 if options.suite == "package-preparation" else 90,
+            timeout=90,
         )
     if options.suite in {"review", "review-legacy"}:
         from verify_native_review import verify
 
         verify(root, legacy=options.suite == "review-legacy")
-    if options.suite == "package-preparation":
-        from verify_native_packages import verify as verify_packages
-
-        verify_packages(root)
     if options.suite == "recovery":
         from verify_native_recovery import verify as verify_recovery
 

@@ -199,7 +199,6 @@ struct RecordingCatalogDeliveryTests {
         #expect(model.state.contextReady && model.state.phase == .ready && model.state.errorCode == nil)
         #expect(model.state.selection.object?["catalog_sha256"] == .string(Self.digest))
         #expect(model.state.selection.object?["selection_revision"] == .integer(8))
-        #expect(model.packageSheetTitle == "Prepare a lab package")
         // History pages bind to the delivered digest only.
         model.handleService(try Self.reply(Self.historyPage(digest: String(repeating: "e", count: 64)), schema: nil))
         #expect(model.state.historyRevision == 0)
@@ -265,27 +264,16 @@ struct RecordingCatalogDeliveryTests {
         #expect(model.catalogReference == Self.reference() && model.catalogSHA256 == Self.digest && model.prompts.count == 3)
     }
 
-    @Test @MainActor func aDeliveredPhysicalTestCatalogDrivesItsChipsPackageTitleAndCandidates() async throws {
+    @Test @MainActor func aDeliveredPhysicalTestCatalogDrivesItsChips() async throws {
         let service = ScriptedService()
         service.catalog = Self.physicalTestCatalog()
         service.reference = Self.reference(purpose: "physical-test", suiteID: "cole-physical-test-synthetic-store")
         let model = RecordingWorkspaceModel(bootstrap: service.requests, target: Self.target)
         let opened = await model.prepareContext()
         #expect(opened)
-        #expect(model.packageSheetTitle == "Prepare diagnostic package")
+        #expect(model.catalog?.object?["purpose"] == .string("physical-test"))
         #expect(model.prompts.allSatisfy { $0.catalogPurpose == "physical-test" && $0.effectiveLabels.contains("test") && $0.pinnedLabelCount == 2 })
         #expect(model.labelOptions == ["room-tone", "test", "neutral", "procedure", "device-loss"])
-        // Candidates must be exact prompts of the delivered catalog; its normalized copy is what rows carry.
-        let delivered = try #require(model.catalog?.object?["prompts"]?.array)
-        func row(_ takeID: String, _ prompt: RecordingJSON) -> RecordingJSON {
-            .object(["take_id": .string(takeID), "group_id": .string("group-store"), "prompt": prompt,
-                     "recorded_at": .string("2026-09-16T00:00:00.000000Z"), "date_precision": .string("take"),
-                     "decision": .string("kept"), "analysis": .string("verified"), "export": .string("unprepared")])
-        }
-        let foreign = try #require(Self.pilotCatalog().object?["prompts"]?.array?.first)
-        model.state.history = [row("take-tone", delivered[0]), row("take-foreign", foreign), row("take-step", delivered[2])]
-        model.openPackageSelection()
-        #expect(model.packageCandidates.map(\.takeID) == ["take-tone"])
     }
 
     @Test @MainActor func aPilotApprovalBuildRefusesANonCorpusCatalogNamingBothPurposes() async throws {
@@ -312,13 +300,6 @@ struct RecordingCatalogDeliveryTests {
         let open = try #require(corpus.sent.last?.object)
         #expect(open["pilot_approval_path"] == .string("provenance/pilot-gate.json"))
         try Self.requireRequestShape(.object(open))
-    }
-
-    @Test @MainActor func aSeededPackageFixtureCatalogWinsOverTheLibraryCatalog() {
-        let model = RecordingWorkspaceModel(fixture: .init(), catalog: Self.physicalTestCatalog())
-        #expect(model.packageSheetTitle == "Prepare diagnostic package")
-        model.seedPackageFixture(groupID: "group-package", history: [], catalog: Self.pilotCatalog())
-        #expect(model.packageCatalog == Self.pilotCatalog() && model.packageSheetTitle == "Prepare a lab package")
     }
 
     @Test @MainActor func reconnectNamesTheHeldReferenceAndNeverRequestsTheCatalogAgain() async throws {

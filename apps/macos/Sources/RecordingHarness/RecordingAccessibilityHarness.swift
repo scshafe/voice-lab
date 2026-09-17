@@ -32,7 +32,7 @@ extension RecordingHarness {
             guard model.state.prompt?.id == "reading-one", model.state.prompt?.displayPrompt != nil else {
                 throw RecordingContractError(code: "RECORDING.ACCESSIBILITY_HARNESS", message: "Accessibility harness requires its spoken prompt reading-one")
             }
-            for required in ["library.continueMissing", "library.search", "library.filter", "library.labels", "trim.start", "trim.end", "playback.play-pause", "transport.record-stop", "transport.save-next", "transport.prepare-package", "recording.labels", "recording.script", "recording.instructions"] {
+            for required in ["library.continueMissing", "library.search", "library.filter", "library.labels", "trim.start", "trim.end", "playback.play-pause", "transport.record-stop", "transport.save-next", "transport.fine-tune", "recording.labels", "recording.script", "recording.instructions"] {
                 guard ids.contains(required) else { throw RecordingContractError(code: "RECORDING.ACCESSIBILITY_HARNESS", message: "Actual native accessibility tree omitted \(required)") }
             }
             // §6.4: the Labels menu is never a text field, and the search field is the only text field among the

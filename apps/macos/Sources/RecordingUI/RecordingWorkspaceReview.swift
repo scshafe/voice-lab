@@ -311,7 +311,6 @@ extension RecordingWorkspaceModel {
         case .record: record()
         case .retake: requestRetake()
         case .decision(let action): requestDecision(action)
-        case .preparePackage: requestPreparePackage()
         case .close: requestClose()
         }
     }
@@ -325,8 +324,8 @@ extension RecordingWorkspaceModel {
     }
 
     public func handleKeyboard(_ action: RecordingKeyboardAction) {
-        // Transport keys stay inert behind an explicit modal choice or the Prepare sheet.
-        guard reviewConfirmation == nil, !packageSheetOpen else { return }
+        // Transport keys stay inert behind an explicit modal choice.
+        guard reviewConfirmation == nil else { return }
         switch action {
         case .recordOrStop: if state.canStop { stop() } else { record() }
         case .playPause: playPauseSelected()

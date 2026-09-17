@@ -30,7 +30,7 @@ struct RecordingHarness {
         }
         let suite = CommandLine.arguments[1]
         let directory = URL(fileURLWithPath: CommandLine.arguments.last!, isDirectory: true)
-        guard ["shell", "workspace", "contracts", "transport", "review", "review-legacy", "package-preparation", "recovery-zero-frame", "recovery-crash", "recovery-restart", "recovery-busy", "benchmark", "open", "early-capture"].contains(suite) else {
+        guard ["shell", "workspace", "contracts", "transport", "review", "review-legacy", "recovery-zero-frame", "recovery-crash", "recovery-restart", "recovery-busy", "benchmark", "open", "early-capture"].contains(suite) else {
             throw RecordingContractError(code: "RECORDING.HARNESS_SUITE", message: "Unknown or unimplemented harness suite")
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -81,10 +81,6 @@ struct RecordingHarness {
         else if suite == "recovery-crash" {
             guard CommandLine.arguments.count == 4 else { throw transportFailure("Recovery requires configuration and output directory") }
             try await recoveryCrash(configurationURL: URL(fileURLWithPath: CommandLine.arguments[2]), directory: directory)
-        }
-        else if suite == "package-preparation" {
-            guard CommandLine.arguments.count == 4 else { throw transportFailure("Package preparation requires configuration and output directory") }
-            try await packagePreparation(configurationURL: URL(fileURLWithPath: CommandLine.arguments[2]), directory: directory)
         }
         else if suite == "review-legacy" {
             guard CommandLine.arguments.count == 4 else { throw transportFailure("Legacy review requires configuration and output directory") }

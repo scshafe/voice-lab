@@ -60,15 +60,16 @@ public final class RecordingWorkspaceModel: ObservableObject {
     var recoveryBootstrapFinished = false
     var recoveryInventoryClosed = false
     @Published public var recoverySheetOpen = false
-    @Published public internal(set) var packagePreparation: RecordingPackagePreparationStatus?
-    @Published public internal(set) var packageCandidates: [RecordingPackageCandidate] = []
-    @Published public internal(set) var packageSelectedTakeIDs: Set<String> = []
-    @Published public internal(set) var packageCandidatesTruncated = false
-    @Published public var packageSheetOpen = false
-    var packageOperationID: String?
-    /// Fixture-only catalog for package candidates; a configured workspace uses the catalog
-    /// its service delivered.
-    var packageFixtureCatalog: RecordingJSON?
+    /// Fine-tuning state (RecordingFineTune.swift); kept apart from `state` so no fine-tune
+    /// event reaches the take, the selection, Save or navigation.
+    @Published public internal(set) var fineTune = RecordingFineTuneStatus()
+    /// Advances when this app starts, adopts or ends a job; a status reply requested under an
+    /// older value never names a different job.
+    var fineTuneGeneration: UInt64 = 0
+    var fineTuneStatusRequests: [(operationID: String, generation: UInt64)] = []
+    var fineTuneStatusTask: Task<Void, Never>?
+    /// Fixture-only fine-tune transport; a configured workspace reaches its service.
+    var fineTuneRequests: RecordingFineTuneRequests?
     @Published public internal(set) var takeHistory: [RecordingJSON] = []
     @Published public internal(set) var takeHistoryLoading = false
     @Published public internal(set) var takeHistoryError: String?
@@ -82,7 +83,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
     /// The Library, built from the delivered catalog; empty until the service delivers it.
     public private(set) var prompts: [RecordingPromptPresentation] = []
     /// The PromptSuite the service pinned for its process (its CatalogEvent), exactly as
-    /// received; nil until delivered. Package candidates and the purpose-derived UI read it.
+    /// received; nil until delivered. The purpose-derived UI reads it.
     public private(set) var catalog: RecordingJSON?
     /// That catalog's CatalogReference; every open-context names it.
     public private(set) var catalogReference: RecordingJSON?
@@ -312,7 +313,8 @@ public final class RecordingWorkspaceModel: ObservableObject {
     /// (which builds the Library), the durable snapshot, then open-context naming that
     /// catalog's reference. A refused catalog shows the service's own message (a catalog this
     /// build's pilot approval cannot apply to, the model's own) and leaves the workspace without
-    /// a context or Library, so Record stays unavailable; nothing else is requested. Returns
+    /// a context or Library, so Record stays unavailable; nothing else is requested. Once the
+    /// context opens, the fine-tune status is requested without waiting for it. Returns
     /// whether a context opened.
     func prepareContext() async -> Bool {
         guard let target = contextTarget, let requests = contextTransport() else { return false }
@@ -324,8 +326,9 @@ public final class RecordingWorkspaceModel: ObservableObject {
             let response = try result(await requests.openContext(target.openContextCommand(
                 operationID: operation, catalogReference: reference, expectedSelectionRevision: revision)))
             try applyContext(response.data, operationID: operation)
-            return true
         } catch { fail(error, phase: .recoverableError); return false }
+        scheduleFineTuneStatus()
+        return true
     }
 
     /// The selection revision an open-context must expect (the service refuses any other): the
@@ -454,6 +457,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
             updated.status = updated.canRecord ? "Ready to record" : updated.recordUnavailableReason
             publish(updated)
         } catch { fail(error, phase: .recoverableError); return }
+        scheduleFineTuneStatus()
         guard !recoveryBootstrapFinished else { return }
         await refreshRecoveryInventory()
         recoveryBootstrapFinished = true
@@ -760,6 +764,14 @@ public final class RecordingWorkspaceModel: ObservableObject {
     }
 
     func handleService(_ event: RecordingWireEnvelope) {
+        // An error-only envelope on the stream is a copy of a refused request's reply, which its
+        // request already applied, or a background supervisor's failure, which no request awaits.
+        if event.data == .null {
+            if event.error != .null, event.meta.request_id == Self.fineTuneSupervisorRequestID {
+                applyFineTuneSupervisorError(event.error)
+            }
+            return
+        }
         switch event.data.object?["event"]?.string {
         case "analysis":
             guard let result = event.data.object?["result"], let takeID = result.object?["take_id"]?.string,
@@ -785,7 +797,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
             if recoveryBootstrapFinished {
                 Task { [weak self] in await self?.refreshRecoveryInventory() }
             }
-        case "package-preparation", "package": applyPackageEvent(event.data)
+        case "fine-tune-progress", "fine-tune", "fine-tune-status": applyFineTuneEvent(event.data)
         case "history": applyHistory(event.data)
         case "derivative": handleDerivative(event.data)
         case "review-action": handleLegacyReviewAction(event.data)

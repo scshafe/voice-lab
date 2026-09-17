@@ -112,16 +112,56 @@ public final class RecordingServiceClient: Sendable {
             "selection": selection]), takeID: selection.object?["take_id"]?.string)
     }
 
-    /// Submit-only: Python owns every package rule, eligibility check and durable write.
-    /// The reply is the queue's first state; the rest arrive as unsolicited events.
-    public func preparePackage(operationID: String, groupID: String, takeIDs: [String],
-                               roomToneTakeIDs: [String]) async throws -> RecordingWireEnvelope {
-        try await command(.object([
-            "command": .string("prepare-package"), "operation_id": .string(operationID),
-            "group_id": .string(groupID),
-            "take_ids": .array(takeIDs.map(RecordingJSON.string)),
-            "room_tone_take_ids": .array(roomToneTakeIDs.map(RecordingJSON.string)),
-        ]), takeID: nil)
+    /// Fine-tune requests share the service's metadata queue with Save, and a request past its
+    /// deadline closes the whole channel, so they wait as long as a context request.
+    public static let fineTuneRequestTimeout: TimeInterval = 30
+
+    /// Submit-only: Python owns the corpus selection, the runtime and every durable write. The
+    /// reply is the job's state (a FineTuneProgressEvent); the rest arrive as unsolicited events
+    /// whose request id is `operationID`, so this request names a different `requestID` and a
+    /// job event can never be taken for its reply. `allowMissing` trains on the prompts that
+    /// have a kept take; the app always sends true because its catalog lists unrecorded sets.
+    /// Throws: RECORDING.INVALID_MESSAGE when `requestID` equals `operationID`; the service's
+    /// refusal is the reply's error (FINETUNE.JOB_ACTIVE, FINETUNE.RUNTIME_UNAVAILABLE, ...).
+    public func fineTune(operationID: String, requestID: String, epochs: Int? = nil,
+                         allowMissing: Bool) async throws -> RecordingWireEnvelope {
+        guard requestID != operationID else {
+            throw RecordingContractError(code: "RECORDING.INVALID_MESSAGE",
+                                         message: "A fine-tune request id must differ from its job's operation id")
+        }
+        return try await command(Self.fineTuneCommand(operationID: operationID, epochs: epochs, allowMissing: allowMissing),
+                                 takeID: nil, requestID: requestID, timeout: Self.fineTuneRequestTimeout)
+    }
+
+    /// Stop the durable job `cancelledOperationID` (the session's `cancel` cannot reach it).
+    /// The reply is that job's state: cancelled when it was queued; running with the message
+    /// "Cancelling the fine-tune" when it runs (a cancelled event follows once its processes
+    /// are gone); its final state when it had already ended.
+    public func cancelFineTune(operationID: String, cancelledOperationID: String) async throws -> RecordingWireEnvelope {
+        try await command(Self.cancelFineTuneCommand(operationID: operationID, cancelledOperationID: cancelledOperationID),
+                          takeID: nil, timeout: Self.fineTuneRequestTimeout)
+    }
+
+    /// Read-only: whether a runtime is configured, the queued or running job with its live
+    /// progress, and the latest finished run (a FineTuneStatusEvent).
+    public func fineTuneStatus(operationID: String) async throws -> RecordingWireEnvelope {
+        try await command(Self.fineTuneStatusCommand(operationID: operationID), takeID: nil,
+                          timeout: Self.fineTuneRequestTimeout)
+    }
+
+    static func fineTuneCommand(operationID: String, epochs: Int?, allowMissing: Bool) -> RecordingJSON {
+        .object(["command": .string("fine-tune"), "operation_id": .string(operationID),
+                 "epochs": epochs.map { RecordingJSON.integer(Int64($0)) } ?? .null,
+                 "allow_missing": .boolean(allowMissing)])
+    }
+
+    static func cancelFineTuneCommand(operationID: String, cancelledOperationID: String) -> RecordingJSON {
+        .object(["command": .string("cancel-fine-tune"), "operation_id": .string(operationID),
+                 "cancelled_operation_id": .string(cancelledOperationID)])
+    }
+
+    static func fineTuneStatusCommand(operationID: String) -> RecordingJSON {
+        .object(["command": .string("fine-tune-status"), "operation_id": .string(operationID)])
     }
 
     /// Bounded recovery. A single-take re-check names its take; a page sweep names none,

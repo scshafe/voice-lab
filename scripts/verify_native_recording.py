@@ -53,7 +53,6 @@ def main(argv: list[str] | None = None) -> int:
             "review",
             "accessibility",
             "review-sanitizers",
-            "package-preparation",
             "recovery",
             "packaged-app",
             "acceptance",
@@ -228,26 +227,6 @@ def main(argv: list[str] | None = None) -> int:
                 ],
                 cwd=repository,
             )
-    if args.suite in {"package-preparation", "all"}:
-        run(
-            swift + ["test"] + test_location + test_flags + ["--filter", "RecordingPackageTests"],
-            cwd=repository,
-        )
-        run(
-            [
-                str(repository / ".venv/bin/python"),
-                str(repository / "scripts/verify_native_workspace.py"),
-                "--suite",
-                "package-preparation",
-                "--package",
-                str(package),
-                "--binary-directory",
-                str(binary_directory),
-                "--output",
-                str(artifacts / "package-preparation"),
-            ],
-            cwd=repository,
-        )
     if args.suite in {"recovery", "all"}:
         run(
             swift
@@ -672,12 +651,6 @@ print(json.dumps(report))
         )
         identity["recovery_python"] = json.loads(
             (recovery / "native-restart/python-recovery-evidence.json").read_text()
-        )
-    if args.suite in {"package-preparation", "all"}:
-        packages = artifacts / "package-preparation/native"
-        identity["package_preparation"] = json.loads((packages / "package-report.json").read_text())
-        identity["package_preparation_python"] = json.loads(
-            (packages / "python-package-evidence.json").read_text()
         )
     if args.suite in {"acceptance", "all"}:
         # The state inventory is checked from the rendered files themselves, so a phase

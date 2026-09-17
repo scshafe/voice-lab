@@ -24,7 +24,6 @@ public struct RecordingWorkspace: View {
                 RecordingMediaTimer(model: model).region("timer", frame: regions["timer"]!)
                 RecordingPlaybackControls(model: model).region("playback", frame: regions["playback"]!)
                 RecordingTransportControls(model: model).region("footer", frame: regions["footer"]!)
-                    .sheet(isPresented: $model.packageSheetOpen) { RecordingPreparePackageView(model: model) }
                 RecordingReviewStatus(model: model).region("status", frame: regions["status"]!)
                     .sheet(isPresented: $model.recoverySheetOpen) { RecordingRecoveryView(model: model) }
             }

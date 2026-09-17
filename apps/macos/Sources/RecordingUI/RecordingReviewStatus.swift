@@ -15,11 +15,11 @@ struct RecordingReviewStatus: View {
         if review.cacheStatus == "needs-rebuild" { return "Waveform archive unavailable · displayed peaks ready; rebuild available" }
         // A capture terminal's own words are never masked by background recovery progress.
         if let notice = model.captureTerminalNotice, notice == model.state.status { return notice }
-        return model.recoveryStatusLine ?? model.packagePreparation?.statusLine ?? model.legacyReviewStatus ?? model.state.status
+        return model.recoveryStatusLine ?? model.fineTuneStatusLine ?? model.legacyReviewStatus ?? model.state.status
     }
     var body: some View {
         HStack(spacing: 6) {
-            if model.state.errorCode != nil || playback.failure != nil || review.failure != nil || review.fieldError != nil || model.packagePreparation?.errorCode != nil || !model.recoveryAttentionRows.isEmpty {
+            if model.state.errorCode != nil || playback.failure != nil || review.failure != nil || review.fieldError != nil || model.fineTuneNeedsAttention || !model.recoveryAttentionRows.isEmpty {
                 Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
             }
             Text(message).lineLimit(1)

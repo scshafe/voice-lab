@@ -2,7 +2,7 @@ import Foundation
 
 /// A pending destructive-to-preview navigation requires one explicit discard/save choice.
 public enum RecordingReviewIntent: Equatable, Sendable {
-    case selectTake(String), selectPrompt(String), continueMissing, record, retake, decision(String), preparePackage, close
+    case selectTake(String), selectPrompt(String), continueMissing, record, retake, decision(String), close
 }
 
 public enum RecordingReviewConfirmation: Equatable, Sendable {

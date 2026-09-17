@@ -4,6 +4,8 @@ import RecordingCore
 /// Persistent controls with dependency-specific availability; Stop stays red through sealing.
 @MainActor
 public struct RecordingTransportControls: View {
+    /// Fits the wider of the two slot labels at the system font size.
+    static let fineTuneLabelWidth: CGFloat = 104
     @ObservedObject private var model: RecordingWorkspaceModel
     @ObservedObject private var waveform: RecordingWaveformModel
     @ObservedObject private var playback: RecordingPlaybackController
@@ -39,9 +41,17 @@ public struct RecordingTransportControls: View {
             } label: { Text("Take actions") }.disabled(!model.canSelectTake || model.state.reservationUnsealed)
             Button("Retake") { model.requestRetake() }.disabled(!model.canSelectTake || model.state.takeID == nil || model.state.reservationUnsealed)
                 .help("Retain this independent take and prepare another recording").accessibilityIdentifier("transport.retake")
-            Button("Prepare for lab…") { model.requestPreparePackage() }.disabled(!model.canPreparePackage)
-                .help(model.prepareUnavailableReason).accessibilityLabel("Prepare for lab")
-                .accessibilityIdentifier("transport.prepare-package")
+            // One slot: Fine-tune model, or Cancel fine-tune while a job is queued or running.
+            // Both labels share one width, so switching never moves Retake or Save.
+            if model.fineTune.isActive {
+                Button { model.cancelFineTune() } label: { Text("Cancel fine-tune").frame(width: Self.fineTuneLabelWidth) }
+                    .disabled(!model.canCancelFineTune).help(model.fineTuneCancelReason)
+                    .accessibilityLabel("Cancel fine-tune").accessibilityIdentifier("transport.cancel-fine-tune")
+            } else {
+                Button { model.startFineTune() } label: { Text("Fine-tune model").frame(width: Self.fineTuneLabelWidth) }
+                    .disabled(!model.canStartFineTune).help(model.fineTuneUnavailableReason)
+                    .accessibilityLabel("Fine-tune model").accessibilityIdentifier("transport.fine-tune")
+            }
             Button { model.save() } label: { Text(model.saveActionTitle).frame(width: 80) }
                 .disabled(!model.canSave)
                 .help(model.saveUnavailableReason).accessibilityIdentifier("transport.save-next")

@@ -36,7 +36,7 @@
   - Tests `tests/test_recording_finetune_jobs.py` with the stub runtime from `tests/test_finetune.py`: submit → queued → running (progress parsed from a scripted log) → finished with `run.json`; each refusal code; cancel; worker crash → failed record; restart recovers a stale job as failed, never as running.
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_recording_finetune_jobs.py tests/test_recording_service.py`
 
-- [ ] **Step 4: Swift client and model**
+- [x] **Step 4: Swift client and model**
   - `RecordingServiceClient.fineTune(operationID:epochs:allowMissing:)`, `.cancelFineTune(operationID:)`; delete `preparePackage`. `RecordingUI/RecordingFineTune.swift`: `RecordingFineTuneStatus` (phase, run id, epoch/epochs, update, loss, eta, message) + `applyFineTuneEvent` (idempotent; ignores foreign operation ids; same event via reply and stream). Delete `RecordingPackagePreparation.swift`; remove `packageSheetOpen`, `packagePreparation`, `canPreparePackage`, `prepareUnavailableReason`, `packageCandidates` from `RecordingWorkspaceModel`/`RecordingWorkspaceState`.
   - Tests: `apps/macos/Tests/RecordingWorkspaceTests/RecordingFineTuneTests.swift`.
   - Verify: `cd apps/macos && swift test --filter "RecordingFineTuneTests|RecordingWorkspaceTests"`
