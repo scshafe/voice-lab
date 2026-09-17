@@ -1,0 +1,127 @@
+{
+  "$defs": {
+    "BlobRef": {
+      "additionalProperties": false,
+      "description": "One stored blob, named by the SHA-256 and size of the bytes the store keeps.",
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size": {
+          "maximum": 16777216,
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size"
+      ],
+      "title": "BlobRef",
+      "type": "object"
+    },
+    "LibraryId": {
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+      "type": "string"
+    },
+    "PositiveStorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "RefName": {
+      "maxLength": 256,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:/[a-z0-9][a-z0-9._-]{0,63}){0,7}$",
+      "type": "string"
+    },
+    "RefValue": {
+      "additionalProperties": false,
+      "description": "A named pointer at one blob; ``version`` counts its swaps, starting at 1.",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/RefName"
+        },
+        "target": {
+          "$ref": "#/$defs/BlobRef"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "version": {
+          "$ref": "#/$defs/PositiveStorageCounter"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "target",
+        "updated_at"
+      ],
+      "title": "RefValue",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The Mac's record of the newest generation it pushed (``provenance/vault/state.json``).\n\nGeneration 0 means nothing was pushed yet, and only then are ``manifest_sha256`` and\n``head`` null; ``head`` is always this library's head ref.",
+  "properties": {
+    "generation": {
+      "$ref": "#/$defs/StorageCounter"
+    },
+    "head": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RefValue"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "library_id": {
+      "$ref": "#/$defs/LibraryId"
+    },
+    "manifest_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.replication-state/v1",
+      "default": "cole-voice-lab.replication-state/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "updated_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    }
+  },
+  "required": [
+    "library_id",
+    "generation",
+    "manifest_sha256",
+    "head",
+    "updated_at"
+  ],
+  "title": "ReplicationState",
+  "type": "object"
+}

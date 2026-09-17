@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+from collections import Counter
 from pathlib import Path
 
 from cole_voice_lab.capture import RejectedTakeLog
@@ -17,6 +19,32 @@ def test_schema_bytes_is_stable_json() -> None:
 
 def test_rejected_take_log_is_registered_at_the_durable_schema_name() -> None:
     assert SCHEMA_MODELS["capture-rejected-takes"] is RejectedTakeLog
+
+
+def test_no_schema_name_is_registered_twice() -> None:
+    """A ``**`` merge keeps the last value of a repeated key; count every name the literal adds."""
+    from cole_voice_lab import schema
+
+    tree = ast.parse(Path(schema.__file__).read_text(encoding="utf-8"))
+    literal = next(
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "SCHEMA_MODELS"
+    )
+    assert isinstance(literal, ast.Dict)
+    names: list[str] = []
+    for key, value in zip(literal.keys, literal.values, strict=True):
+        if key is None:
+            assert isinstance(value, ast.Name), ast.dump(value)
+            names.extend(getattr(schema, value.id))
+        else:
+            assert isinstance(key, ast.Constant) and isinstance(key.value, str), ast.dump(key)
+            names.append(key.value)
+    repeated = sorted(name for name, count in Counter(names).items() if count > 1)
+    assert repeated == []
+    assert len(names) == len(SCHEMA_MODELS)
 
 
 def test_generate_and_check_exact_schema_set(tmp_path: Path) -> None:

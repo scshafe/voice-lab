@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "BlobRef": {
+      "additionalProperties": false,
+      "description": "One stored blob, named by the SHA-256 and size of the bytes the store keeps.",
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size": {
+          "maximum": 16777216,
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size"
+      ],
+      "title": "BlobRef",
+      "type": "object"
+    },
+    "PositiveStorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "RefName": {
+      "maxLength": 256,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:/[a-z0-9][a-z0-9._-]{0,63}){0,7}$",
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A named pointer at one blob; ``version`` counts its swaps, starting at 1.",
+  "properties": {
+    "name": {
+      "$ref": "#/$defs/RefName"
+    },
+    "target": {
+      "$ref": "#/$defs/BlobRef"
+    },
+    "updated_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "version": {
+      "$ref": "#/$defs/PositiveStorageCounter"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "target",
+    "updated_at"
+  ],
+  "title": "RefValue",
+  "type": "object"
+}

@@ -148,6 +148,8 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - the approval id;
   - the Keychain item names, which are fixed and derived from `library_id`.
 
+  It also names the file classes copied to that destination, so `training` is opt-in per binding (and, for the tailnet vault, must also be covered by the approval) *(amended 2026-09-17, Step 2)*.
+
   It holds no secret and no path to one.
 - **When the binding is missing:**
   - With no binding, the status is "Vault · off".
@@ -174,11 +176,11 @@ Every piece of code that stores or reads the lab's data depends on storage and c
 - **Ledger.** Before the first new blob of a generation, the Mac appends an entry to `provenance/vault/ledger/` containing:
   - the approval digest;
   - the destination's identity;
-  - the plaintext manifest digest;
+  - ~~the plaintext manifest digest;~~ the payload digest: the digest of the generation's manifest *plan* (every file's path, class, digest, size, mode and pin, without chunk refs, which exist only after sealing) *(amended 2026-09-17, Step 2)*;
   - the classes and the byte count;
   - the previous entry's digest.
 
-  It appends a completion entry after the head swap.
+  It appends a completion entry after the head swap, naming the plaintext manifest digest (whose plan has that payload digest) and the head version. A local-directory destination needs no approval, so its entries carry no approval digest.
 - **Verify.** `vault verify` downloads and decrypts every chunk (or a named subset) and compares digests. A file counts as present only after this check, never on the vault's word.
 - **Restore.** `restore_library` restores into an empty asset root.
   - It requires either `--generation N --manifest-sha256 D`, or `--accept-latest`, which prints the generation's time and entry counts.
@@ -270,7 +272,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - ~~Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/catalog_conformance.py tests/test_corpus_store_sqlite.py tests/test_corpus_store_cli.py tests/test_recording_service.py tests/test_recording_finetune_jobs.py tests/test_storage_import_boundary.py && .venv/bin/mypy src/cole_voice_lab && scripts/verify-native-recording --suite transport`~~
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/catalog_conformance.py tests/test_corpus_store_sqlite.py tests/test_corpus_store.py tests/test_corpus_store_cli.py tests/test_recording_service.py tests/test_recording_finetune_jobs.py tests/test_storage_import_boundary.py && .venv/bin/mypy src/cole_voice_lab && scripts/verify-native-recording --suite transport`
 
-- [ ] **Step 2: Storage ports and contracts**
+- [x] **Step 2: Storage ports and contracts**
   - Add `storage_ports.py` with `BlobStore`, `RefStore` and the errors.
   - Add `storage_contracts.py`, registering only the models Steps 2–6 use: `BlobRef`, `RefValue`, `LibraryManifest` and its entries, `StorageBinding`, `ReplicationState` and `LedgerEntry`.
   - Add contract tests, each with valid cases and cases that are invalid for exactly one reason.
@@ -508,3 +510,5 @@ The first draft was reviewed on 2026-09-17 by `rigorous-architect` (the storage 
 **Amended 2026-09-17:** Cole answered Decisions 0–7 (recorded above) and chose to start before the pending combined build, which will be made from the finished vault commit.
 
 **Amended 2026-09-17 (Step 1):** the old corpus-store test file keeps the shared-logic tests, pytest now collects `*_conformance.py`, and the Step 1 verify command runs `tests/test_corpus_store.py` too.
+
+**Amended 2026-09-17 (Step 2):** the upload-started ledger entry names the payload digest of the generation's manifest plan (a manifest's chunk refs exist only after sealing); the completion entry names the manifest digest; the binding names its classes.

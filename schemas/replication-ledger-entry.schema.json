@@ -1,0 +1,217 @@
+{
+  "$defs": {
+    "Endpoint": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "FileClass": {
+      "enum": [
+        "records",
+        "prompt-database",
+        "recordings",
+        "derived-edits",
+        "training"
+      ],
+      "type": "string"
+    },
+    "FileClasses": {
+      "items": {
+        "$ref": "#/$defs/FileClass"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "LedgerDestination": {
+      "additionalProperties": false,
+      "description": "Where a generation was sent; the node id and tag identify a ``tailnet-vault`` node.",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/StorageBackend"
+        },
+        "endpoint": {
+          "$ref": "#/$defs/Endpoint"
+        },
+        "namespace": {
+          "$ref": "#/$defs/Namespace"
+        },
+        "node_stable_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NodeStableId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tag": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TailscaleTag"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "backend",
+        "endpoint",
+        "namespace",
+        "node_stable_id",
+        "tag"
+      ],
+      "title": "LedgerDestination",
+      "type": "object"
+    },
+    "LedgerEntryKind": {
+      "enum": [
+        "upload-started",
+        "upload-completed"
+      ],
+      "type": "string"
+    },
+    "LibraryId": {
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+      "type": "string"
+    },
+    "Namespace": {
+      "pattern": "^[a-z][a-z0-9-]{0,62}$",
+      "type": "string"
+    },
+    "NodeStableId": {
+      "pattern": "^[A-Za-z0-9]{1,64}$",
+      "type": "string"
+    },
+    "PositiveStorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StorageBackend": {
+      "enum": [
+        "local-directory",
+        "tailnet-vault"
+      ],
+      "type": "string"
+    },
+    "StorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "TailscaleTag": {
+      "pattern": "^tag:[A-Za-z][A-Za-z0-9-]{0,123}$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One append-only ledger record (``provenance/vault/ledger/<sequence:08d>.json``).\n\nThe entries form a chain: ``previous_entry_sha256`` is null exactly for sequence 1.\n``upload-started`` is written before the first new blob of a generation leaves the Mac, so\nit names only what is known then: ``payload_sha256``, the ``manifest_payload_digest`` of\nthe generation's ``ManifestPlan`` (every file's path, class, kind, digest, size, mode and\npin, but no chunk ref, since a chunk's ref exists only once the sealed chunk is stored).\n``upload-completed`` is written after the head swap and adds ``manifest_sha256`` (the\n``manifest_digest`` of the plaintext ``LibraryManifest`` the head now names, which\nextends that plan with its chunk refs) and ``head_version`` (the head's new version).\n``approval_sha256`` is the digest of the destination approval the upload relies on:\nrequired for a ``tailnet-vault`` destination and null for ``local-directory``, which needs\nno approval (as in ``StorageBinding``). ``classes`` are the binding's classes.\n``byte_count`` and ``blob_count`` count the stored bytes and blobs of the upload (planned\nin a started entry, sent in a completed one), so the bytes never exceed ``blob_count``\nfull blobs.\n\nPairing, which no single entry can show and the ledger reader checks: an\n``upload-completed`` entry directly follows an ``upload-started`` entry with the same\n``library_id``, ``generation``, ``approval_sha256``, ``destination``, ``payload_sha256``\nand ``classes``, and the manifest it names has ``payload_sha256`` as its payload digest\n(its ``manifest_plan`` is the plan the started entry names).\nA started entry with no completed entry after it records an upload that stopped.",
+  "properties": {
+    "approval_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "blob_count": {
+      "$ref": "#/$defs/StorageCounter"
+    },
+    "byte_count": {
+      "$ref": "#/$defs/StorageCounter"
+    },
+    "classes": {
+      "$ref": "#/$defs/FileClasses"
+    },
+    "destination": {
+      "$ref": "#/$defs/LedgerDestination"
+    },
+    "generation": {
+      "$ref": "#/$defs/PositiveStorageCounter"
+    },
+    "head_version": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PositiveStorageCounter"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "$ref": "#/$defs/LedgerEntryKind"
+    },
+    "library_id": {
+      "$ref": "#/$defs/LibraryId"
+    },
+    "manifest_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "payload_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "previous_entry_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recorded_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.replication-ledger-entry/v1",
+      "default": "cole-voice-lab.replication-ledger-entry/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "$ref": "#/$defs/PositiveStorageCounter"
+    }
+  },
+  "required": [
+    "sequence",
+    "previous_entry_sha256",
+    "kind",
+    "library_id",
+    "generation",
+    "approval_sha256",
+    "destination",
+    "payload_sha256",
+    "manifest_sha256",
+    "classes",
+    "byte_count",
+    "blob_count",
+    "head_version",
+    "recorded_at"
+  ],
+  "title": "LedgerEntry",
+  "type": "object"
+}

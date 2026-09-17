@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "Endpoint": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "FileClass": {
+      "enum": [
+        "records",
+        "prompt-database",
+        "recordings",
+        "derived-edits",
+        "training"
+      ],
+      "type": "string"
+    },
+    "FileClasses": {
+      "items": {
+        "$ref": "#/$defs/FileClass"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "LibraryId": {
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+      "type": "string"
+    },
+    "Namespace": {
+      "pattern": "^[a-z][a-z0-9-]{0,62}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "StorageBackend": {
+      "enum": [
+        "local-directory",
+        "tailnet-vault"
+      ],
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Which vault a library copies to, and what it copies (``provenance/vault/binding.json``).\n\n``tailnet-vault`` names a lowercase DNS ``endpoint`` and requires ``approval_id`` and\n``token_item``; ``local-directory`` names an absolute, normalized directory and has\nneither. ``classes`` (sorted, unique) are the file classes copied to that destination on\nevery backend, so ``training`` goes only where the binding opts in; for ``tailnet-vault``\nthe approval must also cover each of them, which is checked where the approval is loaded.\n``key_item`` and ``token_item`` are always the names ``keychain_item_names`` derives from\n``library_id``. The binding holds no secret and no path to one.",
+  "properties": {
+    "approval_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "backend": {
+      "$ref": "#/$defs/StorageBackend"
+    },
+    "classes": {
+      "$ref": "#/$defs/FileClasses"
+    },
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "endpoint": {
+      "$ref": "#/$defs/Endpoint"
+    },
+    "key_item": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Key Item",
+      "type": "string"
+    },
+    "library_id": {
+      "$ref": "#/$defs/LibraryId"
+    },
+    "namespace": {
+      "$ref": "#/$defs/Namespace"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.storage-binding/v1",
+      "default": "cole-voice-lab.storage-binding/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "token_item": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Token Item"
+    }
+  },
+  "required": [
+    "backend",
+    "endpoint",
+    "namespace",
+    "library_id",
+    "classes",
+    "approval_id",
+    "key_item",
+    "token_item",
+    "created_at"
+  ],
+  "title": "StorageBinding",
+  "type": "object"
+}

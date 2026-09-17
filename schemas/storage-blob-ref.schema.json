@@ -1,0 +1,27 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One stored blob, named by the SHA-256 and size of the bytes the store keeps.",
+  "properties": {
+    "sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "size": {
+      "maximum": 16777216,
+      "minimum": 0,
+      "title": "Size",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "sha256",
+    "size"
+  ],
+  "title": "BlobRef",
+  "type": "object"
+}
