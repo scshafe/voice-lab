@@ -134,7 +134,11 @@ public actor AVFoundationRecordingPlaybackBackend: RecordingPlaybackBackend {
     public func position() -> Int64? {
         if let pausedFrame { return pausedFrame }
         guard graphReady else { return nil }
-        guard let time = player.lastRenderTime, let clock = player.playerTime(forNodeTime: time), clock.isSampleTimeValid else { return nil }
+        // Before the first render cycle (an offline engine that has rendered nothing, or a
+        // device just starting) the render time is valid in neither clock, and AVFAudio raises
+        // rather than answer; the position is simply not known yet.
+        guard let time = player.lastRenderTime, time.isSampleTimeValid || time.isHostTimeValid,
+              let clock = player.playerTime(forNodeTime: time), clock.isSampleTimeValid else { return nil }
         return min(segmentEnd, max(segmentStart, segmentStart + clock.sampleTime))
     }
 

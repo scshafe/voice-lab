@@ -27,7 +27,9 @@ survives SIGTERM, so only SIGKILL stops it), sample_seconds (sample synthesis sl
 writing), fail_sampling (sample synthesis exits 1), synthesis_seconds (Speak synthesis, the
 job's file_prefix "speech", sleeps before writing), fail_synthesis (Speak synthesis exits 1),
 synthesis_format ([rate, channels, sample width] Speak writes instead of 24000 Hz mono
-16-bit), synthesis_report (a line Speak prints instead of its clip report).
+16-bit), synthesis_report (a line Speak prints instead of its clip report). A Speak clip's
+240 frames follow a pattern set by its text, so different texts give different clips;
+listening samples are silent.
 """
 import json, os, signal, sys, time, wave
 from pathlib import Path
@@ -96,7 +98,13 @@ if script == "f5_synthesize.py":
         path = out / f"{{prefix}}-{{index:02d}}.wav"
         with wave.open(str(path), "wb") as handle:
             handle.setnchannels(channels); handle.setsampwidth(width); handle.setframerate(rate)
-            handle.writeframes(bytes(240 * channels * width))
+            if speech and (channels, width) == (1, 2):
+                seed = sum(text.encode()) % 997
+                handle.writeframes(b"".join(
+                    ((frame * 131 + seed * 7) % 20_000 - 10_000).to_bytes(2, "little", signed=True)
+                    for frame in range(240)))
+            else:
+                handle.writeframes(bytes(240 * channels * width))
         if speech and "synthesis_report" in MODE:
             print(MODE["synthesis_report"])
         else:

@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from finetune_speech_runs import write_speech_run as shared_speech_run
+from finetune_speech_runs import write_wav
 from finetune_stub_runtime import stub_finetune_runtime, write_stub_mode
 from native_finetune_service_fixture import format_pins
 from test_pilot_v2_coverage import SUBJECT, released_pilot_v2
@@ -41,17 +43,10 @@ from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canoni
 from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.finetune import (
     MAX_TRUSTED_DIGESTS,
-    FineTuneCheckpoint,
-    FineTuneCorpus,
-    FineTuneCorpusEntry,
-    FineTuneDataset,
-    FineTuneDatasetClip,
     FineTuneDigestCache,
     FineTuneError,
-    FineTuneHyperparameters,
     FineTunePretrainedPins,
     FineTuneRun,
-    FineTuneRuntimeIdentity,
     FineTuneTrustedDigests,
     SpeechClip,
     describe_finetune_runtime,
@@ -100,7 +95,6 @@ from cole_voice_lab.recording_service import (
 )
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-CLIP_FRAMES = 2_400
 # Catalog order: a reference candidate without a recording, one with, then a plain prompt.
 REFERENCE_ENTRIES = ("reference-neutral-01", "reference-warm-01", "neutral-01")
 REFERENCE_CLIPS = ("reference-warm-01", "neutral-01")
@@ -108,34 +102,6 @@ PLAIN_ENTRIES = ("neutral-01", "neutral-02")
 
 
 # -- a library with finished runs ---------------------------------------------------------------
-
-
-def write_wav(path: Path, frames: int = CLIP_FRAMES) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(24_000)
-        handle.writeframes(bytes(index % 251 for index in range(frames * 2)))
-    path.chmod(0o600)
-
-
-def corpus_entry(prompt_id: str) -> FineTuneCorpusEntry:
-    prompt = next(item for item in released_pilot_v2().prompts if item.prompt_id == prompt_id)
-    return FineTuneCorpusEntry(
-        prompt_id=prompt_id,
-        prompt_sha256=canonical_sha256(prompt),
-        recorded_prompt_sha256=canonical_sha256(prompt),
-        prompt=prompt,
-        take_id=f"take-{prompt_id}",
-        source_kind="native",
-        source_path=f"tmp/recording-takes/take-{prompt_id}/original.wav",
-        source_sha256="0" * 64,
-        source_frames=48_000,
-        source_sample_rate_hz=48_000,
-        recorded_at=None,
-        date_precision="unknown",
-    )
 
 
 def write_speech_run(
@@ -148,85 +114,19 @@ def write_speech_run(
     clips: tuple[str, ...] = REFERENCE_CLIPS,
     checkpoint: bool = True,
 ) -> FineTuneRun:
-    """A run directory bound like a trained one: clips, corpus, dataset, checkpoint, run.json."""
-    catalog = released_pilot_v2()
-    run_root = f"derived/finetune/{run_id}"
-    directory = layout.root / run_root
-    corpus = FineTuneCorpus(
+    """A pilot-v2 run bound like a trained one (``finetune_speech_runs.write_speech_run``)."""
+    return shared_speech_run(
+        layout,
+        run_id,
+        catalog=released_pilot_v2(),
         subject_id=SUBJECT,
-        catalog_suite_id=catalog.suite_id,
-        catalog_sha256=canonical_sha256(catalog),
-        entries=tuple(corpus_entry(prompt_id) for prompt_id in entries),
-        missing_prompt_ids=(),
-        unknown_record_ids=(),
-        selected_at=START,
-    )
-    texts = {entry.prompt_id: entry.text for entry in corpus.entries}
-    dataset_clips = []
-    for prompt_id in clips:
-        path = directory / "dataset" / "wavs" / f"{prompt_id}.wav"
-        write_wav(path)
-        dataset_clips.append(
-            FineTuneDatasetClip(
-                prompt_id=prompt_id,
-                take_id=f"take-{prompt_id}",
-                relative_path=f"wavs/{prompt_id}.wav",
-                sha256=sha256_file(path)[0],
-                frames=CLIP_FRAMES,
-                gain_db=0.0,
-                text=texts[prompt_id],
-            )
-        )
-    dataset = FineTuneDataset(
-        corpus_sha256=canonical_sha256(corpus),
-        dataset_root=f"{run_root}/dataset",
-        normalization_rule="synthetic",
-        clips=tuple(dataset_clips),
-        metadata_csv_sha256="4" * 64,
-        materialized_at=START,
-    )
-    write_canonical_json(directory / "dataset" / "corpus.json", corpus)
-    write_canonical_json(directory / "dataset" / "dataset.json", dataset)
-    checkpoints: tuple[FineTuneCheckpoint, ...] = ()
-    if checkpoint:
-        weights = directory / "checkpoints" / "model_last.pt"
-        weights.parent.mkdir(mode=0o700)
-        weights.write_bytes(f"fine-tuned weights of {run_id}".encode())
-        digest, size = sha256_file(weights)
-        checkpoints = (
-            FineTuneCheckpoint(
-                relative_path=f"{run_root}/checkpoints/model_last.pt",
-                sha256=digest,
-                size_bytes=size,
-                update=0,
-                kind="last",
-            ),
-        )
-    run = FineTuneRun(
-        run_id=run_id,
-        subject_id=SUBJECT,
-        catalog_sha256=corpus.catalog_sha256,
-        corpus_sha256=canonical_sha256(corpus),
-        dataset_sha256=canonical_sha256(dataset),
-        hyperparameters=FineTuneHyperparameters(epochs=3),
-        runtime=FineTuneRuntimeIdentity(
-            runtime_root="/synthetic/runtime",
-            python_sha256="5" * 64,
-            f5_tts_version="stub",
-            torch_version="stub",
-            pretrained_path="/synthetic/runtime/pretrained/model.safetensors",
-            pretrained_sha256="6" * 64,
-        ),
-        run_root=run_root,
-        log_path=f"{run_root}/train.log",
-        checkpoints=checkpoints,
-        status=status,
         started_at=START,
         finished_at=None if status == "running" else START + timedelta(minutes=finished_minute),
-        error="stopped" if status == "failed" else None,
+        entries=entries,
+        clips=clips,
+        status=status,
+        checkpoint=checkpoint,
     )
-    write_canonical_json(directory / "run.json", run)
-    return run
 
 
 @dataclass(frozen=True)

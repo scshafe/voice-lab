@@ -54,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
             "accessibility",
             "review-sanitizers",
             "finetune",
+            "speak",
             "recovery",
             "packaged-app",
             "acceptance",
@@ -245,6 +246,30 @@ def main(argv: list[str] | None = None) -> int:
                 str(binary_directory),
                 "--output",
                 str(artifacts / "finetune"),
+            ],
+            cwd=repository,
+        )
+    if args.suite in {"speak", "all"}:
+        run(
+            swift
+            + ["test"]
+            + test_location
+            + test_flags
+            + ["--filter", "RecordingSpeakModelTests|RecordingSpeakTests"],
+            cwd=repository,
+        )
+        run(
+            [
+                str(repository / ".venv/bin/python"),
+                str(repository / "scripts/verify_native_workspace.py"),
+                "--suite",
+                "speak",
+                "--package",
+                str(package),
+                "--binary-directory",
+                str(binary_directory),
+                "--output",
+                str(artifacts / "speak"),
             ],
             cwd=repository,
         )
@@ -682,6 +707,10 @@ print(json.dumps(report))
         identity["finetune_python"] = json.loads(
             (finetune / "python-finetune-evidence.json").read_text()
         )
+    if args.suite in {"speak", "all"}:
+        speak = artifacts / "speak"
+        identity["speak"] = json.loads((speak / "native/speak-report.json").read_text())
+        identity["speak_python"] = json.loads((speak / "python-speak-evidence.json").read_text())
     if args.suite in {"acceptance", "all"}:
         # The state inventory is checked from the rendered files themselves, so a phase
         # that stopped being drawn is a missing artifact rather than a silent gap.

@@ -20,7 +20,7 @@ from typing import Any
 DOCUMENT = "docs/NATIVE_RECORDING_UX.md"
 DOCUMENT_PATH = Path(__file__).resolve().parent.parent / DOCUMENT
 
-# Sections 4 through 11, 13 and 16, each row tied to the durable evidence that answers it.
+# Sections 4 through 11, 13, 16 and 17, each row tied to the durable evidence that answers it.
 # "artifact" rows cite a file under the native verification root; "identity" rows cite a
 # key in its verification.json; "benchmark" rows defer to the benchmark's own verdict.
 PARITY_ROWS: tuple[dict[str, Any], ...] = (
@@ -106,6 +106,13 @@ PARITY_ROWS: tuple[dict[str, Any], ...] = (
         "section": "16",
         "requirement": "Fine-tune model trains on the latest kept takes, shows progress, cancels",
         "evidence": {"kind": "identity", "key": "finetune"},
+    },
+    {
+        "id": "speak_page",
+        "section": "17",
+        "requirement": "Speak plays typed text in a fine-tuned voice or Base, cancels, "
+        "yields to capture and saves a copy",
+        "evidence": {"kind": "identity", "key": "speak"},
     },
     {
         "id": "recovery_after_crash",
@@ -195,6 +202,7 @@ PHYSICAL_GATE_ROWS: tuple[str, ...] = (
     "Device unplug, reconnect and sleep or wake recovery",
     "Safe reopen and recovery after an interrupted session",
     "Fine-tune model on real recordings: start, watch progress, cancel, finish, listen",
+    "Speak page: hear typed text from the latest fine-tune and from Base, Save As, then record",
 )
 
 
@@ -371,7 +379,7 @@ def render_markdown(matrix: dict[str, Any]) -> str:
     lines = [
         "# Native recording acceptance matrix",
         "",
-        f"Document: `{matrix['document']}` sections 4-13 and 16.",
+        f"Document: `{matrix['document']}` sections 4-13, 16 and 17.",
         f"Benchmark: {matrix['benchmark_report']['backend']} backend, "
         f"{matrix['benchmark_report']['profile']} profile, "
         f"{matrix['benchmark_report']['created_at']}.",
@@ -379,7 +387,7 @@ def render_markdown(matrix: dict[str, Any]) -> str:
         f"Acceptance closed: **{matrix['acceptance_closed']}**. "
         f"Outstanding rows: **{len(matrix['outstanding'])}**.",
         "",
-        "## Parity (sections 4-11, 13, 16)",
+        "## Parity (sections 4-11, 13, 16, 17)",
         "",
         "| Section | Requirement | Verdict | Evidence |",
         "| --- | --- | --- | --- |",

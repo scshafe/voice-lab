@@ -30,7 +30,7 @@
   - Accessibility: labels on every control, VoiceOver reads generation state changes, Reduce Motion respected, contrast per `RecordingPalette`.
   - Verify: `cd apps/macos && swift test --filter RecordingSpeakTests && scripts/verify-native-recording --suite accessibility` (extended with the Speak page)
 
-- [ ] **Step 4: Native `speak` verification suite**
+- [x] **Step 4: Native `speak` verification suite**
   - Add `speak` to `scripts/verify_native_recording.py`/`verify_native_workspace.py`: synthesis against the stub runtime, `SynthesisEvent` sequence observed, the clip's sha256 re-read by Python, playback source accepted, interlock while a synthetic recording is active, cancel mid-generation, failure message shown verbatim.
   - Verify: `scripts/verify-native-recording --suite speak`
 

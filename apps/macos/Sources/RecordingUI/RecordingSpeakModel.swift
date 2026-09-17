@@ -458,9 +458,11 @@ public final class RecordingSpeakModel: ObservableObject {
         request = current
     }
 
-    /// "Speech ready, 2.5 seconds": tenths, without a trailing ".0".
+    /// "Speech ready, 2.5 seconds": tenths, without a trailing ".0"; a clip shorter than a
+    /// twentieth of a second is "under 0.1 seconds".
     public nonisolated static func readyAnnouncement(seconds: Double) -> String {
         let tenths = Int((max(0, seconds.isFinite ? seconds : 0) * 10).rounded())
+        guard tenths > 0 else { return "Speech ready, under 0.1 seconds" }
         let amount = tenths % 10 == 0 ? String(tenths / 10) : String(format: "%ld.%ld", tenths / 10, tenths % 10)
         return "Speech ready, \(amount) \(tenths == 10 ? "second" : "seconds")"
     }

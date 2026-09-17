@@ -166,7 +166,7 @@ extension RecordingHarness {
     }
 
     /// One short turn of the main run loop, where SwiftUI applies a pending page change.
-    @MainActor private static func spinRunLoop() {
+    @MainActor static func spinRunLoop() {
         RunLoop.current.run(until: Date().addingTimeInterval(0.01))
     }
 

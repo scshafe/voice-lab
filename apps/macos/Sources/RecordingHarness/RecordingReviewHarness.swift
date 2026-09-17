@@ -135,7 +135,8 @@ extension RecordingHarness {
     init(_ model: RecordingWorkspaceModel, barrierSeconds: Int = 30) {
         self.model = model
         self.barrierSeconds = barrierSeconds
-        for publisher in [model.objectWillChange.eraseToAnyPublisher(), model.review.objectWillChange.eraseToAnyPublisher(), model.review.playback.objectWillChange.eraseToAnyPublisher(), model.waveform.objectWillChange.eraseToAnyPublisher()] {
+        for publisher in [model.objectWillChange.eraseToAnyPublisher(), model.review.objectWillChange.eraseToAnyPublisher(), model.review.playback.objectWillChange.eraseToAnyPublisher(), model.waveform.objectWillChange.eraseToAnyPublisher(),
+                          model.speak.objectWillChange.eraseToAnyPublisher(), model.speak.playback.objectWillChange.eraseToAnyPublisher()] {
             subscriptions.append(publisher.sink { [weak self] _ in Task { @MainActor in self?.changed() } })
         }
     }

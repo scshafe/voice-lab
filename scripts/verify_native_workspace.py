@@ -429,7 +429,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("transport", "review", "review-legacy", "recovery", "finetune"),
+        choices=("transport", "review", "review-legacy", "recovery", "finetune", "speak"),
         default="transport",
     )
     parser.add_argument("--accepted-legacy", action="store_true")
@@ -448,6 +448,11 @@ def main() -> None:
         from native_finetune_fixture import run_finetune_suite
 
         run_finetune_suite(root, package=options.package, binary_directory=options.binary_directory)
+        return
+    if options.suite == "speak":
+        from native_speak_fixture import run_speak_suite
+
+        run_speak_suite(root, package=options.package, binary_directory=options.binary_directory)
         return
     assets = AssetLayout.initialize(root / "assets")
     schemas = write_recording_schemas(root)

@@ -84,10 +84,39 @@ def test_fine_tuning_is_cited_from_its_own_section_and_checked_physically(
     physical = [row["requirement"] for row in matrix["physical_gate"]]
     assert "A disposable full package through local intake" not in physical
     check = "Fine-tune model on real recordings: start, watch progress, cancel, finish, listen"
+    assert check in physical
+    text = render_markdown(matrix)
+    assert "sections 4-13, 16 and 17" in text and "## Parity (sections 4-11, 13, 16, 17)" in text
+    assert f"| [16:{row['doc_line']}]" in text and check in text
+
+
+def test_the_speak_page_is_cited_from_its_own_section_and_checked_physically(
+    tmp_path: Path,
+) -> None:
+    import recording_acceptance_matrix as module
+
+    matrix = build_matrix(PASSING_BENCHMARK, complete_root(tmp_path))
+    row = next(row for row in matrix["parity"] if row["id"] == "speak_page")
+    assert row["section"] == "17" and row["doc_anchor"] == "17-speak-page"
+    lines = module.DOCUMENT_PATH.read_text(encoding="utf-8").splitlines()
+    assert lines[row["doc_line"] - 1] == "## 17. Speak page"
+    assert row["evidence"] == "verification.json:speak" and row["verdict"] == "verified"
+    check = (
+        "Speak page: hear typed text from the latest fine-tune and from Base, Save As, then record"
+    )
+    physical = [row["requirement"] for row in matrix["physical_gate"]]
     assert physical[-1] == check
     text = render_markdown(matrix)
-    assert "sections 4-13 and 16" in text and "## Parity (sections 4-11, 13, 16)" in text
-    assert f"| [16:{row['doc_line']}]" in text and check in text
+    assert f"| [17:{row['doc_line']}]" in text and check in text
+
+    # Without the suite's evidence the row stays open.
+    (tmp_path / "other").mkdir()
+    root = complete_root(tmp_path / "other")
+    identity = json.loads((root / "verification.json").read_text())
+    del identity["speak"]
+    (root / "verification.json").write_text(json.dumps(identity))
+    unverified = build_matrix(PASSING_BENCHMARK, root)
+    assert "speak_page" in unverified["outstanding"]
 
 
 def test_a_missing_or_unreadable_artifact_is_unverified_not_assumed(tmp_path: Path) -> None:

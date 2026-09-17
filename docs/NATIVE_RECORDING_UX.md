@@ -1428,3 +1428,15 @@ The latest finished run, reported by `fine-tune-status`, is the run with the new
 `finished_at` among `derived/finetune/*/run.json` with status finished. On equal times the
 greater run id wins. The Speak page plan uses the same rule. Runs made by `voice-lab
 finetune run` with the default output root count too.
+
+## 17. Speak page
+
+Added 2026-09-16 (plan `2026-09-15-in-app-speak-page.md`, D-019). The window has a second
+page, **Speak**, chosen with the `Record | Speak` control in the window toolbar or View ▸
+Record Page (⌘1) / Speak Page (⌘2). Cole types text, picks a finished fine-tuned model (or
+Base) and a reference clip, presses **Speak** (⌘↩), hears the result and can save a WAV
+copy. The Record page and its geometry are unchanged. The native `speak` suite
+(`scripts/verify-native-recording --suite speak`) checks the page against a stub runtime:
+the model and reference choices, finished clips re-read by Python, playback of a speech
+clip, cancel, a deadline failure shown verbatim, the one-GPU-slot exclusion with
+fine-tuning, the capture interlock, Save As, and the Record regions after a page switch.

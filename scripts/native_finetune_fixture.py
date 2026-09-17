@@ -125,6 +125,7 @@ def prepare_finetune_fixture(
     catalog: PromptSuite | None = None,
     runtime_mode: Mapping[str, Any] | None = None,
     runtime_configured: bool = True,
+    synthesis_deadline: float | None = None,
 ) -> NativeFineTuneFixture:
     """Create a fine-tune fixture root at ``root`` (new or empty; made private).
 
@@ -132,11 +133,15 @@ def prepare_finetune_fixture(
     products; ``catalog`` defaults to ``finetune_catalog()`` and is published and activated
     for the synthetic subject; ``runtime_mode`` is the stub's initial ``stub-mode.json``
     (default: ``TRAINING_STEP_SECONDS`` per status line); ``runtime_configured=False`` gives
-    the service a runtime directory without ``bin/python``.
+    the service a runtime directory without ``bin/python``; ``synthesis_deadline`` shortens
+    the Speak deadline through the test-only wrapper (configured roots only).
     Returns: the prepared fixture.
-    Raises: ``ValueError`` as ``private_fixture_root`` and ``seed_active_catalog``.
+    Raises: ``ValueError`` as ``private_fixture_root`` and ``seed_active_catalog``, and for a
+    ``synthesis_deadline`` without a configured runtime.
     """
 
+    if synthesis_deadline is not None and not runtime_configured:
+        raise ValueError("only the test-only service wrapper can shorten the Speak deadline")
     root = private_fixture_root(root, package=package)
     catalog = finetune_catalog() if catalog is None else catalog
     layout = AssetLayout.initialize(root / "assets")
@@ -159,6 +164,8 @@ def prepare_finetune_fixture(
             "--test-pretrained-pins",
             format_pins(pin),
         ]
+        if synthesis_deadline is not None:
+            service_arguments += ["--test-synthesis-deadline", f"{synthesis_deadline:g}"]
     else:
         runtime_root.mkdir(mode=0o700)
         from cole_voice_lab.recording_service import recording_service_build_identity

@@ -290,6 +290,20 @@ private struct AudioFixture {
         #expect(await backend.plays.isEmpty)
     }
 
+    @Test func positionIsUnknownRatherThanFatalBeforeTheFirstRenderCycle() async throws {
+        let fixture = try AudioFixture(frames: 2400, format: .speech)
+        defer { try? fixture.remove() }
+        let backend = AVFoundationRecordingPlaybackBackend(mode: .offline)
+        try await backend.load(fixture.source, generation: 1)
+        try await backend.play(from: 0, through: 2400, generation: 2)
+        // A view polling the position between play() and the first rendered frames.
+        let unknown = await backend.position()
+        #expect(unknown == nil || unknown == 0, "\(String(describing: unknown))")
+        _ = try await backend.renderOffline(frames: 480)
+        #expect(await backend.position() == 480)
+        try await backend.stop()
+    }
+
     @Test func idleBackendShutdownAndInvalidRangesAreSafeWithoutAnAudioGraph() async throws {
         let backend = AVFoundationRecordingPlaybackBackend(mode: .offline)
         #expect(await backend.position() == nil)
