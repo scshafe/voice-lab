@@ -12,6 +12,8 @@ Later steps extend ``ADAPTERS`` (and an adapter's own allowed importers) as adap
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -359,6 +361,39 @@ def test_the_scan_finds_every_import_form_of_an_adapter(tmp_path: Path) -> None:
     write(tmp_path, "scripts/broken", "#!/usr/bin/env python3\ndef broken(:\n")
     with pytest.raises(SyntaxError):
         violations(tmp_path)
+
+
+def test_the_replication_modules_load_no_adapter_even_indirectly() -> None:
+    """Library copies take ports: importing them loads no adapter, key or owner module."""
+    code = (
+        "import sys\n"
+        "import cole_voice_lab.library_classification\n"
+        "import cole_voice_lab.library_replication\n"
+        "print('\\n'.join(sorted(sys.modules)))\n"
+    )
+    loaded = set(
+        subprocess.run(
+            [sys.executable, "-I", "-B", "-c", code],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=60,
+        ).stdout.split()
+    )
+    assert {"cole_voice_lab.library_classification", "cole_voice_lab.library_replication"} <= (
+        loaded
+    )
+    forbidden = {
+        *ADAPTERS,
+        "cole_voice_lab.storage_binding",
+        "cole_voice_lab.recording_takes",
+        "cole_voice_lab.recording_contracts",
+        "cole_voice_lab.recording_finetune_jobs",
+        "cole_voice_lab.finetune",
+        *EXCLUSIVE_PACKAGES,
+    }
+    assert forbidden & loaded == set()
 
 
 @pytest.mark.parametrize(

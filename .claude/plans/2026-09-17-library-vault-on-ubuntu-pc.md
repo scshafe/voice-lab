@@ -158,7 +158,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
 - **Switching backends:** `voice-lab vault bind …` plus a relaunch. There is no rebuild and no change to the app's settings.
 
 **Library copies** (`library_replication.py`, `@canonical library_replication`).
-- **Sources.** Each owner module implements a `ReplicationSource` that lists its items without blocking any writer:
+- **Sources.** ~~Each owner module implements a `ReplicationSource`~~ Each owner has a `ReplicationSource`, kept in `library_replication.py` because sources inside the owner modules would create import cycles with the composition root *(amended 2026-09-17, Step 5)*. A source lists its items without blocking any writer:
   - write-once files are read directly;
   - replaced files are read, their identity re-checked, and the read retried if they changed;
   - the corpus database is copied with SQLite's online backup API into private scratch space.
@@ -299,7 +299,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - Specialist: `doddy` (the encryption construction and key handling)
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/storage_conformance.py tests/test_storage_sealing.py tests/test_native_recording_application.py`
 
-- [ ] **Step 5: Replication sources and path classification**
+- [x] **Step 5: Replication sources and path classification**
   - Add the `ReplicationSource` Protocol and one implementation per owner module.
   - Add the classification data and the test that every path is classified.
   - Tests on the pilot-v2 legacy and native fixture roots:
@@ -514,3 +514,5 @@ The first draft was reviewed on 2026-09-17 by `rigorous-architect` (the storage 
 **Amended 2026-09-17 (Step 2):** the upload-started ledger entry names the payload digest of the generation's manifest plan (a manifest's chunk refs exist only after sealing); the completion entry names the manifest digest; the binding names its classes.
 
 **Amended 2026-09-17 (Step 4):** sealed blobs do not hide plaintext sizes; the leak is accepted and goes into D-020.
+
+**Amended 2026-09-17 (Step 5):** the replication sources live in `library_replication.py`, one per owner, and declare which owners their files refer to; an owner whose referent changed during a pass is held back with it.
