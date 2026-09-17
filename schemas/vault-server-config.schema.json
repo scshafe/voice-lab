@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "Namespace": {
+      "pattern": "^[a-z][a-z0-9-]{0,62}$",
+      "type": "string"
+    },
+    "PositiveStorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "UserLogin": {
+      "maxLength": 320,
+      "minLength": 1,
+      "type": "string"
+    },
+    "VaultNamespaceConfig": {
+      "additionalProperties": false,
+      "description": "One namespace the vault server serves: its token hashes, its quota and its logins.\n\nA token is never stored: ``read_token_sha256`` and ``write_token_sha256`` are the SHA-256\nhex of the two tokens, they differ from each other (and, across the configuration, from\nevery other namespace's), and the write token also has read scope.  ``quota_bytes`` is the\nmost this namespace's blobs may occupy; a put beyond it is refused with ``STORAGE.QUOTA``.\n``allowed_user_logins`` is defence in depth on top of the tokens: when it is empty the\nproxy's ``Tailscale-User-Login`` header is not checked, and otherwise a request must carry\nexactly one of these logins.",
+      "properties": {
+        "allowed_user_logins": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/UserLogin"
+          },
+          "title": "Allowed User Logins",
+          "type": "array"
+        },
+        "name": {
+          "$ref": "#/$defs/Namespace"
+        },
+        "quota_bytes": {
+          "$ref": "#/$defs/PositiveStorageCounter"
+        },
+        "read_token_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "write_token_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "name",
+        "read_token_sha256",
+        "write_token_sha256",
+        "quota_bytes"
+      ],
+      "title": "VaultNamespaceConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "What the vault server is given at startup (a read-only file; no raw token is in it).\n\n``namespaces`` names at least one namespace, no name twice and no token hash twice, so a\ntoken grants exactly one namespace and one scope. ``max_workers`` bounds the request\nthreads (a request that finds them all busy is refused with ``STORAGE.UNAVAILABLE``\ninstead of queueing), and ``request_timeout_seconds`` bounds a request's whole read phase\n(its request line, headers, body and any drained refusal together) as one wall-clock\ndeadline taken when a worker picks the connection up, not as a per-read socket timeout. A\nblob upload must therefore *complete* within it or it is refused with ``STORAGE.TIMEOUT``:\nat the default of 120 seconds a 16 MiB blob must average about 140 KB/s, so a slower link\nneeds a larger value (up to 600 seconds, which allows about 28 KB/s). Writing the answer\ngets the same number of seconds again as its own budget.",
+  "properties": {
+    "max_workers": {
+      "default": 8,
+      "maximum": 64,
+      "minimum": 1,
+      "title": "Max Workers",
+      "type": "integer"
+    },
+    "namespaces": {
+      "items": {
+        "$ref": "#/$defs/VaultNamespaceConfig"
+      },
+      "minItems": 1,
+      "title": "Namespaces",
+      "type": "array"
+    },
+    "request_timeout_seconds": {
+      "default": 120,
+      "maximum": 600,
+      "minimum": 1,
+      "title": "Request Timeout Seconds",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.vault-server-config/v1",
+      "default": "cole-voice-lab.vault-server-config/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "namespaces"
+  ],
+  "title": "VaultServerConfig",
+  "type": "object"
+}

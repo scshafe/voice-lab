@@ -209,7 +209,8 @@ def test_only_the_composition_root_the_adapters_and_the_seeders_import_an_adapte
     assert violations(REPOSITORY) == []
     importers = {found.path for found in adapter_imports(REPOSITORY)}
     # The scan sees the known importers, so an empty violation list means something.
-    assert importers == {COMPOSITION_ROOT, *SEEDERS}
+    named = {path for paths in ADAPTERS.values() for path in paths}
+    assert importers == {COMPOSITION_ROOT, *SEEDERS, *named}
     scanned = {path.relative_to(REPOSITORY).as_posix() for path, _ in python_sources(REPOSITORY)}
     assert {COMPOSITION_ROOT, "src/cole_voice_lab/cli.py", "scripts/guard-private-assets"} <= (
         scanned

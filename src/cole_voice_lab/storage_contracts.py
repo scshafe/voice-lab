@@ -1,8 +1,9 @@
 """The library vault's records: blob and ref values, manifests, the binding, state and ledger.
 
 @canonical storage_contracts -- every value a storage port returns and every record the vault
-keeps (library manifests and the envelopes a head names) or the Mac keeps under
-provenance/vault (the binding, replication state, ledger entries) is one of these strict
+keeps (library manifests and the envelopes a head names), the Mac keeps under
+provenance/vault (the binding, replication state, ledger entries) or the vault server reads
+and writes (its namespace configuration and its access-log lines) is one of these strict
 models; ref names and library ids are validated here, a manifest's digest is always
 manifest_digest (SHA-256 of its canonical JSON), the digest of what a generation carries (its
 ManifestPlan, known before any chunk is stored, which the LibraryManifest built after the
@@ -41,6 +42,17 @@ MAX_REF_NAME_LENGTH: Final = 256
 MAX_MANIFEST_PATH_LENGTH: Final = 1024
 MAX_ENDPOINT_LENGTH: Final = 1024
 MAX_DNS_NAME_LENGTH: Final = 253
+# A tailnet user login (``person@example.com`` or ``person@github``) and one proxy-set
+# forwarded-for value, as the vault server may log them.
+MAX_USER_LOGIN_LENGTH: Final = 320
+MAX_FORWARDED_FOR_LENGTH: Final = 256
+# The vault server's bounds: enough workers for one Mac's pushes, and a request timeout whose
+# ceiling still allows a 16 MiB blob to arrive whole over a slow tailnet link (the timeout is
+# one deadline for the whole request, so the default suits a fast link only).
+MAX_VAULT_WORKERS: Final = 64
+DEFAULT_VAULT_WORKERS: Final = 8
+MAX_VAULT_REQUEST_TIMEOUT_SECONDS: Final = 600
+DEFAULT_VAULT_REQUEST_TIMEOUT_SECONDS: Final = 120
 # The largest manifest (its canonical JSON) a generation stores or a reader accepts: far above
 # a real library's (tens of thousands of entries are a few tens of MiB) and small enough to
 # assemble in memory.
@@ -63,6 +75,14 @@ LIBRARY_ID_PATTERN: Final = r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$"
 NAMESPACE_PATTERN: Final = r"^[a-z][a-z0-9-]{0,62}$"
 NODE_STABLE_ID_PATTERN: Final = r"^[A-Za-z0-9]{1,64}$"
 TAILSCALE_TAG_PATTERN: Final = r"^tag:[A-Za-z][A-Za-z0-9-]{0,123}$"
+# A vault access token: the prefix names the format, and the 43 base64url characters are the
+# 256 bits ``secrets.token_bytes(32)`` returned. The server keeps only sha256(token) hex.
+VAULT_TOKEN_PREFIX: Final = "cvlv_"
+VAULT_TOKEN_PATTERN: Final = rf"^{VAULT_TOKEN_PREFIX}[A-Za-z0-9_-]{{43}}$"
+# One ``DOMAIN.FAILURE`` storage code as a logged or transmitted string. The codes themselves
+# are ``storage_ports.StorageErrorCode``, which imports this module, so a record spells the
+# shape and ``tests/test_storage_server.py`` pins the two to each other.
+STORAGE_CODE_PATTERN: Final = r"^STORAGE\.[A-Z][A-Z0-9_]{0,30}$"
 PIN_SOURCE_PATTERN: Final = r"^[a-z][a-z0-9_-]{0,63}(?:\.[a-z][a-z0-9_-]{0,63}){0,7}$"
 
 _REF_NAME = re.compile(REF_NAME_PATTERN)
@@ -251,6 +271,19 @@ def _has_unsafe_character(value: str) -> bool:
     )
 
 
+def _plain_line(value: str) -> str:
+    """Return ``value`` when it can be written as one field of a JSON line.
+
+    Raises: ``ValueError`` for a hidden, control or line-separator character, which a log
+    reader or a header comparison must never have to guess at.
+    """
+    if _has_unsafe_character(value) or "\n" in value:
+        raise ValueError(
+            "this value cannot contain hidden, control, newline or separator characters"
+        )
+    return value
+
+
 def _sorted_unique_classes(values: tuple[FileClass, ...]) -> tuple[FileClass, ...]:
     if len(set(values)) != len(values):
         raise ValueError("classes must not repeat")
@@ -309,6 +342,32 @@ type FileClasses = Annotated[
 ]
 type ManifestEntryKind = Literal["file", "pin"]
 type LedgerEntryKind = Literal["upload-started", "upload-completed"]
+type UserLogin = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=MAX_USER_LOGIN_LENGTH),
+    AfterValidator(_plain_line),
+]
+type ForwardedFor = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=MAX_FORWARDED_FOR_LENGTH),
+    AfterValidator(_plain_line),
+]
+# A digest or a ref name: what the request's path named, once it parsed.
+type AccessedName = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=MAX_REF_NAME_LENGTH),
+    AfterValidator(_plain_line),
+]
+type StorageCodeText = Annotated[str, StringConstraints(pattern=STORAGE_CODE_PATTERN)]
+type HttpStatus = Annotated[int, Field(ge=100, le=599)]
+# ``none`` is every request that presented no token of this namespace, the health endpoint
+# included; the write token also has read scope, so ``write`` implies it.
+type VaultScope = Literal["read", "write", "none"]
+# The endpoint a request reached, or ``refused`` when its path, method or framing never named
+# one.
+type VaultOperation = Literal[
+    "put-blob", "has-blob", "get-blob", "read-ref", "swap-ref", "health", "refused"
+]
 
 
 class BlobRef(ContractModel):
@@ -646,6 +705,118 @@ class LedgerEntry(ContractModel):
         return self
 
 
+class VaultNamespaceConfig(ContractModel):
+    """One namespace the vault server serves: its token hashes, its quota and its logins.
+
+    A token is never stored: ``read_token_sha256`` and ``write_token_sha256`` are the SHA-256
+    hex of the two tokens, they differ from each other (and, across the configuration, from
+    every other namespace's), and the write token also has read scope.  ``quota_bytes`` is the
+    most this namespace's blobs may occupy; a put beyond it is refused with ``STORAGE.QUOTA``.
+    ``allowed_user_logins`` is defence in depth on top of the tokens: when it is empty the
+    proxy's ``Tailscale-User-Login`` header is not checked, and otherwise a request must carry
+    exactly one of these logins.
+    """
+
+    name: Namespace
+    read_token_sha256: Sha256
+    write_token_sha256: Sha256
+    quota_bytes: PositiveStorageCounter
+    allowed_user_logins: tuple[UserLogin, ...] = ()
+
+    @model_validator(mode="after")
+    def _the_two_scopes_have_two_tokens(self) -> Self:
+        if self.read_token_sha256 == self.write_token_sha256:
+            raise ValueError("a namespace's read and write token hashes must differ")
+        if len(set(self.allowed_user_logins)) != len(self.allowed_user_logins):
+            raise ValueError("allowed_user_logins must not repeat")
+        return self
+
+
+class VaultServerConfig(ContractModel):
+    """What the vault server is given at startup (a read-only file; no raw token is in it).
+
+    ``namespaces`` names at least one namespace, no name twice and no token hash twice, so a
+    token grants exactly one namespace and one scope. ``max_workers`` bounds the request
+    threads (a request that finds them all busy is refused with ``STORAGE.UNAVAILABLE``
+    instead of queueing), and ``request_timeout_seconds`` bounds a request's whole read phase
+    (its request line, headers, body and any drained refusal together) as one wall-clock
+    deadline taken when a worker picks the connection up, not as a per-read socket timeout. A
+    blob upload must therefore *complete* within it or it is refused with ``STORAGE.TIMEOUT``:
+    at the default of 120 seconds a 16 MiB blob must average about 140 KB/s, so a slower link
+    needs a larger value (up to 600 seconds, which allows about 28 KB/s). Writing the answer
+    gets the same number of seconds again as its own budget.
+    """
+
+    schema_version: Literal["cole-voice-lab.vault-server-config/v1"] = (
+        "cole-voice-lab.vault-server-config/v1"
+    )
+    namespaces: tuple[VaultNamespaceConfig, ...] = Field(min_length=1)
+    max_workers: int = Field(default=DEFAULT_VAULT_WORKERS, ge=1, le=MAX_VAULT_WORKERS)
+    request_timeout_seconds: int = Field(
+        default=DEFAULT_VAULT_REQUEST_TIMEOUT_SECONDS,
+        ge=1,
+        le=MAX_VAULT_REQUEST_TIMEOUT_SECONDS,
+    )
+
+    @model_validator(mode="after")
+    def _no_name_and_no_token_serves_twice(self) -> Self:
+        names = [namespace.name for namespace in self.namespaces]
+        if len(set(names)) != len(names):
+            raise ValueError("namespace names must be unique")
+        hashes = [
+            digest
+            for namespace in self.namespaces
+            for digest in (namespace.read_token_sha256, namespace.write_token_sha256)
+        ]
+        if len(set(hashes)) != len(hashes):
+            raise ValueError("no token hash may serve two namespaces or two scopes")
+        return self
+
+
+class VaultAccessRecord(ContractModel):
+    """One line of the vault server's access log, appended for every answered request.
+
+    It records what was asked and how it was answered, never a credential: no ``Authorization``
+    header, no token hash and no byte of any body. ``namespace`` and ``ref`` (a blob digest or
+    a ref name) appear only once the path parsed; ``scope`` is the scope of the token the
+    request presented, so a request without one is ``none``. ``operation`` is ``refused`` when
+    the path, method or framing never named an endpoint, and a refusal always has a status of
+    400 or more and a ``code``, which every answer under 400 lacks. ``bytes`` counts the blob
+    bytes accepted or sent, so only a blob operation has any. ``forwarded_for`` and
+    ``user_login`` are the proxy's ``X-Forwarded-For`` and ``Tailscale-User-Login`` values,
+    informational and null unless exactly one arrived in a form that can be logged.
+    """
+
+    time: UtcTimestamp
+    namespace: Namespace | None
+    scope: VaultScope
+    operation: VaultOperation
+    ref: AccessedName | None
+    bytes: StorageCounter
+    status: HttpStatus
+    code: StorageCodeText | None
+    forwarded_for: ForwardedFor | None
+    user_login: UserLogin | None
+
+    @model_validator(mode="after")
+    def _the_record_answers_one_request(self) -> Self:
+        if self.ref is not None and self.namespace is None:
+            raise ValueError("a ref is recorded only with the namespace whose path named it")
+        if (self.code is not None) != (self.status >= 400):
+            raise ValueError("a code is recorded exactly for a status of 400 or more")
+        if self.operation == "health" and (
+            self.scope != "none" or self.namespace is not None or self.ref is not None
+        ):
+            raise ValueError("the health endpoint takes no namespace, scope or ref")
+        if self.operation == "refused" and self.status < 400:
+            raise ValueError("a refused request is never answered under 400")
+        if self.status < 400 and self.scope == "none" and self.operation != "health":
+            raise ValueError("only the health endpoint answers without a scope")
+        if self.bytes > 0 and self.operation not in {"put-blob", "get-blob"}:
+            raise ValueError("only a blob operation accepts or sends bytes")
+        return self
+
+
 STORAGE_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "storage-blob-ref": BlobRef,
     "storage-ref-value": RefValue,
@@ -655,4 +826,6 @@ STORAGE_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "storage-binding": StorageBinding,
     "replication-state": ReplicationState,
     "replication-ledger-entry": LedgerEntry,
+    "vault-server-config": VaultServerConfig,
+    "vault-access-record": VaultAccessRecord,
 }

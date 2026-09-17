@@ -49,6 +49,8 @@ from cole_voice_lab.storage_contracts import (
     ReplicationState,
     StorageBinding,
     UtcTimestamp,
+    VaultAccessRecord,
+    VaultNamespaceConfig,
     keychain_item_names,
     ledger_entry_digest,
     manifest_digest,
@@ -724,6 +726,40 @@ def local_completed_entry() -> Payload:
     return completed_entry() | {"destination": local_destination(), "approval_sha256": None}
 
 
+def namespace_config() -> Payload:
+    return {
+        "name": "cole",
+        "read_token_sha256": "7" * 64,
+        "write_token_sha256": "8" * 64,
+        "quota_bytes": 32 * 1024 * 1024 * 1024,
+        "allowed_user_logins": ["cole@github"],
+    }
+
+
+def server_config() -> Payload:
+    return {
+        "schema_version": "cole-voice-lab.vault-server-config/v1",
+        "namespaces": [namespace_config()],
+        "max_workers": 8,
+        "request_timeout_seconds": 120,
+    }
+
+
+def access_record() -> Payload:
+    return {
+        "time": TIME,
+        "namespace": "cole",
+        "scope": "write",
+        "operation": "put-blob",
+        "ref": HELLO_SHA256,
+        "bytes": 5,
+        "status": 201,
+        "code": None,
+        "forwarded_for": "100.101.102.103",
+        "user_login": "cole@github",
+    }
+
+
 # One valid payload per registered schema name, plus the models that are never stored on
 # their own: the ledger's embedded destination and a generation's plan.
 SYNTHETIC: dict[str, Build] = {
@@ -735,14 +771,17 @@ SYNTHETIC: dict[str, Build] = {
     "storage-binding": tailnet_binding,
     "replication-state": pushed_state,
     "replication-ledger-entry": completed_entry,
+    "vault-server-config": server_config,
+    "vault-access-record": access_record,
 }
 CONTRACTS: dict[type[ContractModel], Build] = {
     **{STORAGE_SCHEMA_MODELS[name]: build for name, build in SYNTHETIC.items()},
     LedgerDestination: tailnet_destination,
     PlannedManifestEntry: planned_file_entry,
     ManifestPlan: plan,
+    VaultNamespaceConfig: namespace_config,
 }
-UNREGISTERED = {LedgerDestination, PlannedManifestEntry, ManifestPlan}
+UNREGISTERED = {LedgerDestination, PlannedManifestEntry, ManifestPlan, VaultNamespaceConfig}
 TIMESTAMP_FIELDS = [
     (RefValue, "updated_at"),
     (ManifestPlan, "created_at"),
@@ -750,6 +789,7 @@ TIMESTAMP_FIELDS = [
     (StorageBinding, "created_at"),
     (ReplicationState, "updated_at"),
     (LedgerEntry, "recorded_at"),
+    (VaultAccessRecord, "time"),
 ]
 
 

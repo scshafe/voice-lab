@@ -322,7 +322,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - A round trip (build, store in an encrypted local store, restore) must give the same recording index rebuild, `prompts coverage-report` and `finetune corpus` results.
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_library_replication.py tests/test_pilot_v2_coverage.py tests/test_prompt_coverage.py`
 
-- [ ] **Step 7: Vault server**
+- [x] **Step 7: Vault server**
   - Add `storage_server.py` and the `cole-voice-lab-vault` console script, with:
     - the namespace configuration;
     - hashed read and write tokens, compared in constant time;

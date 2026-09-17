@@ -1,0 +1,144 @@
+{
+  "$defs": {
+    "AccessedName": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "ForwardedFor": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "HttpStatus": {
+      "maximum": 599,
+      "minimum": 100,
+      "type": "integer"
+    },
+    "Namespace": {
+      "pattern": "^[a-z][a-z0-9-]{0,62}$",
+      "type": "string"
+    },
+    "StorageCodeText": {
+      "pattern": "^STORAGE\\.[A-Z][A-Z0-9_]{0,30}$",
+      "type": "string"
+    },
+    "StorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "UserLogin": {
+      "maxLength": 320,
+      "minLength": 1,
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "VaultOperation": {
+      "enum": [
+        "put-blob",
+        "has-blob",
+        "get-blob",
+        "read-ref",
+        "swap-ref",
+        "health",
+        "refused"
+      ],
+      "type": "string"
+    },
+    "VaultScope": {
+      "enum": [
+        "read",
+        "write",
+        "none"
+      ],
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One line of the vault server's access log, appended for every answered request.\n\nIt records what was asked and how it was answered, never a credential: no ``Authorization``\nheader, no token hash and no byte of any body. ``namespace`` and ``ref`` (a blob digest or\na ref name) appear only once the path parsed; ``scope`` is the scope of the token the\nrequest presented, so a request without one is ``none``. ``operation`` is ``refused`` when\nthe path, method or framing never named an endpoint, and a refusal always has a status of\n400 or more and a ``code``, which every answer under 400 lacks. ``bytes`` counts the blob\nbytes accepted or sent, so only a blob operation has any. ``forwarded_for`` and\n``user_login`` are the proxy's ``X-Forwarded-For`` and ``Tailscale-User-Login`` values,\ninformational and null unless exactly one arrived in a form that can be logged.",
+  "properties": {
+    "bytes": {
+      "$ref": "#/$defs/StorageCounter"
+    },
+    "code": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StorageCodeText"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "forwarded_for": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ForwardedFor"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "namespace": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Namespace"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "$ref": "#/$defs/VaultOperation"
+    },
+    "ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AccessedName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scope": {
+      "$ref": "#/$defs/VaultScope"
+    },
+    "status": {
+      "$ref": "#/$defs/HttpStatus"
+    },
+    "time": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "user_login": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UserLogin"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "time",
+    "namespace",
+    "scope",
+    "operation",
+    "ref",
+    "bytes",
+    "status",
+    "code",
+    "forwarded_for",
+    "user_login"
+  ],
+  "title": "VaultAccessRecord",
+  "type": "object"
+}
