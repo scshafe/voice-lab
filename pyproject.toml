@@ -42,6 +42,8 @@ cole_voice_lab = ["py.typed", "resources/*"]
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers -ra"
 testpaths = ["tests"]
+# Port conformance suites are test modules too (tests/catalog_conformance.py, ...).
+python_files = ["test_*.py", "*_conformance.py"]
 
 [tool.coverage.run]
 branch = true

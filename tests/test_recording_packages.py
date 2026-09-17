@@ -12,7 +12,7 @@ from recording_fixtures import synthetic_catalog
 from test_recording_takes import DEVICE, Rig, publish_catalog
 
 from cole_voice_lab.canonical import canonical_json_bytes, sha256_file
-from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError
+from cole_voice_lab.catalog_ports import CorpusSnapshotSecurityError
 from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.intake import accept_capture_session, validate_capture_package
 from cole_voice_lab.models import PROMPT_SUITE_V2, Prompt, PromptSuite, utc_now

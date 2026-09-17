@@ -21,8 +21,8 @@ from dataclasses import dataclass
 from pydantic import JsonValue
 
 from .canonical import canonical_sha256
+from .catalog_ports import CorpusSnapshotSecurityError
 from .corpus_store import (
-    CorpusSnapshotSecurityError,
     GroupCatalogCache,
     GroupCatalogKey,
     prompt_catalog_fit,

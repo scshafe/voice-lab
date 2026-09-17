@@ -3,10 +3,10 @@
 @canonical standard_prompt_sets -- the published Harvard (720) and CMU ARCTIC (1,132) sentence
 lists are parsed here, strictly and completely, into one prompt-suite/v2 carrier plus the
 ``PromptSourceReference`` (URL, fetch time, file digest, license) the corpus store records
-beside every imported prompt. Nothing here writes: ``CorpusStore.import_prompt_suite`` is the
-only writer, and it imports a whole set or nothing.
-Related: corpus_store.py (PromptSourceReference, the importer), cli.py (``voice-lab catalog
-import-harvard`` / ``import-arctic``).
+beside every imported prompt. Nothing here writes: ``CatalogEditor.import_prompt_suite`` is
+the only writer, and it imports a whole set or nothing.
+Related: corpus_store.py (PromptSourceReference), catalog_ports.py (the importer), cli.py
+(``voice-lab catalog import-harvard`` / ``import-arctic``).
 
 A parse that does not yield exactly the published sentence count, or meets anything it does
 not recognize (markup inside a sentence, an escaped quote, a stray line), fails as
@@ -33,8 +33,8 @@ from typing import Final, Literal, Protocol
 from pydantic import ValidationError
 
 from .canonical import canonical_json_bytes, open_regular_no_follow
+from .catalog_ports import CorpusStoreError
 from .corpus_store import (
-    CorpusStoreError,
     PromptSourceReference,
     spoken_words,
     validation_problems,

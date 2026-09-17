@@ -23,7 +23,6 @@ from test_pilot_v2_coverage import (
 )
 
 from cole_voice_lab.canonical import canonical_sha256
-from cole_voice_lab.corpus_store import open_corpus_store
 from cole_voice_lab.models import Prompt
 from cole_voice_lab.recording_contracts import CatalogSnapshot
 from cole_voice_lab.recording_discovery_contracts import LegacyProjectionHeader
@@ -35,6 +34,7 @@ from cole_voice_lab.recording_index_backfill import (
 from cole_voice_lab.recording_library import RecordingHistory, RecordingLibrary
 from cole_voice_lab.recording_review import RecordingReviewResolver
 from cole_voice_lab.recording_takes import RecordingTakeStore
+from cole_voice_lab.storage_binding import open_catalog_editor
 
 CATALOG_ID = "cole-corpus"
 
@@ -58,7 +58,7 @@ def published(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Published]:
     """The TC2 legacy root plus a corpus store publishing three catalog versions."""
     root = tmp_path_factory.mktemp("legacy-aliases").resolve() / "assets"
     evidence = build_legacy_root(root)
-    with open_corpus_store(evidence.layout, create=True) as corpus:
+    with open_catalog_editor(evidence.layout, create=True) as corpus:
         corpus.import_prompt_suite(released_pilot_v2(), source="pilot-v2")
         corpus.create_catalog(CATALOG_ID, purpose="capture-pilot")
         seeded = corpus.materialize(corpus.publish_version(CATALOG_ID))

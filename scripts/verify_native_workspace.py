@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canonical_json
-from cole_voice_lab.corpus_store import open_corpus_store
+from cole_voice_lab.corpus_store_sqlite import CorpusStore
 from cole_voice_lab.models import PROMPT_SUITE_V2, CaptureDevice, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import (
@@ -51,7 +51,7 @@ def seed_active_catalog(layout: AssetLayout, catalog: PromptSuite) -> CatalogRef
     when the store refuses the prompts, the catalog or the activation.
     """
 
-    with open_corpus_store(layout, create=True) as corpus:
+    with CorpusStore(layout, create=True) as corpus:
         if corpus.list_catalogs():
             raise ValueError("Fixture corpus store must be new")
         corpus.import_prompt_suite(catalog, source="manual")
@@ -277,7 +277,12 @@ def isolated_service_runtime(
     Returns: that build identity.
     """
 
-    from cole_voice_lab import corpus_store, recording_index, recording_service, sqlite_migrations
+    from cole_voice_lab import (
+        corpus_store_sqlite,
+        recording_index,
+        recording_service,
+        sqlite_migrations,
+    )
 
     runtime = root / "python-runtime"
     package_copy = runtime / "cole_voice_lab"
@@ -293,7 +298,7 @@ def isolated_service_runtime(
         name = Path(relative).name
         (migrations / name).write_bytes(recording_index._migration_bytes(name))
     # The service build identity fingerprints the corpus store migration too.
-    for relative, _, _ in corpus_store.corpus_store_migration_resources():
+    for relative, _, _ in corpus_store_sqlite.corpus_store_migration_resources():
         name = Path(relative).name
         (migrations / name).write_bytes(sqlite_migrations.migration_bytes(name))
     shutil.copy2(wrapper, package_copy / f"{module}.py")

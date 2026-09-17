@@ -58,7 +58,8 @@ from .canonical import (
     sha256_stream,
     write_canonical_json,
 )
-from .corpus_store import CorpusSnapshotSecurityError, require_referenced_snapshot
+from .catalog_ports import CorpusSnapshotSecurityError
+from .corpus_store import require_referenced_snapshot
 from .errors import SecurityError, VoiceLabError
 from .models import (
     SILENT_PROMPT_CATEGORIES,

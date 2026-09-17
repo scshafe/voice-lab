@@ -17,7 +17,6 @@ import pytest
 from test_recording_contracts import synthetic_contracts
 
 from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256, write_canonical_json
-from cole_voice_lab.corpus_store import open_corpus_store
 from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.models import PromptSuite
 from cole_voice_lab.paths import AssetLayout
@@ -63,6 +62,7 @@ from cole_voice_lab.recording_service import (
     recording_service_build_identity,
     serve_recording_pipes,
 )
+from cole_voice_lab.storage_binding import open_catalog_editor
 
 
 def build_identity() -> RecordingBuildIdentity:
@@ -858,7 +858,7 @@ def activate_catalog(
     from test_recording_takes import publish_catalog
 
     reference, snapshot = publish_catalog(layout, suite, catalog_id=catalog_id, suite_id=suite_id)
-    with open_corpus_store(layout, create=False) as corpus:
+    with open_catalog_editor(layout) as corpus:
         corpus.activate(subject_id, reference)
     return reference, snapshot
 
@@ -920,7 +920,7 @@ def test_catalog_request_serves_the_active_catalog_pinned_for_the_process(
             refused(backend, data, "CORPUS.STORE_MISSING", "voice-lab catalog init")
         # Asking never creates a store.
         assert not (layout.root / "provenance/corpus").exists()
-        with open_corpus_store(layout, create=True):
+        with open_catalog_editor(layout, create=True):
             pass
         for data in (catalog, SnapshotCommand()):
             refused(backend, data, "CORPUS.NO_ACTIVE_CATALOG", "voice-lab catalog activate")
@@ -935,7 +935,7 @@ def test_catalog_request_serves_the_active_catalog_pinned_for_the_process(
         assert page.catalog_sha256 == reference.catalog_sha256
         # The service read the store and closed it again; the CLI can edit it meanwhile.
         assert lease_is_free(layout)
-        with open_corpus_store(layout, create=False) as corpus:
+        with open_catalog_editor(layout) as corpus:
             corpus.edit_prompt("spoken-0001", text="An edited synthetic sentence.")
             newer = corpus.publish_version("synthetic-corpus")
             corpus.activate(SUBJECT, newer)
@@ -994,7 +994,7 @@ def test_active_catalog_store_failures_are_named_and_pin_nothing(tmp_path: Path)
 
 
 def test_long_store_messages_are_bounded_on_the_wire() -> None:
-    from cole_voice_lab.corpus_store import CorpusStoreError
+    from cole_voice_lab.catalog_ports import CorpusStoreError
     from cole_voice_lab.recording_service import _active_catalog_failure
 
     for code in ("CORPUS.STORE_MISSING", "CORPUS.STORE_UNAVAILABLE"):
@@ -1015,7 +1015,7 @@ def test_open_context_opens_only_the_pinned_catalog_by_reference(tmp_path: Path)
     layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
     suite = store_suite(3)
     first, _ = activate_catalog(layout, suite)
-    with open_corpus_store(layout, create=False) as corpus:
+    with open_catalog_editor(layout) as corpus:
         corpus.edit_prompt(
             "spoken-0000",
             text="A kept synthetic sentence.",
@@ -1163,7 +1163,7 @@ def test_an_active_catalog_one_byte_over_the_frame_budget_is_refused_by_name(
 ) -> None:
     from test_recording_contracts import catalog_of_exactly
 
-    from cole_voice_lab import corpus_store
+    from cole_voice_lab import corpus_store_sqlite
     from cole_voice_lab.recording_contracts import MAX_CATALOG_SUITE_BYTES
 
     layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
@@ -1171,7 +1171,7 @@ def test_an_active_catalog_one_byte_over_the_frame_budget_is_refused_by_name(
     pad = exact.prompts[-1]
     assert pad.text is not None
     shaped = tuple(prompt.prompt_id for prompt in exact.prompts[:-1])
-    with open_corpus_store(layout, create=True) as corpus:
+    with open_catalog_editor(layout, create=True) as corpus:
         corpus.import_prompt_suite(exact, source="manual")
         corpus.add_prompt(
             "shape-pae",
@@ -1186,7 +1186,9 @@ def test_an_active_catalog_one_byte_over_the_frame_budget_is_refused_by_name(
         fitting = corpus.publish_version(exact.suite_id, prompt_ids=(*shaped, pad.prompt_id))
         # A version one byte over, as a store without the publish-time bound could hold.
         with monkeypatch.context() as lifted:
-            lifted.setattr(corpus_store, "MAX_CATALOG_SUITE_BYTES", MAX_CATALOG_SUITE_BYTES + 1)
+            lifted.setattr(
+                corpus_store_sqlite, "MAX_CATALOG_SUITE_BYTES", MAX_CATALOG_SUITE_BYTES + 1
+            )
             oversized = corpus.publish_version("oversized", prompt_ids=(*shaped, "shape-pae"))
         corpus.activate(SUBJECT, oversized)
     backend = workspace_backend(layout)
@@ -1212,7 +1214,7 @@ def test_an_active_catalog_one_byte_over_the_frame_budget_is_refused_by_name(
         for data in (SnapshotCommand(), referenced_context(oversized)):
             refused(backend, data, "RECORDING.GATE_NOT_READY", "the app receives in one message")
         assert not any((layout.root / "provenance").rglob("group-*.json"))
-        with open_corpus_store(layout, create=False) as corpus:
+        with open_catalog_editor(layout) as corpus:
             corpus.activate(SUBJECT, fitting)
         # A suite exactly at the budget is served whole in one frame.
         assert (
@@ -1388,11 +1390,11 @@ def test_build_identity_fingerprints_the_corpus_store_migration(
     from cole_voice_lab import recording_service
 
     baseline = recording_service_build_identity()
-    resources = recording_service.corpus_store_migration_resources()
+    resources = recording_service.catalog_store_build_resources()
     assert len(resources) == 1 and resources[0][0].startswith("migrations/2026091610")
     monkeypatch.setattr(
         recording_service,
-        "corpus_store_migration_resources",
+        "catalog_store_build_resources",
         lambda: ((resources[0][0], "0" * 64, resources[0][2]),),
     )
     changed = recording_service_build_identity()

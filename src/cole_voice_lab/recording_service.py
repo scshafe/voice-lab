@@ -30,12 +30,7 @@ from uuid import uuid4
 from pydantic import TypeAdapter, ValidationError
 
 from .canonical import canonical_json_bytes, canonical_sha256, open_regular_no_follow, sha256_file
-from .corpus_store import (
-    CorpusSnapshotSecurityError,
-    CorpusStoreError,
-    corpus_store_migration_resources,
-    open_corpus_store,
-)
+from .catalog_ports import CorpusSnapshotSecurityError, CorpusStoreError
 from .diagnostic_roots import require_catalog_root
 from .errors import ContractError, SecurityError, VoiceLabError
 from .models import PromptSuite, Sha256
@@ -116,6 +111,7 @@ from .recording_library import RecordingLibrary
 from .recording_recovery import RecordingRecovery, RecordingRecoverySupervisor
 from .recording_review import RecordingReviewResolver
 from .recording_takes import RecordingSelectionError, RecordingTakeStore
+from .storage_binding import catalog_store_build_resources, open_catalog_reader
 
 if TYPE_CHECKING:
     from .recording_analysis import RecordingAnalysisQueue
@@ -646,8 +642,8 @@ class RecordingWorkspaceBackend:
     def pinned_catalog(self) -> PinnedCatalog:
         """The subject's active catalog for this process, resolved on first use and pinned.
 
-        Opens the corpus store read-only in effect (``create=False``), reads the active
-        version and its snapshot (aliases included) and closes the store before returning.
+        Opens the catalog through ``open_catalog_reader`` (never creating a store), reads the
+        active version and its snapshot (aliases included) and closes it before returning.
         Returns: the pinned snapshot and reference.
         Raises: ``RecordingServiceError`` with ``CORPUS.STORE_MISSING`` (no store; the message
         names ``voice-lab catalog init``), ``CORPUS.NO_ACTIVE_CATALOG`` (the message names
@@ -660,7 +656,7 @@ class RecordingWorkspaceBackend:
         with self._catalog_lock:
             if self._pinned_catalog is None:
                 try:
-                    with open_corpus_store(self.layout, create=False) as corpus:
+                    with open_catalog_reader(self.layout) as corpus:
                         _, reference = corpus.active_catalog(self.subject_id)
                         snapshot = corpus.materialize(reference)
                 except CorpusStoreError as error:
@@ -1574,7 +1570,7 @@ def recording_service_build_identity() -> RecordingBuildIdentity:
     from .recording_index import recording_index_migration_resources
 
     files.extend(recording_index_migration_resources())
-    files.extend(corpus_store_migration_resources())
+    files.extend(catalog_store_build_resources())
     files.sort()
     executable_sha256, _ = sha256_file(Path(sys.executable).resolve())
     from .runtime import recording_python_environment_identity

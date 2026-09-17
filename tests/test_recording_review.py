@@ -17,7 +17,6 @@ from test_recording_service import request
 from test_recording_takes import DEVICE, Rig, publish_catalog, store_suite
 
 from cole_voice_lab.canonical import canonical_sha256
-from cole_voice_lab.corpus_store import open_corpus_store
 from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import (
@@ -40,6 +39,7 @@ from cole_voice_lab.recording_service import (
     RecordingWorkspaceBackend,
 )
 from cole_voice_lab.recording_takes import RecordingSelectionError, RecordingTakeStore
+from cole_voice_lab.storage_binding import open_catalog_editor
 
 SUBJECT = "synthetic-subject"
 CATALOG_ID = "synthetic-corpus"
@@ -88,7 +88,7 @@ class Versions:
 def edit_and_publish(
     layout: AssetLayout, text: str, *, keep_recordings: bool
 ) -> tuple[CatalogReference, CatalogSnapshot]:
-    with open_corpus_store(layout, create=False) as corpus:
+    with open_catalog_editor(layout) as corpus:
         corpus.edit_prompt(
             "spoken-0000",
             text=text,
@@ -244,7 +244,7 @@ def test_the_service_names_native_and_legacy_takes_an_edit_stopped_counting_alik
 
     evidence = build_legacy_root(tmp_path.resolve() / "legacy" / "assets")
     layout, pilot_v2 = evidence.layout, released_pilot_v2()
-    with open_corpus_store(layout, create=True) as corpus:
+    with open_catalog_editor(layout, create=True) as corpus:
         corpus.import_prompt_suite(pilot_v2, source="pilot-v2")
         corpus.create_catalog("cole-corpus", purpose="capture-pilot")
         corpus.publish_version("cole-corpus")

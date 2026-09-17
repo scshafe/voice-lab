@@ -20,7 +20,7 @@ from pathlib import Path
 from test_recording_contracts import synthetic_contracts
 
 from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canonical_json
-from cole_voice_lab.corpus_store import open_corpus_store
+from cole_voice_lab.corpus_store_sqlite import CorpusStore
 from cole_voice_lab.models import PROMPT_SUITE_V2, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import (
@@ -111,7 +111,7 @@ def main() -> None:
     if template_group.catalog is None:
         raise ValueError("Bridge template group must embed its synthetic catalog")
     catalog = bridge_catalog(template_group.catalog)
-    with open_corpus_store(assets, create=True) as corpus:
+    with CorpusStore(assets, create=True) as corpus:
         corpus.import_prompt_suite(catalog, source="manual")
         corpus.create_catalog(catalog.suite_id, purpose=catalog.purpose)
         reference = corpus.publish_version(catalog.suite_id)

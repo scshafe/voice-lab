@@ -59,12 +59,8 @@ from uuid import uuid4
 from pydantic import Field, TypeAdapter, model_validator
 
 from .canonical import canonical_sha256, open_regular_no_follow
-from .corpus_store import (
-    CorpusSnapshotSecurityError,
-    CorpusStoreError,
-    open_corpus_store,
-    read_catalog_snapshot,
-)
+from .catalog_ports import CorpusSnapshotSecurityError, CorpusStoreError
+from .corpus_store import read_catalog_snapshot
 from .errors import ContractError, SecurityError, VoiceLabError
 from .finetune import (
     FINETUNE_OUTPUT_ROOT,
@@ -130,6 +126,7 @@ from .recording_takes import (
     sync_recording_evidence_directory,
     write_recording_evidence,
 )
+from .storage_binding import open_catalog_reader
 
 FINETUNE_JOBS_ROOT: Final = "provenance/finetune-jobs"
 FINETUNE_WORKER_MODULE: Final = "cole_voice_lab.recording_finetune_jobs"
@@ -2450,7 +2447,7 @@ def run_finetune_worker_request(
             raise FineTuneError("FINETUNE.RUN_EXISTS", f"{run_root} already exists")
         reference = intent.catalog_reference
         if reference is None:
-            with open_corpus_store(layout, create=False) as store:
+            with open_catalog_reader(layout) as store:
                 _, reference = store.active_catalog(intent.subject_id)
         snapshot = read_catalog_snapshot(layout, reference)
         hyperparameters = (

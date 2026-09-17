@@ -21,11 +21,8 @@ from cole_voice_lab.canonical import (
     sha256_file,
     write_canonical_json,
 )
-from cole_voice_lab.corpus_store import (
-    CorpusSnapshotSecurityError,
-    CorpusStore,
-    open_corpus_store,
-)
+from cole_voice_lab.catalog_ports import CorpusSnapshotSecurityError
+from cole_voice_lab.corpus_store_sqlite import CorpusStore
 from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.models import PROMPT_SUITE_V2, CaptureDevice, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
@@ -59,6 +56,7 @@ from cole_voice_lab.recording_takes import (
     RecordingTakeOperation,
     RecordingTakeStore,
 )
+from cole_voice_lab.storage_binding import open_catalog_editor
 
 NOW = datetime(2026, 9, 11, 12, tzinfo=UTC)
 DEVICE = CaptureDevice(backend="coreaudio", device_id="synthetic", display_name="Synthetic")
@@ -281,7 +279,7 @@ def publish_catalog(
     suite_id: str | None = None,
 ) -> tuple[CatalogReference, CatalogSnapshot]:
     """Seed ``suite`` into the root's corpus store and publish exactly it as a new catalog."""
-    with open_corpus_store(layout, create=True) as corpus:
+    with open_catalog_editor(layout, create=True) as corpus:
         corpus.import_prompt_suite(suite, source="manual")
         corpus.create_catalog(catalog_id, suite_id=suite_id, purpose=suite.purpose)
         reference = corpus.publish_version(
@@ -362,7 +360,7 @@ def test_referenced_groups_are_reused_and_replayed_only_for_the_same_reference(r
     again = open_referenced(rig.store, reference, snapshot)
     assert again.group_id not in {group.group_id, embedded.group_id}
     assert open_referenced(rig.store, reference, snapshot, new_setup=True).reason == "new-setup"
-    with open_corpus_store(rig.layout, create=False) as corpus:
+    with open_catalog_editor(rig.layout) as corpus:
         corpus.edit_prompt(
             "spoken-0000",
             text="Synthetic sentence zero.",
@@ -587,7 +585,7 @@ def test_referenced_context_binds_its_reference_into_the_request(
         rig.store.context_replay(embedded)
     with pytest.raises(ContractError, match="already bound"):
         rig.store.open_context(embedded)
-    with open_corpus_store(rig.layout, create=False) as corpus:
+    with open_catalog_editor(rig.layout) as corpus:
         corpus.create_catalog("other-corpus", purpose="capture-pilot")
         other = corpus.publish_version("other-corpus")
     (rig.layout.root / other.snapshot_path).unlink()

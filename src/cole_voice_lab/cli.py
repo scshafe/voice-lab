@@ -121,7 +121,13 @@ from .sync import (
 )
 
 if TYPE_CHECKING:
-    from .corpus_store import CatalogRecord, CorpusStore, CorpusStoreCode, PromptRecord
+    from .catalog_ports import (
+        CatalogEditor,
+        CatalogReader,
+        CatalogRecord,
+        CorpusStoreCode,
+        PromptRecord,
+    )
     from .recording_contracts import CatalogReference, CatalogSnapshot
 
 Command = Callable[[argparse.Namespace], int]
@@ -536,7 +542,7 @@ def _unknown_catalog(
     name: str, builtins: Mapping[str, str], code: CorpusStoreCode, detail: str | None = None
 ) -> VoiceLabError:
     """The refusal of a ``--catalog``-style name, keeping the store's code for the cause."""
-    from .corpus_store import CorpusStoreError
+    from .catalog_ports import CorpusStoreError
 
     explained = "" if detail is None else f" ({detail})"
     return CorpusStoreError(
@@ -571,7 +577,7 @@ def _resolve_catalog(
 
     A built-in never touches the asset root or the corpus store. A published catalog is
     ``<catalog_id>`` (its latest version) or ``<catalog_id>@<version>``; it is resolved
-    through the library's corpus store (``open_corpus_store(create=False)``: the store's
+    through the library's catalog (``storage_binding.open_catalog_reader``: the store's
     lease and lock are taken and its database opened, nothing is created where no store
     exists), which is closed again before the caller reads any evidence.
     Raises: ``CorpusStoreError`` naming ``UNKNOWN_CATALOG_MESSAGE`` and the built-in names
@@ -591,11 +597,12 @@ def _resolve_catalog(
             "published catalogs are read from the --asset-root or COLE_VOICE_LAB_ASSET_ROOT "
             "library",
         )
-    from .corpus_store import CorpusStoreError, open_corpus_store
+    from .catalog_ports import CorpusStoreError
+    from .storage_binding import open_catalog_reader
 
     layout = AssetLayout.validate(_asset_root(asset_root))
     try:
-        with open_corpus_store(layout, create=False) as store:
+        with open_catalog_reader(layout) as store:
             reference = store.resolve_reference(catalog_id, version)
             snapshot = store.materialize(reference)
     except CorpusStoreError as error:
@@ -981,7 +988,7 @@ def _catalog_layout(options: argparse.Namespace) -> AssetLayout:
 def _new_catalog_id(catalog_id: str) -> str:
     """A new catalog needs a stable id that the CLI does not resolve to a built-in first."""
     if not _is_stable_id(catalog_id):
-        from .corpus_store import CorpusStoreError
+        from .catalog_ports import CorpusStoreError
 
         raise CorpusStoreError(
             "CORPUS.CATALOG_INVALID",
@@ -1030,22 +1037,28 @@ def _catalog_record_json(record: CatalogRecord) -> dict[str, JsonValue]:
     }
 
 
-def _open_catalog_store(layout: AssetLayout, *, create: bool = False) -> CorpusStore:
-    from .corpus_store import open_corpus_store
+def _open_catalog_reader(layout: AssetLayout) -> CatalogReader:
+    from .storage_binding import open_catalog_reader
 
-    return open_corpus_store(layout, create=create)
+    return open_catalog_reader(layout)
+
+
+def _open_catalog_editor(layout: AssetLayout, *, create: bool = False) -> CatalogEditor:
+    from .storage_binding import open_catalog_editor
+
+    return open_catalog_editor(layout, create=create)
 
 
 def _published(
-    store: CorpusStore, catalog_id: str, version: int | None
+    store: CatalogReader, catalog_id: str, version: int | None
 ) -> tuple[CatalogReference, CatalogSnapshot]:
     reference = store.resolve_reference(catalog_id, version)
     return reference, store.materialize(reference)
 
 
-def _active_reference(store: CorpusStore, subject_id: str) -> CatalogReference | None:
+def _active_reference(store: CatalogReader, subject_id: str) -> CatalogReference | None:
     """The subject's active version, or ``None``; a damaged active snapshot still fails."""
-    from .corpus_store import CorpusStoreError
+    from .catalog_ports import CorpusStoreError
 
     try:
         return store.active_catalog(subject_id)[1]
@@ -1055,7 +1068,7 @@ def _active_reference(store: CorpusStore, subject_id: str) -> CatalogReference |
         return None
 
 
-def _init_refusal(store: CorpusStore, subject_id: str) -> str | None:
+def _init_refusal(store: CatalogReader, subject_id: str) -> str | None:
     """Why ``catalog init`` stops on this store, with the command that continues, or None."""
     prompts = store.list_prompts(include_retired=True)
     catalogs = store.list_catalogs()
@@ -1094,14 +1107,9 @@ def _init_refusal(store: CorpusStore, subject_id: str) -> str | None:
 
 
 def _catalog_init(options: argparse.Namespace) -> int:
-    from .corpus_store import (
-        CORPUS_DATABASE_NAME,
-        CORPUS_DIRECTORY,
-        CorpusStoreError,
-        catalog_definition,
-        validated_subject_id,
-        validation_problems,
-    )
+    from .catalog_ports import CorpusStoreError
+    from .corpus_store import catalog_definition, validated_subject_id, validation_problems
+    from .storage_binding import catalog_store_location
 
     layout = _catalog_layout(options)
     catalog_id = _new_catalog_id(options.catalog_id)
@@ -1164,7 +1172,7 @@ def _catalog_init(options: argparse.Namespace) -> int:
                 f"{purpose} prompt-suite/v2 catalog: {validation_problems(error)}",
             ) from error
         require_catalog_root(layout, seed, subject_id)
-    with _open_catalog_store(layout, create=True) as store:
+    with _open_catalog_editor(layout, create=True) as store:
         refusal = _init_refusal(store, subject_id)
         if refusal is not None:
             raise CorpusStoreError("CORPUS.CATALOG_DUPLICATE", refusal)
@@ -1178,7 +1186,7 @@ def _catalog_init(options: argparse.Namespace) -> int:
     _json_print(
         {
             "asset_root": str(layout.root),
-            "store": f"provenance/{CORPUS_DIRECTORY}/{CORPUS_DATABASE_NAME}",
+            "store": catalog_store_location(layout),
             "catalog": _catalog_record_json(record),
             "seeded_from": options.from_builtin,
             "prompt_count": 0 if seed is None else len(seed.prompts),
@@ -1200,7 +1208,7 @@ def _catalog_create(options: argparse.Namespace) -> int:
         purpose=options.purpose,
         description=options.description,
     )
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_editor(layout) as store:
         # The store refuses a purpose that cannot hold every live prompt.
         record = store.create_catalog(
             definition.catalog_id,
@@ -1215,7 +1223,7 @@ def _catalog_create(options: argparse.Namespace) -> int:
 def _catalog_list(options: argparse.Namespace) -> int:
     layout = _catalog_layout(options)
     active: CatalogReference | None = None
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_reader(layout) as store:
         catalogs = store.list_catalogs()
         prompts = store.list_prompts(include_retired=True)
         if options.subject_id is not None:
@@ -1257,7 +1265,7 @@ def _catalog_list(options: argparse.Namespace) -> int:
 
 def _catalog_show(options: argparse.Namespace) -> int:
     layout = _catalog_layout(options)
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_reader(layout) as store:
         reference, snapshot = _published(store, options.catalog_id, options.version)
     if options.json:
         _json_print(
@@ -1278,7 +1286,7 @@ def _catalog_show(options: argparse.Namespace) -> int:
 
 def _catalog_export(options: argparse.Namespace) -> int:
     layout = _catalog_layout(options)
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_reader(layout) as store:
         _reference, snapshot = _published(store, options.catalog_id, options.version)
     _json_print(snapshot.suite.model_dump(mode="json"))
     return 0
@@ -1327,7 +1335,7 @@ def _catalog_add_prompt(options: argparse.Namespace) -> int:
     # The fields are checked before the store is opened; the store checks them again, with
     # every rule about the other live prompts and the catalogs, inside its write.
     prompt_from_fields(options.prompt_id, **fields)
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_editor(layout) as store:
         record = store.add_prompt(options.prompt_id, source="manual", **fields)
     _json_print(_prompt_record_json(record))
     return 0
@@ -1417,7 +1425,7 @@ def _catalog_edit_prompt(options: argparse.Namespace) -> int:
     prompt_id = options.prompt_id
     keep = options.keep_recordings
     rewording = options.allow_rewording
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_editor(layout) as store:
         current = store.prompt_history(prompt_id)[-1]
         # The revision counted and shown here is the only one the write may replace.
         revision = options.expected_revision or current.revision
@@ -1496,14 +1504,14 @@ def _catalog_edit_prompt(options: argparse.Namespace) -> int:
 
 def _catalog_retire_prompt(options: argparse.Namespace) -> int:
     layout = _catalog_layout(options)
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_editor(layout) as store:
         record = store.retire_prompt(options.prompt_id)
     _json_print(_prompt_record_json(record))
     return 0
 
 
-def _require_standard_set_absent(store: CorpusStore, name: str, first_prompt_id: str) -> None:
-    from .corpus_store import CorpusStoreError
+def _require_standard_set_absent(store: CatalogReader, name: str, first_prompt_id: str) -> None:
+    from .catalog_ports import CorpusStoreError
 
     try:
         store.prompt_history(first_prompt_id)
@@ -1546,7 +1554,7 @@ def _catalog_import_standard(
         source_url(options.source_url)
     # An import that cannot succeed reads and downloads nothing: the store must exist and
     # must not hold the set yet.
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_reader(layout) as store:
         _require_standard_set_absent(store, name, STANDARD_SET_FIRST_PROMPT_IDS[name])
     if options.fetch:
         payload, fetched_at, url = fetch_standard_set(name)
@@ -1560,7 +1568,7 @@ def _catalog_import_standard(
         url=url,
         accept_unpinned_source=options.accept_unpinned_source,
     )
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_editor(layout) as store:
         # One store transaction: every catalog must hold the set, and no sentence may read
         # like a live prompt, or nothing is imported.
         prompt_ids = store.import_prompt_suite(
@@ -1596,7 +1604,7 @@ def _catalog_import_arctic(options: argparse.Namespace) -> int:
 def _catalog_import_json(options: argparse.Namespace) -> int:
     layout = _catalog_layout(options)
     suite = _read_bounded_contract(Path(options.suite_path), PromptSuite)
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_editor(layout) as store:
         prompt_ids = store.import_prompt_suite(suite, source="import")
     _json_print(
         {
@@ -1612,7 +1620,7 @@ def _catalog_import_json(options: argparse.Namespace) -> int:
 
 def _catalog_publish(options: argparse.Namespace) -> int:
     layout = _catalog_layout(options)
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_editor(layout) as store:
         reference = store.publish_version(options.catalog_id)
         snapshot = store.materialize(reference)
     _json_print(
@@ -1630,7 +1638,7 @@ def _catalog_publish(options: argparse.Namespace) -> int:
 
 def _catalog_activate(options: argparse.Namespace) -> int:
     layout = _catalog_layout(options)
-    with _open_catalog_store(layout) as store:
+    with _open_catalog_editor(layout) as store:
         reference, snapshot = _published(store, options.catalog_id, options.version)
         require_catalog_root(layout, snapshot.suite, options.subject_id)
         store.activate(options.subject_id, reference)

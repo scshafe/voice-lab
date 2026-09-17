@@ -42,8 +42,8 @@ from cole_voice_lab.canonical import (
     sha256_file,
     write_canonical_json,
 )
+from cole_voice_lab.catalog_ports import CorpusSnapshotSecurityError
 from cole_voice_lab.cli import main
-from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
 from cole_voice_lab.finetune import (
     FineTuneCorpus,
     FineTuneCorpusEntry,
@@ -92,6 +92,7 @@ from cole_voice_lab.recording_contracts import (
 )
 from cole_voice_lab.recording_index import RecordingIndex
 from cole_voice_lab.recording_takes import RecordingTakeStore
+from cole_voice_lab.storage_binding import open_catalog_editor, open_catalog_reader
 
 SPOKEN_PROMPT_COUNT = 34
 
@@ -323,7 +324,7 @@ def test_selection_names_a_published_version_only_when_it_seals_the_selected_cat
 ) -> None:
     layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
     first, plain = publish_catalog(layout, store_suite(2))
-    with open_corpus_store(layout, create=False) as corpus:
+    with open_catalog_editor(layout) as corpus:
         corpus.edit_prompt(
             "spoken-0001",
             text="Synthetic sentence one.",
@@ -385,7 +386,7 @@ def test_legacy_takes_keep_their_selection_through_keep_recordings_aliases(
     layout = published.evidence.layout
     before = select_finetune_corpus(layout, released_pilot_v2(), SUBJECT)
     assert before.complete
-    with open_corpus_store(layout, create=False) as corpus:
+    with open_catalog_reader(layout) as corpus:
         seeded_reference, kept_reference, changed_reference = (
             corpus.resolve_reference(BACKFILL_CATALOG_ID, version) for version in (1, 2, 3)
         )

@@ -256,16 +256,19 @@ Every piece of code that stores or reads the lab's data depends on storage and c
 
 ## Steps
 
-- [ ] **Step 1: Catalog ports; move the SQLite store behind them**
+- [x] **Step 1: Catalog ports; move the SQLite store behind them**
   - Add `catalog_ports.py` and move the store into `corpus_store_sqlite.py`. Behaviour does not change.
   - Every caller opens the store through `storage_binding.open_catalog_reader` or `open_catalog_editor`. At this step both are local-only and need no binding file.
   - Split `tests/test_corpus_store.py` into:
     - `tests/catalog_conformance.py`, with checks written only against the port;
-    - `tests/test_corpus_store_sqlite.py`, which keeps the clock, timestamp and tampering tests.
+    - `tests/test_corpus_store_sqlite.py`, which keeps the clock, timestamp and tampering tests;
+    - `tests/test_corpus_store.py`, which keeps the tests of the shared catalog logic (fit, typo class, snapshot reading). *(Amended 2026-09-17: these tests had no destination.)*
+  - Make pytest collect `*_conformance.py` files, so `scripts/verify` runs the conformance suites. *(Amended 2026-09-17: the default collection skipped them.)*
   - Add the import-boundary test.
   - Commit with a `refactor:` message.
   - Specialist: `makeover` (confirm the move preserves behaviour)
-  - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/catalog_conformance.py tests/test_corpus_store_sqlite.py tests/test_corpus_store_cli.py tests/test_recording_service.py tests/test_recording_finetune_jobs.py tests/test_storage_import_boundary.py && .venv/bin/mypy src/cole_voice_lab && scripts/verify-native-recording --suite transport`
+  - ~~Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/catalog_conformance.py tests/test_corpus_store_sqlite.py tests/test_corpus_store_cli.py tests/test_recording_service.py tests/test_recording_finetune_jobs.py tests/test_storage_import_boundary.py && .venv/bin/mypy src/cole_voice_lab && scripts/verify-native-recording --suite transport`~~
+  - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/catalog_conformance.py tests/test_corpus_store_sqlite.py tests/test_corpus_store.py tests/test_corpus_store_cli.py tests/test_recording_service.py tests/test_recording_finetune_jobs.py tests/test_storage_import_boundary.py && .venv/bin/mypy src/cole_voice_lab && scripts/verify-native-recording --suite transport`
 
 - [ ] **Step 2: Storage ports and contracts**
   - Add `storage_ports.py` with `BlobStore`, `RefStore` and the errors.
@@ -503,3 +506,5 @@ The first draft was reviewed on 2026-09-17 by `rigorous-architect` (the storage 
   - Swift contract twins ship in the step that changes each wire contract.
 
 **Amended 2026-09-17:** Cole answered Decisions 0–7 (recorded above) and chose to start before the pending combined build, which will be made from the finished vault commit.
+
+**Amended 2026-09-17 (Step 1):** the old corpus-store test file keeps the shared-logic tests, pytest now collects `*_conformance.py`, and the Step 1 verify command runs `tests/test_corpus_store.py` too.

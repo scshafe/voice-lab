@@ -41,8 +41,8 @@ from test_recording_takes import DEVICE, Rig, open_referenced, publish_catalog, 
 
 import cole_voice_lab.prompt_coverage as prompt_coverage
 from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256
+from cole_voice_lab.catalog_ports import CorpusSnapshotSecurityError
 from cole_voice_lab.cli import main
-from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
 from cole_voice_lab.finetune import select_finetune_corpus
 from cole_voice_lab.models import PROMPT_SUITE_V2, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
@@ -70,6 +70,7 @@ from cole_voice_lab.recording_index import (
     is_retained,
 )
 from cole_voice_lab.recording_takes import TAKE_PROVENANCE_ROOT, RecordingTakeStore
+from cole_voice_lab.storage_binding import open_catalog_editor, open_catalog_reader
 
 
 def _tree(root: Path) -> dict[str, str | None]:
@@ -289,7 +290,7 @@ def test_report_through_a_published_snapshot_reads_files_only(tmp_path: Path) ->
     evidence = build_legacy_root(tmp_path.resolve() / "assets")
     layout = evidence.layout
     reworded = f"{released_pilot_v2().prompts[5].text} Again."
-    with open_corpus_store(layout, create=True) as corpus:
+    with open_catalog_editor(layout, create=True) as corpus:
         corpus.import_prompt_suite(released_pilot_v2(), source="pilot-v2")
         corpus.create_catalog("cole-corpus", purpose="capture-pilot")
         seeded = corpus.publish_version("cole-corpus")
@@ -622,7 +623,7 @@ def test_report_coverage_equals_indexed_history_through_aliases(published: Publi
 
 def test_report_names_the_published_versions_it_compares(published: Published) -> None:
     layout = published.evidence.layout
-    with open_corpus_store(layout, create=False) as corpus:
+    with open_catalog_reader(layout) as corpus:
         seeded, kept = (corpus.resolve_reference("cole-corpus", version) for version in (1, 2))
     report = prompt_coverage_report(
         layout,

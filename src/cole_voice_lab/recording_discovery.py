@@ -32,7 +32,8 @@ from .canonical import (
     open_regular_no_follow,
     write_canonical_json,
 )
-from .corpus_store import CorpusSnapshotSecurityError, resolve_group_catalog
+from .catalog_ports import CorpusSnapshotSecurityError
+from .corpus_store import resolve_group_catalog
 from .errors import ContractError, SecurityError
 from .models import ContractModel, Sha256, StableId
 from .paths import AssetLayout, confined_path, ensure_private_directory

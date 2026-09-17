@@ -33,7 +33,6 @@ from cole_voice_lab.canonical import (
 from cole_voice_lab.capture import TakeEngine, capture_prompt_suite
 from cole_voice_lab.cli import main
 from cole_voice_lab.consent import approve_self_consent, consent_record_path
-from cole_voice_lab.corpus_store import open_corpus_store
 from cole_voice_lab.datasets import (
     DatasetSelection,
     PilotGateApproval,
@@ -80,6 +79,7 @@ from cole_voice_lab.recording_service import (
 )
 from cole_voice_lab.recording_takes import RecordingTakeStore
 from cole_voice_lab.references import load_accepted_utterance
+from cole_voice_lab.storage_binding import open_catalog_editor
 
 SUBJECT = "cole-physical-diagnostic-synthetic"
 OTHER_SUBJECT = "cole-physical-diagnostic-other"
@@ -567,7 +567,7 @@ def test_open_context_and_group_mints_bind_marked_roots_and_their_subject(
     def activate(layout: AssetLayout, subject: str, catalog: PromptSuite) -> CatalogReference:
         key = (str(layout.root), catalog.suite_id)
         if key in published:
-            with open_corpus_store(layout, create=False) as corpus:
+            with open_catalog_editor(layout) as corpus:
                 corpus.activate(subject, published[key])
         else:
             # The marked root's store holds a capture and a physical-test catalog.

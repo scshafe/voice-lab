@@ -16,7 +16,7 @@ from test_datasets import _corpus
 from test_recording_takes import DEVICE, NOW, Rig, open_referenced, publish_catalog, store_suite
 
 from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256
-from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
+from cole_voice_lab.catalog_ports import CorpusSnapshotSecurityError
 from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import CatalogReference
@@ -29,6 +29,7 @@ from cole_voice_lab.recording_discovery import (
 from cole_voice_lab.recording_discovery_contracts import DiscoveryRequest
 from cole_voice_lab.recording_index import RecordingIndex
 from cole_voice_lab.recording_takes import RecordingTakeOperation, RecordingTakeStore
+from cole_voice_lab.storage_binding import open_catalog_editor
 
 
 def context(tmp_path: Path) -> tuple[AssetLayout, RecordingTakeStore, str]:
@@ -314,7 +315,7 @@ def test_discovery_projects_referenced_takes_and_counts_them_through_aliases(
     rig.store = RecordingTakeStore(layout, clock=lambda: rig.now)
     rig.group_id = open_referenced(rig.store, first, snapshot).group_id
     kept = rig.store.save(rig.command(rig.seal(rig.reserve(prompt="spoken-0001")))).take
-    with open_corpus_store(layout, create=False) as corpus:
+    with open_catalog_editor(layout) as corpus:
         corpus.edit_prompt(
             "spoken-0001", text="Synthetic sentence number one.", keep_recordings=True
         )

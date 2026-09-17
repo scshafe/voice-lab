@@ -20,7 +20,7 @@ from test_recording_library import DEVICE, Clock, Process, Timer, take
 from test_recording_takes import publish_catalog, store_suite
 
 from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256
-from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
+from cole_voice_lab.catalog_ports import CorpusSnapshotSecurityError
 from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.intake import accept_capture_session
 from cole_voice_lab.models import Prompt, PromptSuite
@@ -51,6 +51,7 @@ from cole_voice_lab.recording_index import (
 from cole_voice_lab.recording_index_backfill import backfill_recording_library
 from cole_voice_lab.recording_library import RecordingLibrary
 from cole_voice_lab.sqlite_migrations import SqliteMigrationError
+from cole_voice_lab.storage_binding import open_catalog_editor
 
 
 @pytest.fixture
@@ -1045,7 +1046,7 @@ CORPUS_ID = "synthetic-corpus"
 def publish_revision(
     layout: AssetLayout, prompt_id: str, text: str, *, keep_recordings: bool
 ) -> tuple[CatalogReference, CatalogSnapshot]:
-    with open_corpus_store(layout, create=False) as corpus:
+    with open_catalog_editor(layout) as corpus:
         corpus.edit_prompt(
             prompt_id,
             text=text,

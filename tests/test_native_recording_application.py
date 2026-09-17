@@ -692,13 +692,13 @@ def native_release_catalog(tmp_path_factory: pytest.TempPathFactory) -> Any:
     The release pins no catalog, so the launched app can only reach a useful state through
     the subject's active store version. Returns the root and that version's reference.
     """
-    from cole_voice_lab.corpus_store import open_corpus_store
     from cole_voice_lab.prompt_catalogs import load_builtin_prompt_suite
+    from cole_voice_lab.storage_binding import open_catalog_editor
 
     root = tmp_path_factory.mktemp("native release spaces").resolve()
     assets = AssetLayout.initialize(root / "synthetic assets")
     pilot = load_builtin_prompt_suite("pilot-v2.json")
-    with open_corpus_store(assets, create=True) as corpus:
+    with open_catalog_editor(assets, create=True) as corpus:
         corpus.import_prompt_suite(pilot, source="pilot-v2")
         corpus.create_catalog("cole-corpus", purpose=pilot.purpose)
         reference = corpus.publish_version("cole-corpus")

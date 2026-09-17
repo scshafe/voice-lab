@@ -19,8 +19,8 @@ from test_finetune import FFMPEG, needs_ffmpeg
 from test_recording_takes import DEVICE, Rig, publish_catalog, store_suite
 
 from cole_voice_lab.canonical import canonical_sha256
+from cole_voice_lab.catalog_ports import CorpusSnapshotSecurityError
 from cole_voice_lab.cli import main
-from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
 from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.finetune import (
     FineTuneCorpus,
@@ -45,6 +45,7 @@ from cole_voice_lab.recording_index import RecordingIndex
 from cole_voice_lab.recording_library import RecordingLibrary
 from cole_voice_lab.recording_review import RecordingReviewResolver
 from cole_voice_lab.recording_takes import RecordingTakeStore
+from cole_voice_lab.storage_binding import open_catalog_editor
 
 SUBJECT = "synthetic-subject"
 CATALOG_ID = "synthetic-corpus"
@@ -101,7 +102,7 @@ class Library:
         return launch(self.rig, self.index, version, operation)
 
     def edit(self, text: str, *, keep_recordings: bool) -> Version:
-        with open_corpus_store(self.layout, create=False) as corpus:
+        with open_catalog_editor(self.layout) as corpus:
             corpus.edit_prompt(
                 "spoken-0000",
                 text=text,

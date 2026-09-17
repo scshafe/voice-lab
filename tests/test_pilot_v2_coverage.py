@@ -598,13 +598,13 @@ def test_switching_store_catalogs_through_the_service_rewrites_no_evidence_or_st
     """
     from test_recording_service import execute
 
-    from cole_voice_lab.corpus_store import open_corpus_store
     from cole_voice_lab.recording_contracts import CatalogCommand, CatalogEvent, ContextEvent
     from cole_voice_lab.recording_service import RecordingWorkspaceBackend
+    from cole_voice_lab.storage_binding import open_catalog_editor
 
     evidence = build_legacy_root(tmp_path.resolve() / "assets")
     layout, pilot_v2 = evidence.layout, released_pilot_v2()
-    with open_corpus_store(layout, create=True) as corpus:
+    with open_catalog_editor(layout, create=True) as corpus:
         corpus.import_prompt_suite(pilot_v2, source="pilot-v2")
         corpus.create_catalog("cole-corpus", purpose=pilot_v2.purpose)
         whole = corpus.publish_version("cole-corpus")
@@ -624,7 +624,7 @@ def test_switching_store_catalogs_through_the_service_rewrites_no_evidence_or_st
 
     for number, reference in enumerate((whole, short, whole)):
         # The operator's activation is a deliberate store write before the next launch.
-        with open_corpus_store(layout, create=False) as corpus:
+        with open_catalog_editor(layout) as corpus:
             corpus.activate(SUBJECT, reference)
         before = evidence_files(layout.root)
         assert corpus_files(before)

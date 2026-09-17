@@ -48,14 +48,10 @@ import cole_voice_lab.cli as cli_module
 import cole_voice_lab.prompt_coverage as prompt_coverage
 import cole_voice_lab.standard_prompt_sets as standard_sets
 from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256
+from cole_voice_lab.catalog_ports import CatalogEditor, CorpusStoreError
 from cole_voice_lab.cli import build_parser, main
-from cole_voice_lab.corpus_store import (
-    MAX_CATALOG_VERSION,
-    CorpusStore,
-    CorpusStoreError,
-    PromptSourceReference,
-    open_corpus_store,
-)
+from cole_voice_lab.corpus_store import MAX_CATALOG_VERSION, PromptSourceReference
+from cole_voice_lab.corpus_store_sqlite import CorpusStore
 from cole_voice_lab.diagnostic_roots import (
     DIAGNOSTIC_ROOT_REFUSAL,
     DIAGNOSTIC_SUBJECT_REFUSAL,
@@ -81,6 +77,7 @@ from cole_voice_lab.standard_prompt_sets import (
     standard_expected_seconds,
     standard_prompt_set,
 )
+from cole_voice_lab.storage_binding import open_catalog_editor, open_catalog_reader
 
 FIXTURES = Path(__file__).parent / "fixtures" / "standard_sets"
 HARVARD_EXCERPT = FIXTURES / "harvard-excerpt.html"
@@ -142,8 +139,8 @@ def root(tmp_path: Path) -> Path:
     return AssetLayout.initialize(tmp_path.resolve() / "assets").root
 
 
-def store_of(root: Path) -> CorpusStore:
-    return open_corpus_store(AssetLayout.validate(root), create=False)
+def store_of(root: Path) -> CatalogEditor:
+    return open_catalog_editor(AssetLayout.validate(root))
 
 
 def init(cli: Cli, root: Path, *extra: str) -> Any:
@@ -748,14 +745,14 @@ def test_a_second_init_names_the_command_that_continues_from_the_stores_state(
         return refusal
 
     prompts_only, layout = fresh("prompts-only")
-    with open_corpus_store(layout, create=True) as store:
+    with open_catalog_editor(layout, create=True) as store:
         store.import_prompt_suite(released_pilot_v2(), source="pilot-v2")
     refusal = again(prompts_only)
     assert "already holds 36 prompt(s) and 0 catalog(s)" in refusal
     assert "`voice-lab catalog create <catalog_id> --purpose <purpose>`" in refusal
 
     unpublished, layout = fresh("unpublished")
-    with open_corpus_store(layout, create=True) as store:
+    with open_catalog_editor(layout, create=True) as store:
         store.import_prompt_suite(released_pilot_v2(), source="pilot-v2")
         store.create_catalog("cole-corpus", purpose="capture-pilot")
     assert (
@@ -765,7 +762,7 @@ def test_a_second_init_names_the_command_that_continues_from_the_stores_state(
     ) in again(unpublished)
 
     inactive, layout = fresh("inactive")
-    with open_corpus_store(layout, create=True) as store:
+    with open_catalog_editor(layout, create=True) as store:
         store.import_prompt_suite(released_pilot_v2(), source="pilot-v2")
         store.create_catalog("cole-corpus", purpose="capture-pilot")
         store.publish_version("cole-corpus")
@@ -1434,7 +1431,7 @@ def test_prompts_a_catalog_of_the_store_cannot_publish_are_refused_before_writin
 def test_a_store_without_catalogs_takes_any_prompt_and_a_catalog_must_fit_them(
     cli: Cli, root: Path
 ) -> None:
-    with open_corpus_store(AssetLayout.validate(root), create=True):
+    with open_catalog_editor(AssetLayout.validate(root), create=True):
         pass
     base = ("--asset-root", str(root))
     held = cli.json(
@@ -1568,7 +1565,7 @@ def test_a_version_flag_takes_only_a_positive_sqlite_integer(
 def test_activation_keeps_a_physical_test_catalog_off_a_standard_root(cli: Cli, root: Path) -> None:
     # A store holds a physical-test catalog only beside prompts it can publish, so this one
     # is created through the store API (catalog init refuses it on a standard root).
-    with open_corpus_store(AssetLayout.validate(root), create=True) as store:
+    with open_catalog_editor(AssetLayout.validate(root), create=True) as store:
         store.import_prompt_suite(
             PromptSuite.model_validate_json(
                 json.dumps(
@@ -2068,7 +2065,7 @@ def test_edit_prompt_reads_the_subjects_own_native_package_exactly(
 
 
 def test_list_reports_an_empty_store(cli: Cli, root: Path) -> None:
-    with open_corpus_store(AssetLayout.validate(root), create=True):
+    with open_catalog_editor(AssetLayout.validate(root), create=True):
         pass
     status, out, _ = cli("catalog", "list", "--asset-root", str(root), "--subject-id", SUBJECT)
     assert status == 0
@@ -2107,7 +2104,7 @@ def legacy_corpus(tmp_path_factory: pytest.TempPathFactory) -> Iterator[LegacyCo
         ]
     )
     assert status == 0
-    with open_corpus_store(evidence.layout, create=False) as store:
+    with open_catalog_reader(evidence.layout) as store:
         reference = store.resolve_reference("cole-corpus")
     yield LegacyCorpus(root, reference.model_dump(mode="json"))
 
@@ -2264,7 +2261,7 @@ def test_an_unknown_catalog_is_refused_by_name_and_code_in_every_command(
         *no_root, code="CORPUS.STORE_MISSING"
     )
     empty = AssetLayout.initialize(tmp_path.resolve() / "empty" / "assets").root
-    with open_corpus_store(AssetLayout.validate(empty), create=True) as store:
+    with open_catalog_editor(AssetLayout.validate(empty), create=True) as store:
         store.create_catalog("cole-corpus", purpose="capture-pilot")
     assert "(catalog cole-corpus has no published version)" in cli.refused(
         "prompts", "show", "cole-corpus", "--asset-root", str(empty)

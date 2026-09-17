@@ -32,7 +32,7 @@ from test_recording_service import build_identity, handshake, read_response, req
 
 import cole_voice_lab.recording_finetune_jobs as jobs_module
 from cole_voice_lab.canonical import canonical_sha256, write_canonical_json
-from cole_voice_lab.corpus_store import CorpusStoreError, open_corpus_store
+from cole_voice_lab.catalog_ports import CorpusStoreError
 from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.finetune import FineTuneError, FineTunePretrainedPins, FineTuneRun
 from cole_voice_lab.models import utc_now
@@ -91,6 +91,7 @@ from cole_voice_lab.recording_takes import (
     read_recording_evidence,
     write_recording_evidence,
 )
+from cole_voice_lab.storage_binding import open_catalog_editor, open_catalog_reader
 
 needs_ffmpeg = pytest.mark.skipif(not FFMPEG.exists(), reason="ffmpeg is not installed")
 CATALOG_ID = "cole-corpus"
@@ -115,7 +116,7 @@ class Library:
 @pytest.fixture
 def library(native_coverage: NativeCoverage, tmp_path: Path) -> Library:
     layout = native_coverage.rig.layout
-    with open_corpus_store(layout, create=True) as corpus:
+    with open_catalog_editor(layout, create=True) as corpus:
         corpus.import_prompt_suite(released_pilot_v2(), source="pilot-v2")
         corpus.create_catalog(CATALOG_ID, purpose="capture-pilot")
         corpus.activate(SUBJECT, corpus.publish_version(CATALOG_ID))
@@ -1212,7 +1213,7 @@ def test_the_worker_names_every_failure(
         assert unexpected.code == "RECORDING.WRITE_FAILED"
         assert "unexpectedly: RuntimeError: synthetic bug" in unexpected.message
         monkeypatch.undo()
-        with open_corpus_store(layout, create=False) as corpus:
+        with open_catalog_reader(layout) as corpus:
             snapshot_path = layout.root / corpus.active_catalog(SUBJECT)[1].snapshot_path
         original = snapshot_path.read_bytes()
         snapshot_path.chmod(0o600)
@@ -1225,7 +1226,7 @@ def test_the_worker_names_every_failure(
         def unavailable(*args: Any, **kwargs: Any) -> None:
             raise CorpusStoreError("CORPUS.STORE_UNAVAILABLE", "synthetic store failure")
 
-        monkeypatch.setattr(jobs_module, "open_corpus_store", unavailable)
+        monkeypatch.setattr(jobs_module, "open_catalog_reader", unavailable)
         assert run().error.code == "RECORDING.GATE_NOT_READY"
         monkeypatch.undo()
         queue.finish("tune-1", "failed", reply.error)
@@ -1835,7 +1836,7 @@ def test_the_worker_trains_on_the_pinned_catalog_version_without_opening_the_sto
     library: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     layout = library.layout
-    with open_corpus_store(layout, create=False) as corpus:
+    with open_catalog_editor(layout) as corpus:
         _, pinned = corpus.active_catalog(SUBJECT)
         corpus.retire_prompt(released_pilot_v2().prompts[-1].prompt_id)
         newer = corpus.publish_version(CATALOG_ID)
@@ -1863,7 +1864,7 @@ def test_the_worker_trains_on_the_pinned_catalog_version_without_opening_the_sto
         def pipeline(layout: Any, snapshot: Any, subject: str, *args: Any, **kwargs: Any) -> None:
             selected.append((snapshot, kwargs["reference"]))
 
-        monkeypatch.setattr(jobs_module, "open_corpus_store", never)
+        monkeypatch.setattr(jobs_module, "open_catalog_reader", never)
         monkeypatch.setattr(jobs_module, "run_finetune_pipeline", pipeline)
         reply = run_finetune_worker_request(layout, request, emit=lambda stage: None)
         assert reply.error is None
@@ -2056,7 +2057,7 @@ def test_a_real_service_keeps_save_fast_during_a_job_and_cancel_leaves_no_proces
     rig, analysis, _packages = package_rig
     layout = rig.layout
     reference, _snapshot = publish_catalog(layout, store_suite(2))
-    with open_corpus_store(layout, create=False) as corpus:
+    with open_catalog_editor(layout) as corpus:
         corpus.activate("synthetic-subject", reference)
     runtime, _pin = _stub_runtime(tmp_path.resolve() / "runtime", {"probe_seconds": 120})
     # A separate unsaved draft makes the concurrent Save a real durable mutation.

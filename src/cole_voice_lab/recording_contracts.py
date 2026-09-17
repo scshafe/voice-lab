@@ -97,7 +97,7 @@ type ErrorCode = Literal[
     "RECORDING.PACKAGE_INCOMPLETE",
     "RECORDING.CANCELLED",
     # The corpus-store failures the recording service sends under their own code
-    # (recording_service maps corpus_store.CorpusStoreError; SNAPSHOT_MISSING arrives as
+    # (recording_service maps catalog_ports.CorpusStoreError; SNAPSHOT_MISSING arrives as
     # SNAPSHOT_MISMATCH and every other store failure as RECORDING.GATE_NOT_READY).
     "CORPUS.NO_ACTIVE_CATALOG",
     "CORPUS.SNAPSHOT_MISMATCH",
