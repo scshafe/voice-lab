@@ -6,9 +6,12 @@ through the same readers prompt_coverage uses, never through packages or the SQL
 A take counts for a prompt under the coverage rule (its recorded prompt, or an earlier
 revision a published catalog's keep-recordings alias accepts); the transcript is always the
 current prompt text. Every artifact is bound by SHA-256 so a run can be reproduced and
-audited.
+audited. ``run_finetune_pipeline`` is the one select → dataset → train → sample chain; the
+CLI and the recording service's job worker both call it, and ``latest_finished_finetune_run``
+is the one rule for "the latest model".
 Related: prompt_coverage.py (readers), recording_index.py (retained predicate),
-docs/FINETUNE.md (operator guide), DECISIONS.md D-016.
+recording_finetune_jobs.py (the service's job queue and worker), docs/FINETUNE.md
+(operator guide), DECISIONS.md D-016.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import hashlib
 import json
 import math
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -27,12 +31,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Final, Literal, cast
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, TypeAdapter, model_validator
 
 from .audio import CANONICAL_SAMPLE_RATE_HZ
-from .canonical import canonical_sha256, sha256_file, write_canonical_json
+from .canonical import canonical_sha256, open_regular_no_follow, sha256_file, write_canonical_json
 from .corpus_store import CorpusSnapshotSecurityError, require_referenced_snapshot
-from .errors import VoiceLabError
+from .errors import SecurityError, VoiceLabError
 from .models import (
     SILENT_PROMPT_CATEGORIES,
     ContractModel,
@@ -48,6 +52,8 @@ from .recording_contracts import (
     FINETUNE_MAX_EPOCHS,
     CatalogReference,
     CatalogSnapshot,
+    FineTuneRunSummary,
+    FineTuneStage,
     RecordingFrameRange,
     RecordingHistoryEntry,
     RecordingTake,
@@ -69,6 +75,11 @@ FINETUNE_CORPUS_SCHEMA: Final = "cole-voice-lab.finetune-corpus/v1"
 FINETUNE_HYPERPARAMETERS_SCHEMA: Final = "cole-voice-lab.finetune-hyperparameters/v1"
 FINETUNE_DATASET_SCHEMA: Final = "cole-voice-lab.finetune-dataset/v1"
 FINETUNE_RUN_SCHEMA: Final = "cole-voice-lab.finetune-run/v1"
+# Every run lives in <asset root>/derived/finetune/<run id>/ (the CLI's --output-root default).
+FINETUNE_OUTPUT_ROOT: Final = "derived/finetune"
+FINETUNE_FFMPEG: Final = Path("/opt/homebrew/bin/ffmpeg")
+# run.json, dataset.json, corpus.json and samples.json are read through this bound.
+MAX_FINETUNE_RECORD_BYTES: Final = 64 * 1024 * 1024
 FINETUNE_SAMPLE_RATE_HZ: Final = 24_000
 # F5-TTS inference raises a reference to RMS 0.1 (-20 dBFS); training copies get the same
 # level so conditioning at inference matches what the model saw. Raw UMIK-1 takes sit near
@@ -527,6 +538,31 @@ def select_finetune_corpus(
     )
 
 
+def require_complete_corpus(corpus: FineTuneCorpus, *, allow_missing: bool) -> None:
+    """Refuse an incomplete corpus unless the caller allows training on what is recorded.
+
+    Incomplete means a spoken prompt has no kept take or a record could not be read. The
+    message leads with the counts, so a bounded copy of it (a wire error keeps 1,024
+    characters) still says what is missing; the full lists follow.
+    Params: ``allow_missing`` true accepts any corpus (the app always sends it, because the
+    active catalog lists unrecorded standard sentence sets).
+    Raises: ``FineTuneError`` FINETUNE.CORPUS_INCOMPLETE.
+    """
+    if corpus.complete or allow_missing:
+        return
+    raise FineTuneError(
+        "FINETUNE.CORPUS_INCOMPLETE",
+        f"the corpus is incomplete: {len(corpus.missing_prompt_ids)} of "
+        f"{corpus.spoken_prompt_count} spoken prompts have no kept take and "
+        f"{len(corpus.unknown_record_ids)} records could not be read; record the missing "
+        "prompts or allow missing prompts (--allow-missing) (missing: "
+        + ", ".join(corpus.missing_prompt_ids)
+        + "; unknown: "
+        + ", ".join(corpus.unknown_record_ids)
+        + ")",
+    )
+
+
 _VOLUME_PATTERN = re.compile(r"(mean|max)_volume:\s*(-?\d+(?:\.\d+)?)\s*dB")
 
 
@@ -583,7 +619,7 @@ def materialize_finetune_dataset(
     corpus: FineTuneCorpus,
     destination: str,
     *,
-    ffmpeg: Path = Path("/opt/homebrew/bin/ffmpeg"),
+    ffmpeg: Path = FINETUNE_FFMPEG,
     clock: Callable[[], datetime] = utc_now,
 ) -> FineTuneDataset:
     """Write level-normalized 24 kHz mono 16-bit training copies of ``corpus`` to ``destination``.
@@ -729,12 +765,30 @@ class FineTuneRuntime:
         return self.root / "pretrained" / FINETUNE_PRETRAINED_VOCAB_FILE
 
 
+def _runtime_environment() -> dict[str, str]:
+    """The F5 runtime's environment: this process's, plus the settings it always needs.
+
+    ``HOME`` comes from the password database when absent (the app's frozen service
+    environment has none, and the runtime's libraries cache under it), and
+    ``HF_HUB_OFFLINE=1`` keeps Hugging Face from downloading anything (downloads need an
+    explicit flag, AGENTS.md).
+    """
+    environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1"}
+    if "HOME" not in environment:
+        environment["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
+    return environment
+
+
 def _run_runtime(
     runtime_python: Path, arguments: list[str], *, cwd: Path | None, log: Path | None, what: str
 ) -> str:
-    """Run the runtime's python out of process; stdout is returned or, with ``log``, appended."""
+    """Run the runtime's python out of process; stdout is returned or, with ``log``, appended.
+
+    The child stays in this process's process group, so whoever stops this process's group
+    (the fine-tune job supervisor) stops the runtime with it.
+    """
     command = [str(runtime_python), "-B", *arguments]
-    environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    environment = _runtime_environment()
     try:
         if log is None:
             completed = subprocess.run(
@@ -899,6 +953,20 @@ def _checkpoints_in(directory: Path, relative_root: Path) -> tuple[FineTuneCheck
     return tuple(found)
 
 
+def _failed_run(
+    run: FineTuneRun, checkpoints: Path, root: Path, message: str, finished_at: datetime
+) -> FineTuneRun:
+    """``run`` as failed with ``message``, listing the checkpoints it left behind."""
+    return run.model_copy(
+        update={
+            "status": "failed",
+            "finished_at": finished_at,
+            "error": message[:4_000],
+            "checkpoints": _checkpoints_in(checkpoints, root),
+        }
+    )
+
+
 def run_f5_finetune(
     layout: AssetLayout,
     dataset: FineTuneDataset,
@@ -952,14 +1020,7 @@ def run_f5_finetune(
     write_canonical_json(run_directory / "run.json", run)
 
     def fail(code: FineTuneErrorCode, message: str) -> FineTuneError:
-        failed = run.model_copy(
-            update={
-                "status": "failed",
-                "finished_at": clock(),
-                "error": message[:4_000],
-                "checkpoints": _checkpoints_in(checkpoints, layout.root),
-            }
-        )
+        failed = _failed_run(run, checkpoints, layout.root, message, clock())
         write_canonical_json(run_directory / "run.json", failed)
         return FineTuneError(code, message)
 
@@ -1155,6 +1216,305 @@ def synthesize_finetune_samples(
     )
     write_canonical_json(output_directory / "samples.json", sample_set)
     return sample_set
+
+
+def release_finetune_runtime_link(link: Path, checkpoints: Path) -> bool:
+    """Remove the runtime's ``ckpts/<run id>`` symlink when it points at ``checkpoints``.
+
+    ``run_f5_finetune`` creates the link (to ``<run root>/checkpoints``, resolved); a failed
+    or cancelled run releases it so the runtime tree keeps no pointer into the library. A
+    link that is absent, not a symlink, or points anywhere else belongs to another run and is
+    left alone.
+    Returns: whether the link was removed.
+    Raises: ``OSError`` when the link cannot be read or removed.
+    """
+    if not link.is_symlink() or Path(os.readlink(link)) != checkpoints.resolve():
+        return False
+    link.unlink()
+    return True
+
+
+def mark_finetune_run_failed(
+    layout: AssetLayout,
+    run_root: str,
+    error: str,
+    *,
+    clock: Callable[[], datetime] = utc_now,
+) -> FineTuneRun | None:
+    """Rewrite ``<run_root>/run.json`` as failed with ``error`` when it still says running.
+
+    A run whose trainer was stopped from outside (cancelled, or its service restarted) never
+    reached ``run_f5_finetune``'s own failure record; this writes the same record, listing
+    the checkpoints it left behind (hashing them can take seconds for real weights).
+    Returns: the rewritten record, the unchanged record when it is not running, or ``None``
+    when the run has no ``run.json``.
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when ``run.json`` is unreadable or
+    invalid; ``SecurityError``/``ValueError`` for an unsafe ``run_root``; ``OSError`` when
+    the record cannot be written.
+    """
+    layout = AssetLayout.validate(layout.root)
+    run_directory = confined_path(layout.root, run_root)
+    path = run_directory / "run.json"
+    if not os.path.lexists(path):
+        return None
+    run = _read_finetune_record(path, FineTuneRun)
+    if run.status != "running":
+        return run
+    failed = _failed_run(run, run_directory / "checkpoints", layout.root, error, clock())
+    write_canonical_json(path, failed)
+    return failed
+
+
+@dataclass(frozen=True, slots=True)
+class FineTunePipelineStep:
+    """One stage change of ``run_finetune_pipeline``.
+
+    ``runtime_link`` is the runtime's ``ckpts/<run id>`` path once the runtime is described
+    (from the ``dataset`` stage on): whoever stops the run releases it with
+    ``release_finetune_runtime_link``.
+    """
+
+    stage: FineTuneStage
+    run_id: str
+    runtime_link: Path | None
+
+
+@dataclass(frozen=True, slots=True)
+class FineTunePipelineResult:
+    """Everything one pipeline run produced: the corpus, its dataset, the run and the samples."""
+
+    corpus: FineTuneCorpus
+    dataset: FineTuneDataset
+    run: FineTuneRun
+    finetuned: FineTuneSampleSet
+    base: FineTuneSampleSet
+
+
+def run_finetune_pipeline(
+    layout: AssetLayout,
+    catalog: PromptSuite | CatalogSnapshot,
+    subject_id: str,
+    runtime_root: Path,
+    hyperparameters: FineTuneHyperparameters,
+    *,
+    run_id: str,
+    allow_missing: bool,
+    reference: CatalogReference | None = None,
+    output_root: str = FINETUNE_OUTPUT_ROOT,
+    ffmpeg: Path = FINETUNE_FFMPEG,
+    reference_prompt_id: str | None = None,
+    sample_texts: tuple[str, ...] = FINETUNE_DEFAULT_SAMPLE_TEXTS,
+    use_ema: bool = True,
+    nfe_steps: int = 32,
+    device: Literal["mps", "cpu"] = "mps",
+    pretrained_pin: tuple[str, int] | None = None,
+    progress: Callable[[FineTunePipelineStep], None] | None = None,
+) -> FineTunePipelineResult:
+    """Select → describe the runtime → materialize → train → sample (fine-tuned and base).
+
+    The one fine-tune chain: ``voice-lab finetune run`` and the recording service's job
+    worker both call it. Everything is written under ``<output_root>/<run_id>/``: the
+    dataset in ``dataset/``, the run in ``run.json``/``train.log``/``checkpoints/``, and the
+    listening samples in ``samples/finetuned`` (``model_last.pt``, EMA unless ``use_ema`` is
+    false) and ``samples/base`` (the pinned pretrained weights, EMA). ``progress`` hears each
+    stage as it starts: ``selecting`` (corpus and runtime), ``dataset``, ``training``,
+    ``sampling``. A failed or interrupted training releases the runtime's ``ckpts/<run_id>``
+    link before the error propagates; a finished one keeps it.
+    Params: ``catalog``/``reference``/``subject_id`` as ``select_finetune_corpus``;
+    ``allow_missing`` as ``require_complete_corpus``; ``reference_prompt_id`` names the
+    reference clip (default: the dataset's first); ``pretrained_pin`` substitutes the
+    pretrained-weights pin (tests only; ``None`` is the F5-TTS v1 Base pin).
+    Returns: the corpus, dataset, finished run and both sample sets.
+    Raises: every ``FineTuneError`` of the steps it chains (FINETUNE.CORPUS_INCOMPLETE,
+    FINETUNE.RUNTIME_UNAVAILABLE, FINETUNE.PRETRAINED_MISMATCH, FINETUNE.EMPTY_CORPUS,
+    FINETUNE.TRAINING_FAILED, FINETUNE.RUNTIME_FAILED, ...); ``CorpusSnapshotSecurityError``
+    as ``select_finetune_corpus``.
+    """
+
+    def report(stage: FineTuneStage, link: Path | None) -> None:
+        if progress is not None:
+            progress(FineTunePipelineStep(stage=stage, run_id=run_id, runtime_link=link))
+
+    report("selecting", None)
+    corpus = select_finetune_corpus(layout, catalog, subject_id, reference=reference)
+    require_complete_corpus(corpus, allow_missing=allow_missing)
+    runtime = describe_finetune_runtime(runtime_root, pretrained_pin=pretrained_pin)
+    link = runtime.checkpoints_directory / run_id
+    run_root = f"{output_root}/{run_id}"
+    report("dataset", link)
+    dataset = materialize_finetune_dataset(layout, corpus, f"{run_root}/dataset", ffmpeg=ffmpeg)
+    report("training", link)
+    try:
+        run = run_f5_finetune(
+            layout,
+            dataset,
+            runtime,
+            hyperparameters,
+            run_root,
+            run_id=run_id,
+            subject_id=corpus.subject_id,
+            catalog_sha256=corpus.catalog_sha256,
+        )
+    except BaseException:
+        release_finetune_runtime_link(link, layout.root / run_root / "checkpoints")
+        raise
+    report("sampling", link)
+    reference_clip = reference_prompt_id or dataset.clips[0].prompt_id
+
+    def samples(label: str, checkpoint: Path, ema: bool) -> FineTuneSampleSet:
+        return synthesize_finetune_samples(
+            layout,
+            dataset,
+            runtime,
+            checkpoint,
+            f"{run_root}/samples/{label}",
+            label=label,
+            reference_prompt_id=reference_clip,
+            texts=sample_texts,
+            use_ema=ema,
+            nfe_steps=nfe_steps,
+            device=device,
+        )
+
+    finetuned = samples(
+        "finetuned", layout.root / run_root / "checkpoints" / "model_last.pt", use_ema
+    )
+    base = samples("base", runtime.pretrained_path, True)
+    return FineTunePipelineResult(
+        corpus=corpus, dataset=dataset, run=run, finetuned=finetuned, base=base
+    )
+
+
+def _read_finetune_record[ModelT: BaseModel](path: Path, model: type[ModelT]) -> ModelT:
+    """One fine-tune record (run, dataset, corpus or samples) through a bounded no-follow read.
+
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when the file is missing, not a regular
+    file, larger than ``MAX_FINETUNE_RECORD_BYTES`` or not a valid ``model``.
+    """
+    try:
+        with open_regular_no_follow(path, nonblocking=True) as stream:
+            if os.fstat(stream.fileno()).st_size > MAX_FINETUNE_RECORD_BYTES:
+                raise ValueError(f"larger than {MAX_FINETUNE_RECORD_BYTES} bytes")
+            payload = stream.read(MAX_FINETUNE_RECORD_BYTES + 1)
+        if len(payload) > MAX_FINETUNE_RECORD_BYTES:
+            raise ValueError(f"larger than {MAX_FINETUNE_RECORD_BYTES} bytes")
+        return model.model_validate_json(payload)
+    except (SecurityError, OSError, ValueError) as error:
+        raise FineTuneError(
+            "FINETUNE.SOURCE_CHANGED",
+            f"fine-tune record {path} is missing, unreadable or invalid: {error}",
+        ) from error
+
+
+# FineTuneRunSummary bounds each sample list; the default sentences are three.
+_MAX_SUMMARY_SAMPLES: Final = 64
+
+
+def finetune_run_summary(layout: AssetLayout, run_root: str) -> FineTuneRunSummary:
+    """The app's view of one run: ``run.json`` plus its dataset, corpus and samples.
+
+    ``prompt_count`` is the dataset's clip count and ``retained_seconds`` the corpus's
+    retained audio (neither is in ``run.json``). Sample paths come from
+    ``samples/{finetuned,base}/samples.json`` and only for a finished run; a finished run
+    whose sampling never completed has none. Every path is asset-root-relative.
+    Params: ``run_root`` is the run's asset-root-relative directory
+    (``derived/finetune/<run id>``).
+    Returns: the summary.
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when a record is missing, unreadable
+    or invalid, or when ``run.json``, ``dataset/dataset.json`` and ``dataset/corpus.json``
+    do not bind each other and ``run_root``; ``SecurityError``/``ValueError`` for an unsafe
+    ``run_root``.
+    """
+    directory = confined_path(layout.root, run_root)
+    run = _read_finetune_record(directory / "run.json", FineTuneRun)
+    dataset = _read_finetune_record(directory / "dataset" / "dataset.json", FineTuneDataset)
+    corpus = _read_finetune_record(directory / "dataset" / "corpus.json", FineTuneCorpus)
+    if (
+        run.run_root != run_root
+        or canonical_sha256(dataset) != run.dataset_sha256
+        or canonical_sha256(corpus) != run.corpus_sha256
+        or dataset.corpus_sha256 != run.corpus_sha256
+    ):
+        raise FineTuneError(
+            "FINETUNE.SOURCE_CHANGED",
+            f"fine-tune run {run_root} does not match its dataset and corpus records",
+        )
+    sample_paths: dict[str, tuple[str, ...]] = {"finetuned": (), "base": ()}
+    if run.status == "finished":
+        for label in sample_paths:
+            path = directory / "samples" / label / "samples.json"
+            if os.path.lexists(path):
+                sample_set = _read_finetune_record(path, FineTuneSampleSet)
+                sample_paths[label] = tuple(
+                    sample.relative_path for sample in sample_set.samples[:_MAX_SUMMARY_SAMPLES]
+                )
+    try:
+        return FineTuneRunSummary(
+            run_id=run.run_id,
+            run_root=run.run_root,
+            status=run.status,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            epochs=run.hyperparameters.epochs,
+            prompt_count=len(dataset.clips),
+            retained_seconds=round(corpus.retained_seconds, 3),
+            finetuned_sample_paths=sample_paths["finetuned"],
+            base_sample_paths=sample_paths["base"],
+            error=run.error,
+        )
+    except ValueError as error:
+        raise FineTuneError(
+            "FINETUNE.SOURCE_CHANGED", f"fine-tune run {run_root} cannot be summarized: {error}"
+        ) from error
+
+
+_RUN_DIRECTORY_NAME: TypeAdapter[StableId] = TypeAdapter(StableId)
+
+
+def latest_finished_finetune_run(
+    layout: AssetLayout, *, output_root: str = FINETUNE_OUTPUT_ROOT
+) -> FineTuneRunSummary | None:
+    """The newest finished run under ``<output_root>``: the one resolver of "the latest model".
+
+    Every real directory whose name is a stable id and that holds a ``run.json`` is a run
+    (a ``finetune dataset`` directory without one is not). Newest means the latest
+    ``finished_at``; equal times are ordered by run id, the greater winning. The recording
+    service's fine-tune status and the Speak page use this same rule.
+    Returns: the summary of that run, or ``None`` when no run has finished.
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when a ``run.json`` is unreadable,
+    invalid or names another run or directory, and as ``finetune_run_summary`` for the
+    chosen run; ``SecurityError`` when ``output_root`` has a symlink component.
+    """
+    root = confined_path(layout.root, output_root)
+    if not root.is_dir():
+        return None
+    latest: tuple[datetime, str] | None = None
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            try:
+                name = _RUN_DIRECTORY_NAME.validate_python(entry.name)
+            except ValueError:
+                continue
+            path = root / name / "run.json"
+            if not os.path.lexists(path):
+                continue
+            run = _read_finetune_record(path, FineTuneRun)
+            if run.run_id != name or run.run_root != f"{output_root}/{name}":
+                raise FineTuneError(
+                    "FINETUNE.SOURCE_CHANGED",
+                    f"fine-tune record {path} names run {run.run_id} at {run.run_root}",
+                )
+            if run.status != "finished":
+                continue
+            assert run.finished_at is not None  # FineTuneRun: finished runs are dated
+            candidate = (run.finished_at, run.run_id)
+            if latest is None or candidate > latest:
+                latest = candidate
+    if latest is None:
+        return None
+    return finetune_run_summary(layout, f"{output_root}/{latest[1]}")
 
 
 # Provisioning: one venv from the pinned requirements plus the two pinned Hugging Face files.

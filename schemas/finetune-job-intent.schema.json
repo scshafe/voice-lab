@@ -1,0 +1,86 @@
+{
+  "$defs": {
+    "FineTuneCommand": {
+      "additionalProperties": false,
+      "description": "Train the voice model on the latest kept take of every spoken prompt (one job at a time).\n\n``epochs`` overrides the default training length. ``allow_missing`` trains on the\nprompts that have a kept take even when others have none; without it the job is refused\n``FINETUNE.CORPUS_INCOMPLETE`` unless every spoken prompt has one. The app always sends\n``true`` because the active catalog lists unrecorded standard sentence sets.",
+      "properties": {
+        "allow_missing": {
+          "title": "Allow Missing",
+          "type": "boolean"
+        },
+        "command": {
+          "const": "fine-tune",
+          "default": "fine-tune",
+          "title": "Command",
+          "type": "string"
+        },
+        "epochs": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Epochs"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id",
+        "allow_missing"
+      ],
+      "title": "FineTuneCommand",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The exact accepted command, written once before its job enters the queue.",
+  "properties": {
+    "command": {
+      "$ref": "#/$defs/FineTuneCommand"
+    },
+    "queued_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "request_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-job-intent/v1",
+      "default": "cole-voice-lab.finetune-job-intent/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "command",
+    "subject_id",
+    "request_sha256",
+    "queued_at"
+  ],
+  "title": "FineTuneJobIntent",
+  "type": "object"
+}

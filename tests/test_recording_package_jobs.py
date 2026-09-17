@@ -24,7 +24,7 @@ from test_recording_packages import (
 from cole_voice_lab.canonical import canonical_json_bytes
 from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.models import utc_now
-from cole_voice_lab.recording_contracts import PackageEvent, PackagePreparationEvent
+from cole_voice_lab.recording_contracts import PackageEvent
 from cole_voice_lab.recording_package_jobs import (
     MAX_PACKAGE_ATTEMPTS,
     MAX_PACKAGE_BACKLOG,
@@ -336,133 +336,6 @@ def test_supervisor_stop_preserves_running_job_for_new_owner(package_rig: Any) -
     finally:
         supervisor.close()
         queue.close()
-        os.close(reader)
-        os.close(writer)
-
-
-def test_actual_service_prepares_in_owned_process_while_save_remains_reachable(
-    package_rig: Any, tmp_path: Path
-) -> None:
-    import subprocess
-    import sys
-
-    from test_recording_service import build_identity, handshake, read_response, request
-
-    from cole_voice_lab.canonical import write_canonical_json
-    from cole_voice_lab.recording_contracts import SaveEvent, ShutdownCommand, recording_frame_bytes
-    from cole_voice_lab.recording_service import recording_service_build_identity
-
-    rig, analysis, packages = package_rig
-    _, command = full_selection(rig, analysis)
-    # A separate unsaved draft makes the concurrent Save a real durable mutation.
-    rig.now = utc_now() - timedelta(seconds=5)
-    rig.store.clock = lambda: rig.now
-    draft = rig.seal(rig.reserve("service-draft", "synthetic-0001"), "service-draft-seal")
-    rig.store.clock = utc_now
-    analysis.close()
-    build = recording_service_build_identity()
-    own, client = tmp_path / "service-build.json", tmp_path / "client-build.json"
-    write_canonical_json(own, build)
-    write_canonical_json(client, build_identity())
-    group = rig.store.get_group(rig.group_id)
-    reader, writer = os.pipe()
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "cole_voice_lab.recording_service",
-            "--asset-root",
-            str(rig.layout.root),
-            "--catalog-sha256",
-            group.catalog_sha256,
-            "--recording-group-id",
-            group.group_id,
-            "--process-generation",
-            "generation-1",
-            "--build-identity",
-            str(own),
-            "--expected-client-build",
-            str(client),
-            "--package-test-block-fd",
-            str(reader),
-        ],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        pass_fds=(reader,),
-    )
-    assert process.stdin is not None and process.stdout is not None
-    events: list[Any] = []
-
-    def send(message: Any) -> Any:
-        process.stdin.write(recording_frame_bytes(message))
-        process.stdin.flush()
-        while True:
-            response = read_response(process.stdout.fileno(), timeout=20)
-            events.append(response)
-            assert response.error is None, response.error
-            if response.meta.request_id == message.meta.request_id:
-                return response.data
-
-    try:
-        send(handshake(service=build))
-        queued = send(request(command, request_id="package-request"))
-        assert isinstance(queued, PackagePreparationEvent) and queued.state == "queued"
-        jobs = packages.directory / "jobs/head.json"
-        wait_until(
-            lambda: (
-                RecordingPackageQueueHead.model_validate_json(jobs.read_bytes()).jobs[0].state
-                == "running"
-            )
-        )
-        started = time.monotonic()
-        saved = send(
-            request(
-                rig.command(draft, "service-fast-save"),
-                request_id="save",
-                take_id=draft.reservation.take_id,
-            )
-        )
-        elapsed = time.monotonic() - started
-        assert isinstance(saved, SaveEvent) and saved.take.decision == "kept" and elapsed < 2
-        rows = subprocess.check_output(["ps", "-axo", "pid,ppid,args"], text=True).splitlines()[1:]
-        children = [
-            int(row.split(None, 2)[0])
-            for row in rows
-            if len(row.split(None, 2)) == 3
-            and int(row.split(None, 2)[1]) == process.pid
-            and "cole_voice_lab.recording_package_jobs" in row
-        ]
-        assert len(children) == 1
-        os.write(writer, b"1")
-        while not any(isinstance(event.data, PackageEvent) for event in events):
-            response = read_response(process.stdout.fileno(), timeout=30)
-            assert response.error is None, response.error
-            events.append(response)
-        prepared = next(event for event in events if isinstance(event.data, PackageEvent))
-        assert prepared.meta.request_id == command.operation_id
-        assert prepared.data.package.group.group_id == group.group_id
-        write_canonical_json(
-            tmp_path / "actual-service-package-evidence.json",
-            {
-                "synthetic_only": True,
-                "service_pid": process.pid,
-                "package_worker_pid": children[0],
-                "save_seconds_while_package_worker_blocked": elapsed,
-                "manifest_sha256": prepared.data.package.manifest_sha256,
-                "package_path": prepared.data.package.package_path,
-            },
-        )
-        send(request(ShutdownCommand(), request_id="shutdown"))
-        assert process.wait(timeout=4) == 0
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait(timeout=3)
-        process.stdin.close()
-        process.stdout.close()
-        assert process.stderr is not None
-        process.stderr.close()
         os.close(reader)
         os.close(writer)
 

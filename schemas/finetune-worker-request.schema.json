@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "AbsolutePath": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "FineTunePretrainedPin": {
+      "additionalProperties": false,
+      "description": "A substitute pretrained-weights pin (tests only; the service never sends one).",
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "minimum": 1,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "FineTunePretrainedPin",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "generation": {
+      "$ref": "#/$defs/StableId"
+    },
+    "kind": {
+      "const": "run",
+      "default": "run",
+      "title": "Kind",
+      "type": "string"
+    },
+    "operation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "pretrained_pin": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FineTunePretrainedPin"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "request_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "run_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "runtime_root": {
+      "$ref": "#/$defs/AbsolutePath"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-worker/v1",
+      "default": "cole-voice-lab.finetune-worker/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "generation",
+    "operation_id",
+    "request_sha256",
+    "run_id",
+    "runtime_root"
+  ],
+  "title": "FineTuneWorkerRequest",
+  "type": "object"
+}

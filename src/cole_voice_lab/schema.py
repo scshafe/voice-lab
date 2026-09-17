@@ -68,6 +68,7 @@ from .recording_discovery_contracts import (
 )
 from .recording_edit_jobs import RECORDING_EDIT_JOB_SCHEMA_MODELS
 from .recording_edits import RECORDING_EDIT_SCHEMA_MODELS
+from .recording_finetune_jobs import RECORDING_FINETUNE_JOB_SCHEMA_MODELS
 from .recording_library import DesktopSessionEvidence
 from .recording_package_jobs import RECORDING_PACKAGE_JOB_SCHEMA_MODELS
 from .recording_packages import RECORDING_PACKAGE_SCHEMA_MODELS
@@ -88,6 +89,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     **RECORDING_PACKAGE_JOB_SCHEMA_MODELS,
     **RECORDING_EDIT_SCHEMA_MODELS,
     **RECORDING_EDIT_JOB_SCHEMA_MODELS,
+    **RECORDING_FINETUNE_JOB_SCHEMA_MODELS,
     "recording-discovery-checkpoint": RecordingDiscoveryCheckpoint,
     "recording-discovery-request": DiscoveryRequest,
     "recording-discovery-worker-start": DiscoveryWorkerStart,

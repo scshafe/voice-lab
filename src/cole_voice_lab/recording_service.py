@@ -49,6 +49,7 @@ from .recording_contracts import (
     AcknowledgedEvent,
     AnalysisEvent,
     CancelCommand,
+    CancelFineTuneCommand,
     CatalogCommand,
     CatalogEvent,
     CatalogReference,
@@ -61,14 +62,14 @@ from .recording_contracts import (
     EditEvent,
     EditTakeCommand,
     ErrorCode,
+    FineTuneCommand,
+    FineTuneStatusCommand,
     HandshakeCommand,
     HandshakeEvent,
     HistoryCommand,
     NavigateCommand,
     NavigationEvent,
     OpenContextCommand,
-    PackagePreparationEvent,
-    PreparePackageCommand,
     RecorderStateEvent,
     RecordingAnalysisResult,
     RecordingBuildIdentity,
@@ -117,7 +118,7 @@ from .recording_takes import RecordingSelectionError, RecordingTakeStore
 if TYPE_CHECKING:
     from .recording_analysis import RecordingAnalysisQueue
     from .recording_edit_jobs import RecordingEditCoordinator
-    from .recording_package_jobs import RecordingPackageQueue
+    from .recording_finetune_jobs import FineTuneSupervisor
 
 CONTROL_READ_BYTES = 16_384
 MAX_PENDING_REQUESTS = 16
@@ -312,6 +313,45 @@ class RecordingServiceBackend(Protocol):
     ) -> ReliableEvent: ...
 
 
+type FineTuneServiceCommand = FineTuneCommand | CancelFineTuneCommand | FineTuneStatusCommand
+
+
+def _fine_tune_event(
+    jobs: FineTuneSupervisor | None,
+    command: FineTuneServiceCommand,
+    cancellation: RecordingCancellation,
+) -> ReliableEvent:
+    """Answer a fine-tune command from the service's job supervisor (no context needed).
+
+    Status is read-only; submit and cancel pass the cancellation's commit barrier first.
+    Returns: a ``FineTuneProgressEvent`` (submit, cancel) or ``FineTuneStatusEvent``.
+    Raises: ``RecordingServiceError`` RECORDING.GATE_NOT_READY when this service runs no
+    fine-tune jobs, and every job refusal and ``FineTuneError`` under its own code
+    (FINETUNE.JOB_ACTIVE, FINETUNE.RUNTIME_UNAVAILABLE, RECORDING.DISK_SPACE, ...).
+    """
+    from .finetune import FineTuneError
+    from .recording_finetune_jobs import FineTuneJobError
+
+    if jobs is None:
+        raise RecordingServiceError(
+            "RECORDING.GATE_NOT_READY", "fine-tuning is unavailable in this recording service"
+        )
+    try:
+        if isinstance(command, FineTuneStatusCommand):
+            return jobs.status(command)
+        cancellation.begin_commit()
+        if isinstance(command, FineTuneCommand):
+            return jobs.submit(command)
+        return jobs.cancel(command)
+    except FineTuneJobError as error:
+        refusal = error.recording_error
+        raise RecordingServiceError(
+            refusal.code, refusal.message, retryable=refusal.retryable
+        ) from error
+    except FineTuneError as error:
+        raise RecordingServiceError(error.code, _bounded_message(str(error))) from error
+
+
 class UnpreparedRecordingBackend:
     """Honest bridge baseline before durable take/index capabilities are attached."""
 
@@ -368,7 +408,7 @@ class RecordingTakesBackend:
         self.group = store.get_group(group_id)
         self.analysis_queue = analysis_queue
         self.recovery_index = recovery_index
-        self.package_queue: RecordingPackageQueue | None = None
+        self.finetune_jobs: FineTuneSupervisor | None = None
 
     @property
     def state_revision(self) -> int:
@@ -389,23 +429,8 @@ class RecordingTakesBackend:
         cancellation.check()
         command = request.data
         try:
-            if isinstance(command, PreparePackageCommand):
-                if self.package_queue is None:
-                    raise RecordingServiceError(
-                        "RECORDING.GATE_NOT_READY", "package preparation is unavailable"
-                    )
-                from .recording_packages import RecordingPackageError
-
-                cancellation.begin_commit()
-                try:
-                    return self.package_queue.submit(command)
-                except RecordingPackageError as error:
-                    return PackagePreparationEvent(
-                        operation_id=command.operation_id,
-                        group_id=command.group_id,
-                        state="blocked",
-                        error=error.recording_error,
-                    )
+            if isinstance(command, (FineTuneCommand, CancelFineTuneCommand, FineTuneStatusCommand)):
+                return _fine_tune_event(self.finetune_jobs, command, cancellation)
             if isinstance(command, ReserveTakeCommand):
                 reservation = self.store.reserve(
                     operation_id=command.operation_id,
@@ -535,7 +560,7 @@ class RecordingWorkspaceBackend:
         self._catalog_lock = threading.Lock()
         self._pinned_catalog: PinnedCatalog | None = None
         self.analysis_queue = analysis_queue
-        self.package_queue: RecordingPackageQueue | None = None
+        self.finetune_jobs: FineTuneSupervisor | None = None
         self.index = index or RecordingIndex(layout, subject_id=subject_id)
         self.index.begin_recovery_scan(scan_generation="recovery-" + uuid4().hex)
         self.store = store or RecordingTakeStore(
@@ -699,23 +724,9 @@ class RecordingWorkspaceBackend:
                         cursor=command.cursor, page_size=command.page_size
                     )
                 )
-            if isinstance(command, PreparePackageCommand):
-                if self.package_queue is None:
-                    raise RecordingServiceError(
-                        "RECORDING.GATE_NOT_READY", "package preparation is unavailable"
-                    )
-                from .recording_packages import RecordingPackageError
-
-                cancellation.begin_commit()
-                try:
-                    return self.package_queue.submit(command)
-                except RecordingPackageError as error:
-                    return PackagePreparationEvent(
-                        operation_id=command.operation_id,
-                        group_id=command.group_id,
-                        state="blocked",
-                        error=error.recording_error,
-                    )
+            if isinstance(command, (FineTuneCommand, CancelFineTuneCommand, FineTuneStatusCommand)):
+                # Fine-tuning reads the library, not the open context: it works before one.
+                return _fine_tune_event(self.finetune_jobs, command, cancellation)
             if isinstance(command, CatalogCommand):
                 # A catalog this root refuses is never shown, exactly as open-context refuses it.
                 pinned = self._served_catalog()
@@ -1567,19 +1578,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--expected-client-build", type=Path, required=True)
     parser.add_argument("--build-identity", type=Path, required=True)
     parser.add_argument("--analysis-test-block-fd", type=int)
-    parser.add_argument("--package-test-block-fd", type=int)
     # The F5-TTS runtime (a virtual environment) fine-tune jobs run in; the app's build
     # settings name it. Absent: fine-tuning is unavailable.
     parser.add_argument("--finetune-runtime-root", type=_finetune_runtime_root)
     options = parser.parse_args(argv)
     from .recording_analysis import RecordingAnalysisQueue, RecordingAnalysisSupervisor
     from .recording_edit_jobs import RecordingEditCoordinator
+    from .recording_finetune_jobs import FineTuneJobQueue, FineTuneSupervisor
     from .recording_index import RecordingIndex
-    from .recording_package_jobs import RecordingPackageQueue, RecordingPackageSupervisor
-    from .recording_packages import RecordingPackageStore
 
-    package_queue = None
-    package_supervisor = None
+    finetune_queue = None
+    finetune_supervisor = None
     analysis_queue = None
     analysis_supervisor = None
     recovery_supervisor = None
@@ -1642,17 +1651,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if backend is None:
             backend = UnpreparedRecordingBackend(options.catalog_sha256)
         if isinstance(backend, (RecordingWorkspaceBackend, RecordingTakesBackend)):
-            package_queue = RecordingPackageQueue(
-                RecordingPackageStore(
-                    layout,
-                    take_store=backend.store,
-                    index=index,
-                    analyzer_build=build.model_copy(
-                        update={"build_id": "python-recording-analysis-v1"}
-                    ),
-                )
+            finetune_queue = FineTuneJobQueue(
+                layout,
+                subject_id=backend.subject_id
+                if isinstance(backend, RecordingWorkspaceBackend)
+                else backend.group.subject_id,
+                runtime_root=options.finetune_runtime_root,
             )
-            backend.package_queue = package_queue
         session = RecordingServiceSession(
             build=build,
             expected_client=_read_private_build_identity(options.expected_client_build),
@@ -1702,17 +1707,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 on_failure=lambda error: session.publish_error("recovery-supervisor", error),
             )
             recovery_supervisor.start()
-        if package_queue is not None:
-            package_supervisor = RecordingPackageSupervisor(
-                package_queue,
-                # Package events are no longer service events (the app fine-tunes instead),
-                # so a job recovered from disk finishes without a reply. The corpus-first
-                # pipeline plan's Step 3 removes this supervisor.
-                on_event=None,
-                on_failure=lambda error: session.publish_error("package-supervisor", error),
-                block_fd=options.package_test_block_fd,
+        if finetune_queue is not None:
+            assert isinstance(backend, (RecordingWorkspaceBackend, RecordingTakesBackend))
+            finetune_supervisor = FineTuneSupervisor(
+                finetune_queue,
+                on_event=session.publish_event,
+                on_failure=lambda error: session.publish_error("finetune-supervisor", error),
             )
-            package_supervisor.start()
+            backend.finetune_jobs = finetune_supervisor
+            finetune_supervisor.start()
         serve_recording_pipes(session, sys.stdin.fileno(), sys.stdout.fileno())
         return 0
     except (VoiceLabError, ValidationError, OSError, ValueError) as error:
@@ -1737,10 +1740,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
     finally:
-        if package_supervisor is not None:
-            package_supervisor.close()
-        if package_queue is not None:
-            package_queue.close()
+        if finetune_supervisor is not None:
+            finetune_supervisor.close()
+        if finetune_queue is not None:
+            finetune_queue.close()
         if edit_coordinator is not None:
             edit_coordinator.close()
         if workspace is not None and workspace.discovery is not None:

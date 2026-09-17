@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import math
+import os
 import re
 import wave
 from array import array
@@ -34,28 +35,43 @@ from test_recording_packages import saved_take
 from test_recording_takes import Rig, publish_catalog, store_suite
 
 import cole_voice_lab.finetune as finetune_module
-from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256, sha256_file
+from cole_voice_lab.canonical import (
+    canonical_json_bytes,
+    canonical_sha256,
+    sha256_file,
+    write_canonical_json,
+)
 from cole_voice_lab.cli import main
 from cole_voice_lab.corpus_store import CorpusSnapshotSecurityError, open_corpus_store
 from cole_voice_lab.finetune import (
     FineTuneCorpus,
     FineTuneCorpusEntry,
     FineTuneDataset,
+    FineTuneDatasetClip,
     FineTuneDownload,
     FineTuneError,
     FineTuneErrorCode,
     FineTuneHyperparameters,
+    FineTunePipelineStep,
     FineTuneRun,
+    FineTuneRuntimeIdentity,
+    FineTuneSample,
     FineTuneSampleSet,
     describe_finetune_runtime,
     download_verified,
     execute_finetune_runtime_provisioning,
     fetch_finetune_pretrained,
     finetune_cli_arguments,
+    finetune_run_summary,
+    latest_finished_finetune_run,
+    mark_finetune_run_failed,
     materialize_finetune_dataset,
     normalization_gain_db,
     plan_finetune_runtime_provisioning,
+    release_finetune_runtime_link,
+    require_complete_corpus,
     run_f5_finetune,
+    run_finetune_pipeline,
     select_finetune_corpus,
     synthesize_finetune_samples,
 )
@@ -538,16 +554,25 @@ def test_materialization_refuses_a_source_that_changed_since_selection(
 
 
 STUB_RUNTIME_PYTHON = '''#!{python}
-"""Stand-in for the F5 runtime python: answers the probe, packs, trains and synthesizes."""
-import json, os, sys, wave
+"""Stand-in for the F5 runtime python: answers the probe, packs, trains and synthesizes.
+
+<root>/stub-mode.json, when present, slows or breaks it: probe_seconds (the probe sleeps),
+step_seconds (each training status line waits), fail_training, ignore_sigterm (the trainer
+survives SIGTERM, so only SIGKILL stops it).
+"""
+import json, os, signal, sys, time, wave
 from pathlib import Path
 
 ROOT = Path({root!r})
 PACKAGE = ROOT / "lib" / "python3.12" / "site-packages" / "f5_tts"
+MODE_PATH = ROOT / "stub-mode.json"
+MODE = json.loads(MODE_PATH.read_text()) if MODE_PATH.exists() else {{}}
 argv = [a for a in sys.argv[1:] if a != "-B"]
 if argv[:1] == ["-c"]:
+    time.sleep(MODE.get("probe_seconds", 0))
     print(json.dumps({{"f5_tts_version": "1.1.22-stub", "torch_version": "2.14.0-stub",
-                       "package_path": str(PACKAGE)}}))
+                       "package_path": str(PACKAGE), "home": os.environ.get("HOME"),
+                       "hf_hub_offline": os.environ.get("HF_HUB_OFFLINE")}}))
     sys.exit(0)
 script = Path(argv[0]).name
 if script == "prepare_csv_wavs.py":
@@ -559,9 +584,25 @@ if script == "prepare_csv_wavs.py":
     sys.exit(0)
 if script == "f5_finetune_launcher.py":
     name = argv[argv.index("--dataset_name") + 1]
-    print("lab launcher stub argv: " + " ".join(argv[1:]))
-    if name.startswith("fail"):
+    print("lab launcher stub argv: " + " ".join(argv[1:]), flush=True)
+    if name.startswith("fail") or MODE.get("fail_training"):
         print("Traceback: stub training failure", file=sys.stderr); sys.exit(1)
+    if MODE.get("ignore_sigterm"):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    epochs = int(argv[argv.index("--epochs") + 1])
+    update = 0
+    for epoch in range(1, epochs + 1):
+        for step in (1, 2):
+            update += 1
+            # tqdm's shape: \\r-separated status lines on stderr (merged into train.log).
+            sys.stderr.write(
+                f"\\rEpoch {{epoch}}/{{epochs}}:  {{step * 50}}%|#####     | {{step}}/2 "
+                f"[00:0{{step}}<00:0{{2 - step}},  1.00s/update, loss={{0.9 / epoch:.3f}}, "
+                f"update={{update}}]"
+            )
+            sys.stderr.flush()
+            time.sleep(MODE.get("step_seconds", 0))
+    sys.stderr.write("\\n")
     ckpts = ROOT / "lib" / "python3.12" / "ckpts" / name
     (ckpts / "model_9.pt").write_bytes(b"intermediate")
     (ckpts / "model_last.pt").write_bytes(b"last")
@@ -582,11 +623,16 @@ print("unexpected invocation", argv, file=sys.stderr); sys.exit(3)
 '''
 
 
-def _stub_runtime(root: Path) -> tuple[Path, tuple[str, int]]:
-    """A fake F5 runtime whose python is a script; returns its root and the fake pretrained pin."""
+def _stub_runtime(root: Path, mode: dict[str, Any] | None = None) -> tuple[Path, tuple[str, int]]:
+    """A fake F5 runtime whose python is a script; returns its root and the fake pretrained pin.
+
+    ``mode`` is written to ``stub-mode.json`` (see STUB_RUNTIME_PYTHON).
+    """
     import sys
 
     (root / "bin").mkdir(parents=True)
+    if mode is not None:
+        (root / "stub-mode.json").write_text(json.dumps(mode))
     python = root / "bin" / "python"
     python.write_text(STUB_RUNTIME_PYTHON.format(python=sys.executable, root=str(root)))
     python.chmod(0o700)
@@ -932,3 +978,304 @@ def test_unreadable_library_is_a_named_projection_failure(tmp_path: Path) -> Non
         assert failure.value.code == "FINETUNE.CORPUS_PROJECTION_FAILED"
     finally:
         (layout.root / "tmp").chmod(0o700)
+
+
+def test_runtime_subprocess_gets_a_home_and_never_downloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pwd
+
+    root, _pin = _stub_runtime(tmp_path / "runtime")
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    output = finetune_module._run_runtime(
+        root / "bin" / "python",
+        ["-c", finetune_module._RUNTIME_PROBE],
+        cwd=None,
+        log=None,
+        what="environment probe",
+    )
+    described = json.loads(output.strip().splitlines()[-1])
+    assert described["home"] == pwd.getpwuid(os.getuid()).pw_dir
+    assert described["hf_hub_offline"] == "1"
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert finetune_module._runtime_environment()["HOME"] == str(tmp_path / "home")
+
+
+def test_an_incomplete_corpus_is_refused_by_name_unless_missing_prompts_are_allowed() -> None:
+    complete = _corpus_with_one_entry()
+    require_complete_corpus(complete, allow_missing=False)
+    missing = _corpus_with_one_entry(
+        missing_prompt_ids=tuple(f"missing-{number}" for number in range(400))
+    )
+    unknown = _corpus_with_one_entry(unknown_record_ids=("record-x",))
+    for corpus in (missing, unknown):
+        require_complete_corpus(corpus, allow_missing=True)
+        with pytest.raises(FineTuneError) as refused:
+            require_complete_corpus(corpus, allow_missing=False)
+        assert refused.value.code == "FINETUNE.CORPUS_INCOMPLETE"
+    with pytest.raises(FineTuneError) as refused:
+        require_complete_corpus(missing, allow_missing=False)
+    message = str(refused.value)
+    # The counts and the advice lead, so a 1,024-character wire copy keeps them.
+    assert message[:1024].startswith(
+        "the corpus is incomplete: 400 of 401 spoken prompts have no kept take and 0 records "
+        "could not be read; record the missing prompts or allow missing prompts (--allow-missing)"
+    )
+    assert "missing-399" in message
+
+
+def test_cli_run_refuses_an_incomplete_corpus_by_code_before_touching_the_runtime(
+    native_coverage: NativeCoverage, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    layout = native_coverage.rig.layout
+    command = ["finetune", "run", "--asset-root", str(layout.root), "--catalog", "pilot-v2"]
+    status = main([*command, "--runtime-root", str(tmp_path / "no-runtime"), "--run-id", "r"])
+    assert status == 2
+    error = capsys.readouterr().err
+    assert error.startswith("voice-lab: FINETUNE.CORPUS_INCOMPLETE: the corpus is incomplete")
+    assert not (layout.root / "derived/finetune/r").exists()
+
+
+def test_runtime_link_is_released_only_when_it_points_at_this_run(tmp_path: Path) -> None:
+    checkpoints = tmp_path / "run" / "checkpoints"
+    other = tmp_path / "other" / "checkpoints"
+    checkpoints.mkdir(parents=True)
+    other.mkdir(parents=True)
+    ckpts = tmp_path / "ckpts"
+    ckpts.mkdir()
+    link = ckpts / "run"
+    assert release_finetune_runtime_link(link, checkpoints) is False  # absent
+    link.mkdir()
+    assert release_finetune_runtime_link(link, checkpoints) is False  # not a link
+    link.rmdir()
+    os.symlink(other.resolve(), link)
+    assert release_finetune_runtime_link(link, checkpoints) is False  # another run's
+    assert link.is_symlink()
+    link.unlink()
+    os.symlink(checkpoints.resolve(), link)
+    assert release_finetune_runtime_link(link, checkpoints) is True
+    assert not os.path.lexists(link) and checkpoints.is_dir()
+
+
+def _write_run(
+    layout: AssetLayout,
+    run_id: str,
+    *,
+    status: str = "finished",
+    started_minute: int = 0,
+    finished_minute: int | None = 10,
+    samples: bool = True,
+    error: str | None = None,
+) -> FineTuneRun:
+    """A synthetic run directory: run.json bound to dataset/{dataset,corpus}.json."""
+    run_root = f"derived/finetune/{run_id}"
+    directory = layout.root / run_root
+    (directory / "dataset").mkdir(parents=True, mode=0o700)
+    corpus = _corpus_with_one_entry()
+    dataset = FineTuneDataset(
+        corpus_sha256=canonical_sha256(corpus),
+        dataset_root=f"{run_root}/dataset",
+        normalization_rule="synthetic",
+        clips=(
+            FineTuneDatasetClip(
+                prompt_id=corpus.entries[0].prompt_id,
+                take_id="take-x",
+                relative_path=f"wavs/{corpus.entries[0].prompt_id}.wav",
+                sha256="3" * 64,
+                frames=240,
+                gain_db=0.0,
+                text=corpus.entries[0].text,
+            ),
+        ),
+        metadata_csv_sha256="4" * 64,
+        materialized_at=START,
+    )
+    write_canonical_json(directory / "dataset" / "corpus.json", corpus)
+    write_canonical_json(directory / "dataset" / "dataset.json", dataset)
+    run = FineTuneRun(
+        run_id=run_id,
+        subject_id=SUBJECT,
+        catalog_sha256=corpus.catalog_sha256,
+        corpus_sha256=canonical_sha256(corpus),
+        dataset_sha256=canonical_sha256(dataset),
+        hyperparameters=FineTuneHyperparameters(epochs=3),
+        runtime=FineTuneRuntimeIdentity(
+            runtime_root="/synthetic/runtime",
+            python_sha256="5" * 64,
+            f5_tts_version="stub",
+            torch_version="stub",
+            pretrained_path="/synthetic/runtime/pretrained/model.safetensors",
+            pretrained_sha256="6" * 64,
+        ),
+        run_root=run_root,
+        log_path=f"{run_root}/train.log",
+        checkpoints=(),
+        status=status,
+        started_at=START + timedelta(minutes=started_minute),
+        finished_at=None if finished_minute is None else START + timedelta(minutes=finished_minute),
+        error=error,
+    )
+    write_canonical_json(directory / "run.json", run)
+    if samples:
+        for label in ("finetuned", "base"):
+            sample_directory = directory / "samples" / label
+            sample_directory.mkdir(parents=True)
+            sample_set = FineTuneSampleSet(
+                label=label,
+                checkpoint_path="/synthetic/checkpoint.pt",
+                checkpoint_sha256="7" * 64,
+                use_ema=True,
+                nfe_steps=32,
+                device="mps",
+                reference_prompt_id=corpus.entries[0].prompt_id,
+                reference_audio_sha256="3" * 64,
+                samples=(
+                    FineTuneSample(
+                        index=1,
+                        relative_path=f"{run_root}/samples/{label}/sample-01.wav",
+                        sha256="8" * 64,
+                        seconds=0.5,
+                        text="One.",
+                    ),
+                ),
+                created_at=START,
+            )
+            write_canonical_json(sample_directory / "samples.json", sample_set)
+    return run
+
+
+def test_latest_finished_run_is_the_newest_finished_record(tmp_path: Path) -> None:
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    assert latest_finished_finetune_run(layout) is None  # no derived/finetune yet
+    (layout.root / "derived/finetune").mkdir()
+    assert latest_finished_finetune_run(layout) is None
+    _write_run(layout, "finetune-a", finished_minute=10)
+    _write_run(layout, "finetune-b", finished_minute=30, samples=False)
+    _write_run(layout, "finetune-c", finished_minute=30)  # same time: the greater id wins
+    _write_run(layout, "finetune-d", status="running", finished_minute=None)
+    _write_run(layout, "finetune-e", status="failed", finished_minute=50, error="stopped")
+    # Not runs: a dataset-only directory, a file, a symlink and a name that is no stable id.
+    (layout.root / "derived/finetune/dataset-only/dataset").mkdir(parents=True)
+    (layout.root / "derived/finetune/notes.txt").write_text("synthetic")
+    os.symlink(layout.root / "derived/finetune/finetune-a", layout.root / "derived/finetune/z")
+    (layout.root / "derived/finetune/Not A Run").mkdir()
+    latest = latest_finished_finetune_run(layout)
+    assert latest is not None
+    assert (latest.run_id, latest.status, latest.epochs) == ("finetune-c", "finished", 3)
+    assert latest.prompt_count == 1 and latest.retained_seconds == 0.01
+    assert latest.finetuned_sample_paths == (
+        "derived/finetune/finetune-c/samples/finetuned/sample-01.wav",
+    )
+    assert latest.base_sample_paths == ("derived/finetune/finetune-c/samples/base/sample-01.wav",)
+    unsampled = finetune_run_summary(layout, "derived/finetune/finetune-b")
+    assert unsampled.finetuned_sample_paths == () and unsampled.base_sample_paths == ()
+    failed = finetune_run_summary(layout, "derived/finetune/finetune-e")
+    assert failed.status == "failed" and failed.error == "stopped"
+    assert failed.finetuned_sample_paths == ()
+
+
+@pytest.mark.parametrize("damage", ["corrupt", "renamed", "unbound", "missing-corpus"])
+def test_a_damaged_run_record_is_a_named_failure(tmp_path: Path, damage: str) -> None:
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    run = _write_run(layout, "finetune-a")
+    directory = layout.root / run.run_root
+    if damage == "corrupt":
+        (directory / "run.json").write_text("{not json")
+    elif damage == "renamed":
+        write_canonical_json(directory / "run.json", run.model_copy(update={"run_id": "other"}))
+    elif damage == "unbound":
+        write_canonical_json(
+            directory / "run.json", run.model_copy(update={"dataset_sha256": "9" * 64})
+        )
+    else:
+        (directory / "dataset" / "corpus.json").unlink()
+    with pytest.raises(FineTuneError) as failure:
+        latest_finished_finetune_run(layout)
+    assert failure.value.code == "FINETUNE.SOURCE_CHANGED"
+
+
+def test_a_summary_that_breaks_its_contract_is_a_named_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    run = _write_run(layout, "finetune-a")
+    monkeypatch.setattr(finetune_module, "_MAX_SUMMARY_SAMPLES", 0)
+    summary = finetune_run_summary(layout, run.run_root)
+    assert summary.finetuned_sample_paths == ()
+    inverted = run.model_copy(
+        update={"started_at": START + timedelta(minutes=20)}  # finishes before it started
+    )
+    write_canonical_json(layout.root / run.run_root / "run.json", inverted)
+    with pytest.raises(FineTuneError, match="cannot be summarized") as failure:
+        finetune_run_summary(layout, run.run_root)
+    assert failure.value.code == "FINETUNE.SOURCE_CHANGED"
+
+
+def test_an_oversized_run_record_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    run = _write_run(layout, "finetune-a")
+    monkeypatch.setattr(finetune_module, "MAX_FINETUNE_RECORD_BYTES", 16)
+    with pytest.raises(FineTuneError, match="larger than 16 bytes"):
+        finetune_run_summary(layout, run.run_root)
+
+
+def test_a_stopped_run_is_rewritten_failed_only_while_it_says_running(tmp_path: Path) -> None:
+    layout = AssetLayout.initialize(tmp_path.resolve() / "assets")
+    assert mark_finetune_run_failed(layout, "derived/finetune/absent", "x") is None
+    running = _write_run(layout, "finetune-a", status="running", finished_minute=None)
+    checkpoints = layout.root / running.run_root / "checkpoints"
+    checkpoints.mkdir()
+    (checkpoints / "model_540.pt").write_bytes(b"intermediate")
+    rewritten = mark_finetune_run_failed(
+        layout, running.run_root, "cancelled by the operator", clock=lambda: START
+    )
+    assert rewritten is not None and rewritten.status == "failed"
+    assert rewritten.error == "cancelled by the operator" and rewritten.finished_at == START
+    assert [(item.kind, item.update) for item in rewritten.checkpoints] == [("intermediate", 540)]
+    stored = FineTuneRun.model_validate_json(
+        (layout.root / running.run_root / "run.json").read_bytes()
+    )
+    assert stored == rewritten
+    finished = _write_run(layout, "finetune-b")
+    assert mark_finetune_run_failed(layout, finished.run_root, "late") == finished
+    assert (
+        FineTuneRun.model_validate_json(
+            (layout.root / finished.run_root / "run.json").read_bytes()
+        ).status
+        == "finished"
+    )
+
+
+@needs_ffmpeg
+def test_pipeline_reports_its_stages_and_releases_the_link_when_training_fails(
+    native_coverage: NativeCoverage, tmp_path: Path
+) -> None:
+    layout = native_coverage.rig.layout
+    root, pin = _stub_runtime(tmp_path / "runtime", {"fail_training": True})
+    steps: list[FineTunePipelineStep] = []
+    with pytest.raises(FineTuneError) as failure:
+        run_finetune_pipeline(
+            layout,
+            native_coverage.pilot_v2,
+            SUBJECT,
+            root,
+            FineTuneHyperparameters(epochs=1),
+            run_id="stages",
+            allow_missing=True,
+            pretrained_pin=pin,
+            progress=steps.append,
+        )
+    assert failure.value.code == "FINETUNE.TRAINING_FAILED"
+    link = root / "lib" / "python3.12" / "ckpts" / "stages"
+    assert [step.stage for step in steps] == ["selecting", "dataset", "training"]
+    assert steps[0].runtime_link is None
+    assert all(step.runtime_link == link.resolve() for step in steps[1:])
+    assert all(step.run_id == "stages" for step in steps)
+    assert not os.path.lexists(link)
+    record = FineTuneRun.model_validate_json(
+        (layout.root / "derived/finetune/stages/run.json").read_bytes()
+    )
+    assert record.status == "failed"

@@ -1,0 +1,247 @@
+{
+  "$defs": {
+    "AbsolutePath": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "ErrorCode": {
+      "enum": [
+        "RECORDING.INVALID_MESSAGE",
+        "RECORDING.VERSION_MISMATCH",
+        "RECORDING.BUILD_MISMATCH",
+        "RECORDING.STALE_REVISION",
+        "RECORDING.STALE_GENERATION",
+        "RECORDING.OWNERSHIP_CONFLICT",
+        "RECORDING.INVALID_TRANSITION",
+        "RECORDING.DEVICE_UNAVAILABLE",
+        "RECORDING.PERMISSION_DENIED",
+        "RECORDING.PLAYBACK_ACTIVE",
+        "RECORDING.DISK_SPACE",
+        "RECORDING.WRITE_FAILED",
+        "RECORDING.WAVEFORM_CACHE_UNAVAILABLE",
+        "RECORDING.CONTINUITY_FAILED",
+        "RECORDING.CAPTURE_OVERFLOW",
+        "RECORDING.PARENT_LOST",
+        "RECORDING.SOURCE_CHANGED",
+        "RECORDING.HISTORY_UNKNOWN",
+        "RECORDING.GATE_NOT_READY",
+        "RECORDING.ANALYSIS_FAILED",
+        "RECORDING.PLAYBACK_FAILED",
+        "RECORDING.EDIT_FAILED",
+        "RECORDING.PACKAGE_INCOMPLETE",
+        "RECORDING.CANCELLED",
+        "CORPUS.NO_ACTIVE_CATALOG",
+        "CORPUS.SNAPSHOT_MISMATCH",
+        "CORPUS.STORE_MISSING",
+        "FINETUNE.CANCELLED",
+        "FINETUNE.CATALOG_HELD_OUT",
+        "FINETUNE.CHECKPOINT_MISSING",
+        "FINETUNE.CORPUS_INCOMPLETE",
+        "FINETUNE.CORPUS_PROJECTION_FAILED",
+        "FINETUNE.DOWNLOADS_NOT_ALLOWED",
+        "FINETUNE.DOWNLOAD_FAILED",
+        "FINETUNE.EMPTY_CORPUS",
+        "FINETUNE.FFMPEG_FAILED",
+        "FINETUNE.FFMPEG_UNAVAILABLE",
+        "FINETUNE.INTERRUPTED",
+        "FINETUNE.JOB_ACTIVE",
+        "FINETUNE.PRETRAINED_MISMATCH",
+        "FINETUNE.REFERENCE_MISSING",
+        "FINETUNE.REQUIREMENTS_MISSING",
+        "FINETUNE.RUNTIME_FAILED",
+        "FINETUNE.RUNTIME_UNAVAILABLE",
+        "FINETUNE.RUN_EXISTS",
+        "FINETUNE.SOURCE_CHANGED",
+        "FINETUNE.TRAINING_FAILED",
+        "FINETUNE.UNSUPPORTED_TEXT"
+      ],
+      "type": "string"
+    },
+    "FineTuneJob": {
+      "additionalProperties": false,
+      "description": "One fine-tune job's durable state.\n\n``run_id`` is chosen when the job starts; ``worker_pid`` is the worker process, which\nleads its own process group (the group id is the same number); ``runtime_link`` is the\nruntime's ``ckpts/<run id>`` path once the worker has described the runtime.",
+      "properties": {
+        "cancel_requested": {
+          "default": false,
+          "title": "Cancel Requested",
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "queued_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "request_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "runtime_link": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.finetune-job/v1",
+          "default": "cole-voice-lab.finetune-job/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "$ref": "#/$defs/FineTuneState",
+          "default": "queued"
+        },
+        "worker_pid": {
+          "anyOf": [
+            {
+              "minimum": 2,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Worker Pid"
+        }
+      },
+      "required": [
+        "operation_id",
+        "request_sha256",
+        "queued_at"
+      ],
+      "title": "FineTuneJob",
+      "type": "object"
+    },
+    "FineTuneState": {
+      "enum": [
+        "queued",
+        "running",
+        "finished",
+        "failed",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "RecordingError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Details",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "RecordingError",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The active job pointer: at most one queued or running job.",
+  "properties": {
+    "job": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FineTuneJob"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-job-head/v1",
+      "default": "cole-voice-lab.finetune-job-head/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "title": "FineTuneJobHead",
+  "type": "object"
+}

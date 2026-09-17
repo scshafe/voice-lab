@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "AbsolutePath": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "FineTuneStage": {
+      "enum": [
+        "selecting",
+        "dataset",
+        "training",
+        "sampling"
+      ],
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "generation": {
+      "$ref": "#/$defs/StableId"
+    },
+    "kind": {
+      "const": "stage",
+      "default": "stage",
+      "title": "Kind",
+      "type": "string"
+    },
+    "operation_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "runtime_link": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AbsolutePath"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-worker/v1",
+      "default": "cole-voice-lab.finetune-worker/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stage": {
+      "$ref": "#/$defs/FineTuneStage"
+    }
+  },
+  "required": [
+    "generation",
+    "operation_id",
+    "stage"
+  ],
+  "title": "FineTuneWorkerStage",
+  "type": "object"
+}

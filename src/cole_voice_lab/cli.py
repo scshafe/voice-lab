@@ -678,21 +678,14 @@ def _finetune_corpus_summary(corpus: Any) -> dict[str, JsonValue]:
 
 
 def _finetune_select(options: argparse.Namespace) -> Any:
-    from .finetune import select_finetune_corpus
+    from .finetune import require_complete_corpus, select_finetune_corpus
 
     layout = AssetLayout.validate(_asset_root(options.asset_root))
     resolved = _resolve_catalog(options.catalog, options.asset_root, BUILTIN_CATALOG_RESOURCES)
     corpus = select_finetune_corpus(
         layout, resolved.catalog, options.subject_id, reference=resolved.reference
     )
-    if not corpus.complete and not options.allow_missing:
-        raise VoiceLabError(
-            "the corpus is incomplete (missing: "
-            + ", ".join(corpus.missing_prompt_ids)
-            + "; unknown: "
-            + ", ".join(corpus.unknown_record_ids)
-            + "); record the missing prompts or pass --allow-missing"
-        )
+    require_complete_corpus(corpus, allow_missing=options.allow_missing)
     return layout, corpus
 
 
@@ -828,55 +821,39 @@ def _finetune_synthesize(options: argparse.Namespace) -> int:
 
 
 def _finetune_run(options: argparse.Namespace) -> int:
-    from .finetune import describe_finetune_runtime, materialize_finetune_dataset, run_f5_finetune
+    from .finetune import FINETUNE_DEFAULT_SAMPLE_TEXTS, run_finetune_pipeline
 
-    layout, corpus = _finetune_select(options)
-    runtime = describe_finetune_runtime(Path(options.runtime_root))
+    layout = AssetLayout.validate(_asset_root(options.asset_root))
+    resolved = _resolve_catalog(options.catalog, options.asset_root, BUILTIN_CATALOG_RESOURCES)
     run_id = _finetune_run_id(options)
-    run_root = f"{options.output_root}/{run_id}"
-    dataset = materialize_finetune_dataset(
-        layout, corpus, f"{run_root}/dataset", ffmpeg=Path(options.ffmpeg)
-    )
-    run = run_f5_finetune(
+    result = run_finetune_pipeline(
         layout,
-        dataset,
-        runtime,
+        resolved.catalog,
+        options.subject_id,
+        Path(options.runtime_root),
         _finetune_hyperparameters(options),
-        run_root,
         run_id=run_id,
-        subject_id=corpus.subject_id,
-        catalog_sha256=corpus.catalog_sha256,
-    )
-    finetuned = _finetune_synthesize_one(
-        layout,
-        options,
-        dataset,
-        runtime,
-        run_root=run_root,
-        label="finetuned",
-        checkpoint=layout.root / run_root / "checkpoints" / "model_last.pt",
+        allow_missing=options.allow_missing,
+        reference=resolved.reference,
+        output_root=options.output_root,
+        ffmpeg=Path(options.ffmpeg),
+        reference_prompt_id=options.reference_prompt_id,
+        sample_texts=tuple(options.text) if options.text else FINETUNE_DEFAULT_SAMPLE_TEXTS,
         use_ema=not options.no_ema,
+        nfe_steps=options.nfe_steps,
+        device=options.device,
     )
-    base = _finetune_synthesize_one(
-        layout,
-        options,
-        dataset,
-        runtime,
-        run_root=run_root,
-        label="base",
-        checkpoint=runtime.pretrained_path,
-        use_ema=True,
-    )
+    run = result.run
     _json_print(
         {
             "run_id": run_id,
             "run_root": run.run_root,
             "status": run.status,
-            "corpus": _finetune_corpus_summary(corpus),
+            "corpus": _finetune_corpus_summary(result.corpus),
             "checkpoints": [item.model_dump(mode="json") for item in run.checkpoints],
             "samples": {
-                "finetuned": [item.relative_path for item in finetuned.samples],
-                "base": [item.relative_path for item in base.samples],
+                "finetuned": [item.relative_path for item in result.finetuned.samples],
+                "base": [item.relative_path for item in result.base.samples],
             },
         }
     )
