@@ -334,7 +334,7 @@ struct RecordingCatalogDeliveryTests {
         }
         let opened = await model.prepareContext()
         #expect(!opened && model.state.phase == .recoverableError)
-        #expect(model.promptPlaceholder == (refused == "catalog" ? "Catalog unavailable" : "Recording context unavailable"))
+        #expect(model.promptPlaceholder == (refused == "catalog" ? "Catalog unavailable" : "Recording library unavailable"))
         let launch = refused == "catalog" ? ["catalog"] : ["catalog", "snapshot", "open-context"]
         #expect(service.commands == launch)
         model.requireAudioReconnect(after: .deviceUnavailable)

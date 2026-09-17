@@ -32,8 +32,22 @@ extension RecordingHarness {
             guard model.state.prompt?.id == "reading-one", model.state.prompt?.displayPrompt != nil else {
                 throw RecordingContractError(code: "RECORDING.ACCESSIBILITY_HARNESS", message: "Accessibility harness requires its spoken prompt reading-one")
             }
-            for required in ["library.continueMissing", "library.search", "library.filter", "library.labels", "trim.start", "trim.end", "playback.play-pause", "transport.record-stop", "transport.save-next", "transport.fine-tune", "recording.labels", "recording.script", "recording.instructions"] {
+            for required in ["library.continueMissing", "library.search", "library.filter", "library.labels", "library.coverage", "trim.start", "trim.end", "playback.play-pause", "transport.record-stop", "transport.save-next", "transport.fine-tune", "recording.labels", "recording.script", "recording.instructions", "recording.status"] {
                 guard ids.contains(required) else { throw RecordingContractError(code: "RECORDING.ACCESSIBILITY_HARNESS", message: "Actual native accessibility tree omitted \(required)") }
+            }
+            // No fine-tune job runs here, so the footer slot is Fine-tune model, named in words; the
+            // status region is one named element; the coverage count is spoken as a sentence.
+            // Static text carries its spoken words as its value rather than a title or description.
+            let labels = Dictionary(records.compactMap { record -> (String, String)? in
+                guard let identifier = record.object?["identifier"]?.string, !identifier.isEmpty,
+                      let label = record.object?["label"]?.string, let value = record.object?["value"]?.string else { return nil }
+                return (identifier, label.isEmpty ? value : label)
+            }, uniquingKeysWith: { first, _ in first })
+            let coverage = model.libraryCoverage.spokenText
+            guard model.fineTuneSlot.identifier == "transport.fine-tune", labels["transport.fine-tune"] == "Fine-tune model",
+                  labels["recording.status"] == "Status", labels["library.coverage"] == coverage,
+                  !ids.contains("transport.cancel-fine-tune") else {
+                throw RecordingContractError(code: "RECORDING.ACCESSIBILITY_HARNESS", message: "Fine-tune, status or coverage labels are missing: \(labels.filter { ["transport.fine-tune", "recording.status", "library.coverage"].contains($0.key) })")
             }
             // §6.4: the Labels menu is never a text field, and the search field is the only text field among the
             // library controls, so the search field stays the sidebar's first editable field.
@@ -77,9 +91,12 @@ extension RecordingHarness {
         }
         func visit(_ element: AXUIElement, depth: Int) {
             guard depth < 30, records.count < 5000 else { return }
-            let label = attribute(element, kAXTitleAttribute as CFString) as? String ?? attribute(element, kAXDescriptionAttribute as CFString) as? String ?? ""
+            // A control named only by its accessibility label has an empty title; use the description then.
+            let title = attribute(element, kAXTitleAttribute as CFString) as? String
+            let label = (title?.isEmpty == false ? title : nil) ?? attribute(element, kAXDescriptionAttribute as CFString) as? String ?? ""
             let identifier = attribute(element, kAXIdentifierAttribute as CFString) as? String ?? ""
             let role = attribute(element, kAXRoleAttribute as CFString) as? String ?? ""
+            let value = attribute(element, kAXValueAttribute as CFString) as? String ?? ""
             var point = CGPoint.zero, size = CGSize.zero
             if let value = attribute(element, kAXPositionAttribute as CFString), CFGetTypeID(value) == AXValueGetTypeID() {
                 AXValueGetValue(value as! AXValue, .cgPoint, &point)
@@ -87,7 +104,7 @@ extension RecordingHarness {
             if let value = attribute(element, kAXSizeAttribute as CFString), CFGetTypeID(value) == AXValueGetTypeID() {
                 AXValueGetValue(value as! AXValue, .cgSize, &size)
             }
-            records.append(.object(["label": .string(label), "identifier": .string(identifier), "role": .string(role), "frame": .array([point.x, point.y, size.width, size.height].map { .number(Double($0)) })]))
+            records.append(.object(["label": .string(label), "value": .string(value), "identifier": .string(identifier), "role": .string(role), "frame": .array([point.x, point.y, size.width, size.height].map { .number(Double($0)) })]))
             for child in attribute(element, kAXChildrenAttribute as CFString) as? [AXUIElement] ?? [] { visit(child, depth: depth + 1) }
         }
         visit(application, depth: 0)

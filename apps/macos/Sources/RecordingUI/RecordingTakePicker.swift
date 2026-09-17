@@ -62,10 +62,19 @@ public struct RecordingTakePicker: View {
         }.padding(16).frame(width: 440, height: 350)
     }
     private func date(_ text: String?, precision: String) -> String {
+        Self.recordedDate(text, precision: precision, locale: .current, timeZone: .current)
+    }
+    /// When a take was recorded. A take-precise time shows to the millisecond; a take whose
+    /// time is known only from when its recording began shows its date alone.
+    nonisolated static func recordedDate(_ text: String?, precision: String, locale: Locale, timeZone: TimeZone) -> String {
         guard let text, let value = RecordingTimestamp.parse(text) else { return "Date unknown" }
-        let formatter = DateFormatter(); formatter.locale = .current; formatter.timeZone = .current
+        let formatter = DateFormatter(); formatter.locale = locale; formatter.timeZone = timeZone
+        guard precision == "take" else {
+            formatter.dateFormat = "MMM d, yyyy"
+            return formatter.string(from: value) + " · exact time unknown"
+        }
         formatter.dateFormat = "MMM d, yyyy 'at' h:mm:ss.SSS a"
-        return (precision == "session" ? "Session · " : "") + formatter.string(from: value)
+        return formatter.string(from: value)
     }
     private func analysisTitle(_ value: String?) -> String {
         switch value {

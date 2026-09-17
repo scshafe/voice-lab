@@ -348,6 +348,35 @@ struct RecordingWorkspaceTests {
         #expect(!unselected.contains { $0.identifier == "recording.instructions" } && !unselected.flatMap(\.texts).contains("INSTRUCTIONS · NOT READ ALOUD"))
     }
 
+    /// The fine-tune footer slot is one control named in words in both states, and the status region
+    /// is one element named Status whose line VoiceOver reads with its warning.
+    @Test @MainActor func theFineTuneSlotAndTheStatusRegionAreNamedForVoiceOver() throws {
+        let model = RecordingWorkspaceModel(fixture: .init(phase: .draftReview))
+        let footer = CGSize(width: 748, height: RecordingLayout.recordTarget)
+        let idle = Self.hosted(RecordingTransportControls(model: model), size: footer)
+        let start = try #require(idle.first { $0.identifier == "transport.fine-tune" })
+        #expect(start.label == "Fine-tune model" && start.texts.contains("Fine-tune model"))
+        #expect(!idle.contains { $0.identifier == "transport.cancel-fine-tune" })
+        model.fineTune.phase = .running
+        model.fineTune.operationID = "fine-tune-job"
+        let running = Self.hosted(RecordingTransportControls(model: model), size: footer)
+        let cancel = try #require(running.first { $0.identifier == "transport.cancel-fine-tune" })
+        #expect(cancel.label == "Cancel fine-tune")
+        #expect(!running.contains { $0.identifier == "transport.fine-tune" })
+        // Both labels fit the slot's fixed width, so switching never moves Retake or Save.
+        #expect(abs(start.frame.width - cancel.frame.width) <= 1, "\(start.frame) vs \(cancel.frame)")
+        #expect(start.frame.minX == cancel.frame.minX)
+
+        let statusSize = CGSize(width: 748, height: 20)
+        let quiet = try #require(Self.hosted(RecordingReviewStatus(model: model), size: statusSize).first { $0.identifier == "recording.status" })
+        #expect(quiet.label == "Status" && quiet.texts.contains(model.statusRegion.line))
+        let failure = "fine-tune supervision stopped; restart the app to recover the job"
+        model.applyFineTuneSupervisorError(.object(["code": .string("RECORDING.WRITE_FAILED"), "message": .string(failure)]))
+        #expect(model.statusRegion.line == failure && model.statusRegion.needsAttention)
+        let warned = try #require(Self.hosted(RecordingReviewStatus(model: model), size: statusSize).first { $0.identifier == "recording.status" })
+        #expect(warned.label == "Status" && warned.texts.contains("Warning: " + failure), "\(warned.texts)")
+    }
+
     /// TU1 (§6.4): a catalog label containing Markdown renders literally in the Labels menu title.
     @Test @MainActor func labelsMenuTitleRendersCatalogTitlesVerbatim() throws {
         let catalog = RecordingJSON.object(["purpose": .string("capture-pilot"), "prompts": .array([

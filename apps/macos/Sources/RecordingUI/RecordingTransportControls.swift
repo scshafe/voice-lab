@@ -41,17 +41,14 @@ public struct RecordingTransportControls: View {
             } label: { Text("Take actions") }.disabled(!model.canSelectTake || model.state.reservationUnsealed)
             Button("Retake") { model.requestRetake() }.disabled(!model.canSelectTake || model.state.takeID == nil || model.state.reservationUnsealed)
                 .help("Retain this independent take and prepare another recording").accessibilityIdentifier("transport.retake")
-            // One slot: Fine-tune model, or Cancel fine-tune while a job is queued or running.
-            // Both labels share one width, so switching never moves Retake or Save.
-            if model.fineTune.isActive {
-                Button { model.cancelFineTune() } label: { Text("Cancel fine-tune").frame(width: Self.fineTuneLabelWidth) }
-                    .disabled(!model.canCancelFineTune).help(model.fineTuneCancelReason)
-                    .accessibilityLabel("Cancel fine-tune").accessibilityIdentifier("transport.cancel-fine-tune")
-            } else {
-                Button { model.startFineTune() } label: { Text("Fine-tune model").frame(width: Self.fineTuneLabelWidth) }
-                    .disabled(!model.canStartFineTune).help(model.fineTuneUnavailableReason)
-                    .accessibilityLabel("Fine-tune model").accessibilityIdentifier("transport.fine-tune")
-            }
+            // One control: Fine-tune model, or Cancel fine-tune while a job is queued or running.
+            // Its words change in place, so focus stays on it, and both share one width, so
+            // switching never moves Retake or Save.
+            let slot = model.fineTuneSlot
+            Button { model.activateFineTuneSlot() } label: { Text(slot.title).frame(width: Self.fineTuneLabelWidth) }
+                .disabled(!slot.enabled).help(slot.help)
+                .accessibilityLabel(slot.title).accessibilityHint(slot.help)
+                .accessibilityIdentifier(slot.identifier)
             Button { model.save() } label: { Text(model.saveActionTitle).frame(width: 80) }
                 .disabled(!model.canSave)
                 .help(model.saveUnavailableReason).accessibilityIdentifier("transport.save-next")

@@ -33,7 +33,9 @@ public final class RecordingWorkspaceModel: ObservableObject {
     var reviewOperationID: String?
     var reviewTask: Task<Void, Never>?
     @Published public internal(set) var reviewDerivativeState: String?
-    @Published public internal(set) var legacyReviewStatus: String?
+    @Published public internal(set) var legacyReviewStatus: String? {
+        didSet { if legacyReviewStatus != oldValue { noteRecordingStatusChange() } }
+    }
     var deferredDerivativeEvent: RecordingJSON?
     var deferredLegacyReviewEvent: RecordingJSON?
     var legacyReviewOperation: (id: String, terminal: Bool)?
@@ -70,6 +72,14 @@ public final class RecordingWorkspaceModel: ObservableObject {
     var fineTuneStatusTask: Task<Void, Never>?
     /// Fixture-only fine-tune transport; a configured workspace reaches its service.
     var fineTuneRequests: RecordingFineTuneRequests?
+    /// Status-region ordering (RecordingStatusRegion.swift): recording status changes and
+    /// fine-tune outcomes share one sequence; the clock times the recording status hold.
+    var statusClock: @MainActor () -> ContinuousClock.Instant = { ContinuousClock.now }
+    var recordingStatusHold: Duration = .seconds(8)
+    var statusSequence: UInt64 = 0
+    var recordingStatusChange: (sequence: UInt64, at: ContinuousClock.Instant)?
+    var fineTuneOutcomeSequence: UInt64?
+    var statusHoldTask: Task<Void, Never>?
     @Published public internal(set) var takeHistory: [RecordingJSON] = []
     @Published public internal(set) var takeHistoryLoading = false
     @Published public internal(set) var takeHistoryError: String?
@@ -271,7 +281,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
     /// still deliver one; after a refusal it names what is missing (the status says why).
     public var promptPlaceholder: String {
         guard state.phase == .recoverableError else { return "Preparing catalog" }
-        return catalogSHA256 == nil ? "Catalog unavailable" : "Recording context unavailable"
+        return catalogSHA256 == nil ? "Catalog unavailable" : "Recording library unavailable"
     }
     public var canRecord: Bool { state.canRecord && !audioReconnectRequired && !processChannelFailed && review.playback.failure == nil }
     public var recordUnavailableReason: String {
@@ -313,22 +323,24 @@ public final class RecordingWorkspaceModel: ObservableObject {
     /// (which builds the Library), the durable snapshot, then open-context naming that
     /// catalog's reference. A refused catalog shows the service's own message (a catalog this
     /// build's pilot approval cannot apply to, the model's own) and leaves the workspace without
-    /// a context or Library, so Record stays unavailable; nothing else is requested. Once the
-    /// context opens, the fine-tune status is requested without waiting for it. Returns
+    /// a context or Library, so Record stays unavailable; no snapshot or open-context follows.
+    /// Right after the catalog step, delivered or refused, the fine-tune status is requested
+    /// without waiting for it (the service answers it before any context check). Returns
     /// whether a context opened.
     func prepareContext() async -> Bool {
         guard let target = contextTarget, let requests = contextTransport() else { return false }
-        let reference: RecordingJSON
-        do { reference = try await requireCatalog(requests) } catch { failCatalog(error); return false }
+        let delivered: RecordingJSON?
+        do { delivered = try await requireCatalog(requests) } catch { failCatalog(error); delivered = nil }
+        scheduleFineTuneStatus()
+        guard let reference = delivered else { return false }
         do {
             let revision = try await expectedSelectionRevision(requests)
             let operation = newOperation("context")
             let response = try result(await requests.openContext(target.openContextCommand(
                 operationID: operation, catalogReference: reference, expectedSelectionRevision: revision)))
             try applyContext(response.data, operationID: operation)
+            return true
         } catch { fail(error, phase: .recoverableError); return false }
-        scheduleFineTuneStatus()
-        return true
     }
 
     /// The selection revision an open-context must expect (the service refuses any other): the
@@ -434,7 +446,8 @@ public final class RecordingWorkspaceModel: ObservableObject {
     /// names the held catalog reference (requesting the catalog only if none was delivered).
     /// When no context opened at launch (a refused catalog or open-context), it finishes that
     /// bootstrap: the durable snapshot supplies the expected revision, and the recovery
-    /// inventory loads once the context opens.
+    /// inventory loads once the context opens. The fine-tune status is requested again right
+    /// after the catalog step, whether or not the context then opens.
     public func reconnectAudio() async {
         guard canReconnectAudio, let target = contextTarget, let requests = contextTransport() else { return }
         audioReconnectPending = true
@@ -443,8 +456,10 @@ public final class RecordingWorkspaceModel: ObservableObject {
             try await review.playback.recover()
             await refreshReadiness()
             guard state.deviceReady, !systemSleeping else { return }
-            let reference: RecordingJSON
-            do { reference = try await requireCatalog(requests) } catch { failCatalog(error); return }
+            let delivered: RecordingJSON?
+            do { delivered = try await requireCatalog(requests) } catch { failCatalog(error); delivered = nil }
+            scheduleFineTuneStatus()
+            guard let reference = delivered else { return }
             let revision = try await expectedSelectionRevision(requests)
             let operation = newOperation("reconnect-context")
             let response = try result(await requests.openContext(target.openContextCommand(
@@ -457,7 +472,6 @@ public final class RecordingWorkspaceModel: ObservableObject {
             updated.status = updated.canRecord ? "Ready to record" : updated.recordUnavailableReason
             publish(updated)
         } catch { fail(error, phase: .recoverableError); return }
-        scheduleFineTuneStatus()
         guard !recoveryBootstrapFinished else { return }
         await refreshRecoveryInventory()
         recoveryBootstrapFinished = true
@@ -812,7 +826,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
         var updated = state; updated.groupID = group.object?["group_id"]?.string
         let gate = group.object?["gate"]?.object?["state"]?.string
         updated.contextReady = gate == "ready" || gate == "not-required"
-        updated.contextReason = updated.contextReady ? "Recording context is ready" : "Corpus capture approval is not prepared"
+        updated.contextReason = updated.contextReady ? "The recording library is open" : "Corpus capture approval is not prepared"
         updated.phase = .ready; publish(updated)
         if let history = event.object?["history"], history != .null { applyHistory(history) }
     }
@@ -932,7 +946,9 @@ public final class RecordingWorkspaceModel: ObservableObject {
         publish(updated)
     }
     func publish(_ updated: RecordingWorkspaceState) {
+        let statusChanged = updated.status != state.status
         state = updated
+        if statusChanged { noteRecordingStatusChange() }
         let event = RecordingWorkspaceTransition(monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
             phase: updated.phase.rawValue, promptID: updated.prompt?.id, promptText: updated.prompt?.scriptBody,
             takeID: updated.takeID, operationID: updated.activeOperationID, status: updated.status)
@@ -953,6 +969,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
         recoveryRefreshRequested = false
         scheduledHistoryRefresh?.cancel(); scheduledHistoryRefresh = nil
         scheduledRecoveryRefresh?.cancel(); scheduledRecoveryRefresh = nil
+        statusHoldTask?.cancel(); statusHoldTask = nil
         reviewTask?.cancel(); reviewTask = nil
         for consumer in consumers { consumer.cancel() }
         consumers.removeAll(); recorder?.channel.close(); service?.channel.close()

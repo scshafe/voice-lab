@@ -16,7 +16,7 @@ public struct RecordingWorkspaceState: Sendable {
     public var storageReady = false
     public var serviceReady = false
     public var permission: RecordingMicrophonePermission = .notDetermined
-    public var contextReason = "Recording context is being prepared"
+    public var contextReason = "The recording library is opening"
     public var deviceReason = "Microphone discovery is pending"
     public var storageReason = "Private storage is being checked"
     public var historyCompleteness = "unknown"

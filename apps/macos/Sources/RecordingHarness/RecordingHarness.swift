@@ -131,6 +131,17 @@ struct RecordingHarness {
               model.state.selection.object?["catalog_sha256"] == .string(digest) else {
             throw transportFailure("The workspace did not record against the catalog the service pinned from its store")
         }
+        // Fine-tuning is asked about right after the handshake and catalog. The fixture service has
+        // no F5 runtime, so the control stays in place, disabled, and says why; the status region
+        // keeps the recording status.
+        try await observer.wait { model.fineTune.runtimeConfigured != nil || model.fineTune.availabilityError != nil }
+        let fineTuneSlot = model.fineTuneSlot
+        guard model.fineTune.runtimeConfigured == false, model.fineTune.phase == .idle, !fineTuneSlot.enabled,
+              fineTuneSlot.identifier == "transport.fine-tune", fineTuneSlot.title == "Fine-tune model",
+              fineTuneSlot.help == "Fine-tuning is not set up: this app has no F5 runtime to train with",
+              model.statusRegion.source == .recording, model.statusRegion.line == model.state.status else {
+            throw transportFailure("Fine-tune availability did not follow the service's status: \(model.fineTune) \(fineTuneSlot)")
+        }
         guard model.prompts.count == 208, model.state.promptCursor != nil else { throw transportFailure("Transport fixture must exercise bounded prompt metadata pagination") }
         await model.loadMorePromptStatuses()
         guard model.state.promptCursor == nil, model.state.promptStatuses.count == 208 else { throw transportFailure("Paged prompt coverage did not preserve a coherent index revision") }
@@ -248,6 +259,7 @@ struct RecordingHarness {
             "exact_frames": 4_801, "startup_cancelled_before_input": true, "duplicate_save_operation_count": operations.count,
             "prompt_timeline_coherent": true, "fixed_geometry": true, "native_focus_preserved": true, "reading_scroll_preserved": true, "paged_prompt_count": model.prompts.count,
             "first_editable_field": "library.search", "continue_missing_above_search": true,
+            "fine_tune_status_after_catalog": true, "fine_tune_runtime_configured": false,
             "delayed_seal_save_and_qc": delayed, "stop_representation_preserved": true, "draft_library_coherent": true,
             "catalog_source": "service", "catalog_sha256": model.catalogSHA256 ?? "",
             "catalog_id": model.catalogReference?.object?["catalog_id"]?.string ?? "",
@@ -508,7 +520,7 @@ private final class RecordingTransportObserver {
     private var deadline: Task<Void, Never>?
     init(model: RecordingWorkspaceModel) {
         self.model = model
-        subscription = model.$state.combineLatest(model.waveform.$snapshot).sink { [weak self] _ in
+        subscription = model.$state.combineLatest(model.waveform.$snapshot, model.$fineTune).sink { [weak self] _ in
             Task { @MainActor in self?.changed() }
         }
     }

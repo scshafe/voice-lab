@@ -185,12 +185,12 @@ extension RecordingWorkspaceModel {
     public var canStartFineTune: Bool { fineTuneStartBlocker == nil }
     /// Why Fine-tune model is unavailable, or what it does when it is available.
     public var fineTuneUnavailableReason: String {
-        fineTuneStartBlocker ?? "Train the voice model on the latest take of every recorded prompt"
+        fineTuneStartBlocker ?? "Train the voice model on the latest kept take of every recorded prompt. Recording stays available while it runs."
     }
 
     public var canCancelFineTune: Bool { fineTuneCancelBlocker == nil }
     public var fineTuneCancelReason: String {
-        fineTuneCancelBlocker ?? "Stop the fine-tune; recordings are not affected"
+        fineTuneCancelBlocker ?? "Stop the fine-tune. Your recordings are not affected."
     }
 
     private var fineTuneServiceBlocker: String? {
@@ -206,7 +206,7 @@ extension RecordingWorkspaceModel {
         if fineTune.phase == .running { return "A fine-tune is already running" }
         switch fineTune.runtimeConfigured {
         case nil: return fineTune.availabilityError ?? "Checking whether fine-tuning is available"
-        case false?: return "Fine-tuning is not set up: this app has no F5 runtime"
+        case false?: return "Fine-tuning is not set up: this app has no F5 runtime to train with"
         case true?: break
         }
         if state.showsStop { return "Finish the current take before fine-tuning" }
@@ -250,6 +250,7 @@ extension RecordingWorkspaceModel {
         fineTune.errorCode = (error as? RecordingContractError)?.code ?? "RECORDING.INVALID_MESSAGE"
         fineTune.message = errorMessage(error)
         fineTune.cancelRequested = false
+        noteFineTuneOutcome()
         // Another job holds the queue: show that one instead.
         if fineTune.errorCode == "FINETUNE.JOB_ACTIVE" {
             fineTuneStatusTask = Task { [weak self] in await self?.requestFineTuneStatus() }
@@ -313,6 +314,7 @@ extension RecordingWorkspaceModel {
     func applyFineTuneSupervisorError(_ error: RecordingJSON) {
         guard let message = error.object?["message"]?.string else { return }
         fineTune.supervisorFailure = message
+        noteFineTuneOutcome()
     }
 
     private func applyFineTuneProgress(_ event: [String: RecordingJSON]) {
@@ -338,6 +340,7 @@ extension RecordingWorkspaceModel {
             status.cancelRequested = false
             status.message = error?["message"]?.string ?? message
             fineTuneGeneration &+= 1
+            noteFineTuneOutcome()
         } else {
             if message == RecordingFineTuneStatus.cancellingMessage { status.cancelRequested = true }
             // A notice stays until the job moves on, unless a cancel is still pending.

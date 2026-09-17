@@ -37,7 +37,13 @@ public struct RecordingWorkspace: View {
 
     private var library: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack { Text("Library").font(.title2.weight(.semibold)); Spacer(); Text(model.state.historyCompleteness == "complete" ? "\(model.state.coveredCount)/\(model.state.totalCount)" : "—/\(model.prompts.count)").font(.system(size: RecordingLayout.supportingTextSize).monospacedDigit()).foregroundStyle(RecordingPalette.supportingText) }
+            HStack {
+                Text("Library").font(.title2.weight(.semibold)); Spacer()
+                // Prompts with a kept take over the active catalog's prompts.
+                let coverage = model.libraryCoverage
+                Text(coverage.text).font(.system(size: RecordingLayout.supportingTextSize).monospacedDigit()).foregroundStyle(RecordingPalette.supportingText)
+                    .accessibilityLabel(coverage.spokenText).accessibilityIdentifier("library.coverage")
+            }
             // The primary library action sits above search and the filters, which never affect it (§6.4).
             // It is a plain button, so the search field stays the sidebar's first editable field.
             Button { model.continueMissing() } label: { Text("Continue Missing").frame(maxWidth: .infinity) }

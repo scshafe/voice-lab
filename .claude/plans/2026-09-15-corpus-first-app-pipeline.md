@@ -41,7 +41,7 @@
   - Tests: `apps/macos/Tests/RecordingWorkspaceTests/RecordingFineTuneTests.swift`.
   - Verify: `cd apps/macos && swift test --filter "RecordingFineTuneTests|RecordingWorkspaceTests"`
 
-- [ ] **Step 5: Record page — Fine-tune model replaces Prepare for lab**
+- [x] **Step 5: Record page — Fine-tune model replaces Prepare for lab**
   - `RecordingTransportControls.swift:42`: `Fine-tune model` button (enabled when not recording/saving, the runtime is configured and no job runs; tooltip names the reason otherwise) and `Cancel` while running. (Amended 2026-09-16) The button sends `FineTuneCommand` with `allow_missing: true`, because the active catalog includes the unrecorded standard sentence sets; the run trains on the prompts that have a kept take. Status region (`RecordingReviewStatus`) shows `Fine-tuning · pass 30 of 120 · 42 min left · loss 0.52`, `Model ready · <run id>`, or the service's failure message verbatim. ~~Library header reads `34/34` under pilot-v3.~~ Library header reads `34/N` for the active `cole-corpus` version (N = 1,886 after the corpus-store plan's Step 7; reason: there is no pilot-v3, and the active catalog includes the standard sentence sets). `Needs review` badges stay informational (they gate nothing now). Remove every "Lab package" string and the sheet mount at `RecordingWorkspace.swift:27`; delete `RecordingPreparePackageView.swift`.
   - Verify: `scripts/verify-native-recording --suite workspace && scripts/verify-native-recording --suite transport && scripts/verify-native-recording --suite accessibility` (region geometry byte-identical; the new control has an accessibility label; no focus jumps)
 

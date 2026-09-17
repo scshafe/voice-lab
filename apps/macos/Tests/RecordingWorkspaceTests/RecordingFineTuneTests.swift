@@ -300,12 +300,12 @@ struct RecordingFineTuneTests {
         service.statusReply = { try Self.envelope(Self.status($0, configured: false)) }
         await unknown.requestFineTuneStatus()
         #expect(unknown.fineTune.runtimeConfigured == false && unknown.fineTune.availabilityError == nil)
-        #expect(!unknown.canStartFineTune && unknown.fineTuneUnavailableReason == "Fine-tuning is not set up: this app has no F5 runtime")
+        #expect(!unknown.canStartFineTune && unknown.fineTuneUnavailableReason == "Fine-tuning is not set up: this app has no F5 runtime to train with")
 
         service.statusReply = { try Self.envelope(Self.status($0)) }
         await unknown.requestFineTuneStatus()
         #expect(unknown.canStartFineTune)
-        #expect(unknown.fineTuneUnavailableReason == "Train the voice model on the latest take of every recorded prompt")
+        #expect(unknown.fineTuneUnavailableReason == "Train the voice model on the latest kept take of every recorded prompt. Recording stays available while it runs.")
         // A later failed status request does not forget what the service already said.
         service.statusReply = { _ in try Self.refusal("FINETUNE.SOURCE_CHANGED", "run.json under derived/finetune is not a run record") }
         await unknown.requestFineTuneStatus()
@@ -327,7 +327,7 @@ struct RecordingFineTuneTests {
         queued.startFineTune()
         #expect(queued.fineTune.phase == .queued)
         #expect(!queued.canStartFineTune && queued.fineTuneUnavailableReason == "A fine-tune is already queued")
-        #expect(queued.canCancelFineTune && queued.fineTuneCancelReason == "Stop the fine-tune; recordings are not affected")
+        #expect(queued.canCancelFineTune && queued.fineTuneCancelReason == "Stop the fine-tune. Your recordings are not affected.")
         queuedService.release("fine-tune")
 
         let running = try await runningWorkspace(ScriptedFineTune())
@@ -599,11 +599,15 @@ struct RecordingFineTuneTests {
     /// Scripted context bootstrap: the delivered catalog, an empty snapshot, then open-context.
     @MainActor final class ContextScript {
         var revision: Int64 = 0
+        var refuseCatalog = false
         var refuseOpen = false
         var requests: RecordingContextRequests {
             RecordingContextRequests(
-                catalog: { operation in
-                    try RecordingCatalogDeliveryTests.reply(RecordingCatalogDeliveryTests.catalogEvent(
+                catalog: { [self] operation in
+                    if refuseCatalog {
+                        return try RecordingCatalogDeliveryTests.errorReply("CORPUS.NO_ACTIVE_CATALOG", RecordingCatalogDeliveryTests.refusal)
+                    }
+                    return try RecordingCatalogDeliveryTests.reply(RecordingCatalogDeliveryTests.catalogEvent(
                         operation, catalog: RecordingCatalogDeliveryTests.pilotCatalog(),
                         reference: RecordingCatalogDeliveryTests.reference()))
                 },
@@ -620,39 +624,264 @@ struct RecordingFineTuneTests {
         }
     }
 
-    @Test @MainActor func statusIsRequestedAfterTheContextOpensAndAfterAReconnect() async throws {
-        let script = ContextScript()
+    @Test @MainActor func statusIsRequestedRightAfterTheCatalogStepWhetherOrNotAContextOpens() async throws {
         let target = RecordingContextTarget(subjectID: "synthetic-subject",
             captureDevice: .object(["backend": .string("coreaudio"), "device_id": .string("synthetic-coreaudio-uid"),
                                     "display_name": .string("Synthetic UMIK-1")]),
             captureHost: "synthetic-host")
 
-        let refusedService = ScriptedFineTune()
-        script.refuseOpen = true
-        let refused = RecordingWorkspaceModel(bootstrap: script.requests, target: target)
-        refused.fineTuneRequests = refusedService.requests
-        let refusedOpened = await refused.prepareContext()
-        #expect(!refusedOpened)
-        #expect(refused.fineTuneStatusTask == nil && refusedService.sent.isEmpty, "no context, no status request")
-        script.refuseOpen = false
+        // A refused catalog opens no context, yet fine-tuning is still asked about; a failed
+        // status request is then the reason, word for word.
+        let noCatalogScript = ContextScript()
+        noCatalogScript.refuseCatalog = true
+        let noCatalogService = ScriptedFineTune()
+        noCatalogService.statusReply = { _ in try Self.refusal("RECORDING.GATE_NOT_READY", "fine-tuning is unavailable in this recording service") }
+        let noCatalog = RecordingWorkspaceModel(bootstrap: noCatalogScript.requests, target: target)
+        noCatalog.fineTuneRequests = noCatalogService.requests
+        #expect(noCatalog.fineTuneUnavailableReason == "Checking whether fine-tuning is available")
+        let openedWithoutCatalog = await noCatalog.prepareContext()
+        #expect(!openedWithoutCatalog && noCatalog.state.errorCode == "CORPUS.NO_ACTIVE_CATALOG")
+        await noCatalog.fineTuneStatusTask?.value
+        #expect(noCatalogService.commands == ["fine-tune-status"])
+        #expect(!noCatalog.canStartFineTune && noCatalog.fineTuneUnavailableReason == "fine-tuning is unavailable in this recording service")
 
+        // A refused open-context: the status is known all the same.
+        let script = ContextScript()
+        script.refuseOpen = true
         let service = ScriptedFineTune()
         let model = RecordingWorkspaceModel(bootstrap: script.requests, target: target)
         model.fineTuneRequests = service.requests
-        #expect(!model.canStartFineTune)
         let opened = await model.prepareContext()
-        #expect(opened)
+        #expect(!opened && model.state.phase == .recoverableError)
         await model.fineTuneStatusTask?.value
         #expect(service.commands == ["fine-tune-status"])
         #expect(model.fineTune.runtimeConfigured == true && model.canStartFineTune)
 
+        // A reconnect asks again, even when its context is refused once more, and again when it opens.
         model.requireAudioReconnect(after: .deviceUnavailable)
         model.state.deviceReady = true // The fixture has no helper to prepare the device.
         #expect(model.canReconnectAudio)
         await model.reconnectAudio()
         await model.fineTuneStatusTask?.value
+        #expect(model.audioReconnectRequired && service.commands == ["fine-tune-status", "fine-tune-status"])
+        script.refuseOpen = false
+        #expect(model.canReconnectAudio)
+        await model.reconnectAudio()
+        await model.fineTuneStatusTask?.value
         #expect(model.state.contextReady && !model.audioReconnectRequired)
-        #expect(service.commands == ["fine-tune-status", "fine-tune-status"])
+        #expect(service.commands == ["fine-tune-status", "fine-tune-status", "fine-tune-status"])
+    }
+
+    // MARK: status region
+
+    @MainActor final class ManualClock {
+        var now = ContinuousClock.now
+        func advance(_ duration: Duration) { now = now.advanced(by: duration) }
+    }
+
+    /// Every Record gate open, so a ready workspace carries no recording warning.
+    @MainActor private func readyToRecord(_ model: RecordingWorkspaceModel) {
+        model.state.contextReady = true; model.state.deviceReady = true; model.state.storageReady = true
+        model.state.serviceReady = true; model.state.permission = .granted
+        #expect(model.canRecord)
+    }
+
+    @MainActor private func setStatus(_ model: RecordingWorkspaceModel, _ status: String) {
+        var updated = model.state
+        updated.status = status
+        model.publish(updated)
+    }
+
+    static let progressLine = "Fine-tuning · pass 30 of 120 · 42 min left · loss 0.52"
+
+    @Test @MainActor func aRecordingStatusHoldsTheRegionForEightSecondsThenTheRunningJobShows() async throws {
+        let model = try await runningWorkspace(ScriptedFineTune())
+        let clock = ManualClock()
+        model.statusClock = { clock.now }
+        readyToRecord(model)
+        // No recording status has changed yet: the running job shows.
+        #expect(model.statusRegion == RecordingStatusRegion(line: Self.progressLine, source: .fineTune, needsAttention: false))
+        setStatus(model, "Saved · verified")
+        #expect(model.statusRegion == RecordingStatusRegion(line: "Saved · verified", source: .recording, needsAttention: false))
+        clock.advance(.milliseconds(7_999))
+        #expect(model.statusRegion.line == "Saved · verified")
+        clock.advance(.milliseconds(1))
+        #expect(model.statusRegion.line == Self.progressLine && model.statusRegion.source == .fineTune)
+        // Publishing the same words again is not a change.
+        model.publish(model.state)
+        #expect(model.statusRegion.line == Self.progressLine)
+        // A new recording status holds again; job progress does not shorten the hold.
+        setStatus(model, "Draft · checking")
+        clock.advance(.seconds(3))
+        model.handleService(try Self.envelope(Self.training(epoch: 31, update: 279), requestID: Self.job))
+        #expect(model.statusRegion.line == "Draft · checking")
+        clock.advance(.seconds(5))
+        #expect(model.statusRegion.line == "Fine-tuning · pass 31 of 120 · 42 min left · loss 0.52")
+        // A legacy review status is recording feedback too.
+        model.legacyReviewStatus = "Legacy take kept"
+        #expect(model.statusRegion.line == "Legacy take kept")
+        clock.advance(.seconds(8))
+        #expect(model.statusRegion.source == .fineTune)
+        // Recording speaks first, always, while a take is being recorded.
+        model.state.phase = .recording
+        #expect(model.statusRegion.line == model.state.status && model.statusRegion.source == .recording)
+    }
+
+    @Test @MainActor func recordingErrorsAndWarningsAlwaysWinOverAFineTune() async throws {
+        let model = try await runningWorkspace(ScriptedFineTune())
+        let clock = ManualClock()
+        model.statusClock = { clock.now }
+        readyToRecord(model)
+        model.fail(RecordingContractError(code: "RECORDING.WRITE_FAILED", message: "Save could not be written"), phase: .draftReview)
+        clock.advance(.seconds(600))
+        #expect(model.statusRegion == RecordingStatusRegion(line: "Save could not be written", source: .recording, needsAttention: true))
+        var cleared = model.state
+        cleared.errorCode = nil; cleared.phase = .ready; cleared.status = "Ready to record"
+        model.publish(cleared)
+        clock.advance(.seconds(8))
+        #expect(model.statusRegion.source == .fineTune)
+        // Record unavailable (the region offers Check again) names its reason.
+        model.state.deviceReady = false
+        #expect(model.statusRegion.line == "Ready to record" && model.statusRegion.source == .recording)
+        model.state.deviceReady = true
+        #expect(model.statusRegion.source == .fineTune)
+        // Audio to reconnect.
+        model.requireAudioReconnect(after: .systemSleep)
+        clock.advance(.seconds(600))
+        #expect(model.statusRegion.source == .recording)
+        model.audioReconnectRequired = false
+        readyToRecord(model)
+        #expect(model.statusRegion.source == .fineTune)
+        // A capture that needs recovery.
+        model.state.phase = .recoverableError
+        #expect(model.statusRegion.source == .recording)
+        model.state.phase = .ready
+        // Recovery findings come before fine-tuning too.
+        model.recoverySupervisorError = "Recovery inventory is unavailable"
+        #expect(model.statusRegion == RecordingStatusRegion(line: "Recovery inventory is unavailable", source: .recovery, needsAttention: false))
+    }
+
+    @Test @MainActor func aFineTuneOutcomeShowsUntilTheRecordingStatusNextChanges() async throws {
+        let service = ScriptedFineTune()
+        let model = try await runningWorkspace(service)
+        let clock = ManualClock()
+        model.statusClock = { clock.now }
+        readyToRecord(model)
+        // A status changes, then the job finishes during the hold: recording first, then the outcome.
+        setStatus(model, "Saved · verified")
+        clock.advance(.seconds(2))
+        model.handleService(try Self.envelope(Self.runEvent(), requestID: Self.job))
+        model.handleService(try Self.envelope(Self.progress(Self.job, "finished"), requestID: Self.job))
+        #expect(model.statusRegion.line == "Saved · verified")
+        clock.advance(.seconds(6))
+        #expect(model.statusRegion == RecordingStatusRegion(line: "Model ready · \(Self.runID)", source: .fineTune, needsAttention: false))
+        clock.advance(.seconds(3_600))
+        #expect(model.statusRegion.line == "Model ready · \(Self.runID)", "the outcome stays until something else happens")
+        // The next recording status replaces it for good.
+        setStatus(model, "Recording cancelled before input opened")
+        clock.advance(.seconds(3_600))
+        #expect(model.statusRegion.line == "Recording cancelled before input opened" && model.statusRegion.source == .recording)
+
+        // The next job shows at once (starting it changes no recording status), then its outcome.
+        let job = try await start(model, service)
+        #expect(model.statusRegion.line == "Fine-tuning · waiting to start")
+        model.handleService(try Self.envelope(Self.progress(job, "cancelled"), requestID: job))
+        #expect(model.statusRegion == RecordingStatusRegion(line: "Fine-tune cancelled", source: .fineTune, needsAttention: false))
+        setStatus(model, "Ready to record")
+        clock.advance(.seconds(8))
+        #expect(model.statusRegion.line == "Ready to record")
+
+        // A failure warns while it shows, and not once recording feedback replaced it.
+        let failed = try await start(model, service)
+        let message = "the F5 trainer exited with status 1"
+        model.handleService(try Self.envelope(Self.progress(failed, "failed", error: Self.failure("FINETUNE.TRAINING_FAILED", message)), requestID: failed))
+        #expect(model.statusRegion == RecordingStatusRegion(line: message, source: .fineTune, needsAttention: true))
+        #expect(model.statusRegion.spokenLine == "Warning: " + message)
+        setStatus(model, "Ready to record · microphone checked")
+        clock.advance(.seconds(8))
+        #expect(model.statusRegion == RecordingStatusRegion(line: "Ready to record · microphone checked", source: .recording, needsAttention: false))
+
+        // A refused start is an outcome too.
+        service.submitReply = { _ in try Self.refusal("RECORDING.DISK_SPACE", "fine-tuning needs 8.0 GiB free on the library's disk; 2.1 GiB is free", retryable: true) }
+        _ = try await start(model, service)
+        #expect(model.statusRegion == RecordingStatusRegion(line: "fine-tuning needs 8.0 GiB free on the library's disk; 2.1 GiB is free",
+                                                          source: .fineTune, needsAttention: true))
+        // So is a stopped supervisor, which also keeps new jobs from starting.
+        setStatus(model, "Saved · checking")
+        clock.advance(.seconds(8))
+        #expect(model.statusRegion.source == .recording)
+        model.handleService(try Self.envelope(.null, error: Self.failure("RECORDING.WRITE_FAILED", Self.supervisorFailure, retryable: true),
+                                              requestID: RecordingWorkspaceModel.fineTuneSupervisorRequestID))
+        #expect(model.statusRegion == RecordingStatusRegion(line: Self.supervisorFailure, source: .fineTune, needsAttention: true))
+        #expect(model.fineTuneSlot.help == Self.supervisorFailure)
+    }
+
+    @Test @MainActor func aRunRestoredFromAnEarlierSessionIsNotNews() async throws {
+        let service = ScriptedFineTune()
+        service.statusReply = { try Self.envelope(Self.status($0, latest: Self.summary())) }
+        let model = await workspace(service, phase: .draftReview, configured: false)
+        let clock = ManualClock()
+        model.statusClock = { clock.now }
+        await model.requestFineTuneStatus()
+        clock.advance(.seconds(60))
+        #expect(model.fineTune.latestRun?.runID == Self.runID)
+        #expect(model.statusRegion == RecordingStatusRegion(line: model.state.status, source: .recording, needsAttention: false))
+    }
+
+    // MARK: footer slot, library coverage, dates
+
+    @Test @MainActor func theFooterSlotIsOneControlThatStartsOrCancels() async throws {
+        let unconfigured = RecordingWorkspaceModel(fixture: .init())
+        #expect(unconfigured.fineTuneSlot == RecordingFineTuneSlot(title: "Fine-tune model", identifier: "transport.fine-tune",
+                                                                   enabled: false, help: "Recording service is unavailable"))
+        let service = ScriptedFineTune()
+        let model = await workspace(service, phase: .draftReview)
+        #expect(model.fineTuneSlot == RecordingFineTuneSlot(
+            title: "Fine-tune model", identifier: "transport.fine-tune", enabled: true,
+            help: "Train the voice model on the latest kept take of every recorded prompt. Recording stays available while it runs."))
+        model.activateFineTuneSlot()
+        #expect(model.fineTuneSlot == RecordingFineTuneSlot(title: "Cancel fine-tune", identifier: "transport.cancel-fine-tune",
+                                                            enabled: true, help: "Stop the fine-tune. Your recordings are not affected."))
+        await waitUntil { service.answered["fine-tune"] == 1 }
+        let job = try #require(service.sent.first?.operationID)
+        service.holding = ["cancel-fine-tune"]
+        model.activateFineTuneSlot()
+        #expect(model.fineTuneSlot == RecordingFineTuneSlot(title: "Cancel fine-tune", identifier: "transport.cancel-fine-tune",
+                                                            enabled: false, help: "The fine-tune is being cancelled"))
+        await waitUntil { service.heldCount == 1 }
+        #expect(service.commands == ["fine-tune", "cancel-fine-tune"] && service.sent.last?.detail == job)
+        service.release("cancel-fine-tune")
+        await waitUntil { service.answered["cancel-fine-tune"] == 1 }
+        #expect(model.fineTuneSlot.identifier == "transport.fine-tune" && model.fineTuneSlot.enabled)
+        let recording = await workspace(ScriptedFineTune(), phase: .recording)
+        #expect(recording.fineTuneSlot.help == "Finish the current take before fine-tuning" && !recording.fineTuneSlot.enabled)
+    }
+
+    @Test @MainActor func theLibraryHeaderCountsRecordedPromptsOverTheActiveCatalog() {
+        let english = Locale(identifier: "en_US")
+        #expect(RecordingLibraryCoverage(covered: 34, total: 1_886, locale: english)
+                == RecordingLibraryCoverage(text: "34/1,886", spokenText: "34 of 1,886 prompts recorded"))
+        #expect(RecordingLibraryCoverage(covered: nil, total: 1_886, locale: english)
+                == RecordingLibraryCoverage(text: "—/1,886", spokenText: "1,886 prompts; recorded count is loading"))
+        let model = RecordingWorkspaceModel(fixture: .init())
+        #expect(model.libraryCoverage == RecordingLibraryCoverage(covered: nil, total: 1, locale: .current))
+        model.state.historyCompleteness = "complete"
+        model.state.coveredCount = 34; model.state.totalCount = 1_886
+        #expect(model.libraryCoverage == RecordingLibraryCoverage(covered: 34, total: 1_886, locale: .current))
+        for text in [model.libraryCoverage.text, model.libraryCoverage.spokenText] {
+            #expect(!text.localizedCaseInsensitiveContains("room") && !text.localizedCaseInsensitiveContains("tone"))
+        }
+    }
+
+    @Test func takeDatesNameNoSession() throws {
+        let posix = Locale(identifier: "en_US_POSIX")
+        let utc = try #require(TimeZone(secondsFromGMT: 0))
+        #expect(RecordingTakePicker.recordedDate("2026-09-15T22:22:07.123456Z", precision: "take", locale: posix, timeZone: utc)
+                == "Sep 15, 2026 at 10:22:07.123 PM")
+        let imported = RecordingTakePicker.recordedDate("2026-09-15T22:22:07.123456Z", precision: "session", locale: posix, timeZone: utc)
+        #expect(imported == "Sep 15, 2026 · exact time unknown")
+        #expect(!imported.localizedCaseInsensitiveContains("session"))
+        #expect(RecordingTakePicker.recordedDate(nil, precision: "unknown", locale: posix, timeZone: utc) == "Date unknown")
     }
 
     // MARK: cancel

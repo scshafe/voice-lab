@@ -293,7 +293,7 @@ extension RecordingWorkspaceModel {
         audioReconnectRequired = true; audioReconnectCause = cause
         var updated = state; updated.deviceReady = false; updated.contextReady = false
         updated.deviceReason = cause == .systemSleep ? "Reconnect audio after the Mac wakes" : "Reconnect the selected microphone, then choose Reconnect audio"
-        updated.contextReason = "Reconnect audio to establish the resumed recording context"
+        updated.contextReason = "Reconnect audio to continue recording"
         publish(updated)
     }
 
