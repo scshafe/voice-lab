@@ -1,12 +1,13 @@
 """The library vault's records: blob and ref values, manifests, the binding, state and ledger.
 
 @canonical storage_contracts -- every value a storage port returns and every record the vault
-keeps (library manifests) or the Mac keeps under provenance/vault (the binding, replication
-state, ledger entries) is one of these strict models; ref names and library ids are validated
-here, a manifest's digest is always manifest_digest (SHA-256 of its canonical JSON), and the
-digest of what a generation carries (its ManifestPlan, known before any chunk is stored, which
-the LibraryManifest built after the upload extends with chunk refs) is always
-manifest_payload_digest.
+keeps (library manifests and the envelopes a head names) or the Mac keeps under
+provenance/vault (the binding, replication state, ledger entries) is one of these strict
+models; ref names and library ids are validated here, a manifest's digest is always
+manifest_digest (SHA-256 of its canonical JSON), the digest of what a generation carries (its
+ManifestPlan, known before any chunk is stored, which the LibraryManifest built after the
+upload extends with chunk refs) is always manifest_payload_digest, and a ledger entry's digest
+(which the next entry chains to) is always ledger_entry_digest.
 Related: storage_ports.py (BlobStore, RefStore, the STORAGE.* errors; re-exports the name
 helpers), canonical.py (canonical_json_bytes), schema.py (registers STORAGE_SCHEMA_MODELS),
 tests/test_storage_contracts.py.
@@ -40,6 +41,10 @@ MAX_REF_NAME_LENGTH: Final = 256
 MAX_MANIFEST_PATH_LENGTH: Final = 1024
 MAX_ENDPOINT_LENGTH: Final = 1024
 MAX_DNS_NAME_LENGTH: Final = 253
+# The largest manifest (its canonical JSON) a generation stores or a reader accepts: far above
+# a real library's (tens of thousands of entries are a few tens of MiB) and small enough to
+# assemble in memory.
+MAX_MANIFEST_BYTES: Final = 256 * 1024 * 1024
 EMPTY_SHA256: Final = hashlib.sha256(b"").hexdigest()
 # Manifest paths never name this directory (or anything in it): the binding, approvals,
 # replication state, ledger and request log stay on the Mac and are never restored.
@@ -218,6 +223,20 @@ def manifest_payload_digest(plan: ManifestPlan) -> str:
     """
     planned = manifest_plan(plan).model_dump(mode="json")
     return canonical_sha256({"domain": MANIFEST_PAYLOAD_DOMAIN, "plan": planned})
+
+
+def ledger_entry_digest(entry: LedgerEntry) -> str:
+    """The digest that names a ledger entry: SHA-256 of its canonical JSON bytes.
+
+    The next entry's ``previous_entry_sha256`` records this value, so changing, removing or
+    reordering any entry but the last breaks the chain. The hashed bytes are
+    ``canonical.canonical_json_bytes(entry)`` (no trailing newline), the bytes of the entry's
+    file without the newline it ends with.
+    Params: ``entry``.
+    Returns: 64 lowercase hex characters.
+    Raises: nothing.
+    """
+    return canonical_sha256(entry)
 
 
 def _utc(value: datetime) -> datetime:
@@ -433,6 +452,37 @@ class LibraryManifest(ManifestPlan):
     entries: tuple[ManifestEntry, ...]
 
 
+class ManifestEnvelope(ContractModel):
+    """Where one generation's manifest is stored: the blob a library's head ref names.
+
+    A manifest's canonical JSON (``size`` bytes, SHA-256 ``manifest_sha256``, which is its
+    ``manifest_digest``) is stored as the blobs ``chunks``, in order, each holding at least one
+    byte of it; the envelope is stored (sealed, like every blob) as one more blob, and the head
+    ref's target names that blob. ``library_id`` and ``generation`` repeat the manifest's, so a
+    reader refuses a manifest that is not the one the envelope announces. At most
+    ``MAX_MANIFEST_BYTES`` are announced.
+    """
+
+    schema_version: Literal["cole-voice-lab.library-manifest-envelope/v1"] = (
+        "cole-voice-lab.library-manifest-envelope/v1"
+    )
+    library_id: LibraryId
+    generation: PositiveStorageCounter
+    manifest_sha256: Sha256
+    size: int = Field(ge=1, le=MAX_MANIFEST_BYTES)
+    chunks: tuple[BlobRef, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _chunks_can_hold_the_manifest(self) -> ManifestEnvelope:
+        if not len(self.chunks) <= self.size <= len(self.chunks) * MAX_BLOB_BYTES:
+            raise ValueError(
+                "a manifest is stored in chunks of 1 to MAX_BLOB_BYTES of its bytes each, so "
+                "size is at least the chunk count and at most the chunk count times "
+                "MAX_BLOB_BYTES"
+            )
+        return self
+
+
 class StorageBinding(ContractModel):
     """Which vault a library copies to, and what it copies (``provenance/vault/binding.json``).
 
@@ -601,6 +651,7 @@ STORAGE_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "storage-ref-value": RefValue,
     "library-manifest-entry": ManifestEntry,
     "library-manifest": LibraryManifest,
+    "library-manifest-envelope": ManifestEnvelope,
     "storage-binding": StorageBinding,
     "replication-state": ReplicationState,
     "replication-ledger-entry": LedgerEntry,

@@ -369,6 +369,7 @@ def test_the_replication_modules_load_no_adapter_even_indirectly() -> None:
         "import sys\n"
         "import cole_voice_lab.library_classification\n"
         "import cole_voice_lab.library_replication\n"
+        "import cole_voice_lab.library_generations\n"
         "print('\\n'.join(sorted(sys.modules)))\n"
     )
     loaded = set(
@@ -381,9 +382,11 @@ def test_the_replication_modules_load_no_adapter_even_indirectly() -> None:
             timeout=60,
         ).stdout.split()
     )
-    assert {"cole_voice_lab.library_classification", "cole_voice_lab.library_replication"} <= (
-        loaded
-    )
+    assert {
+        "cole_voice_lab.library_classification",
+        "cole_voice_lab.library_replication",
+        "cole_voice_lab.library_generations",
+    } <= loaded
     forbidden = {
         *ADAPTERS,
         "cole_voice_lab.storage_binding",

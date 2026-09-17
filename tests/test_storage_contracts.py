@@ -36,18 +36,21 @@ from cole_voice_lab.storage_contracts import (
     EMPTY_SHA256,
     LIBRARY_ID_PATTERN,
     MANIFEST_PAYLOAD_DOMAIN,
+    MAX_MANIFEST_BYTES,
     MAX_STORAGE_COUNTER,
     STORAGE_SCHEMA_MODELS,
     LedgerDestination,
     LedgerEntry,
     LibraryManifest,
     ManifestEntry,
+    ManifestEnvelope,
     ManifestPlan,
     PlannedManifestEntry,
     ReplicationState,
     StorageBinding,
     UtcTimestamp,
     keychain_item_names,
+    ledger_entry_digest,
     manifest_digest,
     manifest_path_key,
     manifest_payload_digest,
@@ -610,6 +613,17 @@ def plan() -> Payload:
     return unchunked(manifest())
 
 
+def envelope() -> Payload:
+    return {
+        "schema_version": "cole-voice-lab.library-manifest-envelope/v1",
+        "library_id": LIBRARY,
+        "generation": 2,
+        "manifest_sha256": "e" * 64,
+        "size": MAX_BLOB_BYTES + 29,
+        "chunks": [blob_ref(size=MAX_BLOB_BYTES), blob_ref(sha256="d" * 64, size=62)],
+    }
+
+
 def tailnet_binding() -> Payload:
     return {
         "schema_version": "cole-voice-lab.storage-binding/v1",
@@ -717,6 +731,7 @@ SYNTHETIC: dict[str, Build] = {
     "storage-ref-value": ref_value,
     "library-manifest-entry": file_entry,
     "library-manifest": manifest,
+    "library-manifest-envelope": envelope,
     "storage-binding": tailnet_binding,
     "replication-state": pushed_state,
     "replication-ledger-entry": completed_entry,
@@ -1751,3 +1766,61 @@ def test_an_invalid_ledger_entry_is_refused(
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         validate(model, build() | changes)
+
+
+# -- ManifestEnvelope and the ledger digest ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        envelope,
+        lambda: envelope() | {"size": 2},
+        lambda: envelope() | {"size": 2 * MAX_BLOB_BYTES},
+        lambda: envelope() | {"chunks": [blob_ref()], "size": 1},
+        lambda: (
+            envelope() | {"chunks": [blob_ref()] * 17, "size": MAX_MANIFEST_BYTES, "generation": 1}
+        ),
+    ],
+)
+def test_a_valid_manifest_envelope_is_accepted(build: Build) -> None:
+    record = validate(ManifestEnvelope, build())
+    assert len(record.chunks) <= record.size <= len(record.chunks) * MAX_BLOB_BYTES
+
+
+@pytest.mark.parametrize(
+    ("model", "build", "changes", "message"),
+    cases(
+        ManifestEnvelope,
+        (envelope, {"chunks": []}, "at least 1 item"),
+        (envelope, {"size": 0}, "greater than or equal to 1"),
+        (envelope, {"size": MAX_MANIFEST_BYTES + 1}, "less than or equal to 268435456"),
+        (envelope, {"size": 1}, "size is at least the chunk count"),
+        (envelope, {"size": 2 * MAX_BLOB_BYTES + 1}, "at most the chunk count times"),
+        (envelope, {"generation": 0}, "greater than or equal to 1"),
+        (envelope, {"manifest_sha256": "E" * 64}, PATTERN),
+        (envelope, {"library_id": "Cole"}, PATTERN),
+        (envelope, {"chunks": [blob_ref(size=MAX_BLOB_BYTES + 1)]}, "less than or equal to"),
+        (envelope, {"size": 1.0}, "Input should be a valid integer"),
+    ),
+)
+def test_an_invalid_manifest_envelope_is_refused(
+    model: type[ContractModel], build: Build, changes: Payload, message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        validate(model, build() | changes)
+
+
+def test_a_ledger_entry_is_named_by_the_digest_of_its_canonical_json() -> None:
+    record = validate(LedgerEntry, started_entry())
+    digest = ledger_entry_digest(record)
+
+    assert digest == hashlib.sha256(canonical_json_bytes(record)).hexdigest()
+    assert ledger_entry_digest(validate(LedgerEntry, dict(reversed(started_entry().items())))) == (
+        digest
+    )
+    shifted = started_entry() | {"recorded_at": "2026-09-17T14:00:00+02:00"}
+    assert ledger_entry_digest(validate(LedgerEntry, shifted)) == digest
+    changed = validate(LedgerEntry, started_entry() | {"byte_count": 2047})
+    assert ledger_entry_digest(changed) != digest
+    assert digest not in {manifest_digest(validate(LibraryManifest, manifest()))}

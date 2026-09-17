@@ -309,7 +309,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - Specialist: `testineer` (the concurrent-save tests)
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_replication_sources.py tests/test_recording_takes.py`
 
-- [ ] **Step 6: Manifest chain, verify and restore**
+- [x] **Step 6: Manifest chain, verify and restore**
   - Build and encrypt manifests.
   - Add the head swap, `state.json`, the ledger, verification by download, and `restore_library`.
   - Tests refuse:

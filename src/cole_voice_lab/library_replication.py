@@ -12,8 +12,9 @@ Each source names its referents (the owners whose files its files name); a refer
 read after its referrers, so everything a referrer names already exists when its referent is
 read, and an owner whose referent did not complete is reported ``changed`` too (it falls back
 with that referent), so a generation never pairs fresh records with the older files they name.
-Related: library_classification.py (what is copied, and how), storage_contracts.py
-(FileClass, PlannedManifestEntry), recording_takes.py (the lock-free projection readers),
+Related: library_classification.py (what is copied, and how), library_generations.py (turns a
+pass into a stored generation, verifies and restores it), storage_contracts.py (FileClass,
+PlannedManifestEntry), recording_takes.py (the lock-free projection readers),
 tests/test_replication_sources.py.
 
 Step 5 decisions recorded here:
@@ -31,7 +32,7 @@ Step 5 decisions recorded here:
   with ``os.open``, so a pass running inside the recording service cannot drop that process's
   database locks.
 
-Nothing here constructs a storage adapter; Step 6 turns a pass into a manifest.
+Nothing here constructs a storage adapter; library_generations turns a pass into a manifest.
 """
 
 from __future__ import annotations
@@ -92,6 +93,7 @@ __all__ = [
     "ReplicationSink",
     "ReplicationSource",
     "ScanRoot",
+    "ScratchDirectory",
     "SourceChangedError",
     "SourceEntry",
     "SourceProblem",
@@ -1662,8 +1664,16 @@ def backup_database(source: Path, target: Path) -> None:
         raise sqlite3.DatabaseError(f"the database backup failed its check: {check}")
 
 
-class _Scratch:
-    """A pass's private scratch directory ``tmp/.vault-<random>``, locked while it lives."""
+class ScratchDirectory:
+    """A private scratch directory ``tmp/.vault-<random>`` (0700), locked while it lives.
+
+    Built by a pass (for the prompt database's backup) or a push (for its spooled copy).
+    Creating one first removes the scratch directories whose owners are gone (their
+    ``.scratch.lock`` is free); ``remove`` deletes this one and releases its lock. Everything
+    under ``tmp/.vault-*`` stays on the Mac.
+    Raises (on construction): ``SourceChangedError`` when ``tmp`` cannot be opened safely;
+    ``OSError`` when the directory or its lock cannot be created.
+    """
 
     def __init__(self, root: Path) -> None:
         _sweep_scratch(root)
@@ -1775,7 +1785,7 @@ class CorpusDatabaseSource:
 
     def _database(self, layout: AssetLayout) -> Generator[SourceEntry, None, None]:
         root = layout.root
-        scratch = _Scratch(root)
+        scratch = ScratchDirectory(root)
         try:
             target, relative = scratch.new_file(DATABASE_BACKUP_NAME)
             try:

@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "BlobRef": {
+      "additionalProperties": false,
+      "description": "One stored blob, named by the SHA-256 and size of the bytes the store keeps.",
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size": {
+          "maximum": 16777216,
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size"
+      ],
+      "title": "BlobRef",
+      "type": "object"
+    },
+    "LibraryId": {
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+      "type": "string"
+    },
+    "PositiveStorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Where one generation's manifest is stored: the blob a library's head ref names.\n\nA manifest's canonical JSON (``size`` bytes, SHA-256 ``manifest_sha256``, which is its\n``manifest_digest``) is stored as the blobs ``chunks``, in order, each holding at least one\nbyte of it; the envelope is stored (sealed, like every blob) as one more blob, and the head\nref's target names that blob. ``library_id`` and ``generation`` repeat the manifest's, so a\nreader refuses a manifest that is not the one the envelope announces. At most\n``MAX_MANIFEST_BYTES`` are announced.",
+  "properties": {
+    "chunks": {
+      "items": {
+        "$ref": "#/$defs/BlobRef"
+      },
+      "minItems": 1,
+      "title": "Chunks",
+      "type": "array"
+    },
+    "generation": {
+      "$ref": "#/$defs/PositiveStorageCounter"
+    },
+    "library_id": {
+      "$ref": "#/$defs/LibraryId"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.library-manifest-envelope/v1",
+      "default": "cole-voice-lab.library-manifest-envelope/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "size": {
+      "maximum": 268435456,
+      "minimum": 1,
+      "title": "Size",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "library_id",
+    "generation",
+    "manifest_sha256",
+    "size",
+    "chunks"
+  ],
+  "title": "ManifestEnvelope",
+  "type": "object"
+}
