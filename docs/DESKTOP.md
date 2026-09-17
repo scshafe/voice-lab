@@ -356,3 +356,11 @@ After a checkout update, an already-open app retains the interface it loaded.
 Stop and review an active take first; finalize a complete batch or use End
 session to preserve an unfinished batch, then close and reopen the local app
 when convenient. Development verification does not restart an operator's app.
+
+## The Swift native recording app
+
+This guide covers the Qt desktop, whose batches, sessions and finalization are unchanged.
+The Swift native recording app is a different application
+([NATIVE_RECORDING_UX.md](NATIVE_RECORDING_UX.md)). A build of it from this checkout has no
+sessions and prepares no lab packages; it fine-tunes from the library instead
+([FINETUNE.md](FINETUNE.md), "From the app").

@@ -231,8 +231,8 @@ remains the operator's final acceptance.
 ## D-016 — The fine-tuning corpus is the library's latest kept take per prompt
 
 Cole stated on 2026-09-15 that the corpus is the set of catalog prompts, that the live
-corpus is the most recent recording of each prompt, that he will revise a few prompts
-at a time on an ongoing basis, and that he wants to re-tune after each revision.
+corpus is the most recent recording of each prompt, that Cole will revise a few prompts
+at a time on an ongoing basis, and that Cole wants to re-tune after each revision.
 Recording and training happen on the same Mac.
 
 `voice-lab finetune` therefore reads the corpus straight from the recording library:
@@ -309,3 +309,52 @@ The command line is the editor; an in-app editor is a separate change and writes
 the same store methods. The rollout is
 tracked in `migrations/active/corpus-store.md` until the real library is seeded and the
 new build is installed and confirmed. See docs/CORPUS_STORE.md.
+
+## D-018 — The recording app is corpus-first and fine-tunes in place
+
+Cole decided on 2026-09-15 that groups, sessions and packages should leave the recording
+app's interface. The corpus is the latest recording of every prompt (D-016). Fine-tuning is
+an explicit button, never automatic, because each run is a GPU job of about two hours. That
+rules out starting one after every Save. Recording and training happen on the same Mac.
+
+The native recording app therefore has one action beyond recording: **Fine-tune model**. It
+runs the same `finetune.run_finetune_pipeline` as `voice-lab finetune run`, over the latest
+kept take of every spoken prompt that has one. It always sends `allow_missing`, because the
+active catalog lists standard sentences nobody has recorded yet. The recording service runs
+the job in a separate worker process group, one job at a time. A second request is refused
+`FINETUNE.JOB_ACTIVE`, and progress is shown in the status line. Cancel stops the whole
+process group. A job interrupted by a service stop is failed `FINETUNE.INTERRUPTED` and is
+never resumed or retried. Recording, Save and navigation stay available while a job runs,
+because the worker takes no library lock and only reads takes. Prepare for lab, its sheet,
+the service's package queue and the `package-preparation` native suite are removed. The app
+shows no group, session, setup, package or room-tone-binding wording. The Library counts
+prompts with a kept take against the active catalog.
+
+For the native recording app, these D-010 and D-012 sentences about operator-visible
+batches, sessions and package preparation no longer hold:
+
+- D-010: "A batch is an exact selected prompt suite with room tone; retaking older material
+  creates a new session."
+- D-012: "Desktop execution may be out of order, but canonical package order, mandatory room
+  tones, and explicit Keep remain intact." Explicit Keep (Save) still holds; package order
+  and mandatory room tones do not.
+- D-012: "Crossing batch scope preserves the previous session before preparing the selected
+  prompt."
+
+The native app never had operator-visible sessions (`docs/NATIVE_RECORDING_UX.md` §6). The
+native-app statements this decision retires are in that document: groups "visible as
+secondary history metadata", "a manual New setup action", "Catalog coverage and export
+context are distinct", and the Prepare for lab paragraphs of §9. Each carries a dated
+amendment there. The quoted sentences still describe the Qt desktop (`voice-lab desktop`),
+whose batches, sessions and finalization this decision does not change.
+
+Several things do not change. Package maps, package aliases and existing v1 packages stay
+readable, and removal and trim identity still follow a take through them. The lab's transfer
+path (`sync plan`, `intake`, `dataset`) and its consent and transfer rules are unchanged;
+nothing leaves the Mac. Recording groups remain as internal plumbing: every reservation names
+one, and the service still creates them automatically. `PreparePackageCommand` and
+`RecordingPackageStore` stay in the code, but no app, service or `voice-lab` command
+prepares a package from native takes any more; adding one is a separate change. Room tones
+leaving the catalog is D-017's. The training rules are D-016's. Fine-tuned checkpoints and
+samples remain working artifacts, not accepted raw, references or dataset manifests. See
+docs/FINETUNE.md ("From the app") and docs/NATIVE_RECORDING_UX.md §16.

@@ -64,6 +64,17 @@ followed by `--finetune-runtime-root PATH` when the build settings name a
 fine-tune runtime (an ordinary, unreserved flag; the configuration has no key for it).
 Omit `--recording-group-id`; the typed context response owns the current group.
 
+The configuration names two peers, the recorder helper and the service; the app starts
+both. The service starts one further process of its own when Fine-tune model is pressed:
+the fine-tune worker, `<service python> -m cole_voice_lab.recording_finetune_jobs --worker
+--asset-root ROOT --operation-id OP`. It is not a configured peer and has no handshake or
+build identity of its own; it runs the service's frozen interpreter and package. It leads
+a new session and process group, and the F5-TTS runtime processes it starts
+(`<finetune_runtime_root>/bin/python`) stay in that group. It exchanges length-prefixed
+frames with the service over its stdin and stdout. It kills its own group when its stdin
+closes, and the service kills the group when the job is cancelled or the service stops.
+At most one worker runs at a time. See [FINETUNE.md](FINETUNE.md), "From the app".
+
 Preserve the lexical virtual-environment launcher path in `service.executable`.
 Hash its resolved interpreter for the identity, but launch the venv path: resolving
 that path before launch bypasses `pyvenv.cfg` and loses the packaged dependencies.
@@ -90,6 +101,22 @@ and Python Save/QC barriers delay the real writer/service/analysis worker; they 
 not synthesize successful receipts or decisions. Hidden hosted views are never
 ordered onscreen.
 
+The native suites (`scripts/verify-native-recording --suite …`, default `all`) are
+`contracts`, `shell`, `capture`, `capture-sanitizers`, `bridge`, `waveform`, `workspace`,
+`transport`, `review`, `accessibility`, `review-sanitizers`, `finetune`, `recovery`,
+`packaged-app` and `acceptance`.
+`finetune` replaced `package-preparation`. Its fixture roots
+(`scripts/native_finetune_fixture.py`) add a stub F5 runtime
+(`tests/finetune_stub_runtime.py`) and pass `--finetune-runtime-root` to the service. The
+shipped service never overrides the pretrained-weights pin. A configured fixture therefore
+starts the unchanged service through the test-only wrapper
+`tests/native_finetune_service_fixture.py`, which is copied into the fixture's isolated
+runtime, never into a build, and hands the stub's pin to the fine-tune supervisor. The
+suite trains once to a finished run, saves a take while a second job trains, and cancels
+that job. A second root, whose runtime has no `bin/python`, checks that Fine-tune model
+stays unavailable with its reason. `scripts/verify_native_finetune.py` re-derives every
+result from the durable records.
+
 ## Build settings
 
 `scripts/build-native-recording-app --settings FILE` reads one settings file
@@ -107,7 +134,7 @@ private yourself. It has these keys:
 | capture_host | yes | Capture host identity, 1–255 characters |
 | pilot_approval_path | no (default null) | Relative approved evidence path |
 | pilot_approval_sha256 | no (default null) | Its digest; set exactly when the path is set |
-| finetune_runtime_root | no (default null) | The F5-TTS virtual environment fine-tune jobs run in: an absolute, normalized path without `..` (write `~/.local/share/cole-voice-lab/finetune-f5-01/venv` out in full; `~` is not expanded); the build passes it to the service as `--finetune-runtime-root`. Without it the app cannot fine-tune |
+| finetune_runtime_root | no (default null) | The F5-TTS virtual environment fine-tune jobs run in: an absolute, normalized path without `..` (write `~/.local/share/cole-voice-lab/finetune-f5-01/venv` out in full; a path starting with `~` is refused as relative); the build passes it to the service as `--finetune-runtime-root`. The build neither checks nor freezes the runtime: the app offers Fine-tune model only while `<root>/bin/python` exists, and each job checks the runtime's package and pinned weights when it starts. Without it the app cannot fine-tune |
 
 The settings name no catalog; the build records against whatever version the
 subject has active in the library's corpus store when the app launches. The

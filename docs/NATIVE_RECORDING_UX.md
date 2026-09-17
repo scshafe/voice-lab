@@ -380,6 +380,26 @@ when advancement is available. Capture that intent at activation. A subsequent
 coverage change cannot silently turn a requested advance into a nonadvancing Save,
 or make a plain Save advance. Reconciliation never invents missing prompts.
 
+**Amended 2026-09-16 — groups are internal; coverage is the corpus (D-018):** Recording
+groups stay as the service's internal context. Every reservation still names one, and the
+service still manages them automatically. When a context opens it reuses the current group
+if the catalog version, subject, device, host and gate still match. Otherwise it opens a
+new one, as it always does on Reconnect audio. The operator never sees or acts on a group. The app shows
+no group, session, setup, package or room-tone-binding wording. The take picker no longer
+prefixes a session-dated take with "Session"; a take without a take-precise time shows its
+date followed by "exact time unknown". The app has no manual New setup action; the only
+`new_setup` context it sends is Reconnect audio's. "Catalog coverage and export context
+are distinct" becomes **coverage is the corpus**. The Library header counts prompts with a
+kept take against the active catalog's prompts (for example `34/1,886`, identifier
+`library.coverage`, read aloud as "34 of 1,886 prompts recorded"). The latest kept take of each
+spoken prompt is exactly what Fine-tune model trains on (§16). A take's group limits
+neither coverage nor training. "Including both room tones" held for the pilot catalogs;
+the active `cole-corpus` catalog lists no room tone (D-017). A catalog that still lists
+one shows the silent card (§4) and counts its take like any other prompt. No action uses a
+room tone as acoustic evidence any more, because the Prepare for lab action and its
+room-tone prerequisite are gone (§9). `Needs review` badges stay informational; they gate
+nothing in the app.
+
 ## 7. Runtime architecture and ownership
 
 ```mermaid
@@ -473,6 +493,21 @@ Until the catalog arrives the header reads "Preparing catalog" and no history,
 cursor or Record is available. A catalog activated while the app runs takes
 effect at the next launch. Reconnect audio names the reference it already holds,
 or requests the catalog first when none arrived at launch.
+
+**Amended 2026-09-16 — a fine-tune worker replaces package preparation (§16, D-018):**
+The service no longer accepts `prepare-package` and runs no package queue or package
+worker. The diagram's `SVC → PKG → RAW` path and "package preparation" in the command
+list above are retired. So is the package-worker sentence of the one-index-owner
+amendment below. The service instead answers `fine-tune`, `cancel-fine-tune` and
+`fine-tune-status`, and sends `fine-tune-progress`, `fine-tune` and `fine-tune-status`
+events. All are take-less, and the service answers them before any context check. It
+starts at most one more process of its own: the fine-tune worker (`python -m
+cole_voice_lab.recording_finetune_jobs --worker`). The worker leads its own session and
+process group, and it starts the F5-TTS runtime's processes in that group. It talks to the
+service over its own stdin/stdout frames, never opens the recording index, takes no
+library lock and reads takes read-only. When its stdin closes it kills its own group, so no
+training outlives the service. It is not a configured peer: the launch configuration
+names only the recorder helper and the service.
 
 ### Native capture and waveform path
 
@@ -670,6 +705,32 @@ Python object memory. Measure the final 1,000-row transaction and interactive wa
 If that transaction misses acceptance, design staged generations visibly rather
 than weakening a latency target or calling an O(N) transaction constant-time.
 
+**Amended 2026-09-16 — package preparation is no longer an app action (D-018):** The app
+has no Prepare for lab control, sheet or package queue. The service accepts no
+`prepare-package` command. `PreparePackageCommand` survives only as the selection type
+inside `recording_packages.py` plans and commits. The evidence rules of this section still
+hold. v1 manifests, READY markers, sidecars, package maps and package aliases stay
+readable. Removal and trim identity still follow a take through a package that already
+exists. What is gone is every entry point that turns native takes into a new v1 package.
+`RecordingPackageStore.plan` and `prepare` are kept with their tests, but nothing in the
+app, the service or `voice-lab` calls them. The lab's transfer path is unchanged for what
+it already handles: `sync plan`, `intake validate|accept|scan` and `dataset`, applied to
+sessions finalized by `capture run`, `capture console` or the Qt desktop and to packages
+prepared before this change. Preparing a lab package from native takes would need a new
+command, which is a separate change. Fine-tuning needs no package: it reads the library
+directly (§16, D-016). These passages describe the retired action and no longer apply to
+the app:
+- this section's second and fifth paragraphs (package selection, and Prepare for lab's
+  room-tone prerequisite);
+- "lab export" in §1;
+- the explicit Prepare for lab sentence in §6;
+- the package-preparation edge and command in §7;
+- the disposable package step of §13;
+- the export rows of §14.
+
+This section's parity row is now the native `finetune` suite (`finetune_from_recordings`
+in `scripts/recording_acceptance_matrix.py`).
+
 ## 10. Recovery and resource behavior
 
 | Condition | Required behavior |
@@ -691,6 +752,13 @@ than weakening a latency target or calling an O(N) transaction constant-time.
 | No corpus store (`CORPUS.STORE_MISSING`) | Show the service message, which names `voice-lab catalog init`, as status and context reason; header reads Catalog unavailable; no Library, snapshot, open-context or Record; pin nothing, so a relaunch after `init` resolves again |
 | No active catalog for the subject (`CORPUS.NO_ACTIVE_CATALOG`) | Same as no corpus store; the message names `voice-lab catalog init` and `voice-lab catalog activate` |
 | Missing or altered catalog snapshot (`CORPUS.SNAPSHOT_MISMATCH`) | Refuse the catalog, context, reservation or review that depends on it; say missing or altered without file content; never fall back to another catalog or an embedded copy; history that needs the snapshot stays Unknown, never Missing; restore `provenance/corpus/snapshots/` from backup |
+| Fine-tune runtime not configured (no `finetune_runtime_root` in the build settings, or no `bin/python` under it) | Fine-tune model stays disabled with "Fine-tuning is not set up: this app has no F5 runtime to train with" and nothing is submitted (the service would refuse `FINETUNE.RUNTIME_UNAVAILABLE`, naming the setting or the missing python); recording is unaffected. A runtime whose F5-TTS package or pinned weights are wrong fails the job in its first stage (`FINETUNE.RUNTIME_UNAVAILABLE`, `FINETUNE.PRETRAINED_MISMATCH`), before any dataset is written |
+| Less than 8 GB free on the library's disk when Fine-tune model is pressed | Refuse `RECORDING.DISK_SPACE` (retryable), naming the need and the free space; write nothing; the status line shows the message with a warning; Record keeps its own disk check. There is no free-space check during a job: a full disk fails the job with that step's error |
+| A fine-tune already queued or running | The control reads Cancel fine-tune, so no second job can be requested; a second submit is refused `FINETUNE.JOB_ACTIVE` (retryable) and the app then shows the job the service holds; Record, Save, Save & Next and navigation stay available |
+| Fine-tune worker crash, app quit or service restart during a job | Kill the worker's whole process group (the worker also kills its own group when its input closes); never resume or retry the job. A worker that exits without a result fails the job `FINETUNE.INTERRUPTED` at once. A job left running by a stopped service is failed `FINETUNE.INTERRUPTED` by the next service, which rewrites its `run.json` as failed and kills a surviving group only when its command line proves it is this job's; the app shows no notice of it, and Fine-tune model is available again. A job still queued starts when the service starts again |
+| Cancel fine-tune | Queued: cancelled at once. Running: show "Cancelling the fine-tune", send SIGTERM to the job's process group and SIGKILL after 10 s, rewrite `run.json` as failed ("cancelled by the operator") while it still says running (a cancel while samples are written leaves a finished `run.json`, which still counts as the latest finished run), remove the runtime's `ckpts/<run id>` link when it points at this run, then show "Fine-tune cancelled"; checkpoints already written stay in the run directory; recordings are unaffected |
+| Corpus-store refusal during a job (`CORPUS.STORE_MISSING`, `CORPUS.NO_ACTIVE_CATALOG`, `CORPUS.SNAPSHOT_MISMATCH`; any other store failure as `RECORDING.GATE_NOT_READY`) | Fail the job with that code before any dataset is written (the worker reads the active version before its first stage; a take's missing group snapshot surfaces while it selects takes); show the service's message with a warning; the pinned catalog, the Library and recording are unchanged; fix it as in the rows above and press Fine-tune model again |
+| Fine-tune supervision stops (error-only envelope, request id `finetune-supervisor`, `RECORDING.WRITE_FAILED`) | Show "fine-tune supervision stopped; restart the app to recover the job" with a warning; Fine-tune model and Cancel fine-tune stay disabled with that reason; recording is unaffected; after a relaunch a job it left running is failed as in the restart row |
 
 Bound callback buffers, waveform snapshots, decoded preview memory, worker
 concurrency, and result delivery. Keep the durable work backlog outside memory;
@@ -1117,6 +1185,15 @@ merely because this planning document exists. The final switch happens only
 after a safe app exit and concrete acceptance results; deployment approval, when
 needed, is sought after the candidate is built and reviewable.
 
+**Amended 2026-09-16 — no package step in the app (§9, D-018):** A build from the
+corpus-first pipeline cannot perform "a disposable full package through local intake": it
+has no package action. The physical check for such a build is instead Fine-tune model on
+real recordings: watch its progress, cancel it once, start it again and let it finish, then
+listen to a sample from the run (§16). The app always trains the default 120 passes, about
+two hours on the recording Mac, and has no shorter setting. The acceptance matrix still lists the package item
+among its physical gate rows (`PHYSICAL_GATE_ROWS` in
+`scripts/recording_acceptance_matrix.py`); that list has not been updated.
+
 Update usage docs and CURRENT only to claim behavior that has actually shipped.
 Supersede older changing-layout/session-required UX decisions explicitly. Keep
 regression intent from the room-tone, media-clock, continuity, editor, Save &
@@ -1140,3 +1217,180 @@ transfer policy, replace raw-only reference/dataset contracts with edited audio,
 or migrate model stacks. Recording pause/overdub, automatic speech trimming,
 transcription, waveform-based audio enhancement, arbitrary microphone support,
 cloud sync, App Store distribution, and iOS are separate product decisions.
+
+**Amended 2026-09-16:** §16 adds training to the app, under D-018, which Cole decided on
+2026-09-15. The training rules of D-016 and `docs/FINETUNE.md` are unchanged. Consent,
+transfer and promotion policy are unchanged too. Nothing leaves the Mac.
+
+## 16. Fine-tuning from the app
+
+Added 2026-09-16 (plan `2026-09-15-corpus-first-app-pipeline.md`, D-018). The Record page
+has one workflow beyond recording: **Fine-tune model**. It trains F5-TTS on the latest kept
+take of every spoken prompt that has one, straight from the library. It shows progress in
+the status line, and recording stays available throughout. The training itself is the
+lab's `voice-lab finetune run` pipeline (`docs/FINETUNE.md`, "From the app"). This section
+specifies what the operator sees. The native `finetune` suite
+(`scripts/verify-native-recording --suite finetune`) checks it against a stub runtime. It
+runs one finished job, then saves a take during a second job and cancels that job, and it
+covers a build without a runtime.
+
+### The Fine-tune model control
+
+The footer slot between Retake and Save & Next, where Prepare for lab was, holds one
+button. It reads **Fine-tune model** (identifier `transport.fine-tune`) and, while a job is
+queued or running, **Cancel fine-tune** (identifier `transport.cancel-fine-tune`). Its
+words change in place and both titles share one 104-point width, so a job starting or
+ending never moves keyboard focus, Retake or Save. Its accessibility label is its title
+and its hint is its help text.
+
+Pressing Fine-tune model sends `fine-tune` with `allow_missing: true` and no `epochs`, so
+the job uses the default length (120 passes). The active catalog lists standard sentences
+nobody has recorded, and `allow_missing` lets the job train on the prompts that have a
+kept take. There is no confirmation dialog; the status line says the job is waiting to
+start. Nothing else starts a job. Launch and Reconnect audio only ask for its status, and
+Save and Save & Next never touch it.
+
+The first reason that applies is the button's help text, and the button is disabled:
+
+1. A local channel closed: "A local recording channel closed · restart the app to record
+   again".
+2. No recording service: "Recording service is unavailable".
+3. The service stopped supervising fine-tune jobs: the service's message (below).
+4. Availability is not known yet: "Checking whether fine-tuning is available". If the
+   status request failed, the service's message appears instead, for example the
+   `FINETUNE.SOURCE_CHANGED` message for an unreadable `run.json` under
+   `derived/finetune/`. The button stays disabled until a later status request succeeds,
+   at the next launch or Reconnect audio. The status request follows the catalog step, so
+   a launch whose handshakes or recorder snapshot fail never sends it, and the reason stays
+   "Checking whether fine-tuning is available".
+5. The service has no usable runtime: "Fine-tuning is not set up: this app has no F5
+   runtime to train with". This covers settings without `finetune_runtime_root` and a
+   root with no `bin/python`.
+6. A take is starting, recording or stopping: "Finish the current take before
+   fine-tuning".
+7. A Save, including a trim save, is in progress: "Wait for the current Save to finish
+   before fine-tuning".
+
+Otherwise the button is enabled with the help "Train the voice model on the latest kept
+take of every recorded prompt. Recording stays available while it runs." While a job is
+queued or running the slot is Cancel fine-tune. The start button's own reasons for that
+state ("The fine-tune is being cancelled", "A fine-tune is already queued", "A fine-tune
+is already running") are therefore never shown. Cancel fine-tune uses reasons 1–3, then
+"No fine-tune is running" and "The fine-tune is being cancelled". When enabled, its help
+is "Stop the fine-tune. Your recordings are not affected."
+
+The app checks neither free disk nor the corpus nor the runtime's packages and weights.
+The service checks those, and its refusals arrive as failures (§10).
+
+The app asks for `fine-tune-status` right after the catalog step at launch and again after
+Reconnect audio, whether or not a context then opens. The reply says whether the runtime
+is configured and names the latest finished run. It also names any job the service holds
+queued or running, which the app then shows, for example after a refused submit.
+
+### Progress and the status line
+
+The status region keeps its one line and its geometry. The fine-tune lines are:
+
+| Job state | Line |
+| --- | --- |
+| Queued | `Fine-tuning · waiting to start` |
+| Running, before its first stage | `Fine-tuning · starting` |
+| Selecting takes and checking the runtime | `Fine-tuning · choosing the latest takes` |
+| Writing the training copies | `Fine-tuning · preparing the recordings` |
+| Training | `Fine-tuning · pass 30 of 120 · 42 min left · loss 0.52` |
+| Writing listening samples | `Fine-tuning · writing sample sentences` |
+| Cancel pending | `Cancelling the fine-tune` |
+| Finished | `Model ready · <run id>` |
+| Cancelled | `Fine-tune cancelled` |
+| Failed or refused | the service's message, verbatim (`Fine-tune failed` if it sent none) |
+| Supervision stopped | `fine-tune supervision stopped; restart the app to recover the job` |
+
+The training line leaves out any part the trainer has not reported yet. It starts at
+`pass 1 of N` until the trainer prints its first status. Minutes round up, so the last
+minute reads `1 min left`, and the loss shows two decimals. The service parses the tail of
+the run's `train.log`: F5's `Epoch E/N` status with its `update=` and `loss=` fields and
+the elapsed and remaining time of the current pass. Time left is the current pass's
+remaining time plus the remaining passes at the current pass's length. A non-finite loss
+is left out. The first running event is sent at once. After that the service sends at
+most one progress event every five seconds, and it may skip a stage.
+
+Priority, first match wins:
+
+1. While Record shows Stop (starting, recording, stopping), the recording status.
+2. A playback or review failure, a trim field error, the unsaved-trim notice, the
+   waveform-archive notice.
+3. A capture terminal's own notice (while it is the current status), then the recovery
+   line: a recovery supervisor error, a running scan, or standing recovery findings (one
+   finding's own message, or "N recovery findings · originals are retained"). Standing
+   findings from an earlier session therefore hide every fine-tune line until they are
+   resolved.
+4. A recording warning, which always beats fine-tuning: an error, a recoverable error,
+   audio to reconnect, or Record unavailable at Ready (the region then offers Check
+   again).
+5. Any other recording status, for eight seconds after it changes.
+6. A queued or running job's line.
+7. A job's outcome (model ready, cancelled, failed, refused, or supervision stopped),
+   until the recording status next changes or the next job starts. An outcome whose turn
+   never comes is not shown later: a job that ends while a take is recording is followed
+   by Stop's status change, so its outcome is never displayed.
+8. Otherwise the recording status.
+
+The latest finished run from an earlier session is not news, and nothing shows it. A
+failure or stopped supervision draws the warning glyph while its line is shown, and
+VoiceOver then reads "Warning: " before the line. No fine-tune event changes the
+selection, the take, Save, navigation or the waveform.
+
+### One job at a time, and recording alongside it
+
+The service holds at most one queued or running job (`provenance/finetune-jobs/head.json`).
+A submit while one is active is refused `FINETUNE.JOB_ACTIVE` (retryable). The same
+operation submitted again returns that job's state instead. The queue is the app's
+service's alone: `voice-lab finetune run` does not consult it, so do not start a CLI
+training while the app trains (`docs/FINETUNE.md`).
+
+The worker takes no library lock, never opens the recording index and reads takes
+read-only. A selection that overlaps a committing Save is retried for up to ten seconds.
+Record, Save, Save & Next, Continue Missing, navigation, review and trims keep their own
+rules while a job runs. A job trains on the takes that were kept when it selected them. A
+take saved later counts from the next job on.
+
+A job's worker resolves the subject's active catalog version when it starts. That is not
+necessarily the version the app pinned at launch (§7): after `voice-lab catalog activate`
+without a relaunch, the job trains on the newly active version while the Library still
+shows the old one.
+
+### Cancellation and interruption
+
+Cancel fine-tune ends a queued job at once. A running job first shows "Cancelling the
+fine-tune". The service then stops the worker's whole process group, which includes the
+F5 trainer and whatever it started: SIGTERM, then SIGKILL after ten seconds. If the run's
+`run.json` still says running, the service rewrites it as failed with "cancelled by the
+operator". It removes the runtime's `ckpts/<run id>` link when that link points at this
+run. Only then does it report `cancelled`. A job cancelled, or failing, while it writes
+samples is different: training has already marked its `run.json` finished, and that stays.
+The run then still counts as the latest finished run, although its link is gone. Checkpoints and training
+copies already written stay in the run directory.
+
+A job is never resumed or retried. Quitting the app or a service exit kills the worker's
+group. A job left running is failed `FINETUNE.INTERRUPTED` ("the recording service
+stopped while this fine-tune was running; start it again") by the next service start, and
+its `run.json` is rewritten the same way. The app shows no notice of that at the next
+launch; press Fine-tune model again. A job still queued when the service stopped starts
+when the service starts again. A worker is also failed `FINETUNE.INTERRUPTED` when it
+cannot start, exits without a result, does not accept its request within two seconds, or
+runs longer than 24 hours.
+
+### Results
+
+A finished job leaves `derived/finetune/<run id>/` exactly as `voice-lab finetune run`
+does with its default options: the dataset, `run.json`, `train.log`, the checkpoints and the listening samples
+(`docs/FINETUNE.md`). The run id is `finetune-<UTC time>` (for example
+`finetune-20260916t153000z`), with `-2`, `-3`, … if that directory exists. The status line
+reads `Model ready · <run id>`. Listen to `samples/finetuned/sample-0N.wav` against
+`samples/base/sample-0N.wav`; this build does not play them (the Speak page is a separate
+plan). The job's own records are under `provenance/finetune-jobs/`.
+
+The latest finished run, reported by `fine-tune-status`, is the run with the newest
+`finished_at` among `derived/finetune/*/run.json` with status finished. On equal times the
+greater run id wins. The Speak page plan uses the same rule. Runs made by `voice-lab
+finetune run` with the default output root count too.

@@ -462,7 +462,7 @@ No new error codes. The existing vocabulary (`recording_contracts.py:62-87`) cov
 
 ### 5.5 UI
 
-- **Prepare for lab** stays available in physical-test builds, which can only run on a marked root. The sheet title reads "Prepare diagnostic package", and candidates exclude `procedure` rows (§3.6).
+- **Prepare for lab** stays available in physical-test builds, which can only run on a marked root. The sheet title reads "Prepare diagnostic package", and candidates exclude `procedure` rows (§3.6). (2026-09-16: builds from the corpus-first pipeline have no Prepare for lab; see the note in §7.7.)
 - **Purpose chip.** In a physical-test catalog the `Test` chip comes from `catalog.purpose`, sits right after the category chip, and never collapses into `+N` (§6.2). There is no other purpose banner.
 
 ## 6. Presentation contract
@@ -535,7 +535,7 @@ The `script` region frame is unchanged; only its internal layout changes, which 
 3. At Complete, each spoken prompt is covered exactly when it is covered under pilot-v1, and both room tones show Missing. The §7.2 report states the exact numbers before the switch.
 4. Spoken takes appear in take history and are playable and reviewable. Old room-tone takes do not appear under pilot-v2; they remain in the Qt app and in pilot-v1 builds (§3.2). No file changes.
 5. Continue Missing selects the room tones, and any spoken prompt without a kept take, in catalog order. Each room tone needs a new take of about 15 seconds.
-6. Prepare for lab needs a room-tone take recorded in the current pilot-v2 group (§3.6).
+6. Prepare for lab needs a room-tone take recorded in the current pilot-v2 group (§3.6). (2026-09-16: builds from the corpus-first pipeline have no Prepare for lab; see the note in §7.7.)
 7. Later pilot-v2 spoken takes also count for pilot-v1. pilot-v2 room-tone takes do not count for pilot-v1, and the Qt app does not show them.
 8. Unfinished Qt sessions can no longer be continued from this build (§3.7).
 
@@ -589,7 +589,7 @@ An ordered checklist. Ask before each presence step, as usual.
 8. **Order.**
    1. P10, P11, P12, P13 and P13a, as the procedure describes. P11, P12, P13 and P13a each create a new context (`B/physical-gate-procedure.md:396`).
    2. Then fresh P04 and P05, in one app session with no sleep, relaunch or device change.
-   3. Then P14 immediately. A package needs takes from one group (`recording_packages.py:452-455`), and Swift offers only current-group candidates (`RecordingPackagePreparation.swift:133-139`).
+   3. Then P14 immediately. A package needs takes from one group (`recording_packages.py:452-455`), and Swift offers only current-group candidates (`RecordingPackagePreparation.swift:133-139`). (2026-09-16: a build from the corpus-first pipeline cannot perform P14; see the note in §7.7.)
 9. **Evidence.** P01–P09 evidence stays readable in `…c65af236` with its own build and catalog; it is not mapped. P14 intake stays inside the marked root, and every standard root refuses that package (guard #5).
 
 Revision 3 replaces items 4 and 5 for any build from revision 3 on:
@@ -643,6 +643,19 @@ Added in revision 3. From the corpus store onward (D-017), the catalog the nativ
 9. Build from `native-application-settings/v2` settings (no catalog), verify, install, and launch by exact path. That first launch upgrades the recording index to version 4, after which the older native build cannot open the root (§7.5).
 
 **What the operator sees.** The first launch on the new version behaves like §7.1 items 1–2: a new group, then discovery at the cost of a first open. The Library lists the active version's prompts. The old room-tone takes stay on disk and count under pilot-v1 and pilot-v2 in the coverage report, but no prompt of `cole-corpus` lists them. Prepare for lab needs a room-tone take from the current group (§3.6), which a catalog without room-tone prompts cannot record.
+
+**Note, 2026-09-16 (corpus-first pipeline, D-018).** A native build from the corpus-first
+pipeline has no Prepare for lab action. There is no sheet, no "Prepare diagnostic package"
+title, no package queue, no `prepare-package` service command and no
+`package-preparation` native suite; the `finetune` suite replaced it. Its only workflow
+beyond recording is Fine-tune model (`docs/FINETUNE.md`, `docs/NATIVE_RECORDING_UX.md`
+§16). For such a build, the Prepare for lab statements in §5.5, §7.1 item 6, §7.4 item 8
+and the paragraph above no longer apply. So do §3.6's Swift candidate rule
+(`RecordingPackagePreparation.swift` is deleted) and the `package-preparation` Verify
+lines of §8.2. The package rules of §3.6 still govern `recording_packages.py`, which is
+kept, but no app, service or `voice-lab` command calls its preparation any more. Physical
+test P14 ("Choose Prepare for lab…", `physical-test-v1.json`) therefore cannot be performed
+with such a build; the released resource is immutable and is not changed.
 
 **Refusals the operator can meet.** No store, no active catalog, and a missing or altered snapshot each leave the app without a Library, showing the service's message (`docs/NATIVE_RECORDING_UX.md` §10). The fix is the command the message names (`voice-lab catalog init` or `voice-lab catalog activate`), or restoring `provenance/corpus/` from backup, followed by a relaunch.
 
