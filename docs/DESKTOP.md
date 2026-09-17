@@ -363,4 +363,5 @@ This guide covers the Qt desktop, whose batches, sessions and finalization are u
 The Swift native recording app is a different application
 ([NATIVE_RECORDING_UX.md](NATIVE_RECORDING_UX.md)). A build of it from this checkout has no
 sessions and prepares no lab packages; it fine-tunes from the library instead
-([FINETUNE.md](FINETUNE.md), "From the app").
+([FINETUNE.md](FINETUNE.md), "From the app") and speaks typed text on its Speak page
+([FINETUNE.md](FINETUNE.md), "Speak page").

@@ -269,6 +269,12 @@ extrema and the dB display scale are unchanged.
 | Command-S | Save the current draft/edits without advancing |
 | Left / Right in waveform | Seek 0.1 seconds within the retained range |
 | Home / End in waveform | Seek to retained start/end |
+| Command-1 / Command-2 | View ▸ Record Page / Speak Page (§17); do nothing while a take is starting, recording, stopping or saving, or while a confirmation is open |
+| Command-Return | On the Speak page, press Speak when it is enabled (§17); the Record page does not use it |
+
+R, Space, Return, Command-S and the waveform keys belong to the Record page. Its key
+monitor exists only while the Record page is shown (added 2026-09-16, §17), so on the
+Speak page these keys only type into the text box.
 
 Preserve typing, popups, dialogs, and text-selection behavior. Ignore key repeat
 for transport and coalesce duplicate clicks by operation ID. A second press
@@ -760,7 +766,17 @@ in `scripts/recording_acceptance_matrix.py`).
 | Cancel fine-tune | Queued: cancelled at once. Running: show "Cancelling the fine-tune", send SIGTERM to the job's process group and SIGKILL after 10 s, rewrite `run.json` as failed ("cancelled by the operator") while it still says running, remove the runtime's `ckpts/<run id>` link when it points at this run (even when the rewrite failed), then show "Fine-tune cancelled"; checkpoints already written stay in the run directory; recordings are unaffected. A cancel (or failure) while samples are written leaves a finished `run.json`: that model is usable and counts as the latest finished run, and the app shows `Model ready · <run id> · no samples` |
 | Corpus-store refusal for a job (`CORPUS.STORE_MISSING`, `CORPUS.NO_ACTIVE_CATALOG`, `CORPUS.SNAPSHOT_MISMATCH`; any other store failure as `RECORDING.GATE_NOT_READY`) | A job trains on the catalog version the service pinned (the one the app shows). If that pin cannot be resolved, the submit is refused under that code. If its snapshot is missing or altered when the worker reads it (before its first stage), or a take's group snapshot is while it selects takes, the job fails with that code before any dataset is written. Show the service's message with a warning; the pinned catalog, the Library and recording are unchanged; fix it as in the rows above and press Fine-tune model again |
 | Unreadable `run.json` under `derived/finetune/` | The status reply still names the runtime and the active job, and carries `latest_run_error` instead of the latest run; Fine-tune model stays usable and its help names the problem; repair or move the record |
-| Fine-tune supervision stops (error-only envelope, request id `finetune-supervisor`, `RECORDING.WRITE_FAILED`; also when a job's process group is still alive 5 s after SIGKILL) | Show "fine-tune supervision stopped; restart the app to recover the job" with a warning (a failure before the app's handshake is sent right after it); the service refuses every fine-tune request `RECORDING.GATE_NOT_READY` "fine-tune supervision stopped; restart the app", so no second job starts; Fine-tune model and Cancel fine-tune stay disabled with that reason; recording is unaffected; after a relaunch a job it left running is failed as in the restart row |
+| Fine-tune supervision stops (error-only envelope, request id `finetune-supervisor`, `RECORDING.WRITE_FAILED`; also when a job's or Speak request's process group is still alive 10 s after the SIGKILL of a cancel or deadline, or 5 s after the SIGKILL that ends every worker) | Show "fine-tune supervision stopped; restart the app to recover the job" with a warning (a failure before the app's handshake is sent right after it); the service refuses every fine-tune request `RECORDING.GATE_NOT_READY` "fine-tune supervision stopped; restart the app", so no second job starts; Fine-tune model and Cancel fine-tune stay disabled with that reason; recording is unaffected; after a relaunch a job it left running is failed as in the restart row |
+| Speak with no finished run (`FINETUNE.NO_FINISHED_RUN`), or finished runs that cannot be read | Speak stays disabled with "Fine-tune once before using Speak" and the model menu reads "No fine-tuned model yet"; Base needs a finished run too, for its reference clip. A submit is refused `FINETUNE.NO_FINISHED_RUN`, and so is a chosen run that is missing or not finished. When the status reply carries `latest_run_error` (an unreadable `run.json`, or an unreadable dataset, corpus or samples record of one of the newest 32 finished runs), Speak stays disabled with that message; repair or move the record. Recording is unaffected |
+| Speak without a runtime (`FINETUNE.RUNTIME_UNAVAILABLE`, `FINETUNE.PRETRAINED_MISMATCH`) | No `finetune_runtime_root`, or no `bin/python` under it: Speak stays disabled with "Speak is not set up: this app has no F5 runtime to speak with" and nothing is submitted. A runtime whose package, pinned weights or pinned Vocos files are missing or wrong fails the request when its worker describes the runtime, before anything is synthesized; the status line shows the service's message with a warning and the request's output directory is removed |
+| Speak while a fine-tune is queued or running, or Fine-tune model while Speak generates (`FINETUNE.JOB_ACTIVE`) | One GPU slot. Speak is disabled with "Speak is unavailable while a fine-tune runs"; Fine-tune model is disabled with "Wait for Speak to finish"; neither sends anything. A request the service refuses anyway fails with its message (retryable) and the app asks for the fine-tune status, so the job the service holds is shown. Recording, Save and navigation stay available either way |
+| Speak request past its deadline (`FINETUNE.SYNTHESIS_DEADLINE`) | 120 seconds after the worker starts (model load included), kill the worker's whole process group, remove the request's `derived/speech/<operation id>/`, and fail the request (retryable) with "speech synthesis took longer than 120 seconds and was stopped; try a shorter text", shown verbatim with a warning and announced |
+| Cancel Speak | Queued: cancelled at once. Running: the reply is still running and the line reads `Cancelling Speak`; the service kills the worker's process group with SIGKILL at once, removes the partial output, then reports cancelled (`Speak cancelled`). A request whose clip was already complete when the cancel arrived may still end finished, and its clip is then shown. A refused cancel shows the service's words and leaves Cancel available |
+| Service channel closed, or fine-tune supervision stopped, while Speak generates | Requests live only in the service's memory, so no final event will come. Channel closed: the request fails locally with "The recording service closed before Speak finished; restart the app to use Speak again" and Speak stays disabled ("The recording service closed · restart the app to use Speak"). Supervision stopped: the request fails with the supervisor's message and Speak stays disabled with it. The service kills the worker's group when it stops; a directory under `derived/speech/` left without `speech.json` by such a stop is removed when supervision next starts (next row) |
+| Speak output a stopped service left, at the next supervision start (`RECORDING.SOURCE_CHANGED` only for a damaged marker) | Before any request runs, remove every `derived/speech/<operation id>/` without `speech.json` that holds only what Speak writes (`job.json`, `speech-01.wav`, the JSON writer's temporary files, `synthesis-tmp/`, a Finder `.DS_Store`), and a `speech-active.json` marker whose service process is gone. Anything else under `derived/speech/` (another file or a link in such a directory, a file beside the request directories, a directory with another name) is left in place untouched and does not stop anything. A damaged marker stops supervision with "fine-tune supervision stopped: …is damaged…; remove it, then restart the app", shown as in the supervision row; finished requests are never touched |
+| Speak clip changed, missing or no longer private before Save As or playback (`RECORDING.SOURCE_CHANGED`) | Save As re-hashes the clip while copying: "The clip changed after Speak wrote it, so it was not saved"; the temporary file is removed and an existing file at the destination is untouched. The player refuses a clip whose digest, frame count, format, owner, mode or link count differs, shows the failure under the player and offers Recover audio; the output is reset at once, so an unreadable clip does not hold Record back unless that reset fails |
+| Save As into the recording library | Refused before anything is read or written: "Save the clip outside the recording library" (the destination folder and the library are compared after resolving links); a folder that cannot be written is "The clip could not be saved as <name>: <reason>" |
+| Speak playback failure | Show the failure under the Speak player with Recover audio (disabled while capture owns the output). While the Speak output is failed, Record is disabled and its help reads "Speak playback failed: <message> · recover audio on the Speak page", as for a failed review output; the page can still be switched to recover it |
 
 Bound callback buffers, waveform snapshots, decoded preview memory, worker
 concurrency, and result delivery. Keep the durable work backlog outside memory;
@@ -835,6 +851,16 @@ counts, revisions, and error codes; do not log waveform arrays, PCM, transcripts
 consent content, or sensitive path/device details to public logs. Runtime traces,
 screenshots containing actual material, and audio stay under the private root.
 No cloud dependency, audio transfer, or new synthesis authority is introduced.
+
+**Amended 2026-09-16 — Speak page:** §17 adds local synthesis to the app under D-019. The
+service writes each clip under the private root (`derived/speech/<operation id>/`, 0600),
+and the UI receives it as a relative path with its digest and frame count; the player and
+Save As re-check the file against them. F5-TTS's temporary copy of the reference clip is
+written inside the request's directory, not the system's temporary directory, and removed
+with the synthesis. A Save As copy is written outside the root, only
+where the operator chose, and never inside the library. Speak reads no consent
+record: D-019 records in-app speech as local listening by Cole and leaves that scope for
+Cole to confirm; every use beyond it keeps the lab's consent, transfer and promotion rules.
 
 **Amended 2026-09-13 — SQLite descriptor ownership:** SQLite alone owns open
 database and sidecar descriptors. Checking their paths must not open and close an
@@ -1225,6 +1251,11 @@ cloud sync, App Store distribution, and iOS are separate product decisions.
 2026-09-15. The training rules of D-016 and `docs/FINETUNE.md` are unchanged. Consent,
 transfer and promotion policy are unchanged too. Nothing leaves the Mac.
 
+**Amended 2026-09-16:** §17 adds a Speak page, under D-019, which Cole asked for on
+2026-09-15. Its clips are for local listening. They are not references, datasets or
+promotion material. The consent, transfer and promotion policy is unchanged; D-019 records
+that Speak reads no consent record and leaves that scope open for Cole to confirm.
+
 ## 16. Fine-tuning from the app
 
 Added 2026-09-16 (plan `2026-09-15-corpus-first-app-pipeline.md`, D-018). The Record page
@@ -1409,8 +1440,8 @@ start it again` as the latest outcome. Press Fine-tune model again. A job still 
 the service stopped starts when the service starts again. A worker is also failed
 `FINETUNE.INTERRUPTED` when it cannot start, exits without a result, does not accept its
 request within two seconds, or runs longer than 24 hours. A worker group that is still
-alive five seconds after SIGKILL stops fine-tune supervision (§10) rather than let a second
-job start beside it.
+alive ten seconds after the SIGKILL of a cancel, or five seconds after the SIGKILL that ends
+a worker, stops fine-tune supervision (§10) rather than let a second job start beside it.
 
 ### Results
 
@@ -1419,24 +1450,304 @@ does with its default options: the dataset, `run.json`, `train.log`, the checkpo
 (`docs/FINETUNE.md`). The run id is `finetune-<UTC time>` (for example
 `finetune-20260916t153000z`), with `-2`, `-3`, … if that directory exists. The status line
 reads `Model ready · <run id>`. Listen to `samples/finetuned/sample-0N.wav` against
-`samples/base/sample-0N.wav`; this build does not play them (the Speak page is a separate
-plan). A job stopped while writing samples leaves a finished run without them
-(`Model ready · <run id> · no samples`); its model is usable. The job's own records are under
-`provenance/finetune-jobs/`.
+`samples/base/sample-0N.wav`; the app does not play these files, but its Speak page (§17)
+speaks any text with the new model or with Base. A job stopped while writing samples
+leaves a finished run without them (`Model ready · <run id> · no samples`); its model is
+usable. The job's own records are under `provenance/finetune-jobs/`.
 
 The latest finished run, reported by `fine-tune-status`, is the run with the newest
 `finished_at` among `derived/finetune/*/run.json` with status finished. On equal times the
-greater run id wins. The Speak page plan uses the same rule. Runs made by `voice-lab
-finetune run` with the default output root count too.
+greater run id wins. The same reply lists up to 32 finished runs in that order, and the
+Speak page's Latest is the first of them (§17). Runs made by `voice-lab finetune run` with
+the default output root count too.
 
 ## 17. Speak page
 
 Added 2026-09-16 (plan `2026-09-15-in-app-speak-page.md`, D-019). The window has a second
-page, **Speak**, chosen with the `Record | Speak` control in the window toolbar or View ▸
-Record Page (⌘1) / Speak Page (⌘2). Cole types text, picks a finished fine-tuned model (or
-Base) and a reference clip, presses **Speak** (⌘↩), hears the result and can save a WAV
-copy. The Record page and its geometry are unchanged. The native `speak` suite
-(`scripts/verify-native-recording --suite speak`) checks the page against a stub runtime:
-the model and reference choices, finished clips re-read by Python, playback of a speech
-clip, cancel, a deadline failure shown verbatim, the one-GPU-slot exclusion with
-fine-tuning, the capture interlock, Save As, and the Record regions after a page switch.
+page, **Speak**. Cole types text, picks a finished fine-tuned model (or Base) and a
+reference clip, presses **Speak** (⌘↩), hears the result and can save a WAV copy. The
+Record page and its geometry are unchanged. Speak is a local listening tool (D-019): each
+clip stays in the library under `derived/speech/<operation id>/`, and nothing leaves the
+Mac. What the service runs (model and reference resolution, the clip record, the digest
+cache, the deadline and the shared GPU slot) is in `docs/FINETUNE.md`, "Speak page". This
+section specifies what the operator sees.
+
+### The page switch
+
+The window toolbar holds a segmented `Record | Speak` control (identifier `page.picker`,
+segments `page.record` and `page.speak`, labelled "Record page" and "Speak page"). The View
+menu has **Record Page** (⌘1) and **Speak Page** (⌘2), with the shown page checked. The
+app opens on Record. Only the shown page is mounted. The Record workspace keeps its frame
+and regions (§4), and its key monitor exists only while Record is shown. The Speak page
+has no region probes. Closing the window and quitting behave the same on either page, and
+their confirmation sheets appear on either page.
+
+The control's help is "Switch between recording takes and speaking text (⌘1, ⌘2)". The
+control and the other page's menu item are disabled, and the help names the first reason,
+while:
+
+1. a take is starting, recording or stopping: "Finish the current take before switching
+   pages";
+2. a Save, of a take or of a trim, is in progress: "Wait for the take to finish saving
+   before switching pages";
+3. a confirmation (an unsaved trim, quitting during a fine-tune) is open: "Answer the open
+   question before switching pages".
+
+Otherwise the switch is immediate. The page being left pauses its own player. Everything
+else on it stays as it was: a trim preview, the Speak text, the choices and the clips. A
+Speak request keeps running while Record is shown, and a fine-tune keeps running while
+Speak is shown. Speak never changes the Record page's selection, take, Save, waveform or
+status line. The one Speak state the Record page shows is a failed Speak output, which
+disables Record (see Recover audio).
+
+### Text
+
+The text box (identifier `speak.text`, label "Text to speak") shows the placeholder "Type
+what the voice should say" while it is empty. Under it, `N / 2,000` counts Unicode scalars,
+as the service counts code points, and VoiceOver reads it as "N of 2,000 characters". A
+typed or pasted tab is removed, and CR and CRLF line ends become newlines. Newlines are
+allowed. The text cannot be sent, and Speak names the reason, when it:
+
+- is empty: "Type the words to speak";
+- is only whitespace: "Type words to speak, not only spaces";
+- is longer than 2,000 characters: "Shorten the text to 2,000 characters (N now)", with a
+  warning glyph beside the count;
+- contains a format or control character other than a newline: "Remove the hidden
+  formatting or control character from the text".
+
+The service applies the same rules to every request. One request produces one clip.
+
+### Model and reference
+
+The **Model** menu (identifier `speak.model`) lists the finished runs from the service's
+`fine-tune-status` reply:
+
+1. **Latest · <run id>**: the newest finished run. The request says `latest`, and the
+   service resolves it again when it runs.
+2. Every earlier finished run, by its run id, newest first. The reply lists at most 32
+   runs in all. A run whose id is `latest` or `base` is not offered by id.
+3. **Base**: the pinned F5-TTS v1 Base weights, the voice model before fine-tuning.
+
+With no finished run the menu reads "No fine-tuned model yet" and is disabled. A choice
+that is no longer listed falls back to Latest. The app asks for the fine-tune status after
+the service's handshake, after the catalog step, after Reconnect audio, and after a Speak
+request is refused because a job holds the GPU. It also adds a run when a fine-tune it
+shows finishes. A run finished by `voice-lab finetune run` therefore appears at the next of
+these, not at once.
+
+The **Reference** menu (identifier `speak.reference`, label "Reference clip", help "The
+recorded clip whose delivery the voice follows") lists the chosen model's reference
+prompts. These are the prompts marked `reference_candidate` that have a training clip in
+the reference run, in catalog order. Each is titled as the Library titles it, or by its
+prompt id when the active catalog has no such prompt. The reference run is the chosen run
+itself; for Latest and Base it is the newest finished run, so Base speaks with the latest
+run's clips. The first reference is chosen by default. When the model changes, a
+reference the new run does not offer moves to its first. When the run has no reference
+prompt, the menu reads "Chosen by the service" and the service uses the run's first clip.
+The reference is the run's level-normalized training copy, read with its exact prompt text.
+Both menus are disabled while a request is queued or running. Every request uses 32 F5
+flow steps; the page has no control for them.
+
+### Speak, Generating and Cancel
+
+**Speak** (identifier `speak.generate`, ⌘↩) sends one `synthesize` request with the text,
+the model (`latest`, a run id or `base`), the reference prompt and 32 steps. Until the
+request ends, the button reads **Generating…** with a spinner (an hourglass under Reduce
+Motion), and VoiceOver names it "Generating speech". **Cancel** (identifier
+`speak.cancel`, label "Cancel speech generation") is enabled only while a request is
+queued or running and no cancel is pending.
+
+The first reason that applies disables Speak and is its help. The same text appears beside
+the buttons while nothing is generating.
+
+1. No recording service: "Recording service is unavailable".
+2. A local channel closed: "The recording service closed · restart the app to use Speak".
+3. Fine-tune supervision stopped: the service's message, "fine-tune supervision stopped;
+   restart the app to recover the job".
+4. No fine-tune status has arrived yet: "Checking for a fine-tuned model", or the status
+   request's failure message.
+5. No usable runtime: "Speak is not set up: this app has no F5 runtime to speak with".
+6. The finished runs cannot be read (`latest_run_error`): the service's message.
+7. No finished run: "Fine-tune once before using Speak".
+8. A fine-tune is queued or running: "Speak is unavailable while a fine-tune runs".
+9. A take is starting, recording or stopping: "Speak is unavailable while recording".
+10. A Save is in progress: "Wait for the take to finish saving before using Speak".
+11. A stopped take's recording is still being registered: "Wait for the take to finish
+    registering".
+12. A request is queued or running: "Speak is already generating", or "Speak is being
+    cancelled" once Cancel was pressed.
+13. The text rules above.
+
+Otherwise the help is "Speak the text with the chosen model (⌘↩)".
+
+The status line at the bottom of the page (identifier `speak.status`) has one line:
+
+| Request | Line |
+| --- | --- |
+| None yet this session | `Nothing spoken yet this session` |
+| Queued | `Generating · waiting to start` |
+| Running | `Generating…` |
+| Cancel pending | `Cancelling Speak` |
+| Finished | `Spoken · <m:ss.s> · <model>`, where the model is `Latest · <run id>`, the run id, or `Base` |
+| Failed or refused | the service's message, verbatim (`Speak failed` if it sent none) |
+| Cancelled | `Speak cancelled` |
+| Supervision stopped | the service's message |
+
+A failure or stopped supervision draws the warning glyph, and VoiceOver then reads
+"Warning: " before the line. A refused cancel leaves the request running and shows the
+service's words on this line until the request moves on.
+
+### One request at a time
+
+The service runs at most one Speak request, and Speak and fine-tuning share one GPU slot.
+A request is refused `FINETUNE.JOB_ACTIVE` (retryable) while a fine-tune is queued or
+running or another request is active. A `fine-tune` submit is refused the same way while a
+request is active. The app keeps both sides from asking. Speak is disabled while a
+fine-tune is active (reason 8), and Fine-tune model is disabled with "Wait for Speak to
+finish" while a request is queued or running. If the service refuses a request anyway, the
+request fails with its message and the app asks for the fine-tune status, so the job the
+service holds is shown. While a request's worker runs, the service keeps a marker
+(`provenance/finetune-jobs/speech-active.json`), so `voice-lab finetune run`, `train` and
+`synthesize` started in a terminal refuse `FINETUNE.JOB_ACTIVE` meanwhile, as they do while a
+fine-tune is queued or running. The app does not see such a command, so Speak is not held
+back while one runs (`docs/FINETUNE.md`). Recording is
+independent. A request keeps generating if a take is started, and Record, Save and
+navigation keep their own rules; only starting a new request waits for them.
+
+Requests live in the service's memory. The reply to Speak is `queued`. The service then
+reports `running` when the request's worker starts, and exactly one of finished, failed or
+cancelled. The app applies these in order and ignores repeats and events of an earlier
+request.
+
+**Deadline.** A request has 120 seconds from its worker's start, loading the model
+included. Past that, the service kills the worker's whole process group, removes the
+partial output, and fails the request `FINETUNE.SYNTHESIS_DEADLINE` (retryable): "speech
+synthesis took longer than 120 seconds and was stopped; try a shorter text".
+
+**Cancel.** A queued request is cancelled at once. For a running request the reply is still
+running and the line reads `Cancelling Speak`. The service kills the worker's process group
+with SIGKILL at once, removes the partial output once the group is gone, and then reports
+cancelled (`Speak cancelled`). A request whose clip was complete before the cancel reached
+the service can still end finished; its clip is then listed as usual.
+
+**The service goes away.** A request still active when the service's channel closes fails
+locally with "The recording service closed before Speak finished; restart the app to use
+Speak again". When fine-tune supervision stops (§10), an active request fails with the
+supervisor's message, and Speak stays disabled until a relaunch. Closing the window or
+quitting does not ask about a running request, because it is short and in memory; it ends
+with the service, which kills its worker's group. Such a request can leave a
+`derived/speech/<operation id>/` directory without `speech.json`; the service removes it
+when it next starts (§10).
+
+### Listening and the recording interlock
+
+A finished request's clip is added to the clip list, selected, and loaded into the page's
+own player, stopped; it does not play by itself. The player has play/pause (identifier
+`speak.play-pause`), a position slider that scrubs (`speak.position`), and `elapsed /
+total` as `m:ss.s` (`speak.time`). The position is read from the player clock only while it
+plays. The clip is loaded as a speech source (24 kHz, 16-bit, mono). The player refuses the
+file unless it is an owned, private, single-link regular file under the library whose
+SHA-256, frame count and format equal what the service reported
+(`RECORDING.SOURCE_CHANGED`). It therefore plays exactly the bytes Speak wrote.
+
+Speak's player and the Record page's review player never play together: playing one pauses
+the other, and leaving a page pauses its player. Capture owns the audio output (§7).
+Pressing Record stops the review player and then the Speak player, and either one failing
+to stop refuses the take. While a take is starting, recording or stopping, Speak playback
+is unavailable ("Playback is unavailable while recording") and no clip is loaded. A clip
+that finished meanwhile loads when capture ends. Sleep, window close and quit stop the
+Speak player as they stop the review player. A failed stop on close or quit keeps the
+window open; the failure is shown under the Speak player and holds Record back.
+
+Under the player the page shows why playing is refused: the player's failure, the clip's
+failure, or the last refused action's message. "No clip is selected" and "The clip is
+loading" appear as the play button's help.
+
+### This session's clips
+
+The **This session** list (identifier `speak.clips`, label "Clips spoken this session")
+shows the clips spoken since launch, newest first, at most 200. Each row shows the text (up
+to two lines) and `<model> · <duration>`. Choosing a row selects that clip and loads it
+into the player. The list is kept in memory only. The clips themselves stay in the library
+after the app quits, a later launch does not list them, and nothing in the app deletes
+them.
+
+### Save As
+
+**Save As…** (identifier `speak.save-as`) saves a copy of the selected clip as a WAV file.
+The save panel ("Save Speech") suggests the clip's first words, lowercased and joined by
+hyphens, or `speech.wav`. The copy runs off the main thread. The clip is read once through
+the private-file reader and hashed while it is copied into a hidden temporary file in the
+destination folder. The temporary file is then flushed and renamed over the destination,
+and the folder is flushed. It is a byte copy, never a link, and the destination is an
+ordinary file (mode 0644 before the umask). One Save As runs at a time ("A clip is being
+saved"). The result appears beside the button: `Saved <name>`, or a warning with one of:
+
+- "Save the clip outside the recording library": the destination folder is the library or
+  inside it, after resolving links. Nothing is read or written.
+- "The clip changed after Speak wrote it, so it was not saved": the clip is missing, is no
+  longer an owned, private, single-link file, or no longer hashes to what Speak reported.
+  The temporary file is removed, and an existing file at the destination is untouched.
+- "The clip could not be saved as <name>: <reason>": the folder cannot be opened or
+  written.
+
+A workspace without a library cannot save ("Speak clips need the recording library, which
+this workspace does not have").
+
+### Recover audio
+
+When the Speak player has failed, or the selected clip could not be loaded, the page shows
+**Recover audio** (identifier `speak.recover`). It is disabled while capture owns the
+output. It resets the Speak output and loads the selected clip again. A clip that cannot be
+loaded is reported on the clip, and the output is reset at once, so it does not hold
+Record back unless that reset fails. A failed Speak output does hold Record back: Record is
+disabled, and its help reads "Speak playback failed: <message> · recover audio on the Speak
+page", until Recover audio succeeds.
+
+### VoiceOver and keys
+
+Every control has a label. VoiceOver announces, at medium priority:
+
+- "Generating speech" when Speak is pressed;
+- "Speech ready, N seconds" when a request finishes, in tenths ("Speech ready, under 0.1
+  seconds" for a very short clip);
+- the failure message when a request fails or is refused ("Speak failed" without one), and
+  "Speak finished without a playable clip";
+- the channel-closed and supervision-stopped messages.
+
+Cancelling is not announced. Synthetic sessions post no announcements. Reduce Motion
+replaces the spinner with an hourglass and turns off animation. Text uses
+`RecordingPalette`.
+
+⌘1 and ⌘2 switch pages (§4). ⌘↩ presses Speak when it is enabled. The Record page's keys
+(R, Space, Return, ⌘S, the waveform keys) do nothing on the Speak page, where the text box
+takes typing.
+
+### Verification
+
+The native `speak` suite (`scripts/verify-native-recording --suite speak`) runs the real
+app model, recorder helper, service and Speak worker against a stub runtime and two
+finished runs written by `tests/finetune_speech_runs.py`. The app speaks with Latest and
+its default reference, with Base and a named reference, and with the earlier run. It plays
+half of the Latest clip through the offline engine, cancels a slow request, and shows a
+deadline failure verbatim; the test-only service wrapper shortens the deadline to 10
+seconds. It checks that Fine-tune model waits while Speak generates and that Speak waits
+while a fine-tune trains; these are the app's own gates, and the service's refusals in both
+directions are covered by `tests/test_speech_synthesis.py`. It starts a take while a clip
+plays, checks the interlock during the take, saves the take, runs Save As, and checks the
+Record regions after switching back. `scripts/verify_native_speak.py` then re-reads every
+clip, `speech.json`, file mode, header and reference digest. It confirms that cancelled,
+past-deadline and GPU-holding requests left no output, that no Speak marker remains, that
+both finished runs still read as finished, and that no fixture process remains. The
+announcements it checks are the model's; synthetic sessions post none. The harness reports
+how many windows were visible when it finished (none); it does not measure the microphone,
+which its synthetic-PCM configuration keeps closed. The `accessibility` suite hosts the page container:
+it checks the Speak identifiers and labels, that no Record control, region or key monitor
+remains on the Speak page, and that Record returns with identical regions, in both
+appearances. Its contrast check covers the palette's text on the text, window and control
+backgrounds, which are the ones the Speak page uses; the selected clip row's tint is not
+measured.
+
+The hosted checks have no window toolbar. The physical check (plan Step 6, acceptance
+matrix) remains open: hear typed text from the latest fine-tune and from Base in the
+installed app, Save As, then record, and confirm the Record page in the real window.

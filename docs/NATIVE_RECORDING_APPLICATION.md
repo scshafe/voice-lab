@@ -65,15 +65,20 @@ fine-tune runtime (an ordinary, unreserved flag; the configuration has no key fo
 Omit `--recording-group-id`; the typed context response owns the current group.
 
 The configuration names two peers, the recorder helper and the service; the app starts
-both. The service starts one further process of its own when Fine-tune model is pressed:
-the fine-tune worker, `<service python> -m cole_voice_lab.recording_finetune_jobs --worker
---asset-root ROOT --operation-id OP`. It is not a configured peer and has no handshake or
-build identity of its own; it runs the service's frozen interpreter and package. It leads
-a new session and process group, and the F5-TTS runtime processes it starts
+both. The service starts one further process of its own when Fine-tune model or Speak is
+pressed: the fine-tune worker, `<service python> -m cole_voice_lab.recording_finetune_jobs
+--worker --asset-root ROOT --operation-id OP`. The same worker serves both kinds of work: a
+fine-tune job (a `FineTuneWorkerRequest`, stage frames, one `FineTuneWorkerReply`) or one
+Speak request (one `SpeechWorkerRequest`, one `SpeechWorkerReply`, which carries the clip
+or the error). It is not a configured peer and has no handshake or build identity of its
+own; it runs the service's frozen interpreter and package, under umask 077. It leads a new
+session and process group, and the F5-TTS runtime processes it starts
 (`<finetune_runtime_root>/bin/python`) stay in that group. It exchanges length-prefixed
 frames with the service over its stdin and stdout. It kills its own group when its stdin
-closes, and the service kills the group when the job is cancelled or the service stops.
-At most one worker runs at a time. See [FINETUNE.md](FINETUNE.md), "From the app".
+closes, and the service kills the group when the work is cancelled, a Speak request passes
+its 120-second deadline, or the service stops. At most one worker runs at a time: Speak and
+fine-tuning share that one slot. A Speak request exists only in the service's memory. See
+[FINETUNE.md](FINETUNE.md), "From the app" and "Speak page".
 
 Preserve the lexical virtual-environment launcher path in `service.executable`.
 Hash its resolved interpreter for the identity, but launch the venv path: resolving
@@ -90,6 +95,14 @@ directly to the native helper. Save keeps the current script and waveform until
 one matching durable operation and selection revision supplies the next cursor.
 The optional `beforeCapture` and `afterCaptureStopped` hooks are the playback
 exclusion integration point; playback and review behavior is delivered in Step12.
+The workspace model also owns the Speak page's `RecordingSpeakModel`, whose own
+`RecordingPlaybackController` joins the same capture interlock as the review player
+(`beginCaptureInterlock`, `endCaptureInterlock`). Every `RecordingPlaybackSource` declares
+its audio format: `capture` (48 kHz, 24-bit, mono; the default, for takes) or `speech`
+(24 kHz, 16-bit, mono, for Speak clips). The playback backend refuses a file whose layout,
+frame count or digest differs from the declared source, and its read bound follows the
+format's bytes per frame. A synthetic session gives both players the offline engine.
+[NATIVE_RECORDING_UX.md](NATIVE_RECORDING_UX.md) §17 specifies the page.
 
 The maintained synthetic verification creates private PCM, identity, schema and
 configuration instances. It seeds a corpus store in each fixture root, publishes
@@ -103,8 +116,8 @@ ordered onscreen.
 
 The native suites (`scripts/verify-native-recording --suite …`, default `all`) are
 `contracts`, `shell`, `capture`, `capture-sanitizers`, `bridge`, `waveform`, `workspace`,
-`transport`, `review`, `accessibility`, `review-sanitizers`, `finetune`, `recovery`,
-`packaged-app` and `acceptance`.
+`transport`, `review`, `accessibility`, `review-sanitizers`, `finetune`, `speak`,
+`recovery`, `packaged-app` and `acceptance`.
 `finetune` replaced `package-preparation`. Its fixture roots
 (`scripts/native_finetune_fixture.py`) add a stub F5 runtime
 (`tests/finetune_stub_runtime.py`) and pass `--finetune-runtime-root` to the service. The
@@ -117,6 +130,23 @@ waits until the status line shows the second job's loss and time left, and cance
 job. A second root, whose runtime has no `bin/python`, checks that Fine-tune model
 stays unavailable with its reason. `scripts/verify_native_finetune.py` re-derives every
 result from the durable records.
+
+`speak` runs the `RecordingSpeakModelTests` and `RecordingSpeakTests` Swift tests, then the
+harness's `speak` case against a fixture root from `scripts/native_speak_fixture.py`. That
+root is the `finetune` fixture with a second reference-candidate prompt and two finished
+runs written directly (`tests/finetune_speech_runs.py`, no training). Its service starts
+through the same test-only wrapper, which here also passes `--test-synthesis-deadline 10`,
+so the suite can show a deadline failure in seconds; the shipped service has no such flag.
+The harness (`RecordingSpeakHarness.swift`) drives the real workspace model, recorder
+helper, service and Speak worker. It speaks with Latest, Base and the earlier run, plays a
+clip through the offline engine, cancels a request, lets one pass its deadline, checks the
+app's own gates between Speak and Fine-tune model in both directions, records and saves a
+take while Speak waits, runs Save As, and compares the Record regions before and after the
+page switch. It writes `native/speak-report.json`. `scripts/verify_native_speak.py`
+re-reads every clip, `speech.json`, job record and output directory, checks that no Speak
+marker and no fixture process remains, and writes `python-speak-evidence.json`. The identity report carries both
+as `speak` and `speak_python`, and the acceptance matrix cites `speak` for §17. The
+`accessibility` suite hosts `RecordingPageContainer` and checks both pages.
 
 ## Build settings
 

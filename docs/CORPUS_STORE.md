@@ -37,7 +37,7 @@ These processes open the store, always through `open_corpus_store`:
 | every other `voice-lab catalog` command | `create=False` | for the length of the command; `import-harvard` and `import-arctic` close it while they read or fetch the source and open it again to import |
 | `prompts show`, `prompts coverage-report`, `finetune …` with a published `--catalog` | `create=False` | only to resolve the name; closed before any evidence is read |
 | the recording service | `create=False` | once per process, to pin the active catalog; closed at once |
-| the app's fine-tune worker (`recording_finetune_jobs`) | `create=False` | once per job, to read the subject's active version; closed before the snapshot file or any evidence is read |
+| the fine-tune worker of a group-scoped recording service (`recording_finetune_jobs`) | `create=False` | once per job whose request pins no version, to read the subject's active version; closed before the snapshot file or any evidence is read. The native app's workspace service pins its version in every job request, so its worker never opens the store; a Speak request's worker never opens it either |
 
 `create=False` never creates `provenance/corpus/` or the database file; a missing store is
 `CORPUS.STORE_MISSING`. Every open, with either flag, still changes the store directory:
@@ -382,12 +382,12 @@ The pre-context snapshot names the pinned catalog's digest. A workspace service
 2); only group and unprepared services take a launch digest.
 
 Because the catalog is pinned per process, a `catalog activate` while the app runs takes effect
-at the next launch. The one exception is Fine-tune model: each job reads the active version
-when its worker starts, so after an activate without a relaunch the job trains on the new
-version while the Library still shows the pinned one
-([NATIVE_RECORDING_UX.md](NATIVE_RECORDING_UX.md) §16). The service does not keep the
-store open, so the CLI can edit it while the app runs. Switching catalogs, adding prompts and editing prompts are all
-`publish` + `activate` + relaunch.
+at the next launch. Fine-tune model follows the same pin: each job records the version the
+service pinned and trains on that snapshot, so jobs and the Library move to a newly
+activated version together at the next launch
+([NATIVE_RECORDING_UX.md](NATIVE_RECORDING_UX.md) §16, D-018). The service does not keep
+the store open, so the CLI can edit it while the app runs. Switching catalogs, adding
+prompts and editing prompts are all `publish` + `activate` + relaunch.
 
 The service refuses:
 

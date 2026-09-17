@@ -2,10 +2,11 @@
 
 `voice-lab finetune` turns the recording library into a fine-tuned F5-TTS voice in one
 command and can be re-run after every revision of the corpus. The native recording app's
-**Fine-tune model** button runs the same pipeline ("From the app" below). It reads takes
-directly from the library; lab packages, intake, dataset manifests and the pilot gate are
-not involved. Module: `src/cole_voice_lab/finetune.py` (`@canonical finetune`). Decisions:
-D-016, D-018.
+**Fine-tune model** button runs the same pipeline ("From the app" below), and its **Speak**
+page speaks typed text with a finished run or the base weights ("Speak page" below). It
+reads takes directly from the library; lab packages, intake, dataset manifests and the
+pilot gate are not involved. Module: `src/cole_voice_lab/finetune.py` (`@canonical
+finetune`). Decisions: D-016, D-018, D-019.
 
 ## The corpus
 
@@ -73,7 +74,7 @@ example `finetune-20260916t153000z`) and all write under
 | `checkpoints/model_last.pt`, `model_<N>.pt` | fine-tuned weights (light: model + EMA, about 2.7 GB each) |
 | `train.log` | the trainer's output |
 | `run.json` | hyperparameters, runtime identity, checkpoint digests, status (`finetune-run`) |
-| `samples/<label>/sample-NN.wav`, `samples.json` | listening samples (`finetune-samples`) |
+| `samples/<label>/sample-NN.wav`, `samples.json` | listening samples (`finetune-samples`): 24 kHz mono 16-bit, 0600, each checked from its WAV header; `job.json` beside them is the synthesizer's input, and its temporary `synthesis-tmp/` there is gone once it exits |
 
 Nothing is written under `tmp/` or `raw/`, and no evidence is written under `provenance/`. The
 app may keep running; the command takes no library locks and only reads takes. A published
@@ -141,6 +142,21 @@ as the synthesis job's `vocoder_path`), never from the Hugging Face cache. Train
 vocoder: F5-TTS 1.1.22's `finetune_cli` loads one only for `--log_samples`, which the lab never
 passes and the launcher refuses.
 
+Synthesis keeps its temporary files inside the library. F5-TTS 1.1.22's
+`preprocess_ref_audio_text` writes a converted copy of the reference clip, a recording of
+Cole, to the temporary directory and never removes it. The synthesizer therefore creates a
+private (0700) work directory, `synthesis-tmp/`, in its output directory (the job's
+`work_directory`), replacing one an interrupted run left there. It makes that directory the
+temporary directory (`tempfile.tempdir` and `TMPDIR`) before F5-TTS is imported, and removes
+it when synthesis ends, whether it succeeded or failed. Listening samples and Speak clips
+alike fail `FINETUNE.RUNTIME_FAILED` when the directory is still there after the
+synthesizer exits. A synthesizer that is killed (a cancelled or interrupted job, a stopped
+service) cannot remove it. In a samples directory it then stays until the next synthesis
+into that directory; a Speak request's directory is removed with it ("Speak page" below).
+Synthesis runs before 2026-09-16 wrote these copies to the user's temporary directory
+(`$TMPDIR`, files named `tmp….wav`) and left them there. The lab does not remove them;
+delete them by hand if they are unwanted.
+
 Training also writes inside the runtime tree. The packed dataset goes to
 `data/<run-id>_pinyin`, and `ckpts/<run-id>` is a symlink to the run's `checkpoints/`.
 `finetune run` and the app remove that link when training fails, is interrupted (Ctrl-C) or
@@ -164,10 +180,13 @@ instead of 6), and light checkpoints without optimizer state. It refuses `--log_
 | `--reference-prompt-id` | first corpus clip | any clip in the corpus |
 
 Run one training job at a time and no other heavy work on the machine while it runs.
-`finetune run` and `finetune train` refuse with `FINETUNE.JOB_ACTIVE` while the recording
-app's service holds a queued or running job (`provenance/finetune-jobs/head.json`, read
-without a lock and without writing). The app does not see a `finetune run` started from the
-command line, so do not press Fine-tune model while one runs.
+`finetune run`, `finetune train` and `finetune synthesize` refuse with `FINETUNE.JOB_ACTIVE`
+while the recording app's service holds a queued or running job
+(`provenance/finetune-jobs/head.json`) or runs a Speak request
+(`provenance/finetune-jobs/speech-active.json` names a service process that is still alive).
+Both files are read without a lock and without writing; a damaged one is refused by name.
+The app does not see work started from the command line, so do not press Fine-tune model or
+Speak while it runs.
 
 ## From the app
 
@@ -215,24 +234,40 @@ that directory already exists. The job itself is recorded under
 | `head.json` | the one queued or running job, or none (`finetune-job-head`) |
 | `requests/<operation>.json` | the accepted request and the pinned catalog version, written once (`finetune-job-intent`) |
 | `terminal/<operation>.json` | the job's end: finished, failed with its error, or cancelled (`finetune-job`) |
+| `speech-active.json` | while a Speak request's worker runs: its operation id, the service's process id and start time (`finetune-speech-active`, 0600) |
 
 Unlike the command line, the app's service therefore writes under `provenance/`. The
 service creates this directory whenever it starts, even in a build without a runtime.
 
-**The latest finished run.** `finetune.latest_finished_finetune_run` chooses it. It scans
-`derived/finetune/` for directories whose name is a stable id and that hold a `run.json`,
-and picks the one with status `finished` and the newest `finished_at`. On equal times the
-greater run id wins. Runs from `finetune run` with the default `--output-root` count too;
-a `finetune dataset` directory without `run.json` does not. A `run.json` that is
-unreadable, invalid, or names another run or directory leaves the latest run unresolved: the
-status reply still names the active job and whether a runtime is configured, and carries
-`latest_run_error` (`FINETUNE.SOURCE_CHANGED`) instead of `latest_run`. Fine-tune model stays
-usable and its help names the problem; repair the record or move it out of
-`derived/finetune/`. The app's status reply and the Speak page plan both use this rule.
+**The finished runs.** `finetune.finished_finetune_run_ids` is the one ordering. It scans
+`derived/finetune/` for real directories whose name is a stable id and that hold a
+`run.json`, keeps those with status `finished`, and lists them by newest `finished_at`. On
+equal times the greater run id comes first. It reads only the `run.json` files. Runs from
+`finetune run` with the default `--output-root` count too; a `finetune dataset` directory
+without `run.json` does not. `finetune.finished_finetune_runs` summarizes the newest 32
+(`finetune_run_summary`, which reads each run's `run.json`, dataset, corpus and samples
+records), and `finetune.latest_finished_finetune_run` is the first of them. A published
+catalog's `corpus.json` is about 1.5 MB, so the service keeps each listed run's summary
+(`finetune.FineTuneSummaryCache`) and reads a run again only when one of its five records
+(`run.json`, `dataset/dataset.json`, `dataset/corpus.json` and both `samples.json`) has
+changed identity (device, inode, mode, size, modification or change time) or appeared or
+disappeared. A repeated status reply therefore reads only the `run.json` files. With 32 such
+runs the tests measured 1.26 s for the first reply and 6 ms for a repeat. A record that
+cannot be read is never kept, so it fails every reply until it is repaired. The status reply
+carries these as `finished_runs` (each with its Speak `reference_prompt_ids`) and
+`latest_run`, which is always the first. A `run.json` that is unreadable, invalid, or names
+another run or directory, or a listed run whose dataset, corpus or samples record cannot be
+read or does not bind its run, leaves them unresolved: the status reply still names the
+active job and whether a runtime is configured, and carries `latest_run_error`
+(`FINETUNE.SOURCE_CHANGED`) instead of either list. Fine-tune model stays usable and its help
+names the problem, while Speak is unavailable with that message; repair the record or move
+it out of `derived/finetune/`.
 
 **Cancellation.** A queued job is cancelled at once. For a running job the service sends
 SIGTERM to the worker's process group, which holds the worker, the F5 runtime processes
-and whatever they started. It sends SIGKILL after 10 s. Then it rewrites `run.json` as
+and whatever they started. It sends SIGKILL after 10 s and repeats it until the group is
+gone; a group still alive 10 s after that first SIGKILL stops supervision (below). Then it
+rewrites `run.json` as
 `failed` with "cancelled by the operator" while it still says `running`, removes the
 runtime's `ckpts/<run-id>` link when it points at this run, and records the job as
 `cancelled`. The link is released even when the `run.json` rewrite fails; the job then ends
@@ -246,7 +281,8 @@ cancelled after training: the model <run id> was trained, but its listening samp
 missing or incomplete", and a failed job's error message starts with that clause. The app
 shows `Model ready · <run id> · no samples` (or `· samples incomplete`).
 
-**Interruption.** The worker leads its own process group. It kills that group when its stdin
+**Interruption.** The worker leads its own process group and runs under umask 077, so
+everything it and the runtime create is private. It kills that group when its stdin
 closes and after any failure of its own (it writes one JSON line naming the code first), so
 training never outlives the service or the worker. When the app quits (it asks first while a
 job is queued or running), the service kills the group and leaves the job recorded as
@@ -265,10 +301,13 @@ queued when the service stopped starts when the service starts again.
 within 2 s, exits without a result, or runs longer than 24 hours. `terminal/<operation>.json`
 and `run.json` record it.
 
-**Supervision failure.** If the supervisor itself fails (damaged job evidence, or a worker
-group still alive 5 s after SIGKILL), it reports `RECORDING.WRITE_FAILED` "fine-tune
-supervision stopped; restart the app to recover the job" under request id
-`finetune-supervisor`. From then on every `fine-tune`, `cancel-fine-tune` and
+**Supervision failure.** If the supervisor itself fails (damaged job evidence; a worker
+group of a job or Speak request still alive 10 s after the SIGKILL of a cancel or deadline,
+or 5 s after the SIGKILL that ends every worker), it reports `RECORDING.WRITE_FAILED`
+"fine-tune supervision stopped; restart the app to recover the job" under request id
+`finetune-supervisor`. When it cannot start because of a damaged Speak marker ("Speak page"
+below), the same report carries
+`RECORDING.SOURCE_CHANGED` and a message naming the entry and what to do. From then on every `fine-tune`, `cancel-fine-tune` and
 `fine-tune-status` request is refused `RECORDING.GATE_NOT_READY` "fine-tune supervision
 stopped; restart the app", so no second job starts while an old group may live. The next
 service start recovers the job.
@@ -292,9 +331,192 @@ password database, because the frozen service's environment has no `HOME`.
 index, and reads takes read-only. It retries its selection for up to 10 s while a Save
 commits. A job trains on the takes that were kept when it selected them.
 
+## Speak page
+
+The native app's **Speak** page (D-019) speaks typed text with a finished fine-tuned run or
+the pinned base weights. What the operator sees is specified in
+[NATIVE_RECORDING_UX.md](NATIVE_RECORDING_UX.md) §17. This section covers what the service
+runs. Modules: `recording_finetune_jobs.py` (the supervisor's second job kind) and
+`finetune.py` (`resolve_speech_model`, `synthesize_speech`, `discard_speech_output`,
+`SpeechClip`).
+
+**Requests.** `synthesize` (`SynthesizeCommand`) carries an operation id and the text: 1 to
+2,000 code points, not only whitespace, and no format or control character except a
+newline. It also carries the model (`latest`, `base` or a run id), an optional
+`reference_prompt_id`, and `nfe_steps` (4 to 64, default 32; the app always sends 32).
+`cancel-synthesis` (`CancelSynthesisCommand`) names the request to stop. The fine-tune
+supervisor answers both, before and without an open recording context, in a workspace
+service and a group-scoped service alike. Every state is a `SynthesisEvent`.
+
+**Accepting a request** takes metadata time only. The service checks, in order:
+
+1. supervision is running (else `RECORDING.GATE_NOT_READY`);
+2. the operation id is new, or names the identical request, whose current state is then
+   returned (a different request under a used id is `RECORDING.INVALID_MESSAGE`);
+3. no other Speak request and no fine-tune job is queued or running (`FINETUNE.JOB_ACTIVE`,
+   retryable);
+4. a runtime is configured and has `bin/python` (`FINETUNE.RUNTIME_UNAVAILABLE`);
+5. some run has finished (`FINETUNE.NO_FINISHED_RUN`), judged from the `run.json` files
+   alone; records that cannot be read are left to the worker, which names the failure;
+6. `derived/speech/<operation id>/` does not exist (`FINETUNE.RUN_EXISTS`).
+
+Nothing is probed, hashed or written for a refusal. The reply is `queued`. The service also
+publishes `queued`, then `running` when the worker starts, then exactly one of `finished`,
+`failed` or `cancelled`, each under the operation id as request id (the app sends the submit
+under another request id). There is no progress in between. Requests are kept in memory
+only; the one file the service writes under `provenance/` for them is the running request's
+marker ("One GPU slot" below). A service stop ends a request without a final event. The
+service remembers its last 64 ended requests for resends and cancels.
+
+**Model and reference.** The worker resolves the request (`finetune.resolve_speech_model`):
+
+- `latest` is the first of `finished_finetune_run_ids` ("The finished runs" above), resolved
+  when the worker runs.
+- `base` is the runtime's pinned F5-TTS v1 Base weights. Its reference comes from that same
+  newest finished run, because a reference needs recorded audio. With no finished run,
+  every choice is refused `FINETUNE.NO_FINISHED_RUN`.
+- Any other value must name a finished run (`FINETUNE.NO_FINISHED_RUN` names the missing or
+  unfinished run). A run named `latest` or `base` cannot be chosen by its id.
+- The run's `run.json`, `dataset/dataset.json` and `dataset/corpus.json` must bind each
+  other and the directory (`finetune.load_finetune_run_inputs`), else
+  `FINETUNE.SOURCE_CHANGED`.
+- The reference is `reference_prompt_id`'s clip in the reference run's dataset
+  (`FINETUNE.REFERENCE_MISSING` when that run has none). Without one, it is the first prompt
+  in the run's `corpus.json` marked `reference_candidate` that has a clip in `dataset.json`
+  (`finetune.speech_reference_candidates`, catalog order), else the run's first clip. Each
+  run summary in the status reply lists these candidates as `reference_prompt_ids` (at most
+  64), and the page's reference menu shows them.
+
+Then `finetune.synthesize_speech` checks the text again (`FINETUNE.UNSUPPORTED_TEXT`) and
+creates `derived/speech/<operation id>/` (0700; `FINETUNE.RUN_EXISTS` if it exists). It
+describes the runtime with every pin, as training does. It checks the checkpoint: for a
+fine-tuned run, the `checkpoints/model_last.pt` that `run.json` records, which must still
+hash to its recorded digest (`FINETUNE.CHECKPOINT_MISSING`, `FINETUNE.SOURCE_CHANGED`); for
+`base`, the pinned weights. The reference clip must still hash to its digest in
+`dataset.json` (`FINETUNE.SOURCE_CHANGED`). The synthesizer (`resources/f5_synthesize.py`,
+`file_prefix` `speech`) then runs once in the runtime, with EMA weights on MPS and the
+reference clip's exact text. The worker never opens the take store or the corpus store.
+Finished runs are never written.
+
+**Output.** One directory per request:
+
+| Path | What it is |
+| --- | --- |
+| `derived/speech/<operation id>/speech-01.wav` | the clip: 24 kHz mono 16-bit PCM, 0600 |
+| `derived/speech/<operation id>/speech.json` | its record (`finetune-speech`, `SpeechClip`), 0600, written last |
+
+`speech.json` holds relative paths only. It records:
+
+- `operation_id` and `created_at`;
+- `model`: `base`, or the id of the run that spoke (a `latest` request records the run it
+  resolved to);
+- `reference_run_id`, `reference_prompt_id` and `reference_audio_sha256`;
+- `checkpoint_sha256`, `use_ema` and `nfe_steps`;
+- `text`;
+- the clip's `relative_path`, `sha256`, `frames` (from the WAV header), `sample_rate_hz`
+  (24000) and `seconds` (frames / 24000).
+
+The synthesizer's `job.json`, which holds absolute paths and the text, and its
+`synthesis-tmp/` work directory, which holds F5-TTS's copy of the reference clip, are
+removed when the synthesizer exits. Before anything is reported, the clip is made 0600 and read back from its header. A
+file that is not PCM WAV, is not 24 kHz 16-bit mono, or is empty or truncated fails
+`FINETUNE.RUNTIME_FAILED`, naming what it is. So does a synthesizer that reports another
+file or another count. The finished event repeats the clip's path, digest, frames, rate and
+seconds. The supervisor refuses a result whose text or step count differs from the request
+(`RECORDING.INVALID_MESSAGE`).
+
+A request that does not finish (failed, cancelled or past its deadline) has its directory
+removed (`finetune.discard_speech_output`), unless it failed `FINETUNE.RUN_EXISTS`, when the
+directory was not its own. If that removal fails, a failed request keeps its own error and a
+cancelled one fails `RECORDING.WRITE_FAILED` ("the Speak request stopped but its partial
+output was not removed: …").
+
+A request ended by a service stop or crash cannot clean up. Its directory has no
+`speech.json` and may hold `job.json`, a partial clip and `synthesis-tmp/`. The next time
+fine-tune supervision starts, before any request runs, the service removes every such
+directory (`finetune.discard_unfinished_speech`). A directory with `speech.json` is a finished
+request and is never touched. A directory named like an operation id without it is removed
+only when it holds nothing but `job.json`, `speech-01.wav`, the JSON writer's temporary files
+(`.job.json.tmp-…`, `.speech.json.tmp-…`), a Finder `.DS_Store` and `synthesis-tmp/` (regular
+files and directories only). Anything else under `derived/speech/` is left in place untouched
+and stops nothing: another file or a link in such a directory, a file directly in
+`derived/speech/` (a Finder `.DS_Store` too) and a directory with another name. Nothing removes finished clips; they accumulate under
+`derived/speech/`.
+
+**Deadline and cancel.** A worker may run 120 seconds (`SPEECH_DEADLINE_SECONDS`), counted
+from its start, so loading the model is included. Past that the service kills its process
+group with SIGKILL and fails the request `FINETUNE.SYNTHESIS_DEADLINE` (retryable). Cancel
+kills the group with SIGKILL at once; unlike training, there is no SIGTERM grace. Either way
+the request ends only once the group is gone. Until then it stays running, SIGKILL is
+repeated, and nothing else can start. A group still alive 10 s after the first SIGKILL stops
+supervision ("Supervision failure" above): the request then never ends, the app fails it
+itself, and its marker stays. A worker that cannot start, does not take
+its request within 2 s, or exits without a result fails the request `FINETUNE.INTERRUPTED`.
+An invalid frame fails it `RECORDING.INVALID_MESSAGE`. The shipped service cannot change the
+deadline. The native `speak` suite shortens it through the test-only wrapper
+(`tests/native_finetune_service_fixture.py --test-synthesis-deadline`), which is never part
+of a build.
+
+**One GPU slot.** The supervisor runs one worker at a time, and Speak and fine-tuning share
+that slot. A Speak request is refused while a fine-tune job is queued or running, including
+a job the service is still recovering at launch, or while another request is queued or
+running. A `fine-tune` submit is refused `FINETUNE.JOB_ACTIVE` ("Speak request <operation
+id> is queued|running; fine-tune once it has finished or been cancelled") while a request
+is queued or running. The slot is freed only after the worker's whole process group is
+gone.
+
+The command line sees the slot too. Just before a request's worker starts, the service
+writes `provenance/finetune-jobs/speech-active.json` (`SpeechActiveMarker`: the operation
+id, the service's process id and the start time; 0600). It removes the marker once the
+worker's group is gone: after the request finished, failed or was cancelled, and when the
+service stops. `voice-lab finetune run`, `train` and `synthesize` refuse
+`FINETUNE.JOB_ACTIVE` ("the recording app's Speak request <operation id> is running")
+while the marker names a live process, as they do while `head.json` holds a job
+(`recording_finetune_jobs.active_speech_request`). A marker whose service is gone, left by
+a crash, is ignored by the command line and removed when supervision next starts; one whose
+process id still exists then is left for the service's next request to replace. A marker
+that cannot be written fails the request `RECORDING.WRITE_FAILED` ("Speak could not record
+that it is running: …") before any worker starts. One that cannot be removed stops
+supervision. A damaged marker stops supervision at start (`RECORDING.SOURCE_CHANGED`,
+"… speech-active.json is damaged …; remove it, then restart the app") and makes the
+commands fail by name. The app does not see command-line work, so do not press Speak while
+a `voice-lab finetune` command runs.
+
+**The digest cache.** Describing the runtime hashes the 1.35 GB base weights, and checking a
+checkpoint hashes about 2.7 GB. For the life of the service, the supervisor keeps what Speak
+workers verified (`finetune.FineTuneDigestCache`): up to 16 file digests, the newest kept,
+and the runtime probe (the F5-TTS and torch versions and the package path). It passes them
+with each request (`FineTuneTrustedDigests`). A worker reuses a digest only while the file's
+identity (device, inode, size, modification time and change time) equals the recorded one.
+It reuses the probe only while the runtime's python and its site-packages directory are
+unchanged. Anything else is hashed or probed again, and a pinned file must still match its
+pin, so a changed file is still noticed while a repeat request skips the hashing. Fine-tune
+jobs neither use nor fill this cache. With the stub runtime the tests show a repeat request
+skipping the probe; real timings are left to the physical check.
+
+**The worker.** A Speak request uses the same worker command as a fine-tune job (`python -m
+cole_voice_lab.recording_finetune_jobs --worker --asset-root ROOT --operation-id OP`). It
+reads one `SpeechWorkerRequest` frame and writes one `SpeechWorkerReply`
+(`finetune-speech-worker-request`, `finetune-speech-worker-reply`). The reply carries the
+clip or the error, the resolution when the request got that far, and what the worker
+verified. The worker runs under umask 077 and kills its own group when its input closes or
+it fails, as for jobs. Refusals and failures reach the app under their own codes, as listed
+for jobs above, and the page shows the message verbatim.
+
+**Command-line changes.** `finetune train` and `finetune synthesize` read a run's dataset
+through `finetune.load_finetune_dataset`, which needs no `run.json`. A missing, invalid or
+unbound `dataset.json` or `corpus.json` is therefore `voice-lab:
+FINETUNE.SOURCE_CHANGED: …` (exit 2). `finetune.load_finetune_run_inputs` adds the run
+record, and `finetune.finished_finetune_runs` lists finished runs as above. Listening
+samples from `finetune synthesize` and `finetune run` are now private and header-checked
+like Speak clips. The synthesizer writes 16-bit PCM explicitly.
+
 ## Not covered
 
-Samples are for listening. They are not accepted raw, not a reference publication, and not a
-dataset manifest; the lab's transfer, consent-for-rendering and promotion rules are unchanged.
-The app does not play the samples (the Speak page is a separate plan), and it offers no
-epoch override or other training option.
+Samples and Speak clips are for listening. They are not accepted raw, not a reference
+publication, not a dataset manifest and not a promotion or ChloeSpeech artifact. The lab's
+transfer, consent-for-rendering and promotion rules are unchanged for any other use. Neither
+`voice-lab finetune` nor the app (Fine-tune model or Speak) reads a consent record; D-019
+records that scope limit for local listening by Cole, pending Cole's confirmation. The app
+does not play the listening samples, offers no epoch override or other training option, and
+offers no step count, streaming or long-form synthesis on the Speak page.

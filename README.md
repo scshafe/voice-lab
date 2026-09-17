@@ -67,7 +67,9 @@ spoken prompt in the recording library and writes listening samples next to the
 untouched base model; re-run it after any revision. See [docs/FINETUNE.md](docs/FINETUNE.md).
 The native recording app built from this checkout runs the same pipeline from its
 **Fine-tune model** button, with progress in the app, and no longer prepares lab packages
-([docs/NATIVE_RECORDING_UX.md](docs/NATIVE_RECORDING_UX.md) §16).
+([docs/NATIVE_RECORDING_UX.md](docs/NATIVE_RECORDING_UX.md) §16). Its **Speak** page
+speaks typed text with a finished fine-tune or the base model, for local listening
+(§17 there, and "Speak page" in docs/FINETUNE.md).
 
 `voice-lab catalog` edits the prompts the native app records against. Prompts and
 published catalog versions live in a database inside the library, the app loads the

@@ -249,6 +249,11 @@ Fine-tuned checkpoints and listening samples are working artifacts, not accepted
 references or dataset manifests; consent for rendering, transfer approval and promotion
 are unchanged. See docs/FINETUNE.md.
 
+Amended 2026-09-16: the app's Speak page (D-019) also synthesizes with a finished run or the
+base weights. It writes under `derived/speech/<operation-id>/`, never into a run, and its
+clips have the standing of listening samples. Neither `voice-lab finetune` nor the app reads
+a consent record; D-019 records that scope and leaves it open for Cole to confirm.
+
 ## D-017 — The prompt catalog is data in the corpus store
 
 Cole asked on 2026-09-15 that prompts be editable without rebuilding the app. Cole
@@ -372,3 +377,65 @@ queued or running. The runtime's Vocos vocoder is pinned (`charactr/vocos-mel-24
 work, so a missing vocoder fails a job in seconds instead of after training. A job stopped
 while writing samples leaves a usable model without samples. Quitting while a job is queued
 or running asks first, and an interrupted job is reported at the next launch.
+
+Amended 2026-09-16: the app now has a second page, Speak (D-019). Fine-tune model and Speak
+share one GPU slot in the recording service. A fine-tune is refused `FINETUNE.JOB_ACTIVE`
+while a Speak request is queued or running, and a Speak request while a fine-tune is queued
+or running. The Record page and its one action beyond recording are unchanged.
+
+## D-019 — In-app speech is a local listening tool
+
+Cole asked on 2026-09-15 for a separate view in the recording app to type text and perform
+text-to-speech with the tuned model. Recording and training already happen on the same Mac
+(D-016, D-018).
+
+The native app therefore has a second page, **Speak**. It synthesizes locally, out of
+process in the pinned F5-TTS runtime, with a finished fine-tuned run (the newest by
+default, or an earlier one) or with the pinned base weights. The reference clip is a
+reference-candidate prompt's level-normalized training copy in a finished run's dataset,
+checked against that run's recorded digest. Base uses the newest finished run's clips, so
+nothing speaks before a run has finished (`FINETUNE.NO_FINISHED_RUN`). Each request writes
+one clip and its record under `derived/speech/<operation-id>/` in the library, private and
+checked from its WAV header. Finished runs are never modified.
+
+The recording service runs one request at a time, as a second, in-memory job kind of the
+fine-tune supervisor. Speak and fine-tuning share one GPU slot: each is refused
+`FINETUNE.JOB_ACTIVE` while the other is queued or running, so synthesis never runs
+alongside the app's training. A request has 120 seconds (`FINETUNE.SYNTHESIS_DEADLINE`),
+and Cancel kills its worker's process group. The page plays clips through its own player,
+which yields to recording like the review player, and can save a byte copy to a place the
+operator chooses outside the library. Nothing leaves the Mac, and synthesis keeps F5-TTS's
+temporary copy of the reference clip inside the library, removing it when it ends.
+`voice-lab finetune run`, `train` and `synthesize` refuse while the app trains or speaks,
+but the app does not see work started in a terminal (docs/FINETUNE.md).
+
+Speak clips are working audio for listening, with the standing of fine-tune listening
+samples (D-016). They are not accepted raw, references, dataset manifests, promotion
+evidence or ChloeSpeech artifacts, and nothing in the lab reads them as any of these. A
+Save As copy is a file outside the lab's records. The consent and promotion rules for
+recognizable-human synthesis in AGENTS.md, and the transfer approval rule, still govern
+every use beyond local listening: publishing a reference, building a dataset, promotion,
+ChloeSpeech, or moving audio off the Mac.
+
+Speak does not meet AGENTS.md's invariant "Recognizable-human synthesis requires a
+checksum-bound reference and an approved, checksum-bound consent record with a matching
+subject and purpose" as the lab's rendering paths do. It reads no consent record. Its
+reference is bound to a fine-tune run's dataset digest, not a published reference
+(docs/REFERENCES_AND_DATASETS.md). No consent purpose names it: the purposes are
+`private-zero-shot-evaluation`, `private-fine-tuning` and `private-chloe-speech-rendering`.
+The same has held since D-016 for `voice-lab finetune`, its listening samples and the app's
+Fine-tune model, none of which reads a consent record. This decision makes that an explicit
+scope limit: in-app synthesis is local listening by Cole, the subject, to Cole's own voice,
+on the Mac that holds Cole's library. The page does not check who is at the keyboard, so the
+limit rests on the app and the library being Cole's.
+
+Open for Cole (2026-09-16):
+
+- Confirm this consent scope for local listening, or require an approved consent record
+  (for example a new purpose for local listening) before Speak, and fine-tuning, may run.
+- Speak clips accumulate under `derived/speech/`, and nothing removes them. (The service
+  removes only what a request cut short by a service stop or crash left without
+  `speech.json`, when it next starts.) Whether to add retention or a delete action is
+  Cole's call.
+
+See docs/FINETUNE.md ("Speak page") and docs/NATIVE_RECORDING_UX.md §17.
