@@ -11,6 +11,14 @@ struct RecordingContextRequests {
     let openContext: @MainActor (_ command: RecordingJSON) async throws -> RecordingWireEnvelope
 }
 
+/// The launch handshakes, in the order `connect` uses them: both peers' handshakes (run
+/// concurrently), then the recorder's snapshot. Fixtures script them.
+struct RecordingLaunchRequests {
+    let recorderHandshake: @Sendable () async throws -> Void
+    let serviceHandshake: @Sendable () async throws -> Void
+    let recorderSnapshot: @MainActor () async throws -> RecordingWireEnvelope
+}
+
 /// Canonical UI transport binding. Durable decisions/navigation remain in Python;
 /// Stop always targets the native helper directly, independent of service/QC work.
 @MainActor
@@ -69,6 +77,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
     /// older value never names a different job.
     var fineTuneGeneration: UInt64 = 0
     var fineTuneStatusRequests: [(operationID: String, generation: UInt64)] = []
+    var fineTuneSeenOperations: [String] = []
     var fineTuneStatusTask: Task<Void, Never>?
     /// Fixture-only fine-tune transport; a configured workspace reaches its service.
     var fineTuneRequests: RecordingFineTuneRequests?
@@ -78,8 +87,9 @@ public final class RecordingWorkspaceModel: ObservableObject {
     var recordingStatusHold: Duration = .seconds(8)
     var statusSequence: UInt64 = 0
     var recordingStatusChange: (sequence: UInt64, at: ContinuousClock.Instant)?
-    var fineTuneOutcomeSequence: UInt64?
+    var fineTuneOutcome: (sequence: UInt64, at: ContinuousClock.Instant)?
     var statusHoldTask: Task<Void, Never>?
+    var fineTuneOutcomeHoldTask: Task<Void, Never>?
     @Published public internal(set) var takeHistory: [RecordingJSON] = []
     @Published public internal(set) var takeHistoryLoading = false
     @Published public internal(set) var takeHistoryError: String?
@@ -305,12 +315,25 @@ public final class RecordingWorkspaceModel: ObservableObject {
         guard !connected, let recorder, let service else { return }
         connected = true
         consumeChannels(recorder: recorder, service: service)
+        await launch(RecordingLaunchRequests(
+            recorderHandshake: { try await recorder.connect() },
+            serviceHandshake: { try await service.connect() },
+            recorderSnapshot: { try await recorder.snapshot() }))
+    }
+
+    /// The launch after the channels are consumed. The fine-tune status is requested as soon as
+    /// the service's handshake succeeds (the service answers it without any context), so a
+    /// failed recorder handshake, snapshot or catalog step never leaves "Checking whether
+    /// fine-tuning is available"; the catalog step asks again.
+    func launch(_ requests: RecordingLaunchRequests) async {
+        let recorderHandshake = requests.recorderHandshake, serviceHandshake = requests.serviceHandshake
         do {
-            async let native: Void = recorder.connect()
-            async let metadata: Void = service.connect()
-            _ = try await (native, metadata)
+            async let native: Void = recorderHandshake()
+            try await serviceHandshake()
+            scheduleFineTuneStatus()
+            try await native
             var updated = state; updated.serviceReady = true; publish(updated)
-            _ = try result(await recorder.snapshot())
+            _ = try result(await requests.recorderSnapshot())
         } catch { fail(error, phase: .recoverableError); return }
         guard await prepareContext() else { return }
         await refreshReadiness()
@@ -970,6 +993,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
         scheduledHistoryRefresh?.cancel(); scheduledHistoryRefresh = nil
         scheduledRecoveryRefresh?.cancel(); scheduledRecoveryRefresh = nil
         statusHoldTask?.cancel(); statusHoldTask = nil
+        fineTuneOutcomeHoldTask?.cancel(); fineTuneOutcomeHoldTask = nil
         reviewTask?.cancel(); reviewTask = nil
         for consumer in consumers { consumer.cancel() }
         consumers.removeAll(); recorder?.channel.close(); service?.channel.close()

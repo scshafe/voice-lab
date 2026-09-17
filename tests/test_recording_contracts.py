@@ -1994,6 +1994,22 @@ def finetune_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
             ),
         ),
         (
+            "status-latest-run-unreadable",
+            "recording-response",
+            response(
+                FineTuneStatusEvent(
+                    operation_id="op-fine-tune-status",
+                    runtime_configured=True,
+                    active=progress,
+                    latest_run_error=RecordingError(
+                        code="FINETUNE.SOURCE_CHANGED",
+                        message="the latest fine-tuned model cannot be read: synthetic",
+                        retryable=False,
+                    ),
+                )
+            ),
+        ),
+        (
             "command-maximum-epochs",
             "recording-service-request",
             request(
@@ -2224,6 +2240,24 @@ def finetune_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
             changed(status, ("data", "runtime_configured"), absent),
         ),
         (
+            "status-latest-run-and-error",
+            "recording-response",
+            changed(
+                status,
+                ("data", "latest_run_error"),
+                {"code": "FINETUNE.SOURCE_CHANGED", "message": "Synthetic", "retryable": False},
+            ),
+        ),
+        (
+            "status-latest-run-error-unknown-code",
+            "recording-response",
+            changed(
+                changed(status, ("data", "latest_run"), None),
+                ("data", "latest_run_error"),
+                {"code": "FINETUNE.CANCELLED", "message": "Synthetic", "retryable": False},
+            ),
+        ),
+        (
             "error-unknown-finetune-code",
             "recording-response",
             response(error=failure)
@@ -2322,16 +2356,17 @@ def test_finetune_messages_bind_their_state_and_relative_run_paths(case: Any) ->
 
 def test_every_finetune_code_is_a_valid_wire_error() -> None:
     names = {name for name, *_ in finetune_cases()}
-    assert len(FINETUNE_WIRE_CODES) == 21
+    assert len(FINETUNE_WIRE_CODES) == 20
     for code in FINETUNE_WIRE_CODES:
         assert f"finetune-error-{code.lower().replace('.', '-').replace('_', '-')}" in names
     assert {
         "FINETUNE.CORPUS_INCOMPLETE",
         "FINETUNE.JOB_ACTIVE",
-        "FINETUNE.CANCELLED",
         "FINETUNE.INTERRUPTED",
         "FINETUNE.RUNTIME_UNAVAILABLE",
     } <= set(FINETUNE_WIRE_CODES)
+    # A cancelled job carries no error, so no code names a cancellation.
+    assert "FINETUNE.CANCELLED" not in FINETUNE_WIRE_CODES
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
@@ -2343,7 +2378,7 @@ def test_finetune_numbers_must_be_finite(value: float) -> None:
 
 
 def test_finetune_state_rules_name_what_is_missing() -> None:
-    failure = RecordingError(code="FINETUNE.CANCELLED", message="Synthetic", retryable=False)
+    failure = RecordingError(code="FINETUNE.INTERRUPTED", message="Synthetic", retryable=False)
     for changes, message in (
         ({"epoch": None}, "pass and total"),
         ({"stage": "sampling", "epochs": None}, "counted against its total"),
@@ -2377,6 +2412,13 @@ def test_finetune_state_rules_name_what_is_missing() -> None:
             operation_id="op-status",
             runtime_configured=True,
             latest_run=synthetic_finetune_run(status="failed", error="Synthetic", **no_samples),
+        )
+    with pytest.raises(ValidationError, match="never both"):
+        FineTuneStatusEvent(
+            operation_id="op-status",
+            runtime_configured=True,
+            latest_run=synthetic_finetune_run(),
+            latest_run_error=failure,
         )
 
 

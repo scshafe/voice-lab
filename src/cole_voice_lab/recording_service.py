@@ -125,6 +125,9 @@ MAX_PENDING_REQUESTS = 16
 MAX_REPLAY_RESPONSES = 128
 MAX_REPLAY_BYTES = 8 * MAX_CONTROL_FRAME_BYTES
 MAX_OUTPUT_BYTES = 4 * MAX_CONTROL_FRAME_BYTES
+# Background updates kept for the app until its handshake (a recovered fine-tune's run and
+# final state, a supervision failure).
+MAX_RETAINED_BACKGROUND = 8
 CONTROL_POLL_SECONDS = 0.02
 # Safety net only: every completed reply and every closure wakes the pipe server through
 # its self-pipe, so an idle service sleeps in select instead of polling for replies.
@@ -320,14 +323,20 @@ def _fine_tune_event(
     jobs: FineTuneSupervisor | None,
     command: FineTuneServiceCommand,
     cancellation: RecordingCancellation,
+    *,
+    pinned: Callable[[], CatalogReference] | None = None,
 ) -> ReliableEvent:
     """Answer a fine-tune command from the service's job supervisor (no context needed).
 
     Status is read-only; submit and cancel pass the cancellation's commit barrier first.
+    Params: ``pinned`` resolves the catalog version this service pinned (the one the app
+    shows); a submitted job trains on it. Without it (a group-scoped service) the job uses
+    the subject's active version.
     Returns: a ``FineTuneProgressEvent`` (submit, cancel) or ``FineTuneStatusEvent``.
     Raises: ``RecordingServiceError`` RECORDING.GATE_NOT_READY when this service runs no
-    fine-tune jobs, and every job refusal and ``FineTuneError`` under its own code
-    (FINETUNE.JOB_ACTIVE, FINETUNE.RUNTIME_UNAVAILABLE, RECORDING.DISK_SPACE, ...).
+    fine-tune jobs, ``pinned``'s errors for a submit, and every job refusal and
+    ``FineTuneError`` under its own code (FINETUNE.JOB_ACTIVE,
+    FINETUNE.RUNTIME_UNAVAILABLE, RECORDING.DISK_SPACE, ...).
     """
     from .finetune import FineTuneError
     from .recording_finetune_jobs import FineTuneJobError
@@ -339,9 +348,12 @@ def _fine_tune_event(
     try:
         if isinstance(command, FineTuneStatusCommand):
             return jobs.status(command)
+        reference = (
+            pinned() if pinned is not None and isinstance(command, FineTuneCommand) else None
+        )
         cancellation.begin_commit()
         if isinstance(command, FineTuneCommand):
-            return jobs.submit(command)
+            return jobs.submit(command, catalog_reference=reference)
         return jobs.cancel(command)
     except FineTuneJobError as error:
         refusal = error.recording_error
@@ -725,8 +737,14 @@ class RecordingWorkspaceBackend:
                     )
                 )
             if isinstance(command, (FineTuneCommand, CancelFineTuneCommand, FineTuneStatusCommand)):
-                # Fine-tuning reads the library, not the open context: it works before one.
-                return _fine_tune_event(self.finetune_jobs, command, cancellation)
+                # Fine-tuning reads the library, not the open context: it works before one. A
+                # job trains on the catalog version this process pinned, the one the app shows.
+                return _fine_tune_event(
+                    self.finetune_jobs,
+                    command,
+                    cancellation,
+                    pinned=lambda: self.pinned_catalog().reference,
+                )
             if isinstance(command, CatalogCommand):
                 # A catalog this root refuses is never shown, exactly as open-context refuses it.
                 pinned = self._served_catalog()
@@ -970,6 +988,10 @@ class RecordingServiceSession:
         self._replay: OrderedDict[str, tuple[str, RecordingResponse, int]] = OrderedDict()
         self._replay_bytes = 0
         self._control_wakeup: Callable[[], None] | None = None
+        # Background updates that must reach the app even when published before its handshake.
+        self._retained: deque[tuple[str, ReliableEvent | None, RecordingError | None]] = deque(
+            maxlen=MAX_RETAINED_BACKGROUND
+        )
         self._worker = threading.Thread(
             target=self._metadata_loop, daemon=True, name="recording-service-metadata"
         )
@@ -1050,12 +1072,21 @@ class RecordingServiceSession:
             self._publish_response(response)
             return response
 
-    def publish_event(self, request_id: str, event: ReliableEvent) -> None:
-        """Reliable unsolicited update shares the same bounded ordered response lane."""
-        self._publish_background(request_id, event=event)
+    def publish_event(self, request_id: str, event: ReliableEvent, *, retain: bool = False) -> None:
+        """Reliable unsolicited update shares the same bounded ordered response lane.
 
-    def publish_error(self, request_id: str, error: RecordingError) -> None:
-        self._publish_background(request_id, error=error)
+        Before the handshake an update is dropped (durable evidence and the bootstrap
+        requests recover that state), unless ``retain``: it is then kept, at most
+        ``MAX_RETAINED_BACKGROUND`` of them (the oldest dropped first), and published in
+        order right after the handshake reply.
+        """
+        self._publish_background(request_id, event=event, retain=retain)
+
+    def publish_error(
+        self, request_id: str, error: RecordingError, *, retain: bool = False
+    ) -> None:
+        """An error-only background update; ``retain`` as ``publish_event``."""
+        self._publish_background(request_id, error=error, retain=retain)
 
     def _publish_background(
         self,
@@ -1063,9 +1094,14 @@ class RecordingServiceSession:
         *,
         event: ReliableEvent | None = None,
         error: RecordingError | None = None,
+        retain: bool = False,
     ) -> None:
         with self._lock:
-            if self.closed or not self._handshaken:
+            if self.closed:
+                return
+            if not self._handshaken:
+                if retain:
+                    self._retained.append((request_id, event, error))
                 return  # Evidence is durable; bootstrap/snapshot recovers pre-handshake state.
             if self._sequence >= MAX_RECORDING_REVISION:
                 raise RecordingServiceError("RECORDING.INVALID_MESSAGE", "event sequence exhausted")
@@ -1200,7 +1236,11 @@ class RecordingServiceSession:
                 "RECORDING.BUILD_MISMATCH", "recording executable identities do not match"
             )
         self._handshaken = True
-        return self._response(request, event=HandshakeEvent(role="service", build=self.build))
+        response = self._response(request, event=HandshakeEvent(role="service", build=self.build))
+        while self._retained:
+            request_id, event, error = self._retained.popleft()
+            self._publish_background(request_id, event=event, error=error)
+        return response
 
     def _cancel(self, request: ServiceRequest) -> RecordingResponse:
         command = request.data
@@ -1709,10 +1749,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             recovery_supervisor.start()
         if finetune_queue is not None:
             assert isinstance(backend, (RecordingWorkspaceBackend, RecordingTakesBackend))
+            # A job's outcome and a supervision failure reach the app even when they happen
+            # before its handshake (a job the previous service left running is recovered then).
             finetune_supervisor = FineTuneSupervisor(
                 finetune_queue,
                 on_event=session.publish_event,
-                on_failure=lambda error: session.publish_error("finetune-supervisor", error),
+                on_outcome=lambda request_id, event: session.publish_event(
+                    request_id, event, retain=True
+                ),
+                on_failure=lambda error: session.publish_error(
+                    "finetune-supervisor", error, retain=True
+                ),
             )
             backend.finetune_jobs = finetune_supervisor
             finetune_supervisor.start()

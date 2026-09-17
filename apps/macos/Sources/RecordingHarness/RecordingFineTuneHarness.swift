@@ -17,8 +17,9 @@ extension RecordingHarness {
     /// recorded and saved while it trains and it is cancelled mid-training.
     static let slowTrainingStepSeconds = 1.0
 
-    /// Record two takes, fine-tune to a finished run, then start a second job, record and save
-    /// a take while it trains, and cancel it. Writes `finetune-report.json`.
+    /// Record two takes, fine-tune to a finished run, then start a second job, wait until its
+    /// line shows the trainer's loss and time left, record and save a take while it trains, and
+    /// cancel it. Writes `finetune-report.json`.
     @MainActor static func fineTune(configurationURL: URL, runtimeRoot: URL, directory: URL) async throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
         let config = try RecordingApplicationConfiguration.load(privateFile: configurationURL)
@@ -100,6 +101,15 @@ extension RecordingHarness {
         guard model.fineTune.phase == .running, let cancelledRun = model.fineTune.runID else {
             throw fineTuneError("The second fine-tune did not reach training: \(model.fineTune.statusLine ?? "no status")")
         }
+        // A trainer status with its update and loss must reach the status line before cancelling.
+        try await observer.wait {
+            (model.fineTune.update != nil && model.fineTune.loss != nil) || model.fineTune.phase.isTerminal
+        }
+        guard model.fineTune.phase == .running, let progressLine = model.fineTuneStatusLine,
+              progressLine.hasPrefix("Fine-tuning · pass "), progressLine.contains(" min left"),
+              progressLine.contains(" · loss "), lines.contains(progressLine) else {
+            throw fineTuneError("The second fine-tune never showed its loss and time left: \(lines)")
+        }
         let runningBeforeRecord = model.fineTune.phase == .running
         let during = try await recordAndSave(fineTuneReadingPrompts[1], model: model, observer: observer)
         let runningAfterSave = model.fineTune.phase == .running && model.fineTune.operationID == cancelledOperation
@@ -123,6 +133,7 @@ extension RecordingHarness {
         let cancelled: RecordingJSON = .object([
             "operation_id": .string(cancelledOperation), "run_id": .string(cancelledRun),
             "lines": .array(lines.map(RecordingJSON.string)), "stages": .array(stages.map(RecordingJSON.string)),
+            "progress_before_cancel": .string(progressLine),
             "status_region_line": .string(model.statusRegion.line),
         ])
 

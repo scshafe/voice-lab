@@ -5,9 +5,9 @@
       "minLength": 1,
       "type": "string"
     },
-    "FineTunePretrainedPin": {
+    "FineTunePinnedFile": {
       "additionalProperties": false,
-      "description": "A substitute pretrained-weights pin (tests only; the service never sends one).",
+      "description": "One pinned runtime file: its exact size and SHA-256.",
       "properties": {
         "sha256": {
           "$ref": "#/$defs/Sha256"
@@ -22,7 +22,29 @@
         "sha256",
         "size_bytes"
       ],
-      "title": "FineTunePretrainedPin",
+      "title": "FineTunePinnedFile",
+      "type": "object"
+    },
+    "FineTunePretrainedPins": {
+      "additionalProperties": false,
+      "description": "The pretrained files a runtime must hold, each pinned by size and SHA-256.\n\n``weights`` is ``pretrained/F5TTS_v1_Base/model_1250000.safetensors``;\n``vocoder_config`` and ``vocoder_model`` are ``pretrained/vocos-mel-24khz/config.yaml``\nand ``pytorch_model.bin``. Only tests substitute them (a stub runtime's few-byte files).",
+      "properties": {
+        "vocoder_config": {
+          "$ref": "#/$defs/FineTunePinnedFile"
+        },
+        "vocoder_model": {
+          "$ref": "#/$defs/FineTunePinnedFile"
+        },
+        "weights": {
+          "$ref": "#/$defs/FineTunePinnedFile"
+        }
+      },
+      "required": [
+        "weights",
+        "vocoder_config",
+        "vocoder_model"
+      ],
+      "title": "FineTunePretrainedPins",
       "type": "object"
     },
     "Sha256": {
@@ -52,7 +74,7 @@
     "pretrained_pin": {
       "anyOf": [
         {
-          "$ref": "#/$defs/FineTunePretrainedPin"
+          "$ref": "#/$defs/FineTunePretrainedPins"
         },
         {
           "type": "null"

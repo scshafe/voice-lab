@@ -743,10 +743,29 @@ def _finetune_load_run_inputs(layout: AssetLayout, run_root: str) -> tuple[Any, 
     return corpus, dataset
 
 
+def _refuse_during_app_finetune(layout: AssetLayout) -> None:
+    """Refuse to train while the recording app's service holds a queued or running job.
+
+    Reads ``provenance/finetune-jobs/head.json`` only; takes no lock and writes nothing.
+    Raises: ``FineTuneError`` FINETUNE.JOB_ACTIVE naming the app's job.
+    """
+    from .finetune import FineTuneError
+    from .recording_finetune_jobs import active_finetune_job
+
+    job = active_finetune_job(layout)
+    if job is not None:
+        raise FineTuneError(
+            "FINETUNE.JOB_ACTIVE",
+            f"the recording app's fine-tune {job.operation_id} is {job.state}; wait for it to "
+            "finish or cancel it in the app (one training job at a time)",
+        )
+
+
 def _finetune_train(options: argparse.Namespace) -> int:
     from .finetune import describe_finetune_runtime, run_f5_finetune
 
     layout = AssetLayout.validate(_asset_root(options.asset_root))
+    _refuse_during_app_finetune(layout)
     run_root = f"{options.output_root}/{options.run_id}"
     corpus, dataset = _finetune_load_run_inputs(layout, run_root)
     runtime = describe_finetune_runtime(Path(options.runtime_root))
@@ -824,6 +843,7 @@ def _finetune_run(options: argparse.Namespace) -> int:
     from .finetune import FINETUNE_DEFAULT_SAMPLE_TEXTS, run_finetune_pipeline
 
     layout = AssetLayout.validate(_asset_root(options.asset_root))
+    _refuse_during_app_finetune(layout)
     resolved = _resolve_catalog(options.catalog, options.asset_root, BUILTIN_CATALOG_RESOURCES)
     run_id = _finetune_run_id(options)
     result = run_finetune_pipeline(

@@ -13,6 +13,9 @@ struct RecordingFineTuneTests {
     static let runID = "finetune-20260916t080000z"
     static let runRoot = "derived/finetune/\(runID)"
     static let supervisorFailure = "fine-tune supervision stopped; restart the app to recover the job"
+    static let startHelp = "Train the voice model on the latest kept take of every recorded prompt. Recording stays available while it runs; quitting the app stops it."
+    static let cancelHelp = "Stop the fine-tune. Your recordings are not affected. Quitting the app also stops it."
+    static let interrupted = "the recording service stopped while this fine-tune was running; start it again"
 
     private static let repository = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -132,9 +135,13 @@ struct RecordingFineTuneTests {
     }
 
     static func status(_ operation: String, configured: Bool = true, active: RecordingJSON? = nil,
-                       latest: RecordingJSON? = nil) -> RecordingJSON {
-        .object(["event": .string("fine-tune-status"), "operation_id": .string(operation),
-                 "runtime_configured": .boolean(configured), "active": active ?? .null, "latest_run": latest ?? .null])
+                       latest: RecordingJSON? = nil, latestError: String? = nil) -> RecordingJSON {
+        var event: [String: RecordingJSON] = [
+            "event": .string("fine-tune-status"), "operation_id": .string(operation),
+            "runtime_configured": .boolean(configured), "active": active ?? .null, "latest_run": latest ?? .null,
+        ]
+        if let latestError { event["latest_run_error"] = failure("FINETUNE.SOURCE_CHANGED", latestError) }
+        return .object(event)
     }
 
     // MARK: helpers
@@ -259,6 +266,21 @@ struct RecordingFineTuneTests {
         #expect(status.statusLine == "Fine-tune cancelled")
         status.phase = .failed; status.message = "the F5 trainer exited with status 1"
         #expect(status.statusLine == "the F5 trainer exited with status 1" && status.needsAttention)
+        #expect(status.outcomeLine == status.statusLine)
+        status.errorCode = "FINETUNE.INTERRUPTED"; status.message = Self.interrupted
+        #expect(status.statusLine == "Fine-tune interrupted: " + Self.interrupted)
+        status.errorCode = nil; status.message = nil
+        #expect(status.statusLine == "Fine-tune failed")
+        status.phase = .cancelled; status.message = "Fine-tune cancelled after training"
+        #expect(status.statusLine == "Fine-tune cancelled after training")
+        status.run = RecordingFineTuneRunSummary(Self.summary())
+        #expect(status.statusLine == "Model ready · \(Self.runID) · samples incomplete")
+        status.run = RecordingFineTuneRunSummary(Self.summary(status: "failed"))
+        #expect(status.statusLine == "Fine-tune cancelled after training")
+        status.run = nil; status.message = nil
+        status.phase = .running
+        #expect(status.outcomeLine == nil)
+        status.phase = .failed; status.message = "the F5 trainer exited with status 1"
         status.supervisorFailure = Self.supervisorFailure
         #expect(status.statusLine == Self.supervisorFailure)
     }
@@ -272,6 +294,12 @@ struct RecordingFineTuneTests {
         #expect(model.fineTuneStatusLine == nil && !model.fineTuneNeedsAttention)
         #expect(!model.canStartFineTune && model.fineTuneUnavailableReason == RecordingWorkspaceModel.processChannelFailedReason)
         #expect(!model.canCancelFineTune && model.fineTuneCancelReason == RecordingWorkspaceModel.processChannelFailedReason)
+        // The job went with the channel: the slot reads Fine-tune model, disabled, not Cancel fine-tune.
+        #expect(model.fineTune.isActive)
+        #expect(model.fineTuneSlot == RecordingFineTuneSlot(title: "Fine-tune model", identifier: "transport.fine-tune",
+                                                            enabled: false, help: RecordingWorkspaceModel.processChannelFailedReason))
+        model.activateFineTuneSlot()
+        #expect(service.sent.isEmpty)
         // No request is made over a closed channel.
         await model.requestFineTuneStatus()
         #expect(service.sent.isEmpty)
@@ -305,7 +333,7 @@ struct RecordingFineTuneTests {
         service.statusReply = { try Self.envelope(Self.status($0)) }
         await unknown.requestFineTuneStatus()
         #expect(unknown.canStartFineTune)
-        #expect(unknown.fineTuneUnavailableReason == "Train the voice model on the latest kept take of every recorded prompt. Recording stays available while it runs.")
+        #expect(unknown.fineTuneUnavailableReason == Self.startHelp)
         // A later failed status request does not forget what the service already said.
         service.statusReply = { _ in try Self.refusal("FINETUNE.SOURCE_CHANGED", "run.json under derived/finetune is not a run record") }
         await unknown.requestFineTuneStatus()
@@ -316,7 +344,11 @@ struct RecordingFineTuneTests {
             #expect(!capturing.canStartFineTune && capturing.fineTuneUnavailableReason == "Finish the current take before fine-tuning")
         }
         let saving = await workspace(ScriptedFineTune(), phase: .saving)
+        saving.state.activeOperationID = "save-synthetic"
         #expect(!saving.canStartFineTune && saving.fineTuneUnavailableReason == "Wait for the current Save to finish before fine-tuning")
+        // A trim save is named as one.
+        saving.state.activeOperationID = "edit-synthetic"
+        #expect(!saving.canStartFineTune && saving.fineTuneUnavailableReason == "Wait for the trim to finish saving before fine-tuning")
         for phase in [RecordingShellPhase.draftReview, .recoverableError] {
             #expect(await workspace(ScriptedFineTune(), phase: phase).canStartFineTune, "\(phase) does not block fine-tuning")
         }
@@ -327,7 +359,7 @@ struct RecordingFineTuneTests {
         queued.startFineTune()
         #expect(queued.fineTune.phase == .queued)
         #expect(!queued.canStartFineTune && queued.fineTuneUnavailableReason == "A fine-tune is already queued")
-        #expect(queued.canCancelFineTune && queued.fineTuneCancelReason == "Stop the fine-tune. Your recordings are not affected.")
+        #expect(queued.canCancelFineTune && queued.fineTuneCancelReason == Self.cancelHelp)
         queuedService.release("fine-tune")
 
         let running = try await runningWorkspace(ScriptedFineTune())
@@ -761,43 +793,53 @@ struct RecordingFineTuneTests {
         #expect(model.statusRegion == RecordingStatusRegion(line: "Recovery inventory is unavailable", source: .recovery, needsAttention: false))
     }
 
-    @Test @MainActor func aFineTuneOutcomeShowsUntilTheRecordingStatusNextChanges() async throws {
+    @Test @MainActor func aFineTuneOutcomeHoldsTheRegionThenShowsUntilTheRecordingStatusNextChanges() async throws {
         let service = ScriptedFineTune()
         let model = try await runningWorkspace(service)
         let clock = ManualClock()
         model.statusClock = { clock.now }
         readyToRecord(model)
-        // A status changes, then the job finishes during the hold: recording first, then the outcome.
+        // A status changes, then the job finishes during that hold: the outcome shows at once.
         setStatus(model, "Saved · verified")
         clock.advance(.seconds(2))
+        #expect(model.statusRegion.line == "Saved · verified")
         model.handleService(try Self.envelope(Self.runEvent(), requestID: Self.job))
         model.handleService(try Self.envelope(Self.progress(Self.job, "finished"), requestID: Self.job))
-        #expect(model.statusRegion.line == "Saved · verified")
-        clock.advance(.seconds(6))
         #expect(model.statusRegion == RecordingStatusRegion(line: "Model ready · \(Self.runID)", source: .fineTune, needsAttention: false))
+        // A recording status that changes during the outcome's hold waits for it to end.
+        clock.advance(.seconds(3))
+        setStatus(model, "Draft · checking")
+        clock.advance(.milliseconds(4_999))
+        #expect(model.statusRegion.line == "Model ready · \(Self.runID)")
+        clock.advance(.milliseconds(1))
+        #expect(model.statusRegion == RecordingStatusRegion(line: "Draft · checking", source: .recording, needsAttention: false))
         clock.advance(.seconds(3_600))
-        #expect(model.statusRegion.line == "Model ready · \(Self.runID)", "the outcome stays until something else happens")
-        // The next recording status replaces it for good.
-        setStatus(model, "Recording cancelled before input opened")
-        clock.advance(.seconds(3_600))
-        #expect(model.statusRegion.line == "Recording cancelled before input opened" && model.statusRegion.source == .recording)
+        #expect(model.statusRegion.line == "Draft · checking", "afterwards the recording status keeps the region")
 
-        // The next job shows at once (starting it changes no recording status), then its outcome.
+        // An outcome with no recording change after its hold stays until something else happens.
         let job = try await start(model, service)
         #expect(model.statusRegion.line == "Fine-tuning · waiting to start")
         model.handleService(try Self.envelope(Self.progress(job, "cancelled"), requestID: job))
         #expect(model.statusRegion == RecordingStatusRegion(line: "Fine-tune cancelled", source: .fineTune, needsAttention: false))
+        clock.advance(.seconds(3_600))
+        #expect(model.statusRegion.line == "Fine-tune cancelled")
         setStatus(model, "Ready to record")
+        #expect(model.statusRegion.line == "Ready to record", "the recording status replaces it once the hold is over")
         clock.advance(.seconds(8))
         #expect(model.statusRegion.line == "Ready to record")
 
-        // A failure warns while it shows, and not once recording feedback replaced it.
+        // Recording errors and warnings still win during an outcome's hold.
         let failed = try await start(model, service)
         let message = "the F5 trainer exited with status 1"
         model.handleService(try Self.envelope(Self.progress(failed, "failed", error: Self.failure("FINETUNE.TRAINING_FAILED", message)), requestID: failed))
         #expect(model.statusRegion == RecordingStatusRegion(line: message, source: .fineTune, needsAttention: true))
         #expect(model.statusRegion.spokenLine == "Warning: " + message)
-        setStatus(model, "Ready to record · microphone checked")
+        model.fail(RecordingContractError(code: "RECORDING.WRITE_FAILED", message: "Save could not be written"), phase: .draftReview)
+        #expect(model.statusRegion == RecordingStatusRegion(line: "Save could not be written", source: .recording, needsAttention: true))
+        var cleared = model.state
+        cleared.errorCode = nil; cleared.phase = .ready; cleared.status = "Ready to record · microphone checked"
+        model.publish(cleared)
+        #expect(model.statusRegion.source == .fineTune, "the hold is still running")
         clock.advance(.seconds(8))
         #expect(model.statusRegion == RecordingStatusRegion(line: "Ready to record · microphone checked", source: .recording, needsAttention: false))
 
@@ -807,6 +849,7 @@ struct RecordingFineTuneTests {
         #expect(model.statusRegion == RecordingStatusRegion(line: "fine-tuning needs 8.0 GiB free on the library's disk; 2.1 GiB is free",
                                                           source: .fineTune, needsAttention: true))
         // So is a stopped supervisor, which also keeps new jobs from starting.
+        clock.advance(.seconds(8))
         setStatus(model, "Saved · checking")
         clock.advance(.seconds(8))
         #expect(model.statusRegion.source == .recording)
@@ -814,6 +857,247 @@ struct RecordingFineTuneTests {
                                               requestID: RecordingWorkspaceModel.fineTuneSupervisorRequestID))
         #expect(model.statusRegion == RecordingStatusRegion(line: Self.supervisorFailure, source: .fineTune, needsAttention: true))
         #expect(model.fineTuneSlot.help == Self.supervisorFailure)
+        // Stop still speaks first, whatever the hold.
+        model.state.phase = .recording
+        #expect(model.statusRegion.source == .recording)
+    }
+
+    @Test @MainActor func theLastOutcomeIsInTheFineTuneHelpUntilTheNextJob() async throws {
+        let service = ScriptedFineTune()
+        let model = await workspace(service)
+        #expect(model.fineTuneUnavailableReason == Self.startHelp)
+        let job = try await start(model, service)
+        model.handleService(try Self.envelope(Self.runEvent(job), requestID: job))
+        model.handleService(try Self.envelope(Self.progress(job, "finished"), requestID: job))
+        #expect(model.fineTuneSlot.help == Self.startHelp + "\nLast fine-tune: Model ready · \(Self.runID)")
+        // A blocked control names its reason first, then the outcome.
+        model.state.phase = .recording
+        #expect(model.fineTuneSlot.help == "Finish the current take before fine-tuning\nLast fine-tune: Model ready · \(Self.runID)")
+        model.state.phase = .ready
+        // The next job replaces it.
+        service.holding = ["fine-tune"]
+        model.startFineTune()
+        #expect(model.fineTuneSlot.help == Self.cancelHelp && model.fineTune.outcomeLine == nil)
+        await waitUntil { service.heldCount == 1 }
+        service.release("fine-tune")
+        await waitUntil { service.answered["fine-tune"] == 1 }
+        // A job that ends while a take records never shows in the region, but the help keeps it.
+        let clock = ManualClock()
+        model.statusClock = { clock.now }
+        model.state.phase = .recording
+        let second = try #require(model.fineTune.operationID)
+        model.handleService(try Self.envelope(Self.progress(second, "cancelled"), requestID: second))
+        clock.advance(.seconds(30))
+        model.state.phase = .ready
+        setStatus(model, "Saved · verified")
+        clock.advance(.seconds(8))
+        #expect(model.statusRegion.line == "Saved · verified")
+        #expect(model.fineTuneSlot.help == Self.startHelp + "\nLast fine-tune: Fine-tune cancelled")
+    }
+
+    @Test @MainActor func standingRecoveryFindingsNoLongerHideTheFineTuneLine() async throws {
+        let model = try await runningWorkspace(ScriptedFineTune())
+        let clock = ManualClock()
+        model.statusClock = { clock.now }
+        readyToRecord(model)
+        let finding = try #require(RecordingRecoveryRow(entry: .object([
+            "take_id": .string("take-earlier-session"), "status": .string("partial"),
+            "error": Self.failure("RECORDING.WRITE_FAILED", "Capture ended without a seal; preserved material is incomplete"),
+        ])))
+        model.recoveryRows[finding.takeID] = finding
+        #expect(model.recoveryStatusLine == "Capture ended without a seal; preserved material is incomplete")
+        #expect(model.statusRegion == RecordingStatusRegion(line: Self.progressLine, source: .fineTune, needsAttention: false))
+        #expect(model.canOpenRecovery, "the finding stays reachable")
+        // During a recording status hold, what would show without a fine-tune shows: the finding.
+        setStatus(model, "Saved · verified")
+        #expect(model.statusRegion == RecordingStatusRegion(line: finding.errorMessage!, source: .recovery, needsAttention: true))
+        clock.advance(.seconds(8))
+        #expect(model.statusRegion.source == .fineTune)
+        // Without a fine-tune line, the finding still outranks the recording status.
+        model.handleService(try Self.envelope(Self.progress(Self.job, "cancelled"), requestID: Self.job))
+        clock.advance(.seconds(8))
+        #expect(model.statusRegion.line == "Fine-tune cancelled")
+        setStatus(model, "Ready to record")
+        #expect(model.statusRegion == RecordingStatusRegion(line: finding.errorMessage!, source: .recovery, needsAttention: true))
+        // A running recovery scan and a recovery supervisor error still outrank fine-tuning.
+        let running = try await runningWorkspace(ScriptedFineTune())
+        readyToRecord(running)
+        running.recoveryScanGeneration = "scan-now"
+        running.recoveryScanState = "scanning"
+        #expect(running.statusRegion == RecordingStatusRegion(line: "Checking preserved recordings…", source: .recovery, needsAttention: false))
+        running.recoveryScanGeneration = nil
+        running.recoverySupervisorError = "Recovery inventory is unavailable"
+        #expect(running.statusRegion.source == .recovery)
+    }
+
+    @Test @MainActor func aJobTheAppNeverShowedIsAdoptedWhenItEndsAndStatusIsAskedOnceMore() async throws {
+        let service = ScriptedFineTune()
+        let model = await workspace(service)
+        let clock = ManualClock()
+        model.statusClock = { clock.now }
+        readyToRecord(model)
+        setStatus(model, "Ready to record")
+        // The service recovered a job the previous service left running; it was never shown here.
+        let recovered = "fine-tune-recovered"
+        let failure = Self.failure("FINETUNE.INTERRUPTED", Self.interrupted, retryable: true)
+        model.handleService(try Self.envelope(Self.progress(recovered, "running", stage: "training", epoch: 3, epochs: 120), requestID: recovered))
+        #expect(model.fineTune.phase == .idle, "only an ended job is adopted")
+        model.handleService(try Self.envelope(Self.runEvent(recovered, Self.summary(status: "failed")), requestID: recovered))
+        model.handleService(try Self.envelope(Self.progress(recovered, "failed", error: failure), requestID: recovered))
+        let line = "Fine-tune interrupted: " + Self.interrupted
+        #expect(model.fineTune.operationID == recovered && model.fineTune.phase == .failed)
+        #expect(model.fineTune.runtimeConfigured == true, "what the service said about the runtime stays")
+        #expect(model.statusRegion == RecordingStatusRegion(line: line, source: .fineTune, needsAttention: true))
+        #expect(model.canStartFineTune && model.fineTuneUnavailableReason == Self.startHelp + "\nLast fine-tune: " + line)
+        await model.fineTuneStatusTask?.value
+        #expect(service.commands == ["fine-tune-status"], "one status request follows the adoption")
+        // Applying it again changes nothing and asks nothing more.
+        let adopted = model.fineTune
+        model.handleService(try Self.envelope(Self.progress(recovered, "failed", error: failure), requestID: recovered))
+        #expect(model.fineTune == adopted && service.commands == ["fine-tune-status"])
+
+        // An ended job is never adopted over an active one, nor over a job this app already showed.
+        let job = try await start(model, service)
+        model.handleService(try Self.envelope(Self.progress("fine-tune-elsewhere", "finished"), requestID: "fine-tune-elsewhere"))
+        #expect(model.fineTune.operationID == job && model.fineTune.phase == .queued)
+        model.handleService(try Self.envelope(Self.progress(job, "cancelled"), requestID: job))
+        model.handleService(try Self.envelope(Self.progress(recovered, "failed", error: failure), requestID: recovered))
+        #expect(model.fineTune.operationID == job && model.fineTune.phase == .cancelled)
+        service.sent.removeAll()
+        // A job that finished unseen is adopted as the latest outcome as well.
+        model.handleService(try Self.envelope(Self.progress("fine-tune-unseen", "finished", runID: "finetune-unseen"), requestID: "fine-tune-unseen"))
+        #expect(model.fineTune.operationID == "fine-tune-unseen" && model.fineTuneStatusLine == "Model ready · finetune-unseen")
+        await model.fineTuneStatusTask?.value
+        #expect(service.commands == ["fine-tune-status"])
+    }
+
+    @Test @MainActor func aModelTrainedBeforeItsJobStoppedIsReadyWithoutSamples() async throws {
+        for ending in ["cancelled", "failed", "partial"] {
+            let service = ScriptedFineTune()
+            let model = try await runningWorkspace(service)
+            var trained = Self.summary()
+            if ending != "partial", case .object(var run) = trained {
+                run["finetuned_sample_paths"] = .array([]); run["base_sample_paths"] = .array([])
+                trained = .object(run)
+            } else if case .object(var run) = trained {
+                run["base_sample_paths"] = .array([])
+                trained = .object(run)
+            }
+            model.handleService(try Self.envelope(Self.runEvent(Self.job, trained), requestID: Self.job))
+            #expect(model.fineTune.latestRun?.runID == Self.runID, "a trained model is the latest model")
+            let note = "the model \(Self.runID) was trained, but its listening samples are missing or incomplete"
+            let end = ending == "failed"
+                ? Self.progress(Self.job, "failed", error: Self.failure("FINETUNE.RUNTIME_FAILED", note + ": sample synthesis for base failed"))
+                : Self.progress(Self.job, "cancelled", message: "Fine-tune cancelled after training: " + note)
+            model.handleService(try Self.envelope(end, requestID: Self.job))
+            let expected = "Model ready · \(Self.runID) · " + (ending == "partial" ? "samples incomplete" : "no samples")
+            #expect(model.fineTuneStatusLine == expected, "\(ending)")
+            #expect(model.fineTuneNeedsAttention == (ending == "failed"))
+            #expect(model.canStartFineTune)
+        }
+        // Without its run record (a job adopted after the fact), the service's words are shown.
+        let model = await workspace(ScriptedFineTune())
+        let message = "Fine-tune cancelled after training: the model \(Self.runID) was trained, but its listening samples are missing or incomplete"
+        model.handleService(try Self.envelope(Self.progress("fine-tune-other", "cancelled", message: message), requestID: "fine-tune-other"))
+        #expect(model.fineTuneStatusLine == message)
+    }
+
+    @Test @MainActor func anUnreadableLatestRunLeavesFineTuneModelUsable() async throws {
+        let service = ScriptedFineTune()
+        let unreadable = "the latest fine-tuned model cannot be read: fine-tune record derived/finetune/x/run.json is missing, unreadable or invalid"
+        service.statusReply = { try Self.envelope(Self.status($0, active: Self.training(), latestError: unreadable)) }
+        let model = await workspace(service, configured: false)
+        await model.requestFineTuneStatus()
+        #expect(model.fineTune.phase == .running && model.fineTune.latestRunError == unreadable)
+        #expect(model.fineTune.availabilityError == nil && model.fineTune.runtimeConfigured == true)
+        service.statusReply = { try Self.envelope(Self.status($0, latestError: unreadable)) }
+        let idle = await workspace(service, configured: false)
+        await idle.requestFineTuneStatus()
+        #expect(idle.canStartFineTune && idle.fineTuneStatusLine == nil)
+        #expect(idle.fineTuneUnavailableReason == Self.startHelp + "\n" + unreadable)
+        // A later status that resolves the run clears it.
+        service.statusReply = { try Self.envelope(Self.status($0, latest: Self.summary())) }
+        await idle.requestFineTuneStatus()
+        #expect(idle.fineTune.latestRunError == nil && idle.fineTuneUnavailableReason == Self.startHelp)
+    }
+
+    @Test @MainActor func statusIsRequestedRightAfterTheServiceHandshake() async throws {
+        struct Refused: Error {}
+        // The recorder's snapshot fails, so no catalog step follows; the status is known anyway.
+        let service = ScriptedFineTune()
+        let model = RecordingWorkspaceModel(fixture: .init())
+        model.fineTuneRequests = service.requests
+        await model.launch(RecordingLaunchRequests(
+            recorderHandshake: {}, serviceHandshake: {},
+            recorderSnapshot: { throw RecordingContractError(code: "RECORDING.DEVICE_UNAVAILABLE", message: "Synthetic recorder failure") }))
+        #expect(model.state.errorCode == "RECORDING.DEVICE_UNAVAILABLE")
+        await model.fineTuneStatusTask?.value
+        #expect(service.commands == ["fine-tune-status"])
+        #expect(model.canStartFineTune && model.fineTuneUnavailableReason == Self.startHelp)
+        // A failed recorder handshake still leaves the service's answer.
+        let second = ScriptedFineTune()
+        let recorderDown = RecordingWorkspaceModel(fixture: .init())
+        recorderDown.fineTuneRequests = second.requests
+        await recorderDown.launch(RecordingLaunchRequests(
+            recorderHandshake: { throw RecordingContractError(code: "RECORDING.BUILD_MISMATCH", message: "Synthetic recorder handshake") },
+            serviceHandshake: {}, recorderSnapshot: { throw Refused() }))
+        await recorderDown.fineTuneStatusTask?.value
+        #expect(second.commands == ["fine-tune-status"] && recorderDown.fineTune.runtimeConfigured == true)
+        // A failed service handshake asks nothing.
+        let third = ScriptedFineTune()
+        let serviceDown = RecordingWorkspaceModel(fixture: .init())
+        serviceDown.fineTuneRequests = third.requests
+        await serviceDown.launch(RecordingLaunchRequests(
+            recorderHandshake: {},
+            serviceHandshake: { throw RecordingContractError(code: "RECORDING.BUILD_MISMATCH", message: "Synthetic service handshake") },
+            recorderSnapshot: { throw Refused() }))
+        #expect(serviceDown.state.errorCode == "RECORDING.BUILD_MISMATCH" && serviceDown.fineTuneStatusTask == nil)
+        #expect(third.sent.isEmpty && serviceDown.fineTuneUnavailableReason == "Checking whether fine-tuning is available")
+    }
+
+    @Test @MainActor func quittingDuringAJobAsksFirst() async throws {
+        let service = ScriptedFineTune()
+        let model = try await runningWorkspace(service)
+        var closed = 0, kept = 0
+        model.closeHandler = { closed += 1 }
+        model.closeCancellationHandler = { kept += 1 }
+        model.requestClose()
+        #expect(model.reviewConfirmation == .quitDuringFineTune)
+        #expect(RecordingWorkspaceModel.quitDuringFineTuneMessage == "A fine-tune is running. Quitting stops it, and the partial run is discarded.")
+        // Keep running cancels the quit; transport keys stay inert while it is asked.
+        model.handleKeyboard(.recordOrStop)
+        #expect(model.state.phase == .ready)
+        model.cancelReviewConfirmation()
+        #expect(model.reviewConfirmation == nil && kept == 1 && closed == 0)
+        // Quit and stop fine-tune closes; only that confirmation is answered by it.
+        model.quitAndStopFineTune()
+        #expect(closed == 0)
+        model.closeCancellationHandler = { kept += 1 }
+        model.requestClose()
+        model.quitAndStopFineTune()
+        #expect(model.reviewConfirmation == nil)
+        await waitUntil { closed == 1 }
+        #expect(kept == 1)
+        #expect(service.sent.isEmpty, "quitting sends no cancel; the service stops the job with the app")
+
+        // No job, an ended job or a closed channel: nothing to ask.
+        for setup in ["idle", "ended", "channel-closed"] {
+            let other = try await runningWorkspace(ScriptedFineTune())
+            if setup == "idle" { other.fineTune = RecordingFineTuneStatus() }
+            if setup == "ended" { other.handleService(try Self.envelope(Self.progress(Self.job, "cancelled"), requestID: Self.job)) }
+            if setup == "channel-closed" { other.processChannelFailed = true }
+            var done = false
+            other.closeHandler = { done = true }
+            other.requestClose()
+            #expect(other.reviewConfirmation == nil, "\(setup)")
+            await waitUntil { done }
+        }
+        // A window close (no quit handlers) asks the same; Keep running simply stays.
+        let window = try await runningWorkspace(ScriptedFineTune())
+        window.requestClose()
+        #expect(window.reviewConfirmation == .quitDuringFineTune)
+        window.cancelReviewConfirmation()
+        #expect(window.reviewConfirmation == nil && window.fineTune.isActive)
     }
 
     @Test @MainActor func aRunRestoredFromAnEarlierSessionIsNotNews() async throws {
@@ -837,11 +1121,10 @@ struct RecordingFineTuneTests {
         let service = ScriptedFineTune()
         let model = await workspace(service, phase: .draftReview)
         #expect(model.fineTuneSlot == RecordingFineTuneSlot(
-            title: "Fine-tune model", identifier: "transport.fine-tune", enabled: true,
-            help: "Train the voice model on the latest kept take of every recorded prompt. Recording stays available while it runs."))
+            title: "Fine-tune model", identifier: "transport.fine-tune", enabled: true, help: Self.startHelp))
         model.activateFineTuneSlot()
         #expect(model.fineTuneSlot == RecordingFineTuneSlot(title: "Cancel fine-tune", identifier: "transport.cancel-fine-tune",
-                                                            enabled: true, help: "Stop the fine-tune. Your recordings are not affected."))
+                                                            enabled: true, help: Self.cancelHelp))
         await waitUntil { service.answered["fine-tune"] == 1 }
         let job = try #require(service.sent.first?.operationID)
         service.holding = ["cancel-fine-tune"]
@@ -853,6 +1136,8 @@ struct RecordingFineTuneTests {
         service.release("cancel-fine-tune")
         await waitUntil { service.answered["cancel-fine-tune"] == 1 }
         #expect(model.fineTuneSlot.identifier == "transport.fine-tune" && model.fineTuneSlot.enabled)
+        // Until the next job, the help also names how the last one ended.
+        #expect(model.fineTuneSlot.help == Self.startHelp + "\nLast fine-tune: Fine-tune cancelled")
         let recording = await workspace(ScriptedFineTune(), phase: .recording)
         #expect(recording.fineTuneSlot.help == "Finish the current take before fine-tuning" && !recording.fineTuneSlot.enabled)
     }

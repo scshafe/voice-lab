@@ -53,7 +53,9 @@ from cole_voice_lab.finetune import (
     FineTuneError,
     FineTuneErrorCode,
     FineTuneHyperparameters,
+    FineTunePinnedFile,
     FineTunePipelineStep,
+    FineTunePretrainedPins,
     FineTuneRun,
     FineTuneRuntimeIdentity,
     FineTuneSample,
@@ -63,6 +65,7 @@ from cole_voice_lab.finetune import (
     execute_finetune_runtime_provisioning,
     fetch_finetune_pretrained,
     finetune_cli_arguments,
+    finetune_pretrained_pins,
     finetune_run_summary,
     latest_finished_finetune_run,
     mark_finetune_run_failed,
@@ -101,12 +104,14 @@ def test_every_finetune_error_code_is_exactly_the_wire_finetune_codes() -> None:
     source = Path(finetune_module.__file__).read_text(encoding="utf-8")
     body = source.split("class FineTuneError(VoiceLabError):", 1)[1]
     assert set(re.findall(r'"(FINETUNE\.[A-Z_]+)"', body)) <= codes
-    assert {
-        "FINETUNE.CANCELLED",
-        "FINETUNE.CORPUS_INCOMPLETE",
-        "FINETUNE.INTERRUPTED",
-        "FINETUNE.JOB_ACTIVE",
-    } <= codes
+    assert {"FINETUNE.CORPUS_INCOMPLETE", "FINETUNE.INTERRUPTED", "FINETUNE.JOB_ACTIVE"} <= codes
+    # Every code is sent by something besides the two closed lists; a cancelled job carries
+    # no error, so there is no FINETUNE.CANCELLED.
+    assert "FINETUNE.CANCELLED" not in codes
+    package = Path(finetune_module.__file__).parent
+    sources = [path.read_text(encoding="utf-8") for path in sorted(package.glob("*.py"))]
+    for code in codes:
+        assert sum(text.count(f'"{code}"') for text in sources) >= 3, f"nothing sends {code}"
     for code in codes:
         error = FineTuneError(code, "Synthetic")
         wired = RecordingError(code=error.code, message=str(error), retryable=False)
@@ -557,14 +562,44 @@ def test_materialization_refuses_a_source_that_changed_since_selection(
 _stub_runtime = stub_finetune_runtime
 
 
+def patch_default_pins(monkeypatch: pytest.MonkeyPatch, pins: FineTunePretrainedPins) -> None:
+    """Make the shipped pins the stub runtime's, as a real runtime would match them."""
+    for prefix, pin in (
+        ("FINETUNE_PRETRAINED", pins.weights),
+        ("FINETUNE_VOCODER_CONFIG", pins.vocoder_config),
+        ("FINETUNE_VOCODER_MODEL", pins.vocoder_model),
+    ):
+        monkeypatch.setattr(finetune_module, f"{prefix}_SHA256", pin.sha256)
+        monkeypatch.setattr(finetune_module, f"{prefix}_SIZE_BYTES", pin.size_bytes)
+
+
+def test_the_shipped_pins_name_the_pinned_revisions() -> None:
+    pins = finetune_pretrained_pins()
+    assert pins.weights == FineTunePinnedFile(
+        sha256="670900fd14e6c458b95da6e9ed317cdb20dbaf7a1c02ac06a05475a9d32b6a38",
+        size_bytes=1_348_435_761,
+    )
+    assert pins.vocoder_config == FineTunePinnedFile(
+        sha256="da9033922f969a47f0c160010226919e59f27761fd5066f3828d46de6650b0fc",
+        size_bytes=461,
+    )
+    assert pins.vocoder_model == FineTunePinnedFile(
+        sha256="97ec976ad1fd67a33ab2682d29c0ac7df85234fae875aefcc5fb215681a91b2a",
+        size_bytes=54_365_991,
+    )
+    assert finetune_module.FINETUNE_VOCODER_REPOSITORY == "charactr/vocos-mel-24khz"
+    assert finetune_module.FINETUNE_VOCODER_REVISION == "0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21"
+
+
 def test_describe_runtime_refuses_wrong_pretrained_weights(tmp_path: Path) -> None:
     root, pin = _stub_runtime(tmp_path / "runtime")
     with pytest.raises(FineTuneError) as failure:
-        describe_finetune_runtime(root)  # the real pin, which the stub cannot match
+        describe_finetune_runtime(root)  # the real pins, which the stub cannot match
     assert failure.value.code == "FINETUNE.PRETRAINED_MISMATCH"
     runtime = describe_finetune_runtime(root, pretrained_pin=pin)
     assert runtime.identity.f5_tts_version == "1.1.22-stub"
     assert runtime.data_directory == (root / "lib" / "python3.12" / "data").resolve()
+    assert runtime.vocoder_path == root.resolve() / "pretrained" / "vocos-mel-24khz"
     with pytest.raises(FineTuneError) as missing:
         describe_finetune_runtime(tmp_path / "nowhere")
     assert missing.value.code == "FINETUNE.RUNTIME_UNAVAILABLE"
@@ -577,6 +612,94 @@ def test_describe_runtime_refuses_wrong_pretrained_weights(tmp_path: Path) -> No
         describe_finetune_runtime(root, pretrained_pin=pin)
     assert bogus.value.code == "FINETUNE.RUNTIME_UNAVAILABLE"
     assert "absolute directory" in str(bogus.value)
+
+
+@pytest.mark.parametrize("damage", ["config-missing", "model-missing", "size", "digest", "link"])
+def test_describe_runtime_checks_the_pinned_vocoder_before_hashing_the_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    root, pin = _stub_runtime(tmp_path / "runtime")
+    vocoder = root / "pretrained" / "vocos-mel-24khz"
+    if damage == "config-missing":
+        (vocoder / "config.yaml").unlink()
+    elif damage == "model-missing":
+        (vocoder / "pytorch_model.bin").unlink()
+    elif damage == "size":
+        (vocoder / "pytorch_model.bin").write_bytes(b"other-weights-of-another-size")
+    elif damage == "link":
+        # A cache snapshot's file is a link to its blob; the runtime needs the file itself.
+        blob = tmp_path / "blob"
+        (vocoder / "pytorch_model.bin").rename(blob)
+        (vocoder / "pytorch_model.bin").symlink_to(blob)
+    else:
+        (vocoder / "pytorch_model.bin").write_bytes(b"vocoder-weightz")  # same size
+    hashed: list[str] = []
+    original = finetune_module.sha256_file
+
+    def recording_hash(path: Path) -> tuple[str, int]:
+        hashed.append(path.name)
+        return original(path)
+
+    monkeypatch.setattr(finetune_module, "sha256_file", recording_hash)
+    with pytest.raises(FineTuneError) as failure:
+        describe_finetune_runtime(root, pretrained_pin=pin)
+    message = str(failure.value)
+    if damage.endswith("missing"):
+        missing = "config.yaml" if damage == "config-missing" else "pytorch_model.bin"
+        assert failure.value.code == "FINETUNE.RUNTIME_UNAVAILABLE"
+        assert str(vocoder / missing) in message and "fetch-pretrained" in message
+        assert "charactr/vocos-mel-24khz revision 0feb3fdd" in message
+        assert hashed == []  # nothing was hashed before the missing file was named
+    else:
+        assert failure.value.code == "FINETUNE.PRETRAINED_MISMATCH"
+        assert str(vocoder / "pytorch_model.bin") in message
+        assert "model_1250000.safetensors" not in hashed  # the big weights come last
+        assert ("not a link" in message) == (damage == "link")
+    # A vocoder file that is a directory is missing too.
+    if damage == "config-missing":
+        (vocoder / "config.yaml").mkdir()
+        with pytest.raises(FineTuneError) as directory:
+            describe_finetune_runtime(root, pretrained_pin=pin)
+        assert directory.value.code == "FINETUNE.RUNTIME_UNAVAILABLE"
+
+
+def test_the_trainer_never_loads_a_vocoder_and_synthesis_loads_the_pinned_one() -> None:
+    """F5-TTS 1.1.22's finetune_cli loads a vocoder only for --log_samples."""
+    import ast
+
+    from cole_voice_lab.resources import resource_path
+
+    argv = finetune_cli_arguments(
+        FineTuneHyperparameters(), dataset_name="run-x", pretrained_path=Path("/p/w.st")
+    )
+    assert not any(argument.startswith("--log_samples") for argument in argv)
+    launcher = _load_resource_module("f5_finetune_launcher.py")
+    assert launcher.main(["--lab-light-checkpoints", *argv, "--log_samples"]) == 2
+    assert launcher.main([*argv, "--log_samples=1"]) == 2
+    tree = ast.parse(resource_path("f5_synthesize.py").read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "load_vocoder"
+    ]
+    assert len(calls) == 1
+    keywords = {keyword.arg: ast.unparse(keyword.value) for keyword in calls[0].keywords}
+    assert keywords["is_local"] == "True"
+    assert keywords["local_path"] == "job['vocoder_path']"
+
+
+def _load_resource_module(name: str) -> Any:
+    import importlib.util
+
+    from cole_voice_lab.resources import resource_path
+
+    spec = importlib.util.spec_from_file_location(f"_resource_{name[:-3]}", resource_path(name))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_finetune_cli_arguments_carry_every_hyperparameter() -> None:
@@ -685,8 +808,10 @@ def test_synthesized_samples_are_bound_to_checkpoint_and_reference(
         device="cpu",
         nfe_steps=4,
     )
+    job = json.loads((layout.root / "derived/finetune/s/samples/base/job.json").read_text())
+    assert job["vocoder_path"] == str(runtime.vocoder_path)
     assert (
-        samples.checkpoint_sha256 == pin[0]
+        samples.checkpoint_sha256 == pin.weights.sha256
         and samples.reference_audio_sha256 == dataset.clips[0].sha256
     )
     assert [s.text for s in samples.samples] == ["Hello there.", "Second line."]
@@ -740,11 +865,9 @@ def test_cli_run_trains_and_samples_through_a_stub_runtime(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import cole_voice_lab.finetune as finetune_module
 
     root, pin = _stub_runtime(tmp_path / "runtime")
-    monkeypatch.setattr(finetune_module, "FINETUNE_PRETRAINED_SHA256", pin[0])
-    monkeypatch.setattr(finetune_module, "FINETUNE_PRETRAINED_SIZE_BYTES", pin[1])
+    patch_default_pins(monkeypatch, pin)
     layout = native_coverage.rig.layout
     status = main(
         [
@@ -812,11 +935,25 @@ def test_provisioning_plan_names_venv_pins_and_pinned_downloads(tmp_path: Path) 
     )
     assert plan.create_venv is True and plan.install_command[-2:] == ("-r", str(pins))
     urls = [item.url for item in plan.downloads]
+    vocos = "https://huggingface.co/charactr/vocos-mel-24khz/resolve/"
     assert urls == [
         "https://huggingface.co/SWivid/F5-TTS/resolve/84e5a410d9cead4de2f847e7c9369a6440bdfaca/"
         "F5TTS_v1_Base/model_1250000.safetensors",
         "https://huggingface.co/SWivid/F5-TTS/resolve/84e5a410d9cead4de2f847e7c9369a6440bdfaca/"
         "F5TTS_v1_Base/vocab.txt",
+        vocos + "0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21/config.yaml",
+        vocos + "0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21/pytorch_model.bin",
+    ]
+    root = (tmp_path / "rt").resolve()
+    assert [item.destination for item in plan.downloads] == [
+        root / "pretrained/F5TTS_v1_Base/model_1250000.safetensors",
+        root / "pretrained/F5TTS_v1_Base/vocab.txt",
+        root / "pretrained/vocos-mel-24khz/config.yaml",
+        root / "pretrained/vocos-mel-24khz/pytorch_model.bin",
+    ]
+    assert [(item.sha256[:8], item.size_bytes) for item in plan.downloads[2:]] == [
+        ("da903392", 461),
+        ("97ec976a", 54_365_991),
     ]
     assert all(not item.present for item in plan.downloads)
     assert json.dumps(plan.to_json())  # serializable for the CLI
@@ -852,20 +989,28 @@ def test_fetch_pretrained_keeps_matching_files_and_refuses_silent_downloads(
 ) -> None:
     import cole_voice_lab.finetune as finetune_module
 
-    weights, vocab = b"w" * 10, b"v" * 4
-    monkeypatch.setattr(
-        finetune_module, "FINETUNE_PRETRAINED_SHA256", hashlib.sha256(weights).hexdigest()
-    )
-    monkeypatch.setattr(finetune_module, "FINETUNE_PRETRAINED_SIZE_BYTES", len(weights))
-    monkeypatch.setattr(
-        finetune_module, "FINETUNE_PRETRAINED_VOCAB_SHA256", hashlib.sha256(vocab).hexdigest()
-    )
-    monkeypatch.setattr(finetune_module, "FINETUNE_PRETRAINED_VOCAB_SIZE_BYTES", len(vocab))
+    served = {
+        "model_1250000.safetensors": b"w" * 10,
+        "vocab.txt": b"v" * 4,
+        "config.yaml": b"c" * 3,
+        "pytorch_model.bin": b"m" * 7,
+    }
+    for prefix, name in (
+        ("FINETUNE_PRETRAINED", "model_1250000.safetensors"),
+        ("FINETUNE_PRETRAINED_VOCAB", "vocab.txt"),
+        ("FINETUNE_VOCODER_CONFIG", "config.yaml"),
+        ("FINETUNE_VOCODER_MODEL", "pytorch_model.bin"),
+    ):
+        payload = served[name]
+        monkeypatch.setattr(
+            finetune_module, f"{prefix}_SHA256", hashlib.sha256(payload).hexdigest()
+        )
+        monkeypatch.setattr(finetune_module, f"{prefix}_SIZE_BYTES", len(payload))
     root = tmp_path / "rt"
     with pytest.raises(FineTuneError) as refused:
         fetch_finetune_pretrained(root, allow_downloads=False)
     assert refused.value.code == "FINETUNE.DOWNLOADS_NOT_ALLOWED"
-    served = {"model_1250000.safetensors": weights, "vocab.txt": vocab}
+    assert "vocos-mel-24khz/pytorch_model.bin" in str(refused.value)
     calls: list[str] = []
 
     def opener(url: str) -> io.BytesIO:
@@ -873,10 +1018,19 @@ def test_fetch_pretrained_keeps_matching_files_and_refuses_silent_downloads(
         return io.BytesIO(served[url.rsplit("/", 1)[1]])
 
     paths = fetch_finetune_pretrained(root, allow_downloads=True, opener=opener)
-    assert [path.name for path in paths] == ["model_1250000.safetensors", "vocab.txt"]
-    assert len(calls) == 2 and paths[0].read_bytes() == weights
+    assert [path.relative_to(root.resolve()).as_posix() for path in paths] == [
+        "pretrained/F5TTS_v1_Base/model_1250000.safetensors",
+        "pretrained/F5TTS_v1_Base/vocab.txt",
+        "pretrained/vocos-mel-24khz/config.yaml",
+        "pretrained/vocos-mel-24khz/pytorch_model.bin",
+    ]
+    assert len(calls) == 4 and paths[3].read_bytes() == served["pytorch_model.bin"]
+    assert all(
+        "charactr/vocos-mel-24khz/resolve/0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21/" in url
+        for url in calls[2:]
+    )
     fetch_finetune_pretrained(root, allow_downloads=False)  # already present: no download needed
-    assert len(calls) == 2
+    assert len(calls) == 4
 
 
 def test_unreadable_library_is_a_named_projection_failure(tmp_path: Path) -> None:
@@ -945,6 +1099,58 @@ def test_cli_run_refuses_an_incomplete_corpus_by_code_before_touching_the_runtim
     error = capsys.readouterr().err
     assert error.startswith("voice-lab: FINETUNE.CORPUS_INCOMPLETE: the corpus is incomplete")
     assert not (layout.root / "derived/finetune/r").exists()
+
+
+@pytest.mark.parametrize("state", ["queued", "running"])
+def test_cli_training_refuses_while_the_apps_job_is_active(
+    native_coverage: NativeCoverage,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+) -> None:
+    from cole_voice_lab.recording_contracts import FineTuneCommand
+    from cole_voice_lab.recording_finetune_jobs import FineTuneJobQueue, active_finetune_job
+
+    layout = native_coverage.rig.layout
+    assert active_finetune_job(layout) is None  # no queue directory yet
+    queue = FineTuneJobQueue(
+        layout,
+        subject_id=SUBJECT,
+        runtime_root=tmp_path / "runtime",
+        free_bytes=lambda _path: 1 << 40,
+    )
+    try:
+        assert active_finetune_job(layout) is None  # an empty head
+        (tmp_path / "runtime" / "bin").mkdir(parents=True)
+        (tmp_path / "runtime" / "bin" / "python").write_text("")
+        queue.submit(FineTuneCommand(operation_id="app-job", allow_missing=True))
+        if state == "running":
+            assert queue.claim() is not None
+    finally:
+        queue.close()
+    job = active_finetune_job(layout)
+    assert job is not None and job.state == state
+    before = sorted(path.name for path in (layout.root / "provenance/finetune-jobs").iterdir())
+
+    def touched(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("the runtime was used while the app's job was active")
+
+    monkeypatch.setattr(finetune_module, "describe_finetune_runtime", touched)
+    runtime = ["--runtime-root", str(tmp_path / "runtime")]
+    base = ["--asset-root", str(layout.root)]
+    for command in (
+        ["finetune", "run", *base, "--catalog", "pilot-v2", "--allow-missing", *runtime],
+        ["finetune", "train", *base, "--run-id", "r", *runtime],
+    ):
+        assert main(command) == 2
+        error = capsys.readouterr().err
+        assert error.startswith(
+            f"voice-lab: FINETUNE.JOB_ACTIVE: the recording app's fine-tune app-job is {state}"
+        )
+    assert not (layout.root / "derived/finetune").exists()
+    after = sorted(path.name for path in (layout.root / "provenance/finetune-jobs").iterdir())
+    assert after == before  # read only
 
 
 def test_runtime_link_is_released_only_when_it_points_at_this_run(tmp_path: Path) -> None:

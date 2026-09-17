@@ -2,9 +2,10 @@
 
 The runtime's ``bin/python`` is a script that answers the runtime probe, packs a dataset,
 "trains" (printing tqdm-shaped status lines) and "synthesizes" silent samples, so the real
-fine-tune chain runs end to end without torch, weights or a GPU. Its pretrained weights are a
-few bytes, so callers pass the pin this module returns (``FineTuneSupervisor`` /
-``run_finetune_pipeline`` ``pretrained_pin``); the shipped service never does.
+fine-tune chain runs end to end without torch, weights or a GPU. Its pretrained weights and
+Vocos vocoder files are a few bytes, so callers pass the pins this module returns
+(``FineTuneSupervisor`` / ``run_finetune_pipeline`` ``pretrained_pin``); the shipped service
+never does.
 """
 
 from __future__ import annotations
@@ -15,13 +16,15 @@ from pathlib import Path
 from typing import Any
 
 from cole_voice_lab.canonical import sha256_file
+from cole_voice_lab.finetune import FineTunePinnedFile, FineTunePretrainedPins
 
 STUB_RUNTIME_PYTHON = '''#!{python}
 """Stand-in for the F5 runtime python: answers the probe, packs, trains and synthesizes.
 
 <root>/stub-mode.json, when present, slows or breaks it: probe_seconds (the probe sleeps),
 step_seconds (each training status line waits), fail_training, ignore_sigterm (the trainer
-survives SIGTERM, so only SIGKILL stops it).
+survives SIGTERM, so only SIGKILL stops it), sample_seconds (synthesis sleeps before writing),
+fail_sampling (synthesis exits 1).
 """
 import json, os, signal, sys, time, wave
 from pathlib import Path
@@ -72,9 +75,16 @@ if script == "f5_finetune_launcher.py":
     print("Saved last checkpoint at update 9")
     sys.exit(0)
 if script == "f5_synthesize.py":
+    time.sleep(MODE.get("sample_seconds", 0))
+    if MODE.get("fail_sampling"):
+        print("Traceback: stub sampling failure", file=sys.stderr); sys.exit(1)
     job = json.loads(Path(argv[1]).read_text())
     out = Path(job["output_directory"]); out.mkdir(parents=True, exist_ok=True)
     assert Path(job["checkpoint_path"]).is_file() and Path(job["reference_audio_path"]).is_file()
+    # The pinned vocoder is loaded from the runtime's own copy, as f5_synthesize.py does.
+    vocoder = Path(job["vocoder_path"])
+    assert vocoder.resolve() == (ROOT / "pretrained" / "vocos-mel-24khz").resolve(), vocoder
+    assert (vocoder / "config.yaml").is_file() and (vocoder / "pytorch_model.bin").is_file()
     for index, text in enumerate(job["texts"], start=1):
         path = out / f"sample-{{index:02d}}.wav"
         with wave.open(str(path), "wb") as handle:
@@ -92,10 +102,15 @@ def write_stub_mode(root: Path, mode: dict[str, Any]) -> None:
     (root / "stub-mode.json").write_text(json.dumps(mode), encoding="utf-8")
 
 
+def _pin(path: Path) -> FineTunePinnedFile:
+    digest, size = sha256_file(path)
+    return FineTunePinnedFile(sha256=digest, size_bytes=size)
+
+
 def stub_finetune_runtime(
     root: Path, mode: dict[str, Any] | None = None
-) -> tuple[Path, tuple[str, int]]:
-    """Create a fake F5 runtime at ``root``; return ``root`` and its pretrained-weights pin.
+) -> tuple[Path, FineTunePretrainedPins]:
+    """Create a fake F5 runtime at ``root``; return ``root`` and its pretrained-file pins.
 
     ``mode`` is written to ``stub-mode.json`` (see STUB_RUNTIME_PYTHON).
     Raises: ``FileExistsError`` when ``root/bin`` already exists.
@@ -114,5 +129,12 @@ def stub_finetune_runtime(
     pretrained.mkdir(parents=True)
     (pretrained / "model_1250000.safetensors").write_bytes(b"pretrained-weights")
     (pretrained / "vocab.txt").write_text("a\nb\n")
-    digest, size = sha256_file(pretrained / "model_1250000.safetensors")
-    return root, (digest, size)
+    vocoder = root / "pretrained" / "vocos-mel-24khz"
+    vocoder.mkdir()
+    (vocoder / "config.yaml").write_text("feature_extractor: stub\n")
+    (vocoder / "pytorch_model.bin").write_bytes(b"vocoder-weights")
+    return root, FineTunePretrainedPins(
+        weights=_pin(pretrained / "model_1250000.safetensors"),
+        vocoder_config=_pin(vocoder / "config.yaml"),
+        vocoder_model=_pin(vocoder / "pytorch_model.bin"),
+    )

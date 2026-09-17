@@ -44,15 +44,20 @@ extension RecordingLibraryCoverage {
 
 @MainActor
 extension RecordingWorkspaceModel {
-    /// The status region's line. Capture, playback, trim and recovery feedback come first.
-    /// Then recording errors and warnings always win over fine-tuning; any other recording
-    /// status wins for `recordingStatusHold` after it changes; then an active fine-tune's line;
-    /// then a fine-tune outcome (model ready, cancelled, failed) until the recording status next
-    /// changes or the next job starts. A run merely restored from an earlier session is not news.
+    /// The status region's line. Capture, playback, trim feedback, a recovery supervisor error
+    /// and a running recovery scan come first. Then recording errors and warnings always win
+    /// over fine-tuning. A job's outcome (model ready, cancelled, failed, refused, supervision
+    /// stopped) holds the region for `recordingStatusHold` after the job ends, even when the
+    /// recording status changes meanwhile; any other recording status wins for
+    /// `recordingStatusHold` after it changes; then an active fine-tune's line; then the outcome
+    /// until the recording status next changes or the next job starts. Standing recovery
+    /// findings rank below every fine-tune line and above the plain recording status. A run
+    /// merely restored from an earlier session is not news.
     public var statusRegion: RecordingStatusRegion {
         let (line, source) = statusRegionSource
         let reviewAttention = review.playback.failure != nil || review.failure != nil || review.fieldError != nil
-        let attention = state.errorCode != nil || reviewAttention || !recoveryAttentionRows.isEmpty
+        let attention = state.errorCode != nil || reviewAttention
+            || (source != .fineTune && !recoveryAttentionRows.isEmpty)
             || (source == .fineTune && fineTuneNeedsAttention)
         return RecordingStatusRegion(line: line, source: source, needsAttention: attention)
     }
@@ -67,12 +72,18 @@ extension RecordingWorkspaceModel {
         }
         // A capture terminal's own words are never masked by background recovery progress.
         if let notice = captureTerminalNotice, notice == state.status { return (notice, .recording) }
-        if let recovery = recoveryStatusLine { return (recovery, .recovery) }
-        let recording = (legacyReviewStatus ?? state.status, RecordingStatusRegion.Source.recording)
+        if let recovery = recoveryProgressLine { return (recovery, .recovery) }
+        // What shows when no fine-tune line does: standing findings, else the recording status.
+        let recording: (String, RecordingStatusRegion.Source) = recoveryFindingsLine.map { ($0, .recovery) }
+            ?? (legacyReviewStatus ?? state.status, .recording)
         guard let fineTuneLine = fineTuneStatusLine, !recordingStatusIsWarning else { return recording }
-        if let change = recordingStatusChange, statusClock() - change.at < recordingStatusHold { return recording }
+        let now = statusClock()
+        if !fineTune.isActive, let outcome = fineTuneOutcome, now - outcome.at < recordingStatusHold {
+            return (fineTuneLine, .fineTune)
+        }
+        if let change = recordingStatusChange, now - change.at < recordingStatusHold { return recording }
         if fineTune.isActive { return (fineTuneLine, .fineTune) }
-        if let outcome = fineTuneOutcomeSequence, outcome > (recordingStatusChange?.sequence ?? 0) {
+        if let outcome = fineTuneOutcome, outcome.sequence > (recordingStatusChange?.sequence ?? 0) {
             return (fineTuneLine, .fineTune)
         }
         return recording
@@ -98,15 +109,24 @@ extension RecordingWorkspaceModel {
         }
     }
 
-    /// A job ended (or was refused, or supervision stopped): its line shows until the recording
-    /// status next changes.
+    /// A job ended (or was refused, or supervision stopped): its line holds the region for one
+    /// hold period, then shows until the recording status next changes. The region is redrawn
+    /// when the hold ends, so a recording status that changed meanwhile appears on time.
     func noteFineTuneOutcome() {
         statusSequence &+= 1
-        fineTuneOutcomeSequence = statusSequence
+        fineTuneOutcome = (statusSequence, statusClock())
+        fineTuneOutcomeHoldTask?.cancel()
+        let hold = recordingStatusHold
+        fineTuneOutcomeHoldTask = Task { [weak self] in
+            do { try await Task.sleep(for: hold) } catch { return }
+            self?.objectWillChange.send()
+        }
     }
 
+    /// Cancel fine-tune while this app's job is queued or running over a live channel;
+    /// otherwise Fine-tune model (disabled with its reason once the channel closed).
     public var fineTuneSlot: RecordingFineTuneSlot {
-        if fineTune.isActive {
+        if fineTune.isActive && !processChannelFailed {
             return RecordingFineTuneSlot(title: "Cancel fine-tune", identifier: "transport.cancel-fine-tune",
                                          enabled: canCancelFineTune, help: fineTuneCancelReason)
         }

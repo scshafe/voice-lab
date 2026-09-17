@@ -3,9 +3,12 @@
 canonical: finetune synthesizer -- the only way the lab turns text into audio with a
 fine-tuned or base F5-TTS checkpoint. Input is one JSON job file:
 
-  {"checkpoint_path": "...", "vocab_path": "...", "use_ema": true, "device": "mps"|"cpu",
-   "nfe_steps": 32, "reference_audio_path": "...", "reference_text": "...",
-   "output_directory": "...", "texts": ["...", ...]}
+  {"checkpoint_path": "...", "vocab_path": "...", "vocoder_path": "...", "use_ema": true,
+   "device": "mps"|"cpu", "nfe_steps": 32, "reference_audio_path": "...",
+   "reference_text": "...", "output_directory": "...", "texts": ["...", ...]}
+
+``vocoder_path`` is the runtime's pinned Vocos directory (``config.yaml`` and
+``pytorch_model.bin``); it is loaded locally, never from Hugging Face.
 
 Writes ``sample-NN.wav`` (24 kHz mono) into ``output_directory`` and prints one JSON line
 per sample: {"index": N, "path": "...", "seconds": S}. Idempotent for the same job.
@@ -43,7 +46,9 @@ def main(argv: list[str] | None = None) -> int:
 
     config = OmegaConf.load(str(files("f5_tts").joinpath("configs/F5TTS_v1_Base.yaml")))
     device = job["device"]
-    vocoder = load_vocoder(vocoder_name="vocos", is_local=False, device=device)
+    vocoder = load_vocoder(
+        vocoder_name="vocos", is_local=True, local_path=job["vocoder_path"], device=device
+    )
     model = load_model(
         DiT,
         config.model.arch,

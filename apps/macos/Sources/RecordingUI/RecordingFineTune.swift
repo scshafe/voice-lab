@@ -85,6 +85,9 @@ public struct RecordingFineTuneStatus: Equatable, Sendable {
     public var run: RecordingFineTuneRunSummary?
     /// The newest finished run the service knows (this session's or an earlier one).
     public var latestRun: RecordingFineTuneRunSummary?
+    /// Why the service could not name the latest finished run (an unreadable `run.json`); a new
+    /// job can still start.
+    public var latestRunError: String?
     /// Whether the service has an F5 runtime; nil until it answered a status request.
     public var runtimeConfigured: Bool?
     /// Why availability is still unknown: the service refused or failed the status request.
@@ -114,10 +117,20 @@ public struct RecordingFineTuneStatus: Equatable, Sendable {
             case .sampling: return "Fine-tuning · writing sample sentences"
             }
         case .finished: return "Model ready · " + (runID ?? run?.runID ?? "")
-        case .failed: return message ?? "Fine-tune failed"
-        case .cancelled: return "Fine-tune cancelled"
+        case .failed, .cancelled:
+            // Training finished before the job was stopped: the model exists without samples.
+            if let run, run.status == "finished" {
+                let samples = run.finetunedSamplePaths.isEmpty && run.baseSamplePaths.isEmpty ? "no samples" : "samples incomplete"
+                return "Model ready · \(run.runID) · \(samples)"
+            }
+            if phase == .cancelled { return message ?? "Fine-tune cancelled" }
+            guard let message else { return "Fine-tune failed" }
+            return errorCode == "FINETUNE.INTERRUPTED" ? "Fine-tune interrupted: " + message : message
         }
     }
+
+    /// The ended job's line, which the Fine-tune model help repeats until the next job.
+    public var outcomeLine: String? { phase.isTerminal ? statusLine : nil }
 
     /// `Fine-tuning · pass E of N · M min left · loss L`; parts the trainer has not reported
     /// yet are left out. Minutes round up, so the last minute reads "1 min left".
@@ -168,6 +181,10 @@ extension RecordingWorkspaceModel {
     /// The request id of the service's error envelope when fine-tune supervision stops.
     public static let fineTuneSupervisorRequestID = "finetune-supervisor"
     static let fineTuneStatusRequestMemory = 16
+    static let fineTuneStartHelp = "Train the voice model on the latest kept take of every recorded prompt. Recording stays available while it runs; quitting the app stops it."
+    static let fineTuneCancelHelp = "Stop the fine-tune. Your recordings are not affected. Quitting the app also stops it."
+    /// The quit confirmation while a job is queued or running.
+    public static let quitDuringFineTuneMessage = "A fine-tune is running. Quitting stops it, and the partial run is discarded."
 
     func fineTuneTransport() -> RecordingFineTuneRequests? {
         if let fineTuneRequests { return fineTuneRequests }
@@ -183,15 +200,19 @@ extension RecordingWorkspaceModel {
     public var fineTuneNeedsAttention: Bool { !processChannelFailed && fineTune.needsAttention }
 
     public var canStartFineTune: Bool { fineTuneStartBlocker == nil }
-    /// Why Fine-tune model is unavailable, or what it does when it is available.
+    /// Why Fine-tune model is unavailable, or what it does when it is available; then, on their
+    /// own lines, the last job's outcome (until the next job) and an unreadable latest model.
     public var fineTuneUnavailableReason: String {
-        fineTuneStartBlocker ?? "Train the voice model on the latest kept take of every recorded prompt. Recording stays available while it runs."
+        var lines = [fineTuneStartBlocker ?? Self.fineTuneStartHelp]
+        if fineTuneServiceBlocker == nil {
+            if let outcome = fineTune.outcomeLine { lines.append("Last fine-tune: " + outcome) }
+            if let latestRunError = fineTune.latestRunError { lines.append(latestRunError) }
+        }
+        return lines.joined(separator: "\n")
     }
 
     public var canCancelFineTune: Bool { fineTuneCancelBlocker == nil }
-    public var fineTuneCancelReason: String {
-        fineTuneCancelBlocker ?? "Stop the fine-tune. Your recordings are not affected."
-    }
+    public var fineTuneCancelReason: String { fineTuneCancelBlocker ?? Self.fineTuneCancelHelp }
 
     private var fineTuneServiceBlocker: String? {
         if processChannelFailed { return Self.processChannelFailedReason }
@@ -210,7 +231,12 @@ extension RecordingWorkspaceModel {
         case true?: break
         }
         if state.showsStop { return "Finish the current take before fine-tuning" }
-        if state.phase == .saving { return "Wait for the current Save to finish before fine-tuning" }
+        if state.phase == .saving {
+            // A trim save (an `edit-` operation) and a take's Save share the saving phase.
+            return state.activeOperationID?.hasPrefix("edit-") == true
+                ? "Wait for the trim to finish saving before fine-tuning"
+                : "Wait for the current Save to finish before fine-tuning"
+        }
         return nil
     }
 
@@ -228,9 +254,11 @@ extension RecordingWorkspaceModel {
         var started = RecordingFineTuneStatus()
         started.runtimeConfigured = fineTune.runtimeConfigured
         started.latestRun = fineTune.latestRun
+        started.latestRunError = fineTune.latestRunError
         started.phase = .queued
         started.operationID = operation
         fineTuneGeneration &+= 1
+        rememberFineTuneOperation(operation)
         fineTune = started
         Task { [weak self] in
             guard let self, let requests = fineTuneTransport() else { return }
@@ -317,10 +345,37 @@ extension RecordingWorkspaceModel {
         noteFineTuneOutcome()
     }
 
+    /// Operation ids this app started or showed; only a job outside them can be adopted.
+    private func rememberFineTuneOperation(_ operation: String) {
+        fineTuneSeenOperations.append(operation)
+        if fineTuneSeenOperations.count > Self.fineTuneStatusRequestMemory { fineTuneSeenOperations.removeFirst() }
+    }
+
+    /// A job this app never showed ended (the service recovered it at launch, say): unless a
+    /// job is still active here, its end becomes the latest outcome, and the service is asked
+    /// once more for its status (the latest run, any job now queued).
+    private func adoptEndedFineTune(_ operation: String) {
+        var adopted = RecordingFineTuneStatus()
+        adopted.runtimeConfigured = fineTune.runtimeConfigured
+        adopted.latestRun = fineTune.latestRun
+        adopted.latestRunError = fineTune.latestRunError
+        adopted.supervisorFailure = fineTune.supervisorFailure
+        adopted.availabilityError = fineTune.availabilityError
+        adopted.operationID = operation
+        fineTuneGeneration &+= 1
+        rememberFineTuneOperation(operation)
+        fineTune = adopted
+        fineTuneStatusTask = Task { [weak self] in await self?.requestFineTuneStatus() }
+    }
+
     private func applyFineTuneProgress(_ event: [String: RecordingJSON]) {
-        guard let operation = event["operation_id"]?.string, operation == fineTune.operationID,
-              !fineTune.phase.isTerminal,
+        guard let operation = event["operation_id"]?.string,
               let next = event["state"]?.string.flatMap(RecordingFineTunePhase.init(rawValue:)), next != .idle else { return }
+        if operation != fineTune.operationID {
+            guard next.isTerminal, !fineTune.isActive, !fineTuneSeenOperations.contains(operation) else { return }
+            adoptEndedFineTune(operation)
+        }
+        guard !fineTune.phase.isTerminal else { return }
         let stage = event["stage"]?.string.flatMap(RecordingFineTuneStage.init(rawValue:))
         let epoch = event["epoch"]?.integer, update = event["update"]?.integer
         guard !fineTune.isStale(next, stage, epoch: epoch, update: update) else { return }
@@ -369,6 +424,9 @@ extension RecordingWorkspaceModel {
            current || fineTune.latestRun == nil {
             fineTune.latestRun = latest
         }
+        if current {
+            fineTune.latestRunError = event["latest_run_error"]?.object?["message"]?.string
+        }
         guard let active = event["active"]?.object, let job = active["operation_id"]?.string else { return }
         if job != fineTune.operationID {
             guard current else { return }
@@ -376,8 +434,10 @@ extension RecordingWorkspaceModel {
             adopted.runtimeConfigured = fineTune.runtimeConfigured
             adopted.latestRun = fineTune.latestRun
             adopted.supervisorFailure = fineTune.supervisorFailure
+            adopted.latestRunError = fineTune.latestRunError
             adopted.operationID = job
             fineTuneGeneration &+= 1
+            rememberFineTuneOperation(job)
             fineTune = adopted
         }
         applyFineTuneProgress(active)

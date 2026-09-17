@@ -96,13 +96,27 @@ normalized (`docs/CAPTURE_AND_SYNC.md`, "Raw means raw").
 
 Training and synthesis run out of process in a pinned F5-TTS environment
 (`requirements/runtimes/f5-tts-finetune-1.1.22-mps.txt`: torch 2.14 with MPS, f5-tts 1.1.22).
-The runtime root must hold `bin/python` and the pinned pretrained weights at
-`pretrained/F5TTS_v1_Base/model_1250000.safetensors` (Hugging Face `SWivid/F5-TTS` at revision
-`84e5a410d9cead4de2f847e7c9369a6440bdfaca`, SHA-256
-`670900fd14e6c458b95da6e9ed317cdb20dbaf7a1c02ac06a05475a9d32b6a38`) plus
-`pretrained/F5TTS_v1_Base/vocab.txt`. `finetune train` refuses a runtime whose weights hash
-differently. The first runtime root is `~/.local/share/cole-voice-lab/finetune-f5-01/venv`
-(its `pretrained/` is a link to the sibling `pretrained/` directory the manual run downloaded).
+The runtime root must hold `bin/python` and these pinned files under `pretrained/`:
+
+| Path under `<runtime>/pretrained/` | Source (Hugging Face, immutable revision) | Bytes | SHA-256 |
+| --- | --- | --- | --- |
+| `F5TTS_v1_Base/model_1250000.safetensors` | `SWivid/F5-TTS` @ `84e5a410d9cead4de2f847e7c9369a6440bdfaca` | 1,348,435,761 | `670900fd14e6c458b95da6e9ed317cdb20dbaf7a1c02ac06a05475a9d32b6a38` |
+| `F5TTS_v1_Base/vocab.txt` | `SWivid/F5-TTS` @ `84e5a410d9cead4de2f847e7c9369a6440bdfaca` | 13,800 | `2a05f992e00af9b0bd3800a8d23e78d520dbd705284ed2eedb5f4bd29398fa3c` |
+| `vocos-mel-24khz/config.yaml` | `charactr/vocos-mel-24khz` @ `0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21` | 461 | `da9033922f969a47f0c160010226919e59f27761fd5066f3828d46de6650b0fc` |
+| `vocos-mel-24khz/pytorch_model.bin` | `charactr/vocos-mel-24khz` @ `0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21` | 54,365,991 | `97ec976ad1fd67a33ab2682d29c0ac7df85234fae875aefcc5fb215681a91b2a` |
+
+`finetune train`, `finetune synthesize`, `finetune run` and every app job describe the
+runtime first (`finetune.describe_finetune_runtime`). That check runs before any dataset is
+written. It refuses a missing Vocos file with `FINETUNE.RUNTIME_UNAVAILABLE`, naming the file
+and the fetch command. It refuses missing base weights, or any of the three checked files
+(the weights and both Vocos files) with the wrong size or SHA-256, with
+`FINETUNE.PRETRAINED_MISMATCH`, as it refuses a checked file that is a link rather than the
+file itself (a Hugging Face cache snapshot holds links to blobs, so copy the files with links
+followed). The big weights are hashed last. A runtime without the vocoder therefore fails in
+seconds, not after two hours of training. The first runtime root is
+`~/.local/share/cole-voice-lab/finetune-f5-01/venv`. Its `pretrained/` is a link to the
+sibling `pretrained/` directory the manual run downloaded, so its Vocos files belong in
+`~/.local/share/cole-voice-lab/finetune-f5-01/pretrained/vocos-mel-24khz/`.
 
 ```sh
 voice-lab finetune provision-runtime --runtime-root <dir>                      # prints the plan
@@ -110,18 +124,22 @@ voice-lab finetune provision-runtime --runtime-root <dir> --execute --allow-down
 voice-lab finetune fetch-pretrained  --runtime-root <dir> [--allow-downloads]  # verify or fetch
 ```
 
-Provisioning needs about 3 GB for packages and 1.35 GB for the weights; each download is
-verified against its pinned size and SHA-256 before it is published.
+`fetch-pretrained` and provisioning fetch all four files from their pinned revisions
+(`finetune.pretrained_downloads`), and only with `--allow-downloads`. A file that already
+matches its pin is kept. Provisioning needs about 3 GB for packages, 1.35 GB for the weights
+and 54 MB for the vocoder. Each download is verified against its pinned size and SHA-256
+before it is published.
 
 Every runtime subprocess (the probe, dataset packing, training and synthesis, from the
 command line and from the app alike) runs with this process's environment plus
 `PYTHONDONTWRITEBYTECODE=1` and `HF_HUB_OFFLINE=1`, so the runtime's Hugging Face libraries
 download nothing. When the environment has no `HOME` (the app's frozen service has none), `HOME`
 comes from the password database, because the runtime's libraries cache under it.
-Synthesis loads F5's Vocos vocoder (`charactr/vocos-mel-24khz`) through Hugging Face, and
-no revision or digest pins it. The runtime is offline, so the vocoder must already be in
-the Hugging Face cache under that `HOME`. Otherwise sampling fails after training has
-finished.
+Synthesis (`resources/f5_synthesize.py`) loads the Vocos vocoder from the runtime's pinned
+`pretrained/vocos-mel-24khz/` directory (`load_vocoder(is_local=True, local_path=…)`, passed
+as the synthesis job's `vocoder_path`), never from the Hugging Face cache. Training loads no
+vocoder: F5-TTS 1.1.22's `finetune_cli` loads one only for `--log_samples`, which the lab never
+passes and the launcher refuses.
 
 Training also writes inside the runtime tree. The packed dataset goes to
 `data/<run-id>_pinyin`, and `ckpts/<run-id>` is a symlink to the run's `checkpoints/`.
@@ -132,7 +150,8 @@ samples. Neither removes the packed dataset.
 The launcher (`resources/f5_finetune_launcher.py`) wraps F5's own `finetune_cli` and only
 changes three things for a 24 GB Mac: two dataloader workers instead of sixteen, activation
 checkpointing (without it the run reached a 20 GB footprint and swapped, 88 s per update
-instead of 6), and light checkpoints without optimizer state.
+instead of 6), and light checkpoints without optimizer state. It refuses `--log_samples`
+(exit 2), which would load an unpinned vocoder.
 
 ## Defaults and what to change
 
@@ -144,10 +163,11 @@ instead of 6), and light checkpoints without optimizer state.
 | `--nfe-steps` (samples) | 32 | 16 for a quick listen |
 | `--reference-prompt-id` | first corpus clip | any clip in the corpus |
 
-Run one training job at a time and no other heavy work on the machine while it runs. The
-app enforces one job at a time for its own jobs only. It does not see a `finetune run`
-started from the command line, and the command line does not see the app's job, so do not
-start both.
+Run one training job at a time and no other heavy work on the machine while it runs.
+`finetune run` and `finetune train` refuse with `FINETUNE.JOB_ACTIVE` while the recording
+app's service holds a queued or running job (`provenance/finetune-jobs/head.json`, read
+without a lock and without writing). The app does not see a `finetune run` started from the
+command line, so do not press Fine-tune model while one runs.
 
 ## From the app
 
@@ -161,12 +181,16 @@ runs. Module: `src/cole_voice_lab/recording_finetune_jobs.py` (`@canonical finet
 **What runs.** The button sends one `fine-tune` request with `allow_missing: true` and no
 epoch override. The recording service accepts it in metadata time. It checks only that a
 runtime is configured and `<runtime>/bin/python` exists (`FINETUNE.RUNTIME_UNAVAILABLE`), that the library's disk has
-at least 8 GB free (`RECORDING.DISK_SPACE`), and that no other job is queued or running
-(`FINETUNE.JOB_ACTIVE`). A worker process (`python -m
+at least 8 GiB free (`RECORDING.DISK_SPACE`), and that no other job is queued or running
+(`FINETUNE.JOB_ACTIVE`). It records, in the job's request, the catalog version the service
+pinned at launch, which is the version the app shows (a pin that cannot be resolved refuses
+the submit under the corpus store's code). A worker process (`python -m
 cole_voice_lab.recording_finetune_jobs --worker`) then does the rest:
 
-1. It reads the subject's active catalog version from the corpus store. The store is open
-   only for that, and the snapshot is read as a file.
+1. It reads that pinned snapshot as a file; the corpus store is not opened. A later
+   `voice-lab catalog activate` therefore takes effect for jobs only after the app is
+   relaunched, together with the Library. (A group-scoped service, which pins nothing, reads
+   the subject's active version; the store is open only for that.)
 2. It calls `run_finetune_pipeline`, the chain behind `finetune run`, with that version:
    the default hyperparameters (120 epochs), the default sample sentences, the first
    corpus clip as the reference, EMA weights, 32 NFE steps on MPS, and the output root
@@ -189,7 +213,7 @@ that directory already exists. The job itself is recorded under
 | --- | --- |
 | `.owner.lock` | held by the one recording service that owns the queue |
 | `head.json` | the one queued or running job, or none (`finetune-job-head`) |
-| `requests/<operation>.json` | the accepted request, written once (`finetune-job-intent`) |
+| `requests/<operation>.json` | the accepted request and the pinned catalog version, written once (`finetune-job-intent`) |
 | `terminal/<operation>.json` | the job's end: finished, failed with its error, or cancelled (`finetune-job`) |
 
 Unlike the command line, the app's service therefore writes under `provenance/`. The
@@ -200,32 +224,54 @@ service creates this directory whenever it starts, even in a build without a run
 and picks the one with status `finished` and the newest `finished_at`. On equal times the
 greater run id wins. Runs from `finetune run` with the default `--output-root` count too;
 a `finetune dataset` directory without `run.json` does not. A `run.json` that is
-unreadable, invalid, or names another run or directory makes the app's status request fail
-with `FINETUNE.SOURCE_CHANGED`. Fine-tune model then stays unavailable until that record
-is repaired or moved out of `derived/finetune/`. The app's status reply and the Speak
-page plan both use this rule.
+unreadable, invalid, or names another run or directory leaves the latest run unresolved: the
+status reply still names the active job and whether a runtime is configured, and carries
+`latest_run_error` (`FINETUNE.SOURCE_CHANGED`) instead of `latest_run`. Fine-tune model stays
+usable and its help names the problem; repair the record or move it out of
+`derived/finetune/`. The app's status reply and the Speak page plan both use this rule.
 
 **Cancellation.** A queued job is cancelled at once. For a running job the service sends
 SIGTERM to the worker's process group, which holds the worker, the F5 runtime processes
 and whatever they started. It sends SIGKILL after 10 s. Then it rewrites `run.json` as
 `failed` with "cancelled by the operator" while it still says `running`, removes the
 runtime's `ckpts/<run-id>` link when it points at this run, and records the job as
-`cancelled`. Checkpoints, training copies and `train.log` already written stay. A job
-cancelled or failing during `sampling` is different: training already wrote a `finished`
-`run.json`, which stays finished, so that run still counts as the latest finished run,
-although its link is removed and it may have no samples.
+`cancelled`. The link is released even when the `run.json` rewrite fails; the job then ends
+failed, naming the first failure. Checkpoints, training copies and `train.log` already
+written stay. A job cancelled or failing during `sampling` is different: training already
+wrote a `finished` `run.json`, which stays finished. That run is a usable model (synthesis
+reads `<run>/checkpoints/model_last.pt`, never the link) and counts as the latest finished
+run, although its link is removed and its samples are missing or incomplete. The job itself
+still ends cancelled or failed and says so: a cancelled job's `message` is "Fine-tune
+cancelled after training: the model <run id> was trained, but its listening samples are
+missing or incomplete", and a failed job's error message starts with that clause. The app
+shows `Model ready · <run id> · no samples` (or `· samples incomplete`).
 
-**Interruption.** The worker leads its own process group and kills that group when its
-stdin closes, so training never outlives the service. When the app quits, the service
-kills the group and leaves the job recorded as running. The next service start marks such
-a job `failed` with `FINETUNE.INTERRUPTED`. It rewrites its `run.json` the same way and
-releases the link. It kills a group that is still alive only when the group's leader has
-this job's worker command line for this library. If the leader is gone, a remaining member
-must name the job's run id. A job is never resumed or retried. A job still queued when the
-service stopped starts when the service starts again. `FINETUNE.INTERRUPTED` also ends a
-job whose worker cannot start, does not take its request within 2 s, exits without a
-result, or runs longer than 24 hours. The app shows no notice of an interruption at its
-next launch. `terminal/<operation>.json` and `run.json` record it.
+**Interruption.** The worker leads its own process group. It kills that group when its stdin
+closes and after any failure of its own (it writes one JSON line naming the code first), so
+training never outlives the service or the worker. When the app quits (it asks first while a
+job is queued or running), the service kills the group and leaves the job recorded as
+running. The next service start marks such a job `failed` with `FINETUNE.INTERRUPTED`. It
+rewrites its `run.json` the same way and releases the link. It kills a group that is still
+alive only when the group's leader has this job's worker command line for this library. If
+the leader is gone, a remaining member must name the job's run id. A job is never resumed or
+retried. While this recovery runs (rewriting `run.json` hashes the checkpoints), a status
+request is answered at once and reports the job as running with the message "Checking the
+last fine-tune". Recovery then publishes the job's run summary (when it has a `run.json`) and
+its final state, keyed by its operation id. The service keeps these, and any job outcome or
+supervision failure published before the app's handshake, and sends them right after the
+handshake. The app shows the interruption as `Fine-tune interrupted: <message>`. A job still
+queued when the service stopped starts when the service starts again.
+`FINETUNE.INTERRUPTED` also ends a job whose worker cannot start, does not take its request
+within 2 s, exits without a result, or runs longer than 24 hours. `terminal/<operation>.json`
+and `run.json` record it.
+
+**Supervision failure.** If the supervisor itself fails (damaged job evidence, or a worker
+group still alive 5 s after SIGKILL), it reports `RECORDING.WRITE_FAILED` "fine-tune
+supervision stopped; restart the app to recover the job" under request id
+`finetune-supervisor`. From then on every `fine-tune`, `cancel-fine-tune` and
+`fine-tune-status` request is refused `RECORDING.GATE_NOT_READY` "fine-tune supervision
+stopped; restart the app", so no second job starts while an old group may live. The next
+service start recovers the job.
 
 **Refusals and failures** reach the app under their own codes: every `FINETUNE.*` code
 (`finetune.FineTuneErrorCode`, which the wire `ErrorCode` lists exactly), the corpus
@@ -235,9 +281,9 @@ store's `CORPUS.STORE_MISSING`, `CORPUS.NO_ACTIVE_CATALOG` and `CORPUS.SNAPSHOT_
 shows the message verbatim.
 
 **The runtime** is the build setting `finetune_runtime_root`, passed to the service as
-`--finetune-runtime-root`. Each job checks the runtime's weights against the F5-TTS v1 Base
-pin above, and nothing in the shipped service can change that pin. The native `finetune`
-verification suite substitutes a stub runtime's pin through a test-only wrapper
+`--finetune-runtime-root`. Each job checks the runtime's weights and Vocos vocoder against
+the pins above, and nothing in the shipped service can change those pins. The native
+`finetune` verification suite substitutes a stub runtime's pins through a test-only wrapper
 (`tests/native_finetune_service_fixture.py`) that is never part of a build. The runtime
 environment is the same as on the command line: `HF_HUB_OFFLINE=1`, and `HOME` from the
 password database, because the frozen service's environment has no `HOME`.

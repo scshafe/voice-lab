@@ -95,9 +95,9 @@ type FineTuneSourceKind = Literal["native", "legacy"]
 type FineTuneDatePrecision = Literal["take", "session", "unknown"]
 # Every fine-tune failure code. The recording service sends these under their own code, so
 # recording_contracts.ErrorCode lists exactly this set (tests/test_finetune.py checks it).
-# CORPUS_INCOMPLETE, JOB_ACTIVE, CANCELLED and INTERRUPTED belong to the service's job path.
+# JOB_ACTIVE and INTERRUPTED belong to the service's job path (the CLI also refuses
+# JOB_ACTIVE); a cancelled job carries no error at all.
 type FineTuneErrorCode = Literal[
-    "FINETUNE.CANCELLED",
     "FINETUNE.CATALOG_HELD_OUT",
     "FINETUNE.CHECKPOINT_MISSING",
     "FINETUNE.CORPUS_INCOMPLETE",
@@ -723,6 +723,22 @@ FINETUNE_PRETRAINED_SHA256: Final = (
     "670900fd14e6c458b95da6e9ed317cdb20dbaf7a1c02ac06a05475a9d32b6a38"
 )
 FINETUNE_PRETRAINED_SIZE_BYTES: Final = 1_348_435_761
+# The pinned Vocos vocoder synthesis loads from <runtime>/pretrained/vocos-mel-24khz/ (never
+# from the Hugging Face cache). Training loads no vocoder: finetune_cli only does so with
+# --log_samples, which finetune_cli_arguments never passes and the launcher refuses.
+FINETUNE_VOCODER_REPOSITORY: Final = "charactr/vocos-mel-24khz"
+FINETUNE_VOCODER_REVISION: Final = "0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21"
+FINETUNE_VOCODER_DIRECTORY: Final = "vocos-mel-24khz"
+FINETUNE_VOCODER_CONFIG_FILE: Final = "config.yaml"
+FINETUNE_VOCODER_CONFIG_SHA256: Final = (
+    "da9033922f969a47f0c160010226919e59f27761fd5066f3828d46de6650b0fc"
+)
+FINETUNE_VOCODER_CONFIG_SIZE_BYTES: Final = 461
+FINETUNE_VOCODER_MODEL_FILE: Final = "pytorch_model.bin"
+FINETUNE_VOCODER_MODEL_SHA256: Final = (
+    "97ec976ad1fd67a33ab2682d29c0ac7df85234fae875aefcc5fb215681a91b2a"
+)
+FINETUNE_VOCODER_MODEL_SIZE_BYTES: Final = 54_365_991
 # finetune_cli copies the pretrained vocabulary from this dataset name inside the runtime.
 _F5_PRETRAINED_VOCAB_DATASET: Final = "Emilia_ZH_EN_pinyin"
 # importlib.resources.files() can hand back a MultiplexedPath whose str() is a repr, so the
@@ -733,6 +749,44 @@ _RUNTIME_PROBE: Final = (
     "'torch_version': torch.__version__, "
     "'package_path': os.path.abspath(list(f5_tts.__path__)[0])}))\n"
 )
+
+
+class FineTunePinnedFile(ContractModel):
+    """One pinned runtime file: its exact size and SHA-256."""
+
+    sha256: Sha256
+    size_bytes: int = Field(ge=1)
+
+
+class FineTunePretrainedPins(ContractModel):
+    """The pretrained files a runtime must hold, each pinned by size and SHA-256.
+
+    ``weights`` is ``pretrained/F5TTS_v1_Base/model_1250000.safetensors``;
+    ``vocoder_config`` and ``vocoder_model`` are ``pretrained/vocos-mel-24khz/config.yaml``
+    and ``pytorch_model.bin``. Only tests substitute them (a stub runtime's few-byte files).
+    """
+
+    weights: FineTunePinnedFile
+    vocoder_config: FineTunePinnedFile
+    vocoder_model: FineTunePinnedFile
+
+
+def finetune_pretrained_pins() -> FineTunePretrainedPins:
+    """The shipped pins: F5-TTS v1 Base and the Vocos vocoder at their pinned revisions.
+
+    Read from the module's constants at call time.
+    """
+    return FineTunePretrainedPins(
+        weights=FineTunePinnedFile(
+            sha256=FINETUNE_PRETRAINED_SHA256, size_bytes=FINETUNE_PRETRAINED_SIZE_BYTES
+        ),
+        vocoder_config=FineTunePinnedFile(
+            sha256=FINETUNE_VOCODER_CONFIG_SHA256, size_bytes=FINETUNE_VOCODER_CONFIG_SIZE_BYTES
+        ),
+        vocoder_model=FineTunePinnedFile(
+            sha256=FINETUNE_VOCODER_MODEL_SHA256, size_bytes=FINETUNE_VOCODER_MODEL_SIZE_BYTES
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -763,6 +817,11 @@ class FineTuneRuntime:
     @property
     def pretrained_vocab_path(self) -> Path:
         return self.root / "pretrained" / FINETUNE_PRETRAINED_VOCAB_FILE
+
+    @property
+    def vocoder_path(self) -> Path:
+        """The pinned Vocos vocoder directory (``config.yaml`` and ``pytorch_model.bin``)."""
+        return self.root / "pretrained" / FINETUNE_VOCODER_DIRECTORY
 
 
 def _runtime_environment() -> dict[str, str]:
@@ -818,16 +877,47 @@ def _run_runtime(
     return output
 
 
+def _require_pinned_file(path: Path, pin: FineTunePinnedFile, what: str) -> str:
+    """``path``'s digest once its size and SHA-256 equal ``pin``.
+
+    Raises: ``FineTuneError`` FINETUNE.PRETRAINED_MISMATCH naming ``what`` and ``path``,
+    also when ``path`` is a link (the file must be the file itself).
+    """
+    if path.stat().st_size != pin.size_bytes:
+        raise FineTuneError(
+            "FINETUNE.PRETRAINED_MISMATCH",
+            f"{what} at {path} is {path.stat().st_size} bytes, not the pinned {pin.size_bytes}",
+        )
+    try:
+        digest, _ = sha256_file(path)
+    except SecurityError as error:
+        raise FineTuneError(
+            "FINETUNE.PRETRAINED_MISMATCH",
+            f"{what} at {path} must be a regular file, not a link: {error}",
+        ) from error
+    if digest != pin.sha256:
+        raise FineTuneError(
+            "FINETUNE.PRETRAINED_MISMATCH", f"{what} at {path} does not match its pinned SHA-256"
+        )
+    return digest
+
+
 def describe_finetune_runtime(
     runtime_root: Path,
     *,
-    pretrained_pin: tuple[str, int] | None = None,
+    pretrained_pin: FineTunePretrainedPins | None = None,
 ) -> FineTuneRuntime:
-    """Bind a runtime directory: its python, installed F5-TTS, and the pinned pretrained weights.
+    """Bind a runtime directory: its python, installed F5-TTS, and the pinned pretrained files.
 
-    Raises FINETUNE.RUNTIME_UNAVAILABLE when ``<root>/bin/python`` or the package is missing
-    and FINETUNE.PRETRAINED_MISMATCH when ``<root>/pretrained/<pinned file>`` is absent or
-    hashes differently from ``pretrained_pin`` (the F5-TTS v1 Base pin; tests substitute).
+    Every pinned file is checked here, before any dataset is written: missing files first,
+    then each file's size and digest (the 1.35 GB weights last), so a runtime without the
+    vocoder fails in seconds instead of after training.
+    Params: ``pretrained_pin`` substitutes the pins (tests only; ``None`` is
+    ``finetune_pretrained_pins()``).
+    Raises: ``FineTuneError`` FINETUNE.RUNTIME_UNAVAILABLE when ``<root>/bin/python`` or the
+    package is missing, or a Vocos vocoder file is missing (the message names it and the
+    fetch command); FINETUNE.PRETRAINED_MISMATCH when the F5-TTS v1 Base weights are missing,
+    or any pinned file's size or SHA-256 differs from its pin.
     """
     root = Path(runtime_root).expanduser().resolve()
     python = root / "bin" / "python"
@@ -854,18 +944,28 @@ def describe_finetune_runtime(
             "FINETUNE.RUNTIME_UNAVAILABLE",
             f"runtime probe named a package path that is not an absolute directory: {package_path}",
         )
+    pins = finetune_pretrained_pins() if pretrained_pin is None else pretrained_pin
     pretrained = root / "pretrained" / FINETUNE_PRETRAINED_FILE
+    vocoder = root / "pretrained" / FINETUNE_VOCODER_DIRECTORY
     if not pretrained.is_file():
         raise FineTuneError(
             "FINETUNE.PRETRAINED_MISMATCH", f"pretrained weights missing at {pretrained}"
         )
-    digest, size = sha256_file(pretrained)
-    expected = pretrained_pin or (FINETUNE_PRETRAINED_SHA256, FINETUNE_PRETRAINED_SIZE_BYTES)
-    if (digest, size) != expected:
-        raise FineTuneError(
-            "FINETUNE.PRETRAINED_MISMATCH",
-            f"pretrained weights at {pretrained} do not match the pinned F5-TTS v1 Base",
-        )
+    checked = (
+        (vocoder / FINETUNE_VOCODER_CONFIG_FILE, pins.vocoder_config, "the Vocos vocoder config"),
+        (vocoder / FINETUNE_VOCODER_MODEL_FILE, pins.vocoder_model, "the Vocos vocoder weights"),
+    )
+    for path, _pin, what in checked:
+        if not path.is_file():
+            raise FineTuneError(
+                "FINETUNE.RUNTIME_UNAVAILABLE",
+                f"{what} is missing at {path} ({FINETUNE_VOCODER_REPOSITORY} revision "
+                f"{FINETUNE_VOCODER_REVISION}); fetch it with `voice-lab finetune "
+                f"fetch-pretrained --runtime-root {root} --allow-downloads`",
+            )
+    for path, pin, what in checked:
+        _require_pinned_file(path, pin, what)
+    digest = _require_pinned_file(pretrained, pins.weights, "the F5-TTS v1 Base weights")
     return FineTuneRuntime(
         root=root,
         identity=FineTuneRuntimeIdentity(
@@ -1141,7 +1241,9 @@ def synthesize_finetune_samples(
     """Generate ``texts`` with ``checkpoint`` (fine-tuned or the pinned base) into ``output_root``.
 
     The reference is the dataset's normalized copy of ``reference_prompt_id`` with its exact
-    prompt text. Writes ``sample-NN.wav`` and ``samples.json``. Raises FINETUNE.RUNTIME_FAILED
+    prompt text. The synthesizer loads the runtime's pinned Vocos vocoder from
+    ``runtime.vocoder_path`` (the job's ``vocoder_path``), never from a download cache.
+    Writes ``sample-NN.wav`` and ``samples.json``. Raises FINETUNE.RUNTIME_FAILED
     with the synthesizer's last output when generation fails.
     """
     layout = AssetLayout.validate(layout.root)
@@ -1165,6 +1267,7 @@ def synthesize_finetune_samples(
     job = {
         "checkpoint_path": str(checkpoint),
         "vocab_path": str(vocab),
+        "vocoder_path": str(runtime.vocoder_path),
         "use_ema": use_ema,
         "device": device,
         "nfe_steps": nfe_steps,
@@ -1307,7 +1410,7 @@ def run_finetune_pipeline(
     use_ema: bool = True,
     nfe_steps: int = 32,
     device: Literal["mps", "cpu"] = "mps",
-    pretrained_pin: tuple[str, int] | None = None,
+    pretrained_pin: FineTunePretrainedPins | None = None,
     progress: Callable[[FineTunePipelineStep], None] | None = None,
 ) -> FineTunePipelineResult:
     """Select → describe the runtime → materialize → train → sample (fine-tuned and base).
@@ -1323,7 +1426,7 @@ def run_finetune_pipeline(
     Params: ``catalog``/``reference``/``subject_id`` as ``select_finetune_corpus``;
     ``allow_missing`` as ``require_complete_corpus``; ``reference_prompt_id`` names the
     reference clip (default: the dataset's first); ``pretrained_pin`` substitutes the
-    pretrained-weights pin (tests only; ``None`` is the F5-TTS v1 Base pin).
+    pretrained-file pins (tests only; ``None`` is ``finetune_pretrained_pins()``).
     Returns: the corpus, dataset, finished run and both sample sets.
     Raises: every ``FineTuneError`` of the steps it chains (FINETUNE.CORPUS_INCOMPLETE,
     FINETUNE.RUNTIME_UNAVAILABLE, FINETUNE.PRETRAINED_MISMATCH, FINETUNE.EMPTY_CORPUS,
@@ -1585,8 +1688,18 @@ def default_finetune_requirements() -> Path:
 
 
 def pretrained_downloads(runtime_root: Path) -> tuple[FineTuneDownload, ...]:
+    """Every pinned pretrained file, each from its immutable Hugging Face revision.
+
+    The F5-TTS v1 Base weights and vocabulary go to ``pretrained/F5TTS_v1_Base/`` and the
+    Vocos vocoder's config and weights to ``pretrained/vocos-mel-24khz/``.
+    """
     base = f"{FINETUNE_HUGGINGFACE_BASE_URL}/{FINETUNE_PRETRAINED_REPOSITORY}/resolve"
+    vocoder = (
+        f"{FINETUNE_HUGGINGFACE_BASE_URL}/{FINETUNE_VOCODER_REPOSITORY}/resolve/"
+        f"{FINETUNE_VOCODER_REVISION}"
+    )
     pretrained = runtime_root / "pretrained"
+    vocoder_directory = pretrained / FINETUNE_VOCODER_DIRECTORY
     return (
         FineTuneDownload(
             url=f"{base}/{FINETUNE_PRETRAINED_REVISION}/{FINETUNE_PRETRAINED_FILE}",
@@ -1599,6 +1712,18 @@ def pretrained_downloads(runtime_root: Path) -> tuple[FineTuneDownload, ...]:
             destination=pretrained / FINETUNE_PRETRAINED_VOCAB_FILE,
             sha256=FINETUNE_PRETRAINED_VOCAB_SHA256,
             size_bytes=FINETUNE_PRETRAINED_VOCAB_SIZE_BYTES,
+        ),
+        FineTuneDownload(
+            url=f"{vocoder}/{FINETUNE_VOCODER_CONFIG_FILE}",
+            destination=vocoder_directory / FINETUNE_VOCODER_CONFIG_FILE,
+            sha256=FINETUNE_VOCODER_CONFIG_SHA256,
+            size_bytes=FINETUNE_VOCODER_CONFIG_SIZE_BYTES,
+        ),
+        FineTuneDownload(
+            url=f"{vocoder}/{FINETUNE_VOCODER_MODEL_FILE}",
+            destination=vocoder_directory / FINETUNE_VOCODER_MODEL_FILE,
+            sha256=FINETUNE_VOCODER_MODEL_SHA256,
+            size_bytes=FINETUNE_VOCODER_MODEL_SIZE_BYTES,
         ),
     )
 
@@ -1675,8 +1800,9 @@ def download_verified(item: FineTuneDownload, *, opener: Opener = _default_opene
 def fetch_finetune_pretrained(
     runtime_root: Path, *, allow_downloads: bool, opener: Opener = _default_opener
 ) -> tuple[Path, ...]:
-    """Ensure the pinned weights and vocabulary exist under ``<root>/pretrained``.
+    """Ensure every pinned pretrained file (``pretrained_downloads``) exists under ``<root>``.
 
+    The F5-TTS v1 Base weights and vocabulary and the Vocos vocoder's config and weights.
     Files already matching their pin are kept. Anything else needs ``allow_downloads``;
     without it FINETUNE.DOWNLOADS_NOT_ALLOWED names what is missing.
     """

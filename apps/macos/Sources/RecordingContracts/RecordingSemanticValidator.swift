@@ -306,6 +306,7 @@ enum RecordingSemanticValidator {
         case "FineTuneStatusEvent":
             try require(!present("active") || ["queued", "running"].contains(string("active.state")), "The active fine-tune is queued or running")
             try require(!present("latest_run") || string("latest_run.status") == "finished", "The latest run is a finished run")
+            try require(!(present("latest_run") && present("latest_run_error")), "The latest run is either resolved or unresolved, never both")
         case "RecorderRequest", "ServiceRequest":
             let command = string("data.command")
             let expected: RecordingJSON = switch command {

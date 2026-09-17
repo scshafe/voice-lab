@@ -96,11 +96,20 @@ extension RecordingWorkspaceModel {
             : max(0, recoveryFindingCount - Int64(recoveryRows.values.filter(isCancelledBeforeAudio).count))
     }
 
-    public var recoveryStatusLine: String? {
+    public var recoveryStatusLine: String? { recoveryProgressLine ?? recoveryFindingsLine }
+
+    /// Recovery words that outrank a fine-tune line: a supervisor error or a scan in progress.
+    var recoveryProgressLine: String? {
         if let error = recoverySupervisorError { return error }
         if recoveryScanGeneration != nil && recoveryScanState == "scanning" {
             return recoveryPendingCount == 0 ? "Checking preserved recordings…" : "Checking preserved recordings… · \(recoveryPendingCount) known captures awaiting check"
         }
+        return nil
+    }
+
+    /// Standing findings (often from earlier sessions): one finding's own message, or their
+    /// count. They stay reachable through Recovery… but never hide a fine-tune line.
+    var recoveryFindingsLine: String? {
         let incomplete = recoveryAttentionRows
         if incomplete.count == 1 { return incomplete[0].errorMessage ?? "One recording needs attention" }
         let count = recoveryAttentionCount

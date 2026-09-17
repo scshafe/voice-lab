@@ -377,6 +377,41 @@ struct RecordingWorkspaceTests {
         #expect(warned.label == "Status" && warned.texts.contains("Warning: " + failure), "\(warned.texts)")
     }
 
+    /// Neither footer title is truncated in the slot's fixed 104-point width.
+    @Test @MainActor func neitherFineTuneTitleIsTruncatedInItsSlot() throws {
+        let width = RecordingTransportControls.fineTuneLabelWidth
+        #expect(width == 104)
+        for title in ["Fine-tune model", "Cancel fine-tune"] {
+            for font in [Font.body, Font.system(size: NSFont.systemFontSize)] {
+                let needed = Self.hosting(Text(title).font(font).fixedSize(), size: CGSize(width: 400, height: 40)) { $0.fittingSize.width }
+                #expect(needed > 40 && needed <= width, "\(title) needs \(needed) points")
+            }
+            // The rendered label keeps every word: its accessible text is the whole title.
+            let model = RecordingWorkspaceModel(fixture: .init(phase: .draftReview))
+            if title == "Cancel fine-tune" { model.fineTune.phase = .running; model.fineTune.operationID = "fine-tune-job" }
+            let nodes = Self.hosted(RecordingTransportControls(model: model), size: CGSize(width: 748, height: RecordingLayout.recordTarget))
+            let slot = try #require(nodes.first { $0.label == title })
+            #expect(slot.texts.contains(title) && slot.frame.width >= width, "\(slot.frame)")
+        }
+    }
+
+    /// Quitting during a fine-tune asks first, in words VoiceOver reads, with named buttons.
+    @Test @MainActor func theQuitConfirmationIsNamedForVoiceOver() throws {
+        let model = RecordingWorkspaceModel(fixture: .init())
+        model.fineTune.phase = .running
+        model.fineTune.operationID = "fine-tune-job"
+        model.requestClose()
+        #expect(model.reviewConfirmation == .quitDuringFineTune)
+        let nodes = Self.hosted(RecordingReviewConfirmationView(model: model), size: CGSize(width: 430, height: 160))
+        let message = try #require(nodes.first { $0.identifier == "quit-fine-tune.message" })
+        #expect(message.texts.contains(RecordingWorkspaceModel.quitDuringFineTuneMessage), "\(message.texts)")
+        let quit = try #require(nodes.first { $0.identifier == "quit-fine-tune.quit" })
+        let keep = try #require(nodes.first { $0.identifier == "quit-fine-tune.keep-running" })
+        #expect(quit.label == "Quit and stop fine-tune" || quit.texts.contains("Quit and stop fine-tune"), "\(quit)")
+        #expect(keep.label == "Keep running" || keep.texts.contains("Keep running"), "\(keep)")
+        #expect(!nodes.flatMap(\.texts).contains("Review decision complete"))
+    }
+
     /// TU1 (§6.4): a catalog label containing Markdown renders literally in the Labels menu title.
     @Test @MainActor func labelsMenuTitleRendersCatalogTitlesVerbatim() throws {
         let catalog = RecordingJSON.object(["purpose": .string("capture-pilot"), "prompts": .array([

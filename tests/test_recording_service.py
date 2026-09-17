@@ -1457,3 +1457,48 @@ def test_backends_name_a_missing_or_altered_group_snapshot(tmp_path: Path) -> No
     assert_named("altered or unsafe")
     path.unlink()
     assert_named("missing")
+
+
+def test_retained_background_updates_reach_the_app_right_after_its_handshake(
+    session: RecordingServiceSession,
+) -> None:
+    from cole_voice_lab.recording_contracts import FineTuneProgressEvent, RecordingError
+    from cole_voice_lab.recording_service import MAX_RETAINED_BACKGROUND
+
+    failure = RecordingError(
+        code="FINETUNE.INTERRUPTED", message="Synthetic interruption", retryable=True
+    )
+    ended = FineTuneProgressEvent(operation_id="tune-1", state="failed", error=failure)
+    stopped = RecordingError(
+        code="RECORDING.WRITE_FAILED", message="Synthetic supervision stop", retryable=True
+    )
+    session.publish_event("dropped", ended)  # not retained: the bootstrap recovers it
+    session.publish_event("oldest", ended, retain=True)
+    for number in range(MAX_RETAINED_BACKGROUND - 2):
+        session.publish_event(f"kept-{number}", ended, retain=True)
+    session.publish_event("tune-1", ended, retain=True)
+    session.publish_error("finetune-supervisor", stopped, retain=True)
+    assert list(session.completed()) == []
+    reply = session.submit(handshake())
+    assert reply is not None and reply.error is None
+    responses = list(session.completed())
+    names = [response.meta.request_id for response in responses]
+    # The handshake reply comes first; the oldest retained update beyond the bound is dropped.
+    assert names == [
+        "handshake",
+        *(f"kept-{number}" for number in range(MAX_RETAINED_BACKGROUND - 2)),
+        "tune-1",
+        "finetune-supervisor",
+    ]
+    assert responses[-2].data == ended and responses[-2].meta.take_id is None
+    assert responses[-1].data is None and responses[-1].error == stopped
+    sequences = [response.meta.event_sequence for response in responses]
+    assert sequences == sorted(sequences)
+    # After the handshake a retained update is published at once, and nothing is replayed.
+    session.publish_event("later", ended, retain=True)
+    assert [response.meta.request_id for response in session.completed()] == ["later"]
+    session.submit(handshake())
+    assert [response.meta.request_id for response in session.completed()] == ["handshake"]
+    session.close()
+    session.publish_event("closed", ended, retain=True)
+    assert list(session.completed()) == []

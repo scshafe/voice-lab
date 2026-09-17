@@ -5,9 +5,9 @@ spoken catalog (one prompt is a reference candidate), a stub runtime
 (``tests/finetune_stub_runtime.py``), the recording schemas, build identities and an
 application configuration whose service is started with ``--finetune-runtime-root``. The
 native ``finetune`` suite uses it here; the ``speak`` suite reuses it. The shipped service never
-overrides the pretrained-weights pin, so a configured root's service starts through the
+overrides the pretrained-file pins, so a configured root's service starts through the
 test-only wrapper ``tests/native_finetune_service_fixture.py``, copied into the root's isolated
-runtime, which hands the stub's pin to the fine-tune supervisor. A root prepared with
+runtime, which hands the stub's pins to the fine-tune supervisor. A root prepared with
 ``runtime_configured=False`` runs the ordinary service with a runtime directory that has no
 ``bin/python``.
 """
@@ -35,6 +35,7 @@ from verify_native_workspace import (
 )
 
 from cole_voice_lab.canonical import write_canonical_json
+from cole_voice_lab.finetune import FineTunePretrainedPins
 from cole_voice_lab.models import PROMPT_SUITE_V2, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import CatalogReference
@@ -43,6 +44,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "tests"))
 
 from finetune_stub_runtime import stub_finetune_runtime, write_stub_mode  # noqa: E402
+from native_finetune_service_fixture import format_pins  # noqa: E402
 
 REFERENCE_PROMPT_ID = "finetune-reference"
 READING_PROMPT_IDS = ("finetune-reading-one", "finetune-reading-two", "finetune-reading-three")
@@ -93,8 +95,8 @@ class NativeFineTuneFixture:
 
     ``configuration`` is the recording-application JSON the harness loads; ``runtime_root``
     is the directory the service is given as ``--finetune-runtime-root`` (a stub runtime when
-    ``runtime_configured``, otherwise an empty directory); ``pretrained_pin`` is the stub's pin
-    (``None`` when not configured); ``harness`` is the built ``RecordingHarness``.
+    ``runtime_configured``, otherwise an empty directory); ``pretrained_pin`` is the stub's
+    pins (``None`` when not configured); ``harness`` is the built ``RecordingHarness``.
     """
 
     root: Path
@@ -102,7 +104,7 @@ class NativeFineTuneFixture:
     configuration: Path
     runtime_root: Path
     runtime_configured: bool
-    pretrained_pin: tuple[str, int] | None
+    pretrained_pin: FineTunePretrainedPins | None
     catalog: PromptSuite
     reference: CatalogReference
     harness: Path
@@ -144,7 +146,7 @@ def prepare_finetune_fixture(
     builds = native_builds(package, binary_directory)
     environment = fixture_environment()
     runtime_root = root / "f5-runtime"
-    pin: tuple[str, int] | None = None
+    pin: FineTunePretrainedPins | None = None
     if runtime_configured:
         mode = {"step_seconds": TRAINING_STEP_SECONDS} if runtime_mode is None else runtime_mode
         _, pin = stub_finetune_runtime(runtime_root, dict(mode))
@@ -154,8 +156,8 @@ def prepare_finetune_fixture(
         service_arguments = [
             "-m",
             f"cole_voice_lab.{SERVICE_WRAPPER_MODULE}",
-            "--test-pretrained-pin",
-            f"{pin[0]}:{pin[1]}",
+            "--test-pretrained-pins",
+            format_pins(pin),
         ]
     else:
         runtime_root.mkdir(mode=0o700)

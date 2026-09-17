@@ -12,6 +12,8 @@ Options (all set by cole_voice_lab.finetune.run_f5_finetune):
 
 Side effects: writes checkpoints to the runtime's ``ckpts/<dataset_name>/`` directory as
 finetune_cli does. Not idempotent: a second run resumes from ``model_last.pt`` if present.
+Refuses ``--log_samples``: F5-TTS 1.1.22 loads the Vocos vocoder only for that option, and
+through Hugging Face rather than the runtime's pinned copy.
 """
 
 from __future__ import annotations
@@ -75,6 +77,13 @@ def _install_patches(options: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     options, passthrough = _parse_lab_options(sys.argv[1:] if argv is None else argv)
+    if any(argument.split("=", 1)[0] == "--log_samples" for argument in passthrough):
+        print(
+            "lab launcher: --log_samples is refused; it would load an unpinned vocoder",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
     print(
         f"lab launcher: workers={options.lab_dataloader_workers} "
         f"light_checkpoints={options.lab_light_checkpoints} "

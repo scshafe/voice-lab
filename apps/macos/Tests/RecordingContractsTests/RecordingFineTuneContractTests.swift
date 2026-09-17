@@ -16,7 +16,7 @@ import Testing
     ])
     /// Mirrors finetune.FineTuneErrorCode, which Python holds equal to the wire ErrorCode's FINETUNE set.
     private let fineTuneCodes = [
-        "FINETUNE.CANCELLED", "FINETUNE.CATALOG_HELD_OUT", "FINETUNE.CHECKPOINT_MISSING", "FINETUNE.CORPUS_INCOMPLETE",
+        "FINETUNE.CATALOG_HELD_OUT", "FINETUNE.CHECKPOINT_MISSING", "FINETUNE.CORPUS_INCOMPLETE",
         "FINETUNE.CORPUS_PROJECTION_FAILED", "FINETUNE.DOWNLOADS_NOT_ALLOWED", "FINETUNE.DOWNLOAD_FAILED", "FINETUNE.EMPTY_CORPUS",
         "FINETUNE.FFMPEG_FAILED", "FINETUNE.FFMPEG_UNAVAILABLE", "FINETUNE.INTERRUPTED", "FINETUNE.JOB_ACTIVE",
         "FINETUNE.PRETRAINED_MISMATCH", "FINETUNE.REFERENCE_MISSING", "FINETUNE.REQUIREMENTS_MISSING", "FINETUNE.RUNTIME_FAILED",
@@ -72,10 +72,14 @@ import Testing
     }
 
     private func status(active: [String: RecordingJSON]? = nil, latest: [String: RecordingJSON]? = nil,
-                        configured: Bool = true) -> RecordingJSON {
-        .object(["event": .string("fine-tune-status"), "operation_id": .string("op-fine-tune-status"),
-                 "runtime_configured": .boolean(configured),
-                 "active": active.map(RecordingJSON.object) ?? .null, "latest_run": latest.map(RecordingJSON.object) ?? .null])
+                        latestError: RecordingJSON? = nil, configured: Bool = true) -> RecordingJSON {
+        var event: [String: RecordingJSON] = [
+            "event": .string("fine-tune-status"), "operation_id": .string("op-fine-tune-status"),
+            "runtime_configured": .boolean(configured),
+            "active": active.map(RecordingJSON.object) ?? .null, "latest_run": latest.map(RecordingJSON.object) ?? .null,
+        ]
+        if let latestError { event["latest_run_error"] = latestError }
+        return .object(event)
     }
 
     @Test func progressNamesItsStateEvidence() throws {
@@ -166,12 +170,23 @@ import Testing
         #expect(try accepts(responses, response(data: status(configured: false))))
         #expect(try accepts(responses, response(data: status(active: progress(), latest: run()))))
         #expect(try accepts(responses, response(data: status(active: queued))))
+        // A latest run that cannot be read is named beside the still-reported active job.
+        let unreadable = RecordingJSON.object(["code": .string("FINETUNE.SOURCE_CHANGED"),
+            "message": .string("the latest fine-tuned model cannot be read: synthetic"), "retryable": .boolean(false)])
+        #expect(try accepts(responses, response(data: status(active: progress(), latestError: unreadable))))
+        #expect(try accepts(responses, response(data: status(latestError: .null))))
         let failedRun = run(noSamples.merging(["status": .string("failed"), "error": .string("Synthetic")]) { $1 })
+        let cancelledCode = RecordingJSON.object(["code": .string("FINETUNE.CANCELLED"), "message": .string("Synthetic"),
+                                                  "retryable": .boolean(false)])
         let refused: [(String, RecordingJSON)] = [
             ("finished active job", status(active: progress(["state": .string("finished")]))),
             ("cancelled active job", status(active: progress(["state": .string("cancelled")]))),
             ("failed latest run", status(latest: failedRun)),
             ("invalid active job", status(active: progress(["epoch": .null]))),
+            ("latest run and its error", status(latest: run(), latestError: unreadable)),
+            ("latest run error with a retired code", status(latestError: cancelledCode)),
+            ("latest run error without a message", status(latestError: .object(["code": .string("FINETUNE.SOURCE_CHANGED"),
+                                                                                 "retryable": .boolean(false)]))),
         ]
         for (name, event) in refused {
             #expect(try !accepts(responses, response(data: event)), "\(name) must fail closed")
@@ -215,13 +230,16 @@ import Testing
 
     @Test func everyFineTuneFailureIsAWireErrorCode() throws {
         let responses = try validator("recording-response")
-        #expect(fineTuneCodes.count == 21)
+        #expect(fineTuneCodes.count == 20)
         for code in fineTuneCodes {
             let error = RecordingJSON.object(["code": .string(code), "message": .string("Synthetic"), "retryable": .boolean(false)])
             #expect(try accepts(responses, response(error: error)), "\(code) is a wire error code")
         }
         let unknown = RecordingJSON.object(["code": .string("FINETUNE.UNKNOWN"), "message": .string("Synthetic"), "retryable": .boolean(false)])
         #expect(try !accepts(responses, response(error: unknown)))
+        // A cancelled job carries no error, so no code names a cancellation.
+        let cancelled = RecordingJSON.object(["code": .string("FINETUNE.CANCELLED"), "message": .string("Synthetic"), "retryable": .boolean(false)])
+        #expect(try !accepts(responses, response(error: cancelled)))
         // Package preparation is no longer a service event.
         let retired = RecordingJSON.object(["event": .string("package-preparation"), "operation_id": .string("op-package"),
                                             "group_id": .string("synthetic-group"), "state": .string("queued")])

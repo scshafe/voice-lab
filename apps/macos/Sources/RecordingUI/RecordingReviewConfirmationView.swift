@@ -27,6 +27,17 @@ public struct RecordingReviewConfirmationView: View {
                     Button(action == "remove" ? "Remove" : "Reject") { model.confirmDecision() }
                         .disabled(model.decisionReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.decisionReason.count > 160)
                 }
+            case .quitDuringFineTune:
+                Text(RecordingWorkspaceModel.quitDuringFineTuneMessage).font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("quit-fine-tune.message")
+                HStack {
+                    Button("Keep running") { model.cancelReviewConfirmation() }.keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("quit-fine-tune.keep-running")
+                    Spacer()
+                    Button("Quit and stop fine-tune", role: .destructive) { model.quitAndStopFineTune() }
+                        .accessibilityIdentifier("quit-fine-tune.quit")
+                }
             case nil: Text("Review decision complete")
             }
         }.padding(24).frame(width: 430).fixedSize(horizontal: false, vertical: true)

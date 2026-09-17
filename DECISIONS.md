@@ -358,3 +358,17 @@ prepares a package from native takes any more; adding one is a separate change. 
 leaving the catalog is D-017's. The training rules are D-016's. Fine-tuned checkpoints and
 samples remain working artifacts, not accepted raw, references or dataset manifests. See
 docs/FINETUNE.md ("From the app") and docs/NATIVE_RECORDING_UX.md §16.
+
+Known gap, open for Cole (2026-09-16): with Prepare for lab gone, nothing turns native takes
+into a lab package, so the lab's transfer path (`sync plan`, `intake`, `dataset`) cannot
+receive recordings made in the native app. Fine-tuning on the recording Mac does not need
+it. Whether to add a `voice-lab` command for that is Cole's call.
+
+Amended 2026-09-16 after the proofread: a job trains on the catalog version the service
+pinned at launch, the one the app shows, not on whatever is active when the job starts.
+`voice-lab finetune run` and `train` refuse `FINETUNE.JOB_ACTIVE` while the app's job is
+queued or running. The runtime's Vocos vocoder is pinned (`charactr/vocos-mel-24khz` at
+`0feb3fdd…`, under `pretrained/vocos-mel-24khz/`) and checked with the weights before any
+work, so a missing vocoder fails a job in seconds instead of after training. A job stopped
+while writing samples leaves a usable model without samples. Quitting while a job is queued
+or running asks first, and an interrupted job is reported at the next launch.

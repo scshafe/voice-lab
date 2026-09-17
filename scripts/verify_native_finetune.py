@@ -91,7 +91,8 @@ def verify(
     store = RecordingTakeStore(layout, read_only=True)
     jobs = layout.root / FINETUNE_JOBS_ROOT
 
-    # The app always asks for the default length and lets unrecorded prompts be missing.
+    # The app always asks for the default length and lets unrecorded prompts be missing; each
+    # job trains on the catalog version the service pinned, the one the app shows.
     finished_op = report["finished"]["operation_id"]
     cancelled_op = report["cancelled"]["operation_id"]
     assert finished_op != cancelled_op
@@ -99,6 +100,7 @@ def verify(
         intent = read_recording_evidence(jobs / "requests" / f"{operation}.json", FineTuneJobIntent)
         assert intent.subject_id == SUBJECT
         assert intent.command.allow_missing is True and intent.command.epochs is None
+        assert intent.catalog_reference == trained.reference, intent.catalog_reference
     assert sorted(path.stem for path in (jobs / "requests").iterdir()) == sorted(
         [finished_op, cancelled_op]
     ), "the app submitted a job the suite did not start"
@@ -186,6 +188,11 @@ def verify(
     assert report["cancelled"]["status_region_line"] == "Fine-tune cancelled"
     assert any(line.startswith("Fine-tuning · pass ") for line in report["finished"]["lines"])
     assert any(line.startswith("Fine-tuning · pass ") for line in report["cancelled"]["lines"])
+    # The second job was cancelled only after the trainer's loss and time left were shown.
+    shown = report["cancelled"]["progress_before_cancel"]
+    assert shown.startswith("Fine-tuning · pass ") and " min left" in shown and " · loss " in shown
+    assert shown in report["cancelled"]["lines"]
+    assert any(" · loss " in line and " min left" in line for line in report["cancelled"]["lines"])
     assert "training" in report["finished"]["stages"]
     assert report["slots"] == [
         "transport.fine-tune",

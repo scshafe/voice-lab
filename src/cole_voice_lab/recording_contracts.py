@@ -103,7 +103,6 @@ type ErrorCode = Literal[
     "CORPUS.STORE_MISSING",
     # Exactly finetune.FineTuneErrorCode (tests/test_finetune.py holds the two equal), so a
     # fine-tune job can send any FineTuneError under its own code.
-    "FINETUNE.CANCELLED",
     "FINETUNE.CATALOG_HELD_OUT",
     "FINETUNE.CHECKPOINT_MISSING",
     "FINETUNE.CORPUS_INCOMPLETE",
@@ -1832,13 +1831,19 @@ class FineTuneEvent(ContractModel):
 
 
 class FineTuneStatusEvent(ContractModel):
-    """Reply to ``fine-tune-status``: the runtime, the active job and the latest finished run."""
+    """Reply to ``fine-tune-status``: the runtime, the active job and the latest finished run.
+
+    ``active`` is always reported. When the latest finished run cannot be resolved (an
+    unreadable or invalid ``run.json`` under ``derived/finetune``), ``latest_run`` is absent
+    and ``latest_run_error`` names why; a new job can still be started.
+    """
 
     event: Literal["fine-tune-status"] = "fine-tune-status"
     operation_id: StableId
     runtime_configured: bool
     active: FineTuneProgressEvent | None = None
     latest_run: FineTuneRunSummary | None = None
+    latest_run_error: RecordingError | None = None
 
     @model_validator(mode="after")
     def _current_jobs(self) -> FineTuneStatusEvent:
@@ -1846,6 +1851,8 @@ class FineTuneStatusEvent(ContractModel):
             raise ValueError("the active fine-tune is queued or running")
         if self.latest_run is not None and self.latest_run.status != "finished":
             raise ValueError("the latest run is a finished run")
+        if self.latest_run is not None and self.latest_run_error is not None:
+            raise ValueError("the latest run is either resolved or unresolved, never both")
         return self
 
 

@@ -1,5 +1,50 @@
 {
   "$defs": {
+    "CatalogReference": {
+      "additionalProperties": false,
+      "description": "A published catalog version by id, version, exact suite digest and snapshot digest.\n\n``catalog_sha256`` is the canonical digest of the suite alone (the digest every take\nand coverage projection keys on); ``snapshot_sha256`` is the sha256 of the exact\nsnapshot file bytes, so the alias half of the file is pinned too. ``suite_id`` and\n``purpose`` repeat what the snapshot's suite declares so contract-level checks (purpose\nagainst the capture gate) need no file read; the store verifies all of them against the\nsnapshot whenever a reference is materialized.",
+      "properties": {
+        "catalog_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "catalog_version": {
+          "$ref": "#/$defs/PositiveRevision"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation",
+            "physical-test"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "snapshot_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "snapshot_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "catalog_id",
+        "catalog_version",
+        "catalog_sha256",
+        "snapshot_sha256",
+        "suite_id",
+        "purpose",
+        "snapshot_path"
+      ],
+      "title": "CatalogReference",
+      "type": "object"
+    },
     "FineTuneCommand": {
       "additionalProperties": false,
       "description": "Train the voice model on the latest kept take of every spoken prompt (one job at a time).\n\n``epochs`` overrides the default training length. ``allow_missing`` trains on the\nprompts that have a kept take even when others have none; without it the job is refused\n``FINETUNE.CORPUS_INCOMPLETE`` unless every spoken prompt has one. The app always sends\n``true`` because the active catalog lists unrecorded standard sentence sets.",
@@ -39,6 +84,16 @@
       "title": "FineTuneCommand",
       "type": "object"
     },
+    "PositiveRevision": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
     "Sha256": {
       "pattern": "^[0-9a-f]{64}$",
       "type": "string"
@@ -54,8 +109,19 @@
     }
   },
   "additionalProperties": false,
-  "description": "The exact accepted command, written once before its job enters the queue.",
+  "description": "The exact accepted command, written once before its job enters the queue.\n\n``catalog_reference`` is the catalog version the service pinned when it accepted the\ncommand (the one the app shows); the worker trains on exactly that snapshot. It is absent\nfor a service without a pin, whose worker uses the subject's active version.",
   "properties": {
+    "catalog_reference": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CatalogReference"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "command": {
       "$ref": "#/$defs/FineTuneCommand"
     },

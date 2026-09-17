@@ -70,6 +70,26 @@ def test_the_physical_gate_alone_keeps_acceptance_open(tmp_path: Path) -> None:
     assert len(matrix["outstanding"]) == len(PHYSICAL_GATE_ROWS)
 
 
+def test_fine_tuning_is_cited_from_its_own_section_and_checked_physically(
+    tmp_path: Path,
+) -> None:
+    import recording_acceptance_matrix as module
+
+    matrix = build_matrix(PASSING_BENCHMARK, complete_root(tmp_path))
+    row = next(row for row in matrix["parity"] if row["id"] == "finetune_from_recordings")
+    assert row["section"] == "16" and row["doc_anchor"] == "16-fine-tuning-from-the-app"
+    lines = module.DOCUMENT_PATH.read_text(encoding="utf-8").splitlines()
+    assert lines[row["doc_line"] - 1] == "## 16. Fine-tuning from the app"
+    assert row["evidence"] == "verification.json:finetune" and row["verdict"] == "verified"
+    physical = [row["requirement"] for row in matrix["physical_gate"]]
+    assert "A disposable full package through local intake" not in physical
+    check = "Fine-tune model on real recordings: start, watch progress, cancel, finish, listen"
+    assert physical[-1] == check
+    text = render_markdown(matrix)
+    assert "sections 4-13 and 16" in text and "## Parity (sections 4-11, 13, 16)" in text
+    assert f"| [16:{row['doc_line']}]" in text and check in text
+
+
 def test_a_missing_or_unreadable_artifact_is_unverified_not_assumed(tmp_path: Path) -> None:
     root = complete_root(tmp_path)
     artifact = next(row for row in PARITY_ROWS if row["evidence"]["kind"] == "artifact")

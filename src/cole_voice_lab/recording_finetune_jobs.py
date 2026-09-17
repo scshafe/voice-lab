@@ -3,11 +3,12 @@
 @canonical finetune_jobs -- the recording service accepts a fine-tune in metadata time
 (``FineTuneJobQueue.submit`` checks the runtime and free disk, never the library) and one
 worker process, leading its own session and process group, runs
-``finetune.run_finetune_pipeline`` on the subject's active corpus-store catalog. The
+``finetune.run_finetune_pipeline`` on the catalog version the service pinned (the one the app
+shows; a group-scoped service without a pin uses the subject's active version). The
 supervisor turns the worker's stage frames and the tail of ``train.log`` into
 ``FineTuneProgressEvent``s (at most one every five seconds), cancels by signalling the whole
-group, and marks a job a stopped service left running as failed (``FINETUNE.INTERRUPTED``);
-a job is never retried.
+group, and marks a job a stopped service left running as failed (``FINETUNE.INTERRUPTED``),
+publishing that outcome; a job is never retried.
 Layout under ``provenance/finetune-jobs/``: ``.owner.lock`` (one owning service),
 ``head.json`` (the one queued or running job), ``requests/<op>.json`` and
 ``terminal/<op>.json`` (immutable). Runs are written to ``derived/finetune/<run id>/``.
@@ -59,6 +60,7 @@ from .finetune import (
     FineTuneError,
     FineTuneHyperparameters,
     FineTunePipelineStep,
+    FineTunePretrainedPins,
     finetune_run_summary,
     latest_finished_finetune_run,
     mark_finetune_run_failed,
@@ -71,6 +73,7 @@ from .recording_contracts import (
     FINETUNE_MAX_EPOCHS,
     MAX_CONTROL_FRAME_BYTES,
     CancelFineTuneCommand,
+    CatalogReference,
     ErrorCode,
     FineTuneCommand,
     FineTuneEvent,
@@ -99,8 +102,8 @@ from .recording_takes import (
 
 FINETUNE_JOBS_ROOT: Final = "provenance/finetune-jobs"
 FINETUNE_WORKER_MODULE: Final = "cole_voice_lab.recording_finetune_jobs"
-# A run's dataset, packed copy, checkpoints and samples need several gigabytes.
-FINETUNE_MIN_FREE_BYTES: Final = 8 * 1024**3
+# A run's dataset, packed copy, checkpoints and samples need several GiB.
+FINETUNE_MIN_FREE_BYTES: Final = 8 * 1024**3  # 8 GiB
 FINETUNE_PROGRESS_INTERVAL_SECONDS: Final = 5.0
 FINETUNE_CANCEL_GRACE_SECONDS: Final = 10.0
 # No deadline fits training; this only stops a job that can no longer be finishing.
@@ -112,6 +115,11 @@ CANCELLING_MESSAGE: Final = "Cancelling the fine-tune"
 INTERRUPTED_BY_RESTART: Final = (
     "the recording service stopped while this fine-tune was running; start it again"
 )
+# While a restarted service resolves the job its predecessor left running.
+RECOVERING_MESSAGE: Final = "Checking the last fine-tune"
+# Supervision failed: requests are refused with the first, the failure is reported with the second.
+SUPERVISION_STOPPED: Final = "fine-tune supervision stopped; restart the app"
+SUPERVISION_FAILURE: Final = "fine-tune supervision stopped; restart the app to recover the job"
 _SEND_DEADLINE_SECONDS: Final = 2.0
 _REPLY_EXIT_SECONDS: Final = 2.0
 _GROUP_STOP_SECONDS: Final = 5.0
@@ -155,7 +163,12 @@ class FineTuneJobError(VoiceLabError):
 
 
 class FineTuneJobIntent(ContractModel):
-    """The exact accepted command, written once before its job enters the queue."""
+    """The exact accepted command, written once before its job enters the queue.
+
+    ``catalog_reference`` is the catalog version the service pinned when it accepted the
+    command (the one the app shows); the worker trains on exactly that snapshot. It is absent
+    for a service without a pin, whose worker uses the subject's active version.
+    """
 
     schema_version: Literal["cole-voice-lab.finetune-job-intent/v1"] = (
         "cole-voice-lab.finetune-job-intent/v1"
@@ -164,6 +177,9 @@ class FineTuneJobIntent(ContractModel):
     subject_id: StableId
     request_sha256: Sha256
     queued_at: UtcTimestamp
+    catalog_reference: CatalogReference | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def _command_binding(self) -> FineTuneJobIntent:
@@ -178,6 +194,8 @@ class FineTuneJob(ContractModel):
     ``run_id`` is chosen when the job starts; ``worker_pid`` is the worker process, which
     leads its own process group (the group id is the same number); ``runtime_link`` is the
     runtime's ``ckpts/<run id>`` path once the worker has described the runtime.
+    ``message`` is a cancelled job's note (its training had finished, so its model exists
+    without listening samples); a failed job says so in its error instead.
     """
 
     schema_version: Literal["cole-voice-lab.finetune-job/v1"] = "cole-voice-lab.finetune-job/v1"
@@ -192,6 +210,9 @@ class FineTuneJob(ContractModel):
     cancel_requested: bool = False
     finished_at: UtcTimestamp | None = None
     error: RecordingError | None = None
+    message: str | None = Field(
+        default=None, min_length=1, max_length=1024, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def _state_evidence(self) -> FineTuneJob:
@@ -210,6 +231,8 @@ class FineTuneJob(ContractModel):
             raise ValueError("a failed job names its error; other jobs carry none")
         if self.cancel_requested and self.state != "running":
             raise ValueError("only a running job waits for its cancellation")
+        if self.message is not None and self.state != "cancelled":
+            raise ValueError("only a cancelled job carries a note")
         return self
 
     @property
@@ -232,13 +255,6 @@ class FineTuneJobHead(ContractModel):
         return self
 
 
-class FineTunePretrainedPin(ContractModel):
-    """A substitute pretrained-weights pin (tests only; the service never sends one)."""
-
-    sha256: Sha256
-    size_bytes: int = Field(ge=1)
-
-
 class FineTuneWorkerRequest(ContractModel):
     schema_version: Literal["cole-voice-lab.finetune-worker/v1"] = (
         "cole-voice-lab.finetune-worker/v1"
@@ -249,7 +265,8 @@ class FineTuneWorkerRequest(ContractModel):
     request_sha256: Sha256
     run_id: StableId
     runtime_root: AbsolutePath
-    pretrained_pin: FineTunePretrainedPin | None = None
+    # Substitute pretrained-file pins (tests only; the service never sends them).
+    pretrained_pin: FineTunePretrainedPins | None = None
 
 
 class FineTuneWorkerStage(ContractModel):
@@ -303,7 +320,7 @@ def finetune_job_event(job: FineTuneJob) -> FineTuneProgressEvent:
         operation_id=job.operation_id,
         state=job.state,
         run_id=job.run_id,
-        message=CANCELLING_MESSAGE if job.cancel_requested else None,
+        message=CANCELLING_MESSAGE if job.cancel_requested else job.message,
         error=job.error,
     )
 
@@ -312,8 +329,8 @@ def _free_bytes(path: Path) -> int:
     return shutil.disk_usage(path).free
 
 
-def _gigabytes(size: int) -> str:
-    return f"{size / 1024**3:.1f} GB"
+def _gibibytes(size: int) -> str:
+    return f"{size / 1024**3:.1f} GiB"
 
 
 class FineTuneJobQueue:
@@ -425,11 +442,20 @@ class FineTuneJobQueue:
             raise SecurityError("fine-tune intent filename names another operation")
         return intent
 
-    def _new_intent(self, command: FineTuneCommand, request_sha256: str) -> FineTuneJobIntent:
+    def _new_intent(
+        self,
+        command: FineTuneCommand,
+        request_sha256: str,
+        catalog_reference: CatalogReference | None = None,
+    ) -> FineTuneJobIntent:
         path = self._intent_path(command.operation_id)
         if path.exists():
             intent = self.intent(command.operation_id)
-            if intent.request_sha256 != request_sha256 or intent.subject_id != self.subject_id:
+            if (
+                intent.request_sha256 != request_sha256
+                or intent.subject_id != self.subject_id
+                or intent.catalog_reference != catalog_reference
+            ):
                 raise FineTuneJobError(
                     "RECORDING.INVALID_MESSAGE",
                     f"fine-tune operation {command.operation_id} already names another request",
@@ -440,6 +466,7 @@ class FineTuneJobQueue:
             subject_id=self.subject_id,
             request_sha256=request_sha256,
             queued_at=self._clock(),
+            catalog_reference=catalog_reference,
         )
         write_recording_evidence(path, intent, immutable=True)
         return intent
@@ -459,11 +486,16 @@ class FineTuneJobQueue:
                 "`voice-lab finetune provision-runtime`",
             )
 
-    def submit(self, command: FineTuneCommand) -> FineTuneJob:
+    def submit(
+        self, command: FineTuneCommand, *, catalog_reference: CatalogReference | None = None
+    ) -> FineTuneJob:
         """Accept ``command`` as the queued job, or replay the job it already names.
 
         Metadata only: the runtime check is one ``stat`` and the disk check one ``statvfs``;
         the library and the runtime's packages are never read here.
+        Params: ``catalog_reference`` is the catalog version the service pinned, recorded in
+        the intent so the job trains on exactly it (``None``: the subject's active version
+        when the job starts).
         Returns: the new queued job, or the queued, running or terminal job of the same
         operation (an identical resubmit).
         Raises: ``FineTuneJobError`` with RECORDING.INVALID_MESSAGE (the operation already
@@ -501,11 +533,11 @@ class FineTuneJobQueue:
             if free < FINETUNE_MIN_FREE_BYTES:
                 raise FineTuneJobError(
                     "RECORDING.DISK_SPACE",
-                    f"fine-tuning needs {_gigabytes(FINETUNE_MIN_FREE_BYTES)} free on the "
-                    f"library's disk; {_gigabytes(free)} is free",
+                    f"fine-tuning needs {_gibibytes(FINETUNE_MIN_FREE_BYTES)} free on the "
+                    f"library's disk; {_gibibytes(free)} is free",
                     retryable=True,
                 )
-            intent = self._new_intent(command, request_sha256)
+            intent = self._new_intent(command, request_sha256, catalog_reference)
             job = FineTuneJob(
                 operation_id=command.operation_id,
                 request_sha256=request_sha256,
@@ -620,8 +652,12 @@ class FineTuneJobQueue:
 
         A cancelled or failed job's ``run.json`` is rewritten as failed (``"cancelled by the
         operator"`` or the error's message) when it still says running, and the runtime's
-        ``ckpts/<run id>`` link is released; both happen before the queue lock is taken. When
-        either cannot be done the job ends failed and its error says why.
+        ``ckpts/<run id>`` link is released, even when the rewrite failed; both happen before
+        the queue lock is taken. When either cannot be done the job ends failed and its error
+        names the first failure. A run whose training had already finished (it was stopped
+        while writing samples) keeps its finished ``run.json``: its model exists without
+        listening samples, and the job says so (a failed job in its error, a cancelled job in
+        its ``message``).
         Returns: the terminal job.
         Raises: ``SecurityError`` when ``operation_id`` is not the running job;
         ``FineTuneJobError`` RECORDING.GATE_NOT_READY when the queue is closed; ``OSError``
@@ -631,19 +667,51 @@ class FineTuneJobQueue:
             job = self._active(operation_id)
         if job.state != "running":
             raise SecurityError(f"fine-tune job {operation_id} is not running")
+        note: str | None = None
         if state != "finished" and job.run_root is not None:
-            message = CANCELLED_BY_OPERATOR if error is None else error.message
+            reason = CANCELLED_BY_OPERATOR if error is None else error.message
+            failure: RecordingError | None = None
+            record = None
             try:
-                mark_finetune_run_failed(self.layout, job.run_root, message, clock=self._clock)
-                if job.runtime_link is not None:
+                record = mark_finetune_run_failed(
+                    self.layout, job.run_root, reason, clock=self._clock
+                )
+            except FineTuneError as problem:
+                failure = _run_record_error(problem.code, problem)
+            except (SecurityError, OSError, ValueError) as problem:
+                failure = _run_record_error("RECORDING.WRITE_FAILED", problem)
+            if job.runtime_link is not None:
+                try:
                     release_finetune_runtime_link(
                         Path(job.runtime_link),
                         self.layout.root / job.run_root / "checkpoints",
                     )
-            except FineTuneError as failure:
-                state, error = "failed", _run_record_error(failure.code, failure)
-            except (SecurityError, OSError, ValueError) as failure:
-                state, error = "failed", _run_record_error("RECORDING.WRITE_FAILED", failure)
+                except OSError as problem:
+                    if failure is None:
+                        failure = RecordingError(
+                            code="RECORDING.WRITE_FAILED",
+                            message=_bounded_message(
+                                f"the fine-tune stopped but the runtime link {job.runtime_link} "
+                                f"was not released: {problem}"
+                            ),
+                            retryable=False,
+                        )
+            if failure is not None:
+                state, error = "failed", failure
+            elif record is not None and record.status == "finished":
+                trained = (
+                    f"the model {job.run_id} was trained, but its listening samples are "
+                    "missing or incomplete"
+                )
+                if error is None:
+                    note = f"Fine-tune cancelled after training: {trained}"
+                else:
+                    error = RecordingError(
+                        code=error.code,
+                        message=_bounded_message(f"{trained}: {error.message}"),
+                        details=error.details,
+                        retryable=error.retryable,
+                    )
         with self._lock():
             current = self._active(operation_id)
             ended = FineTuneJob.model_validate(
@@ -653,18 +721,25 @@ class FineTuneJobQueue:
                     "cancel_requested": False,
                     "finished_at": self._clock(),
                     "error": None if error is None else error.model_dump(),
+                    "message": note if state == "cancelled" else None,
                 }
             )
             return self._complete(ended)
 
-    def recover(self, stop_worker: Callable[[FineTuneJob], None]) -> FineTuneJob | None:
+    def recover(
+        self,
+        stop_worker: Callable[[FineTuneJob], None],
+        *,
+        recovering: Callable[[FineTuneJob], None] | None = None,
+    ) -> FineTuneJob | None:
         """Resolve the job a previous service left behind; a running job is never resumed.
 
-        A job whose terminal record exists leaves the head. A running job's worker group is
-        handed to ``stop_worker`` (which kills it only when it is verifiably this job's), then
-        the job ends ``cancelled`` when its cancellation was requested and otherwise
-        ``failed`` with ``FINETUNE.INTERRUPTED``, its ``run.json`` rewritten (``finish``).
-        A queued job stays queued and starts normally.
+        A job whose terminal record exists leaves the head. A running job is first handed to
+        ``recovering`` (the slow part follows, and nothing holds the queue lock meanwhile),
+        then its worker group to ``stop_worker`` (which kills it only when it is verifiably
+        this job's); the job then ends ``cancelled`` when its cancellation was requested and
+        otherwise ``failed`` with ``FINETUNE.INTERRUPTED``, its ``run.json`` rewritten
+        (``finish``). A queued job stays queued and starts normally.
         Returns: the job ended here, or ``None``.
         Raises: ``SecurityError`` when a terminal record binds another request; as ``finish``.
         """
@@ -680,6 +755,8 @@ class FineTuneJobQueue:
                 return None
             if job.state == "queued":
                 return None
+        if recovering is not None:
+            recovering(job)
         if job.worker_pid is not None:
             stop_worker(job)
         if job.cancel_requested:
@@ -697,6 +774,30 @@ class FineTuneJobQueue:
             if not self._closed:
                 self._closed = True
                 os.close(self._owner)
+
+
+def active_finetune_job(layout: AssetLayout) -> FineTuneJob | None:
+    """The recording app's queued or running fine-tune job, read without any lock or write.
+
+    ``voice-lab finetune run`` and ``train`` use it to refuse training while the app's
+    service holds a job, so the two never train at once.
+    Returns: the job in ``provenance/finetune-jobs/head.json``, or ``None`` when there is no
+    head or it names no job.
+    Raises: ``SecurityError`` for an unsafe path or head file; ``ContractError`` for an
+    invalid head.
+    """
+    path = confined_path(layout.root, f"{FINETUNE_JOBS_ROOT}/head.json")
+    if not os.path.lexists(path):
+        return None
+    return read_recording_evidence(path, FineTuneJobHead).job
+
+
+def _latest_run_error(code: ErrorCode, failure: BaseException) -> RecordingError:
+    return RecordingError(
+        code=code,
+        message=_bounded_message(f"the latest fine-tuned model cannot be read: {failure}"),
+        retryable=False,
+    )
 
 
 def _run_record_error(code: ErrorCode, failure: BaseException) -> RecordingError:
@@ -723,7 +824,8 @@ class FineTuneTrainingProgress:
 _ESCAPES = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _SEPARATORS = re.compile(r"[\r\n]")
 _EPOCH = re.compile(r"Epoch (\d{1,6})/(\d{1,6})")
-_TIMES = re.compile(r"\[(\d+(?::\d{2}){1,2})<(\d+(?::\d{2}){1,2})")
+# tqdm's elapsed<remaining times: [MM:SS or [H:MM:SS, the leading field at most six digits.
+_TIMES = re.compile(r"\[(\d{1,6}(?::\d{2}){1,2})<(\d{1,6}(?::\d{2}){1,2})")
 _LOSS = re.compile(r"loss=([^,\]\s]+)")
 _UPDATE = re.compile(r"update=(\d{1,18})\b")
 
@@ -951,8 +1053,10 @@ class FineTuneSupervisor:
     """Runs the queue's jobs, one worker process at a time, and answers for their progress.
 
     The service calls ``submit``, ``cancel`` and ``status`` from its metadata executor; the
-    supervisor thread starts, watches and ends jobs and publishes their events through
-    ``on_event`` (keyed by the job's operation id).
+    supervisor thread recovers the job a previous service left running, then starts, watches
+    and ends jobs. Progress goes to ``on_event``; a job's end (its run record and final
+    state, a recovered job's included) goes to ``on_outcome``; both are keyed by the job's
+    operation id. Once supervision has failed, every request is refused.
     """
 
     def __init__(
@@ -960,20 +1064,24 @@ class FineTuneSupervisor:
         queue: FineTuneJobQueue,
         *,
         on_event: Callable[[str, FineTuneJobEvent], None] | None = None,
+        on_outcome: Callable[[str, FineTuneJobEvent], None] | None = None,
         on_failure: Callable[[RecordingError], None] | None = None,
-        pretrained_pin: tuple[str, int] | None = None,
+        pretrained_pin: FineTunePretrainedPins | None = None,
         progress_interval: float = FINETUNE_PROGRESS_INTERVAL_SECONDS,
         cancel_grace: float = FINETUNE_CANCEL_GRACE_SECONDS,
         watchdog: float = FINETUNE_WATCHDOG_SECONDS,
         processes: Callable[[], Sequence[ProcessRow]] = process_table,
     ) -> None:
-        """Params: ``pretrained_pin`` is a test seam: the pretrained-weights pin the worker
-        checks the runtime against (the recording service never sets it, so its workers use
-        the F5-TTS v1 Base pin); ``cancel_grace`` is how long a signalled group has before
-        it is killed; ``processes`` lists processes for recovery's command-line check.
+        """Params: ``on_outcome`` hears each job's run summary and final state (default:
+        ``on_event``; the recording service keeps them until the app's handshake);
+        ``pretrained_pin`` is a test seam: the pretrained-file pins the worker checks the
+        runtime against (the recording service never sets it, so its workers use
+        ``finetune_pretrained_pins()``); ``cancel_grace`` is how long a signalled group has
+        before it is killed; ``processes`` lists processes for recovery's command-line check.
         """
         self.queue = queue
         self.on_event = on_event
+        self.on_outcome = on_outcome
         self.on_failure = on_failure
         self.pretrained_pin = pretrained_pin
         self.progress_interval = progress_interval
@@ -984,6 +1092,7 @@ class FineTuneSupervisor:
         self._mutex = threading.Lock()
         self._process: subprocess.Popen[bytes] | None = None
         self._tracker: FineTuneProgressTracker | None = None
+        self._recovering: str | None = None
         self.fatal_error: BaseException | None = None
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="recording-finetune-supervisor"
@@ -1002,6 +1111,12 @@ class FineTuneSupervisor:
     def _active_event(self, job: FineTuneJob) -> FineTuneProgressEvent:
         with self._mutex:
             tracker = self._tracker
+            recovering = self._recovering == job.operation_id
+        if recovering:
+            event = finetune_job_event(job)
+            return FineTuneProgressEvent.model_validate(
+                event.model_dump() | {"message": RECOVERING_MESSAGE}
+            )
         if tracker is None or tracker.current.operation_id != job.operation_id:
             return finetune_job_event(job)
         live = tracker.current
@@ -1009,9 +1124,21 @@ class FineTuneSupervisor:
             return live.model_copy(update={"message": CANCELLING_MESSAGE})
         return live
 
-    def submit(self, command: FineTuneCommand) -> FineTuneProgressEvent:
-        """Queue ``command`` (``FineTuneJobQueue.submit``) and return its state."""
-        job = self.queue.submit(command)
+    def _require_supervising(self) -> None:
+        if self.fatal_error is not None:
+            raise FineTuneJobError("RECORDING.GATE_NOT_READY", SUPERVISION_STOPPED)
+
+    def submit(
+        self, command: FineTuneCommand, *, catalog_reference: CatalogReference | None = None
+    ) -> FineTuneProgressEvent:
+        """Queue ``command`` (``FineTuneJobQueue.submit``, with the service's pinned
+        ``catalog_reference``) and return its state.
+
+        Raises: ``FineTuneJobError`` RECORDING.GATE_NOT_READY once supervision has stopped;
+        as ``FineTuneJobQueue.submit``.
+        """
+        self._require_supervising()
+        job = self.queue.submit(command, catalog_reference=catalog_reference)
         return self._active_event(job) if job.state == "running" else finetune_job_event(job)
 
     def cancel(self, command: CancelFineTuneCommand) -> FineTuneProgressEvent:
@@ -1020,24 +1147,45 @@ class FineTuneSupervisor:
         Returns: the cancelled state for a queued job; for a running job its live progress
         with the message ``Cancelling the fine-tune`` (the ``cancelled`` event follows once
         its process group is gone); an ended job's terminal state.
+        Raises: ``FineTuneJobError`` RECORDING.GATE_NOT_READY once supervision has stopped;
+        as ``FineTuneJobQueue.request_cancel``.
         """
+        self._require_supervising()
         job = self.queue.request_cancel(command.cancelled_operation_id)
         return self._active_event(job) if job.state == "running" else finetune_job_event(job)
 
     def status(self, command: FineTuneStatusCommand) -> FineTuneStatusEvent:
         """Whether a runtime is configured, the active job's live progress and the latest run.
 
-        Raises: ``FineTuneError`` as ``latest_finished_finetune_run``.
+        Never waits for recovery: a job being recovered is reported running with the message
+        ``Checking the last fine-tune``. A latest run that cannot be resolved is reported as
+        ``latest_run_error`` (its ``FineTuneError`` code; an unsafe path as
+        RECORDING.SOURCE_CHANGED, a file-system failure as RECORDING.WRITE_FAILED), so
+        ``active`` is always answered and a new job can still start.
+        Raises: ``FineTuneJobError`` RECORDING.GATE_NOT_READY once supervision has stopped;
+        RECORDING.GATE_NOT_READY when the queue is closed.
         """
+        self._require_supervising()
         job = self.queue.active_job()
         active = None
         if job is not None:
             active = self._active_event(job) if job.state == "running" else finetune_job_event(job)
+        latest_run: FineTuneRunSummary | None = None
+        latest_run_error: RecordingError | None = None
+        try:
+            latest_run = latest_finished_finetune_run(self.queue.layout)
+        except FineTuneError as failure:
+            latest_run_error = _latest_run_error(failure.code, failure)
+        except (SecurityError, ValueError) as failure:
+            latest_run_error = _latest_run_error("RECORDING.SOURCE_CHANGED", failure)
+        except OSError as failure:
+            latest_run_error = _latest_run_error("RECORDING.WRITE_FAILED", failure)
         return FineTuneStatusEvent(
             operation_id=command.operation_id,
             runtime_configured=self.queue.runtime_configured,
             active=active,
-            latest_run=latest_finished_finetune_run(self.queue.layout),
+            latest_run=latest_run,
+            latest_run_error=latest_run_error,
         )
 
     # -- supervision (supervisor thread) -------------------------------------------------
@@ -1046,9 +1194,30 @@ class FineTuneSupervisor:
         if event is not None and self.on_event is not None:
             self.on_event(event.operation_id, event)
 
+    def _emit_outcome(self, event: FineTuneJobEvent) -> None:
+        publish = self.on_outcome or self.on_event
+        if publish is not None:
+            publish(event.operation_id, event)
+
+    def _note_recovering(self, job: FineTuneJob) -> None:
+        with self._mutex:
+            self._recovering = job.operation_id
+
+    def _recover(self) -> None:
+        """End the job a previous service left running and publish its outcome."""
+        try:
+            ended = self.queue.recover(
+                self._stop_recovered_worker, recovering=self._note_recovering
+            )
+        finally:
+            with self._mutex:
+                self._recovering = None
+        if ended is not None:
+            self._publish_outcome(ended)
+
     def _run(self) -> None:
         try:
-            self.queue.recover(self._stop_recovered_worker)
+            self._recover()
             while not self._stop.is_set():
                 claimed = self.queue.claim()
                 if claimed is None:
@@ -1061,7 +1230,7 @@ class FineTuneSupervisor:
                 self.on_failure(
                     RecordingError(
                         code="RECORDING.WRITE_FAILED",
-                        message="fine-tune supervision stopped; restart the app to recover the job",
+                        message=SUPERVISION_FAILURE,
                         retryable=True,
                     )
                 )
@@ -1165,15 +1334,25 @@ class FineTuneSupervisor:
                 error = RecordingError(
                     code=failure.code, message=_bounded_message(str(failure)), retryable=False
                 )
-        ended = self.queue.finish(job.operation_id, state, error)
-        if summary is None and os.path.lexists(self.queue.layout.root / job.run_root / "run.json"):
+        self._publish_outcome(self.queue.finish(job.operation_id, state, error), summary)
+
+    def _publish_outcome(
+        self, ended: FineTuneJob, summary: FineTuneRunSummary | None = None
+    ) -> None:
+        """Publish an ended job's run summary (when its ``run.json`` summarizes) and its state."""
+        run_root = ended.run_root
+        if (
+            summary is None
+            and run_root is not None
+            and os.path.lexists(self.queue.layout.root / run_root / "run.json")
+        ):
             try:
-                summary = finetune_run_summary(self.queue.layout, job.run_root)
+                summary = finetune_run_summary(self.queue.layout, run_root)
             except FineTuneError:
                 summary = None  # the final state below still names the job's outcome
         if summary is not None:
-            self._emit(FineTuneEvent(operation_id=job.operation_id, run=summary))
-        self._emit(finetune_job_event(ended))
+            self._emit_outcome(FineTuneEvent(operation_id=ended.operation_id, run=summary))
+        self._emit_outcome(finetune_job_event(ended))
 
     def _supervise(self, job: FineTuneJob, tracker: FineTuneProgressTracker) -> _Outcome | None:
         """Start ``job``'s worker and follow it until it replies, fails or is stopped.
@@ -1211,45 +1390,56 @@ class FineTuneSupervisor:
         outcome: _Outcome | None = None
         try:
             job = self.queue.record_worker(job.operation_id, process.pid)
-            pin = self.pretrained_pin
             request = FineTuneWorkerRequest(
                 generation=f"finetune-{uuid4().hex}",
                 operation_id=job.operation_id,
                 request_sha256=job.request_sha256,
                 run_id=run_id,
                 runtime_root=str(runtime_root),
-                pretrained_pin=None
-                if pin is None
-                else FineTunePretrainedPin(sha256=pin[0], size_bytes=pin[1]),
+                pretrained_pin=self.pretrained_pin,
             )
             outcome = self._converse(process, job, request, tracker)
             return outcome
         finally:
-            self._reap(process, replied=outcome is not None and outcome.replied)
-            with self._mutex:
-                self._process = None
+            try:
+                self._reap(process, replied=outcome is not None and outcome.replied)
+            finally:
+                with self._mutex:
+                    self._process = None
 
     def _reap(self, process: subprocess.Popen[bytes], *, replied: bool) -> None:
-        """Close the worker's pipes and make sure its whole process group is gone."""
+        """Close the worker's pipes and make sure its whole process group is gone.
+
+        Raises: ``FineTuneJobError`` RECORDING.WRITE_FAILED when the group is still alive
+        ``_GROUP_STOP_SECONDS`` after SIGKILL; supervision then stops, so no second job can
+        start while the old group lives.
+        """
         assert process.stdin is not None and process.stdout is not None
-        if replied and process.returncode is None:
-            # A worker that replied exits by itself; its stdout closes when it does.
-            deadline = time.monotonic() + _REPLY_EXIT_SECONDS
-            while time.monotonic() < deadline:
-                readable, _, _ = select.select([process.stdout], [], [], _POLL_SECONDS)
-                if readable and not os.read(process.stdout.fileno(), 65_536):
-                    break
-        process.stdin.close()  # nothing is buffered: the request went out through os.write
-        if process.returncode is None:
-            # The leader is not reaped yet, so its group id cannot belong to anyone else.
-            _signal_group(process.pid, signal.SIGKILL)
-            process.wait()
-        elif self._group_alive(process.pid):
-            _signal_group(process.pid, signal.SIGKILL)
-        deadline = time.monotonic() + _GROUP_STOP_SECONDS
-        while self._group_alive(process.pid) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        process.stdout.close()
+        try:
+            if replied and process.returncode is None:
+                # A worker that replied exits by itself; its stdout closes when it does.
+                deadline = time.monotonic() + _REPLY_EXIT_SECONDS
+                while time.monotonic() < deadline:
+                    readable, _, _ = select.select([process.stdout], [], [], _POLL_SECONDS)
+                    if readable and not os.read(process.stdout.fileno(), 65_536):
+                        break
+            process.stdin.close()  # nothing is buffered: the request went out through os.write
+            if process.returncode is None:
+                # The leader is not reaped yet, so its group id cannot belong to anyone else.
+                _signal_group(process.pid, signal.SIGKILL)
+                process.wait()
+            elif self._group_alive(process.pid):
+                _signal_group(process.pid, signal.SIGKILL)
+            deadline = time.monotonic() + _GROUP_STOP_SECONDS
+            while self._group_alive(process.pid):
+                if time.monotonic() > deadline:
+                    raise FineTuneJobError(
+                        "RECORDING.WRITE_FAILED",
+                        f"the fine-tune worker group {process.pid} did not stop",
+                    )
+                time.sleep(0.05)
+        finally:
+            process.stdout.close()
 
     def _converse(
         self,
@@ -1428,9 +1618,10 @@ def run_finetune_worker_request(
     """Run one job in this (worker) process and name its outcome.
 
     Checks the request against the job's durable intent, refuses an existing run directory
-    (FINETUNE.RUN_EXISTS), reads the subject's active catalog (the corpus store is open only
-    to read the active version; the snapshot is read as a file), then runs
-    ``run_finetune_pipeline`` with the intent's epochs and ``allow_missing``. Each stage is
+    (FINETUNE.RUN_EXISTS), reads the catalog snapshot the intent pins as a file (the corpus
+    store is never opened; an intent without a pin reads the subject's active version, the
+    store open only for that), then runs ``run_finetune_pipeline`` with the intent's epochs
+    and ``allow_missing``. Each stage is
     passed to ``emit``. A selection that overlaps a metadata commit is retried for
     ``metadata_retry_seconds``.
     Returns: the reply; its ``error`` names any failure: a ``FineTuneError`` under its own
@@ -1462,15 +1653,16 @@ def run_finetune_worker_request(
         run_root = f"{FINETUNE_OUTPUT_ROOT}/{request.run_id}"
         if os.path.lexists(confined_path(layout.root, run_root)):
             raise FineTuneError("FINETUNE.RUN_EXISTS", f"{run_root} already exists")
-        with open_corpus_store(layout, create=False) as store:
-            _, reference = store.active_catalog(intent.subject_id)
+        reference = intent.catalog_reference
+        if reference is None:
+            with open_corpus_store(layout, create=False) as store:
+                _, reference = store.active_catalog(intent.subject_id)
         snapshot = read_catalog_snapshot(layout, reference)
         hyperparameters = (
             FineTuneHyperparameters()
             if intent.command.epochs is None
             else FineTuneHyperparameters(epochs=intent.command.epochs)
         )
-        pin = request.pretrained_pin
 
         def progress(step: FineTunePipelineStep) -> None:
             emit(
@@ -1494,7 +1686,7 @@ def run_finetune_worker_request(
                     run_id=request.run_id,
                     allow_missing=intent.command.allow_missing,
                     reference=reference,
-                    pretrained_pin=None if pin is None else (pin.sha256, pin.size_bytes),
+                    pretrained_pin=request.pretrained_pin,
                     progress=progress,
                 )
                 break
@@ -1639,28 +1831,37 @@ RECORDING_FINETUNE_JOB_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
 }
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None, *, kill_group: Callable[[], None] = _kill_own_group
+) -> int:
     """The worker process: ``--worker --asset-root <root> --operation-id <op>``.
 
     It must lead its own process group (the supervisor starts it in a new session), because
-    it kills that group when the service goes away.
-    Returns: 0 after its reply, 2 after a failure (one JSON line on stderr naming the code,
-    never the request).
+    it kills that group whenever it stops other than by replying: when the service goes away
+    (stdin ends) and after any failure, so no trainer it started outlives it.
+    Params: ``kill_group`` stops the whole group, this process included (tests substitute it).
+    Returns: 0 after its reply; after a failure it writes one JSON line on stderr naming the
+    code (never the request) and, when it leads its group, kills that group; 2 when it does
+    not lead its group (that group is its caller's and is left alone) or ``kill_group``
+    returned.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worker", action="store_true", required=True)
     parser.add_argument("--asset-root", type=Path, required=True)
     parser.add_argument("--operation-id", required=True)
     options = parser.parse_args(argv)
+    leader = os.getpgrp() == os.getpid()
     try:
-        if os.getpgrp() != os.getpid():
+        if not leader:
             raise FineTuneJobError(
                 "RECORDING.INVALID_TRANSITION",
                 "a fine-tune worker must lead its own process group",
             )
         operation_id: str = _STABLE_ID.validate_python(options.operation_id)
-        return _worker_main(AssetLayout.validate(options.asset_root), operation_id)
-    except (VoiceLabError, ValueError, OSError) as failure:
+        return _worker_main(
+            AssetLayout.validate(options.asset_root), operation_id, kill_group=kill_group
+        )
+    except BaseException as failure:
         code = (
             failure.recording_error.code
             if isinstance(failure, FineTuneJobError)
@@ -1677,6 +1878,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
             flush=True,
         )
+        if leader:
+            kill_group()
         return 2
 
 

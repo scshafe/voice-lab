@@ -1,10 +1,10 @@
 """Fine-tune jobs in the recording service (recording_finetune_jobs.py).
 
 The worker runs the real pipeline against the stub F5 runtime from test_finetune.py. The stub's
-pretrained weights cannot match the pinned F5-TTS v1 Base weights, so tests that train pass
-the stub's pin through ``FineTuneSupervisor(pretrained_pin=...)``, a constructor seam the
-recording service never uses; the real-service test stays on a path that never checks the
-pin (a slow runtime probe).
+pretrained files cannot match the pinned F5-TTS v1 Base weights and Vocos vocoder, so tests
+that train pass the stub's pins through ``FineTuneSupervisor(pretrained_pin=...)``, a
+constructor seam the recording service never uses; the real-service tests stay on paths that
+never check the pins (a slow runtime probe, a job recovered at startup).
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ import cole_voice_lab.recording_finetune_jobs as jobs_module
 from cole_voice_lab.canonical import canonical_sha256, write_canonical_json
 from cole_voice_lab.corpus_store import CorpusStoreError, open_corpus_store
 from cole_voice_lab.errors import SecurityError
-from cole_voice_lab.finetune import FineTuneError, FineTuneRun
+from cole_voice_lab.finetune import FineTuneError, FineTunePretrainedPins, FineTuneRun
 from cole_voice_lab.models import utc_now
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import (
@@ -55,6 +55,9 @@ from cole_voice_lab.recording_finetune_jobs import (
     FINETUNE_MIN_FREE_BYTES,
     FINETUNE_WORKER_MODULE,
     INTERRUPTED_BY_RESTART,
+    RECOVERING_MESSAGE,
+    SUPERVISION_FAILURE,
+    SUPERVISION_STOPPED,
     FineTuneJob,
     FineTuneJobError,
     FineTuneJobHead,
@@ -67,6 +70,7 @@ from cole_voice_lab.recording_finetune_jobs import (
     FineTuneWorkerRequest,
     FineTuneWorkerStage,
     ProcessRow,
+    active_finetune_job,
     decode_finetune_worker_message,
     finetune_job_event,
     parse_training_progress,
@@ -97,7 +101,7 @@ class Library:
 
     coverage: NativeCoverage
     runtime: Path
-    pin: tuple[str, int]
+    pin: FineTunePretrainedPins
 
     @property
     def layout(self) -> AssetLayout:
@@ -354,7 +358,7 @@ def test_submit_refuses_by_name_and_writes_nothing(library: Library, tmp_path: P
     refused(
         full_disk,
         "RECORDING.DISK_SPACE",
-        "fine-tuning needs 8.0 GB free on the library's disk; 1.0 GB is free",
+        "fine-tuning needs 8.0 GiB free on the library's disk; 1.0 GiB is free",
         retryable=True,
     )
     queue = queue_for(library, free_bytes=lambda _path: FINETUNE_MIN_FREE_BYTES)
@@ -493,8 +497,8 @@ def test_a_stopped_supervisor_kills_its_worker_and_the_next_one_marks_the_job_in
         supervisor.close()
         queue.close()
     queue = queue_for(library)
-    events = Events()
-    supervisor = FineTuneSupervisor(queue, on_event=events)
+    events, outcomes = Events(), Events()
+    supervisor = FineTuneSupervisor(queue, on_event=events, on_outcome=outcomes)
     try:
         supervisor.start()
         wait_until(lambda: queue.active_job() is None)
@@ -505,7 +509,13 @@ def test_a_stopped_supervisor_kills_its_worker_and_the_next_one_marks_the_job_in
             INTERRUPTED_BY_RESTART,
         )
         assert supervisor.submit(command()) == finetune_job_event(ended)
-        assert events.events == []  # nobody listens before the handshake
+        # The job never wrote a run record, so its outcome is its final state alone, published
+        # as an outcome (the service keeps it for the app's handshake) keyed by the job.
+        outcomes.wait_for(progress("failed"))
+        assert [(request_id, event) for _, request_id, event in outcomes.items] == [
+            ("tune-1", finetune_job_event(ended))
+        ]
+        assert events.events == []
     finally:
         supervisor.close()
         queue.close()
@@ -567,7 +577,8 @@ def test_restart_recovery_kills_only_a_group_that_is_verifiably_this_jobs(
     finally:
         queue.close()
     queue = queue_for(library)
-    supervisor = FineTuneSupervisor(queue)
+    events = Events()
+    supervisor = FineTuneSupervisor(queue, on_event=events)
     try:
         supervisor.start()
         wait_until(lambda: queue.active_job() is None)
@@ -575,6 +586,11 @@ def test_restart_recovery_kills_only_a_group_that_is_verifiably_this_jobs(
         record = run_record(library, job.run_id)
         assert record.status == "failed"
         assert not os.path.lexists(link)
+        final = events.wait_for(lambda event: isinstance(event, FineTuneProgressEvent))
+        summary, published = events.events
+        assert isinstance(summary, FineTuneEvent) and summary.run.status == "failed"
+        assert summary.run.error == record.error and published == final
+        assert final == finetune_job_event(ended) and final.state == ended.state
         if case == "cancel-requested":
             assert ended.state == "cancelled" and record.error == CANCELLED_BY_OPERATOR
         else:
@@ -705,10 +721,11 @@ def test_the_worker_refuses_to_start_outside_its_own_group(tmp_path: Path) -> No
     assert shared.returncode == 2
     report = json.loads(shared.stderr)
     assert report["error_code"] == "RECORDING.INVALID_TRANSITION"
+    # A leader that fails reports why, then kills its own group (itself included).
     leader = subprocess.run(
         base, capture_output=True, text=True, stdin=subprocess.DEVNULL, start_new_session=True
     )
-    assert leader.returncode == 2
+    assert leader.returncode == -signal.SIGKILL
     assert json.loads(leader.stderr)["error_code"] == "RECORDING.WRITE_FAILED"
     assert str(missing) not in leader.stderr
 
@@ -944,7 +961,7 @@ def test_recovery_finishes_a_restart_that_fell_between_terminal_and_head(
         queue.close()
 
 
-@pytest.mark.parametrize("damage", ["corrupt-run", "stuck-link"])
+@pytest.mark.parametrize("damage", ["corrupt-run", "stuck-link", "both"])
 def test_a_run_record_that_cannot_be_updated_fails_the_job_by_name(
     library: Library, damage: str
 ) -> None:
@@ -958,23 +975,30 @@ def test_a_run_record_that_cannot_be_updated_fails_the_job_by_name(
         run_id = claimed[0].run_id
         assert run_id is not None
         run = _write_run(layout, run_id, status="running", finished_minute=None)
-        if damage == "corrupt-run":
+        link = runtime_link(library, run_id)
+        link.parent.mkdir(parents=True)
+        os.symlink((layout.root / run.run_root / "checkpoints").resolve(), link)
+        queue.record_runtime_link("tune-1", str(link))
+        if damage in {"corrupt-run", "both"}:
             (layout.root / run.run_root / "run.json").write_text("{damaged")
-            expected = "FINETUNE.SOURCE_CHANGED"
-        else:
-            link = runtime_link(library, run_id)
-            link.parent.mkdir(parents=True)
-            os.symlink((layout.root / run.run_root / "checkpoints").resolve(), link)
-            queue.record_runtime_link("tune-1", str(link))
+        if damage in {"stuck-link", "both"}:
             link_parent = link.parent
             link_parent.chmod(0o500)  # the link cannot be removed
-            expected = "RECORDING.WRITE_FAILED"
         ended = queue.finish("tune-1", "cancelled")
-        assert ended.state == "failed" and ended.error is not None
-        assert ended.error.code == expected
-        assert ended.error.message.startswith(
-            "the fine-tune stopped but its run record was not updated"
-        )
+        assert ended.state == "failed" and ended.error is not None and ended.message is None
+        if damage == "stuck-link":
+            assert ended.error.code == "RECORDING.WRITE_FAILED"
+            assert ended.error.message.startswith(
+                f"the fine-tune stopped but the runtime link {link} was not released"
+            )
+            assert run_record(library, run_id).status == "failed"  # rewritten all the same
+        else:
+            # The first failure is reported; the link is released even so, unless it cannot be.
+            assert ended.error.code == "FINETUNE.SOURCE_CHANGED"
+            assert ended.error.message.startswith(
+                "the fine-tune stopped but its run record was not updated"
+            )
+            assert os.path.lexists(link) == (damage == "both")
     finally:
         if link_parent is not None:
             link_parent.chmod(0o700)
@@ -1015,6 +1039,14 @@ def test_job_and_head_contracts_hold_their_invariants() -> None:
         running | {"finished_at": now},  # an active job with a finish time
         running | {"state": "failed", "finished_at": now},  # failed without an error
         base | {"cancel_requested": True},  # only a running job waits for cancellation
+        base | {"message": "A note"},  # only a cancelled job carries a note
+        running
+        | {
+            "state": "failed",
+            "finished_at": now,
+            "error": {"code": "FINETUNE.INTERRUPTED", "message": "x", "retryable": True},
+            "message": "A note",
+        },
     ):
         with pytest.raises(ValueError):
             FineTuneJob.model_validate(invalid)
@@ -1543,6 +1575,360 @@ def test_supervision_without_a_failure_listener_still_records_why_it_stopped(
         queue.close()
 
 
+# -- proofread fixes: recovery, supervision, sampling, pinned catalog ----------------------------
+
+
+def leave_running_job(library: Library, *, run_record_written: bool = True) -> FineTuneJob:
+    """A job a stopped service left running: claimed, its worker recorded as a gone process."""
+    queue = queue_for(library)
+    try:
+        queue.submit(command())
+        claimed = queue.claim()
+        assert claimed is not None
+        job = claimed[0]
+        assert job.run_id is not None
+        if run_record_written:
+            _write_run(library.layout, job.run_id, status="running", finished_minute=None)
+        gone = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        gone.wait()
+        return queue.record_worker("tune-1", gone.pid)
+    finally:
+        queue.close()
+
+
+def test_status_never_waits_for_recovery_and_names_the_job_being_checked(
+    library: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = leave_running_job(library)
+    entered, release = threading.Event(), threading.Event()
+    original = jobs_module.mark_finetune_run_failed
+
+    def slow_rewrite(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert release.wait(30)  # hashing a real run's checkpoints takes seconds
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(jobs_module, "mark_finetune_run_failed", slow_rewrite)
+    queue = queue_for(library)
+    outcomes = Events()
+    supervisor = FineTuneSupervisor(queue, on_outcome=outcomes)
+    try:
+        supervisor.start()
+        assert entered.wait(30)
+        asked = time.monotonic()
+        during = status(supervisor)
+        assert time.monotonic() - asked < 2
+        assert during.active is not None
+        assert (during.active.operation_id, during.active.state, during.active.message) == (
+            "tune-1",
+            "running",
+            RECOVERING_MESSAGE,
+        )
+        assert during.active.run_id == job.run_id and outcomes.events == []
+        release.set()
+        final = outcomes.wait_for(progress("failed"))
+        assert final.error.code == "FINETUNE.INTERRUPTED"
+        summary = outcomes.events[0]
+        assert isinstance(summary, FineTuneEvent) and summary.run.run_id == job.run_id
+        assert [request_id for _, request_id, _ in outcomes.items] == ["tune-1", "tune-1"]
+        after = status(supervisor)
+        assert after.active is None and after.latest_run is None
+    finally:
+        release.set()
+        supervisor.close()
+        queue.close()
+
+
+def test_a_job_recovered_while_writing_samples_is_a_model_without_samples(
+    library: Library,
+) -> None:
+    queue = queue_for(library)
+    try:
+        queue.submit(command())
+        claimed = queue.claim()
+        assert claimed is not None
+        run_id = claimed[0].run_id
+        assert run_id is not None
+        _write_run(library.layout, run_id, samples=False)  # training finished, no samples yet
+    finally:
+        queue.close()
+    queue = queue_for(library)
+    outcomes = Events()
+    supervisor = FineTuneSupervisor(queue, on_outcome=outcomes)
+    try:
+        supervisor.start()
+        final = outcomes.wait_for(progress("failed"))
+        assert final.error.code == "FINETUNE.INTERRUPTED"
+        assert final.error.message == (
+            f"the model {run_id} was trained, but its listening samples are missing or "
+            f"incomplete: {INTERRUPTED_BY_RESTART}"
+        )
+        summary = outcomes.events[0]
+        assert isinstance(summary, FineTuneEvent) and summary.run.status == "finished"
+        assert summary.run.finetuned_sample_paths == () == summary.run.base_sample_paths
+        assert run_record(library, run_id).status == "finished"  # a usable model
+        assert status(supervisor).latest_run == summary.run
+    finally:
+        supervisor.close()
+        queue.close()
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("ending", ["cancelled", "failed"])
+def test_a_job_stopped_while_writing_samples_keeps_its_trained_model(
+    library: Library, jobs: Any, ending: str
+) -> None:
+    queue, events, supervisors = jobs
+    if ending == "cancelled":
+        library.mode(sample_seconds=60)
+    else:
+        library.mode(fail_sampling=True)
+    supervisor = supervise(library, queue, events, supervisors)
+    supervisor.submit(command(epochs=1))
+    supervisor.start()
+    if ending == "cancelled":
+        events.wait_for(progress("running", stage="sampling"))
+        assert supervisor.cancel(cancel()).message == CANCELLING_MESSAGE
+    final = events.wait_for(progress(ending))
+    run_id = final.run_id
+    assert run_id is not None
+    trained = f"the model {run_id} was trained, but its listening samples are missing or incomplete"
+    if ending == "cancelled":
+        assert final.error is None
+        assert final.message == f"Fine-tune cancelled after training: {trained}"
+        assert terminal(queue, "tune-1").message == final.message
+        assert supervisor.cancel(cancel()) == final  # the note is part of the durable outcome
+    else:
+        assert final.error.code == "FINETUNE.RUNTIME_FAILED"
+        assert final.error.message.startswith(f"{trained}: sample synthesis for finetuned failed")
+    summary = next(event for event in events.events if isinstance(event, FineTuneEvent))
+    assert summary.run.status == "finished" and summary.run.finetuned_sample_paths == ()
+    assert run_record(library, run_id).status == "finished"
+    assert not os.path.lexists(runtime_link(library, run_id))  # released all the same
+    assert status(supervisor).latest_run == summary.run
+
+
+def test_failed_supervision_refuses_every_request_by_name(library: Library) -> None:
+    queue = queue_for(library)
+    failures: list[Any] = []
+    supervisor = FineTuneSupervisor(queue, on_failure=failures.append)
+    try:
+        supervisor.submit(command())
+        (queue.directory / "requests" / "tune-1.json").write_bytes(b"damaged")
+        supervisor.start()
+        wait_until(lambda: bool(failures))
+        assert failures[0].message == SUPERVISION_FAILURE
+        for call in (
+            lambda: supervisor.submit(command("tune-2")),
+            lambda: supervisor.cancel(cancel()),
+            lambda: status(supervisor),
+        ):
+            with pytest.raises(FineTuneJobError) as refused:
+                call()
+            error = refused.value.recording_error
+            assert (error.code, error.message) == ("RECORDING.GATE_NOT_READY", SUPERVISION_STOPPED)
+        assert queue.active_job() is not None and queue.active_job().operation_id == "tune-1"
+    finally:
+        supervisor.close()
+        queue.close()
+
+
+def test_a_worker_group_that_will_not_stop_stops_supervision(
+    library: Library, jobs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue, events, supervisors = jobs
+    failures: list[Any] = []
+    monkeypatch.setattr(
+        FineTuneSupervisor,
+        "_worker_command",
+        lambda self, job: [sys.executable, "-c", FAKE_WORKER, "exit"],
+    )
+    monkeypatch.setattr(jobs_module, "_GROUP_STOP_SECONDS", 0.2)
+    monkeypatch.setattr(FineTuneSupervisor, "_group_alive", lambda self, pgid: True)
+    supervisor = supervise(library, queue, events, supervisors, on_failure=failures.append)
+    supervisor.submit(command())
+    supervisor.start()
+    wait_until(lambda: bool(failures), timeout=20)
+    assert isinstance(supervisor.fatal_error, FineTuneJobError)
+    assert "did not stop" in str(supervisor.fatal_error)
+    assert supervisor.worker_pid is None
+    job = queue.active_job()
+    assert job is not None and job.state == "running"  # left for the next service
+    assert events.wait_for(progress("running")).stage is None
+    assert not any(progress("failed")(event) for event in events.events)
+    with pytest.raises(FineTuneJobError, match="supervision stopped"):
+        supervisor.submit(command("tune-2"))  # no second job while the old group lives
+
+
+def test_a_failing_worker_kills_its_own_group_only_when_it_leads_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    killed: list[bool] = []
+    arguments = ["--worker", "--asset-root", str(tmp_path / "missing"), "--operation-id", "t-1"]
+    monkeypatch.setattr(jobs_module.os, "getpgrp", lambda: os.getpid())
+    assert jobs_module.main(arguments, kill_group=lambda: killed.append(True)) == 2
+    assert killed == [True]
+    assert json.loads(capsys.readouterr().err)["error_code"] == "RECORDING.WRITE_FAILED"
+
+    def broken(*args: Any, **kwargs: Any) -> int:
+        raise KeyboardInterrupt  # any failure at all, not only named ones
+
+    monkeypatch.setattr(jobs_module, "_worker_main", broken)
+    monkeypatch.setattr(jobs_module.AssetLayout, "validate", lambda root: root)
+    assert jobs_module.main(arguments, kill_group=lambda: killed.append(True)) == 2
+    assert killed == [True, True]
+    capsys.readouterr()
+    monkeypatch.setattr(jobs_module.os, "getpgrp", lambda: os.getpid() + 1)
+    assert jobs_module.main(arguments, kill_group=lambda: killed.append(True)) == 2
+    assert killed == [True, True]  # a worker in its caller's group never kills that group
+    assert json.loads(capsys.readouterr().err)["error_code"] == "RECORDING.INVALID_TRANSITION"
+
+
+def test_the_worker_trains_on_the_pinned_catalog_version_without_opening_the_store(
+    library: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = library.layout
+    with open_corpus_store(layout, create=False) as corpus:
+        _, pinned = corpus.active_catalog(SUBJECT)
+        corpus.retire_prompt(released_pilot_v2().prompts[-1].prompt_id)
+        newer = corpus.publish_version(CATALOG_ID)
+        corpus.activate(SUBJECT, newer)
+    assert newer != pinned
+    queue = queue_for(library)
+    selected: list[Any] = []
+    try:
+        queue.submit(command(), catalog_reference=pinned)
+        claimed = queue.claim()
+        assert claimed is not None
+        job = claimed[0]
+        assert job.run_id is not None and queue.intent("tune-1").catalog_reference == pinned
+        request = FineTuneWorkerRequest(
+            generation="pinned-generation",
+            operation_id="tune-1",
+            request_sha256=job.request_sha256,
+            run_id=job.run_id,
+            runtime_root=str(library.runtime),
+        )
+
+        def never(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError("a pinned job never opens the corpus store")
+
+        def pipeline(layout: Any, snapshot: Any, subject: str, *args: Any, **kwargs: Any) -> None:
+            selected.append((snapshot, kwargs["reference"]))
+
+        monkeypatch.setattr(jobs_module, "open_corpus_store", never)
+        monkeypatch.setattr(jobs_module, "run_finetune_pipeline", pipeline)
+        reply = run_finetune_worker_request(layout, request, emit=lambda stage: None)
+        assert reply.error is None
+        snapshot, reference = selected[0]
+        assert reference == pinned and snapshot.catalog_sha256 == pinned.catalog_sha256
+        # A pinned snapshot that is gone fails the job by name.
+        (layout.root / pinned.snapshot_path).unlink()
+        missing = run_finetune_worker_request(layout, request, emit=lambda stage: None)
+        assert missing.error is not None and missing.error.code == "CORPUS.SNAPSHOT_MISMATCH"
+        # The same operation cannot be resubmitted with another pin.
+        with pytest.raises(FineTuneJobError) as rebound:
+            queue._new_intent(command(), job.request_sha256, newer)
+        assert rebound.value.recording_error.code == "RECORDING.INVALID_MESSAGE"
+    finally:
+        queue.close()
+
+
+def test_a_recovered_job_ends_even_when_nobody_listens(library: Library) -> None:
+    job = leave_running_job(library, run_record_written=False)
+    queue = queue_for(library)
+    supervisor = FineTuneSupervisor(queue)
+    try:
+        supervisor.start()
+        wait_until(lambda: queue.active_job() is None)
+        ended = terminal(queue, "tune-1")
+        assert ended.state == "failed" and ended.run_id == job.run_id
+        assert supervisor.fatal_error is None
+    finally:
+        supervisor.close()
+        queue.close()
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (SecurityError("synthetic unsafe output root"), "RECORDING.SOURCE_CHANGED"),
+        (ValueError("synthetic escaping output root"), "RECORDING.SOURCE_CHANGED"),
+        (OSError("synthetic unreadable output root"), "RECORDING.WRITE_FAILED"),
+    ],
+)
+def test_an_unresolvable_latest_run_is_named_in_the_status(
+    library: Library, monkeypatch: pytest.MonkeyPatch, failure: Exception, code: str
+) -> None:
+    def broken(*args: Any, **kwargs: Any) -> None:
+        raise failure
+
+    monkeypatch.setattr(jobs_module, "latest_finished_finetune_run", broken)
+    queue = queue_for(library)
+    try:
+        answer = status(FineTuneSupervisor(queue))
+        assert answer.latest_run is None and answer.latest_run_error is not None
+        assert answer.latest_run_error.code == code
+        assert answer.latest_run_error.message.endswith(str(failure))
+    finally:
+        queue.close()
+
+
+def test_an_unsafe_run_record_still_releases_the_link(
+    library: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unsafe(*args: Any, **kwargs: Any) -> None:
+        raise SecurityError("synthetic unsafe run directory")
+
+    monkeypatch.setattr(jobs_module, "mark_finetune_run_failed", unsafe)
+    queue = queue_for(library)
+    try:
+        queue.submit(command())
+        claimed = queue.claim()
+        assert claimed is not None
+        run_id = claimed[0].run_id
+        assert run_id is not None
+        run = _write_run(library.layout, run_id, status="running", finished_minute=None)
+        link = runtime_link(library, run_id)
+        link.parent.mkdir(parents=True)
+        os.symlink((library.layout.root / run.run_root / "checkpoints").resolve(), link)
+        queue.record_runtime_link("tune-1", str(link))
+        ended = queue.finish("tune-1", "failed", jobs_module._interrupted("synthetic"))
+        assert ended.error is not None and ended.error.code == "RECORDING.WRITE_FAILED"
+        assert "synthetic unsafe run directory" in ended.error.message
+        assert not os.path.lexists(link)
+    finally:
+        queue.close()
+
+
+def test_the_app_job_head_is_read_without_writing(library: Library) -> None:
+    layout = library.layout
+    assert active_finetune_job(layout) is None
+    queue = queue_for(library)
+    try:
+        assert active_finetune_job(layout) is None
+        queued = queue.submit(command())
+        assert active_finetune_job(layout) == queued
+    finally:
+        queue.close()
+    head = layout.root / "provenance/finetune-jobs/head.json"
+    head.chmod(0o644)
+    with pytest.raises(SecurityError):
+        active_finetune_job(layout)
+
+
+def test_trainer_times_are_bounded() -> None:
+    long = "9" * 7
+    assert parse_training_progress(f"Epoch 1/2: [{long}:00<00:01, loss=0.5]") == (
+        FineTuneTrainingProgress(epoch=1, epochs=2, update=None, loss=0.5, eta_seconds=None)
+    )
+    assert parse_training_progress("Epoch 1/2: [999999:00<0:00:01, loss=0.5]") == (
+        FineTuneTrainingProgress(
+            epoch=1, epochs=2, update=None, loss=0.5, eta_seconds=1 + 999999 * 60 + 1
+        )
+    )
+
+
 # -- the recording service ---------------------------------------------------------------------
 
 
@@ -1574,20 +1960,34 @@ def test_both_backends_answer_fine_tune_commands_without_an_open_context(
         answer = execute(workspace, FineTuneStatusCommand(operation_id="s"))
         assert isinstance(answer, FineTuneStatusEvent) and answer.runtime_configured
         assert answer.active is None and answer.latest_run is None
+        assert answer.latest_run_error is None
         queued = execute(workspace, command())
         assert isinstance(queued, FineTuneProgressEvent) and queued.state == "queued"
+        # The workspace's job trains on the catalog version this service pinned.
+        pinned = workspace.pinned_catalog().reference
+        assert queue.intent("tune-1").catalog_reference == pinned
         busy = refused(takes, command("tune-2"), "FINETUNE.JOB_ACTIVE")
         assert busy.recording_error.retryable
         assert execute(takes, FineTuneStatusCommand(operation_id="s")).active == queued
         assert execute(takes, cancel()).state == "cancelled"
         refused(workspace, cancel("tune-unknown"), "RECORDING.INVALID_TRANSITION")
-        # A damaged run record reaches the app under its own code.
+        # A group-scoped service pins nothing: its job uses the active version when it starts.
+        assert execute(takes, command("tune-4")).state == "queued"
+        assert queue.intent("tune-4").catalog_reference is None
+        assert execute(takes, cancel("tune-4")).state == "cancelled"
+        # A damaged run record no longer fails the reply: the active job is still reported,
+        # the latest run is named unreadable, and a new job can start.
         run = _write_run(layout, "finetune-damaged")
         (layout.root / run.run_root / "run.json").write_text("{damaged")
-        damaged = refused(
-            workspace, FineTuneStatusCommand(operation_id="s"), "FINETUNE.SOURCE_CHANGED"
-        )
-        assert len(damaged.recording_error.message) <= 1024
+        assert execute(workspace, command("tune-5")).state == "queued"
+        damaged = execute(workspace, FineTuneStatusCommand(operation_id="s"))
+        assert isinstance(damaged, FineTuneStatusEvent) and damaged.latest_run is None
+        assert damaged.active is not None and damaged.active.operation_id == "tune-5"
+        error = damaged.latest_run_error
+        assert error is not None and error.code == "FINETUNE.SOURCE_CHANGED"
+        assert error.message.startswith("the latest fine-tuned model cannot be read: ")
+        assert f"{run.run_root}/run.json" in error.message and not error.retryable
+        assert execute(workspace, cancel("tune-5")).state == "cancelled"
         cancelled = RecordingCancellation()
         cancelled.cancel()
         with pytest.raises(RecordingServiceError) as stopped:
@@ -1734,3 +2134,84 @@ def test_a_real_service_keeps_save_fast_during_a_job_and_cancel_leaves_no_proces
         if pgid is not None:
             for row in live_group(pgid):
                 os.kill(row.pid, signal.SIGKILL)
+
+
+def test_a_real_service_reports_a_job_it_recovered_before_the_handshake(
+    package_rig: Any, tmp_path: Path
+) -> None:
+    rig, analysis, _packages = package_rig
+    layout = rig.layout
+    analysis.close()
+    runtime, _pin = _stub_runtime(tmp_path.resolve() / "runtime")
+    group = rig.store.get_group(rig.group_id)
+    queue = FineTuneJobQueue(
+        layout, subject_id=group.subject_id, runtime_root=runtime, free_bytes=plenty
+    )
+    try:
+        queue.submit(command())
+        claimed = queue.claim()
+        assert claimed is not None
+        run_id = claimed[0].run_id
+        assert run_id is not None
+        _write_run(layout, run_id, status="running", finished_minute=None)
+    finally:
+        queue.close()
+    build = recording_service_build_identity()
+    own, client = tmp_path / "service-build.json", tmp_path / "client-build.json"
+    write_canonical_json(own, build)
+    write_canonical_json(client, build_identity())
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "cole_voice_lab.recording_service",
+            "--asset-root",
+            str(layout.root),
+            "--catalog-sha256",
+            group.catalog_sha256,
+            "--recording-group-id",
+            group.group_id,
+            "--process-generation",
+            "generation-1",
+            "--build-identity",
+            str(own),
+            "--expected-client-build",
+            str(client),
+            "--finetune-runtime-root",
+            str(runtime),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdin is not None and process.stdout is not None
+    try:
+        head = layout.root / "provenance/finetune-jobs/head.json"
+        wait_until(lambda: FineTuneJobHead.model_validate_json(head.read_bytes()).job is None)
+        time.sleep(0.5)  # the outcome is published just after the head clears
+        process.stdin.write(recording_frame_bytes(handshake(service=build)))
+        process.stdin.flush()
+        responses = [read_response(process.stdout.fileno(), timeout=20) for _ in range(3)]
+        assert [response.meta.request_id for response in responses] == [
+            "handshake",
+            "tune-1",
+            "tune-1",
+        ]
+        assert all(response.error is None for response in responses)
+        summary, final = responses[1].data, responses[2].data
+        assert isinstance(summary, FineTuneEvent) and summary.run.run_id == run_id
+        assert isinstance(final, FineTuneProgressEvent) and final.state == "failed"
+        assert final.error is not None and final.error.code == "FINETUNE.INTERRUPTED"
+        assert responses[1].meta.event_sequence < responses[2].meta.event_sequence
+        process.stdin.write(recording_frame_bytes(request(ShutdownCommand(), request_id="bye")))
+        process.stdin.flush()
+        assert read_response(process.stdout.fileno(), timeout=20).meta.request_id == "bye"
+        assert process.wait(timeout=10) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        process.stdin.close()
+        process.stdout.close()
+        assert process.stderr is not None
+        process.stderr.close()

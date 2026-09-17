@@ -293,6 +293,7 @@ extension RecordingWorkspaceModel {
 
     public func cancelReviewConfirmation() {
         if case .discardTrim(.close) = reviewConfirmation { closeCancellationHandler?(); closeCancellationHandler = nil }
+        if case .quitDuringFineTune = reviewConfirmation { closeCancellationHandler?(); closeCancellationHandler = nil }
         reviewConfirmation = nil
     }
     public func saveTrimAndContinue() {
@@ -314,8 +315,23 @@ extension RecordingWorkspaceModel {
         case .close: requestClose()
         }
     }
-    public func requestClose() {
+    /// Quit or close: an unsaved trim is decided first, then a queued or running fine-tune
+    /// (which quitting stops) is confirmed; Keep running cancels the quit.
+    public func requestClose() { requestClose(stoppingFineTune: false) }
+
+    /// The quit confirmation's Quit and stop fine-tune.
+    public func quitAndStopFineTune() {
+        guard case .quitDuringFineTune = reviewConfirmation else { return }
+        reviewConfirmation = nil
+        requestClose(stoppingFineTune: true)
+    }
+
+    private func requestClose(stoppingFineTune: Bool) {
         if review.isDirty { reviewConfirmation = .discardTrim(.close); return }
+        if !stoppingFineTune, fineTune.isActive, !processChannelFailed {
+            reviewConfirmation = .quitDuringFineTune
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do { try await review.playback.shutdown(); close(); closeHandler?(); closeCancellationHandler = nil }

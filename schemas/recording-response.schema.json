@@ -741,7 +741,6 @@
         "CORPUS.NO_ACTIVE_CATALOG",
         "CORPUS.SNAPSHOT_MISMATCH",
         "CORPUS.STORE_MISSING",
-        "FINETUNE.CANCELLED",
         "FINETUNE.CATALOG_HELD_OUT",
         "FINETUNE.CHECKPOINT_MISSING",
         "FINETUNE.CORPUS_INCOMPLETE",
@@ -1048,7 +1047,7 @@
     },
     "FineTuneStatusEvent": {
       "additionalProperties": false,
-      "description": "Reply to ``fine-tune-status``: the runtime, the active job and the latest finished run.",
+      "description": "Reply to ``fine-tune-status``: the runtime, the active job and the latest finished run.\n\n``active`` is always reported. When the latest finished run cannot be resolved (an\nunreadable or invalid ``run.json`` under ``derived/finetune``), ``latest_run`` is absent\nand ``latest_run_error`` names why; a new job can still be started.",
       "properties": {
         "active": {
           "anyOf": [
@@ -1071,6 +1070,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/FineTuneRunSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "latest_run_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingError"
             },
             {
               "type": "null"

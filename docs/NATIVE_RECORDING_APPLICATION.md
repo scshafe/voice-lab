@@ -108,12 +108,13 @@ The native suites (`scripts/verify-native-recording --suite …`, default `all`)
 `finetune` replaced `package-preparation`. Its fixture roots
 (`scripts/native_finetune_fixture.py`) add a stub F5 runtime
 (`tests/finetune_stub_runtime.py`) and pass `--finetune-runtime-root` to the service. The
-shipped service never overrides the pretrained-weights pin. A configured fixture therefore
-starts the unchanged service through the test-only wrapper
-`tests/native_finetune_service_fixture.py`, which is copied into the fixture's isolated
-runtime, never into a build, and hands the stub's pin to the fine-tune supervisor. The
-suite trains once to a finished run, saves a take while a second job trains, and cancels
-that job. A second root, whose runtime has no `bin/python`, checks that Fine-tune model
+shipped service never overrides the pretrained-file pins (the F5-TTS v1 Base weights and
+the Vocos vocoder). A configured fixture therefore starts the unchanged service through the
+test-only wrapper `tests/native_finetune_service_fixture.py`, which is copied into the
+fixture's isolated runtime, never into a build, and hands the stub's pins to the fine-tune
+supervisor. The suite trains once to a finished run, saves a take while a second job trains,
+waits until the status line shows the second job's loss and time left, and cancels that
+job. A second root, whose runtime has no `bin/python`, checks that Fine-tune model
 stays unavailable with its reason. `scripts/verify_native_finetune.py` re-derives every
 result from the durable records.
 

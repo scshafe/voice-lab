@@ -8,4 +8,6 @@ public enum RecordingReviewIntent: Equatable, Sendable {
 public enum RecordingReviewConfirmation: Equatable, Sendable {
     case discardTrim(RecordingReviewIntent)
     case decision(action: String)
+    /// Quitting (or closing the window) while a fine-tune is queued or running stops it.
+    case quitDuringFineTune
 }
