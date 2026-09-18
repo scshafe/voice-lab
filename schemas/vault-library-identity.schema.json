@@ -1,0 +1,35 @@
+{
+  "$defs": {
+    "LibraryId": {
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Which library this Mac holds (``provenance/vault/library.json``; never copied).\n\n``voice-lab vault init`` writes it once, either with a fresh ``lib-<yyyymmdd>-<12 hex>``\nid or with the id of an existing vault library (restoring onto another Mac). Every later\nvault command \u2014 approving a destination, binding one, creating the key or the tokens \u2014\ntakes the library id from here, so no command can be given the wrong one by hand.",
+  "properties": {
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "library_id": {
+      "$ref": "#/$defs/LibraryId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.vault-library-identity/v1",
+      "default": "cole-voice-lab.vault-library-identity/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "library_id",
+    "created_at"
+  ],
+  "title": "LibraryIdentity",
+  "type": "object"
+}

@@ -146,7 +146,8 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - the namespace;
   - `library_id`;
   - the approval id;
-  - the Keychain item names, which are fixed and derived from `library_id`.
+  - the Keychain item names, which are fixed and derived from `library_id`;
+  - *(amended 2026-09-17, Step 9)* the digest of the approval, so an approval edited after the binding was written is refused when the vault opens.
 
   It also names the file classes copied to that destination, so `training` is opt-in per binding (and, for the tailnet vault, must also be covered by the approval) *(amended 2026-09-17, Step 2)*.
 
@@ -172,7 +173,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - one entry per file: path, SHA-256, size, class, and the refs of its chunks (at most 16 MiB each).
 
   The manifest is itself encrypted and stored as blobs, and the head ref points to it.
-- **Rollback protection.** The Mac records the last generation and its digest in `provenance/vault/state.json`. It refuses a head that is older than that, forks from it, or fails to decrypt.
+- **Rollback protection.** The Mac records the last generation and its digest in `provenance/vault/state.json`, together with the destination it belongs to and the ledger entry that records it *(amended 2026-09-17, Step 9)*. It refuses a head that is older than that, forks from it, fails to decrypt, belongs to another destination, or whose ledger tail no longer matches.
 - **Ledger.** Before the first new blob of a generation, the Mac appends an entry to `provenance/vault/ledger/` containing:
   - the approval digest;
   - the destination's identity;
@@ -351,9 +352,9 @@ Every piece of code that stores or reads the lab's data depends on storage and c
     - a non-HTTPS URL outside test mode.
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/storage_conformance.py tests/test_storage_http_client.py`
 
-- [ ] **Step 9: Binding, destination approval and the `vault` commands**
+- [x] **Step 9: Binding, destination approval and the `vault` commands**
   - Complete `storage_binding.py`, `VaultDestinationApproval` and the ledger checks.
-  - Add `voice-lab vault approve|bind|show|push|status|verify|restore|audit`. The app's wire contracts do not change in this step.
+  - Add `voice-lab vault approve|bind|show|push|status|verify|restore|audit`, and — *(amended 2026-09-17, Step 9)* — `init` (the library id in `provenance/vault/library.json`, which every other command reads), `key create|import|show` and `token create|import` (the key and the vault's tokens live in the login Keychain; `token create` prints only their SHA-256 values, which is all the server's configuration needs), plus `push --dry-run` (which also reports how many files are waiting) and `push --full` (re-upload everything, the fix when `verify` finds a blob the vault lost). The app's wire contracts do not change in this step.
   - Tests for each refusal:
     - no approval;
     - an expired approval;
@@ -516,3 +517,5 @@ The first draft was reviewed on 2026-09-17 by `rigorous-architect` (the storage 
 **Amended 2026-09-17 (Step 4):** sealed blobs do not hide plaintext sizes; the leak is accepted and goes into D-020.
 
 **Amended 2026-09-17 (Step 5):** the replication sources live in `library_replication.py`, one per owner, and declare which owners their files refer to; an owner whose referent changed during a pass is held back with it.
+
+**Amended 2026-09-17 (Step 9):** the `vault` group gained `init`, `key` and `token` commands and `push --dry-run|--full`; the binding names the approval's digest; the replication state names its destination and ledger tail.

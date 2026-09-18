@@ -13,12 +13,12 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, cast
 
-from pydantic import Field, StringConstraints, ValidationError, field_validator, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from .canonical import (
-    canonical_json_bytes,
     canonical_sha256,
-    open_regular_no_follow,
+    read_canonical_model,
+    require_evidence_file,
     sha256_file,
     write_canonical_json,
 )
@@ -405,29 +405,13 @@ class PublishedTransferPlan:
 
 
 def _safe_file(path: Path, *, max_bytes: int | None = None) -> os.stat_result:
-    metadata = path.lstat()
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise SecurityError(f"evidence must be a regular non-link file: {path}")
-    if metadata.st_nlink != 1:
-        raise SecurityError(f"hard-linked evidence is forbidden: {path}")
-    if max_bytes is not None and metadata.st_size > max_bytes:
-        raise ContractError(f"evidence exceeds {max_bytes} bytes: {path}")
-    return metadata
+    return require_evidence_file(path, max_bytes=max_bytes)
 
 
 def _read_canonical_model[ContractT: ContractModel](
     path: Path, model_type: type[ContractT]
 ) -> ContractT:
-    _safe_file(path, max_bytes=MAX_DATASET_EVIDENCE_BYTES)
-    try:
-        with open_regular_no_follow(path) as stream:
-            payload = stream.read(MAX_DATASET_EVIDENCE_BYTES + 1)
-        record = model_type.model_validate_json(payload)
-    except (ValidationError, ValueError) as error:
-        raise ContractError(f"invalid canonical evidence {path}: {error}") from error
-    if payload != canonical_json_bytes(record) + b"\n":
-        raise ContractError(f"JSON evidence is not canonical: {path}")
-    return record
+    return read_canonical_model(path, model_type, max_bytes=MAX_DATASET_EVIDENCE_BYTES)
 
 
 def _require_prefix(relative: str, prefix: tuple[str, ...], label: str) -> str:

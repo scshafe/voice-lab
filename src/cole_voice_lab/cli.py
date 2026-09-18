@@ -12,7 +12,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
@@ -113,6 +113,7 @@ from .runtime import (
     verify_local_source,
     verify_runtime_install_receipt,
 )
+from .storage_ports import StorageError, storage_error
 from .sync import (
     DEFAULT_REMOTE_ROOT,
     PRIMARY_MINI_TARGET,
@@ -129,9 +130,16 @@ if TYPE_CHECKING:
         PromptRecord,
     )
     from .recording_contracts import CatalogReference, CatalogSnapshot
+    from .storage_binding import LibraryKeyCreation, LibraryVault
+    from .storage_contracts import StorageBinding, VaultDestinationApproval
 
 Command = Callable[[argparse.Namespace], int]
 MAX_CLI_DATASET_JSON_BYTES = 16 * 1024 * 1024
+# A recovery sheet or one vault token, as it arrives on standard input.
+MAX_CLI_SECRET_INPUT_BYTES = 64 * 1024
+# The file classes a vault binding or a destination approval may name.
+VAULT_FILE_CLASSES = ("derived-edits", "prompt-database", "recordings", "records", "training")
+VAULT_BACKENDS = ("local-directory", "tailnet-vault")
 # `prompts show` names built-ins only; unversioned names stay v1 (docs/PROMPT_CATALOG_V2.md §4).
 PROMPT_SHOW_RESOURCES = {
     "pilot": "pilot-v1.json",
@@ -156,6 +164,10 @@ type CatalogCommandCode = Literal[
     "CATALOG_CLI.USAGE_INVALID",
     "CATALOG_CLI.CATALOG_ID_RESERVED",
 ]
+type VaultCommandCode = Literal[
+    "VAULT_CLI.USAGE_INVALID",
+    "VAULT_CLI.NOT_A_TERMINAL",
+]
 
 
 class CatalogCommandError(VoiceLabError):
@@ -171,6 +183,23 @@ class CatalogCommandError(VoiceLabError):
 
     def __init__(self, code: CatalogCommandCode, message: str) -> None:
         self.code: CatalogCommandCode = code
+        super().__init__(message)
+
+
+class VaultCommandError(VoiceLabError):
+    """A refusal the vault commands decide themselves; ``code`` names it.
+
+    ``VAULT_CLI.USAGE_INVALID``: a flag combination the command refuses (the two ways of
+    naming a generation, a preview that also approves, a key with no output, a namespace
+    that is neither bound nor named).
+    ``VAULT_CLI.NOT_A_TERMINAL``: the recovery sheet was to be printed, but standard output
+    is not a terminal, so a tool or a log would receive the library key.
+    Every rule about the vault itself stays a ``StorageError`` (``STORAGE.*``): what is
+    bound, approved, reachable or intact is the storage layer's business.
+    """
+
+    def __init__(self, code: VaultCommandCode, message: str) -> None:
+        self.code: VaultCommandCode = code
         super().__init__(message)
 
 
@@ -231,6 +260,13 @@ def _version_number(text: str) -> int | None:
     ):
         return None
     return int(text)
+
+
+def _sha256_argument(value: str) -> str:
+    """An argparse type for a lowercase SHA-256 hex digest."""
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise argparse.ArgumentTypeError(f"expected 64 lowercase hexadecimal characters: {value}")
+    return value
 
 
 def _positive_number(value: str) -> int:
@@ -2727,6 +2763,645 @@ def _consent_revoke(options: argparse.Namespace) -> int:
     return 0
 
 
+# -- vault ---------------------------------------------------------------------------------
+
+
+def _vault_layout(options: argparse.Namespace) -> AssetLayout:
+    return AssetLayout.validate(_asset_root(options.asset_root))
+
+
+def _stdout_is_a_terminal() -> bool:
+    """Whether standard output is a terminal; the seam a test replaces."""
+    return sys.stdout.isatty()
+
+
+def _read_standard_input(label: str) -> str:
+    """One secret from standard input, bounded and never echoed.
+
+    Raises: ``VoiceLabError`` when nothing arrived, more than
+    ``MAX_CLI_SECRET_INPUT_BYTES`` did, or the bytes are not UTF-8; no message repeats them.
+    """
+    data = sys.stdin.buffer.read(MAX_CLI_SECRET_INPUT_BYTES + 1)
+    if len(data) > MAX_CLI_SECRET_INPUT_BYTES:
+        raise VoiceLabError(f"{label} exceeds {MAX_CLI_SECRET_INPUT_BYTES} bytes")
+    if not data.strip():
+        raise VoiceLabError(f"{label} is read from standard input; nothing arrived")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise VoiceLabError(f"{label} must arrive as UTF-8 text") from error
+
+
+def _vault_usage(message: str) -> VaultCommandError:
+    return VaultCommandError("VAULT_CLI.USAGE_INVALID", message)
+
+
+def _open_bound_vault(layout: AssetLayout) -> LibraryVault:
+    """The library's vault; a library with no binding is a refusal, not an empty result."""
+    from .storage_binding import open_library_vault
+
+    vault = open_library_vault(layout)
+    if vault is None:
+        raise storage_error(
+            "STORAGE.NOT_BOUND",
+            "this library is not bound to a vault; bind one with `voice-lab vault bind`",
+        )
+    return vault
+
+
+def _vault_init(options: argparse.Namespace) -> int:
+    from .storage_binding import initialize_library
+
+    layout = _vault_layout(options)
+    path, identity = initialize_library(layout, library_id=options.library_id)
+    _json_print(
+        {
+            "path": str(path),
+            "library_id": identity.library_id,
+            "created_at": identity.created_at.isoformat(),
+            "adopted": options.library_id is not None,
+        }
+    )
+    return 0
+
+
+def _vault_approval(options: argparse.Namespace, library_id: str) -> VaultDestinationApproval:
+    from .storage_contracts import VaultDestinationApproval
+
+    return VaultDestinationApproval(
+        approval_id=options.approval_id,
+        approved=True,
+        library_id=library_id,
+        endpoint=options.endpoint,
+        tailnet_suffix=options.tailnet_suffix,
+        node_stable_id=options.node_stable_id,
+        namespace=options.namespace,
+        classes=tuple(sorted(set(options.classes))),
+        approved_at=options.approved_at or datetime.now().astimezone(),
+        expires_at=options.expires_at,
+        approved_by=options.approved_by,
+        statement=options.statement,
+    )
+
+
+def _approval_file_digest(approval: VaultDestinationApproval) -> str:
+    """The digest of the file the approval would be written as (its bytes plus a newline)."""
+    return hashlib.sha256(canonical_json_bytes(approval) + b"\n").hexdigest()
+
+
+def _vault_approve(options: argparse.Namespace) -> int:
+    from .storage_binding import (
+        read_destination_approval,
+        require_library_identity,
+        write_destination_approval,
+    )
+
+    layout = _vault_layout(options)
+    identity = require_library_identity(layout)
+    approval = _vault_approval(options, identity.library_id)
+    digest = _approval_file_digest(approval)
+    if options.preview:
+        if options.reviewed_approval_sha256 or options.i_approve_this_destination:
+            raise _vault_usage("--preview writes nothing, so it takes no approval flag")
+        _json_print(
+            {
+                "approval": approval.model_dump(mode="json"),
+                "approval_sha256": digest,
+                "approved": False,
+            }
+        )
+        return 0
+    if not options.i_approve_this_destination:
+        raise _vault_usage(
+            "approving a destination requires --i-approve-this-destination and the "
+            "--reviewed-approval-sha256 that `vault approve --preview` printed"
+        )
+    if options.reviewed_approval_sha256 != digest:
+        raise _vault_usage(
+            "approval requires the exact --reviewed-approval-sha256 emitted by `vault approve "
+            "--preview`; pass the same fields, including the --approved-at it printed"
+        )
+    path, _ = write_destination_approval(layout, approval)
+    written, written_sha256 = read_destination_approval(layout, approval.approval_id)
+    _json_print(
+        {
+            "path": str(path),
+            "sha256": written_sha256,
+            "approved": True,
+            "approval": written.model_dump(mode="json"),
+        }
+    )
+    return 0
+
+
+def _vault_bind(options: argparse.Namespace) -> int:
+    from .storage_binding import bind_library
+
+    layout = _vault_layout(options)
+    result = bind_library(
+        layout,
+        backend=options.backend,
+        endpoint=options.endpoint,
+        namespace=options.namespace,
+        classes=tuple(options.classes),
+        approval_id=options.approval_id,
+        approval_sha256=options.approval_sha256,
+        replace=options.replace,
+        reset_state=options.reset_state,
+    )
+    _json_print(
+        {
+            "path": str(result.path),
+            "binding": result.binding.model_dump(mode="json"),
+            "replaced": result.replaced,
+            "superseded_state": _optional_path(result.superseded_state),
+            "superseded_manifests": _optional_path(result.superseded_manifests),
+            "takes_effect": "at the next launch of the recording app",
+        }
+    )
+    return 0
+
+
+def _optional_path(path: Path | None) -> str | None:
+    return None if path is None else str(path)
+
+
+def _vault_approval_summary(
+    layout: AssetLayout, binding: StorageBinding | None, now: datetime
+) -> JsonValue:
+    """What ``vault show`` says about the binding's approval, problems included."""
+    from .storage_binding import read_destination_approval
+
+    if binding is None or binding.approval_id is None:
+        return None
+    try:
+        approval, digest = read_destination_approval(layout, binding.approval_id)
+    except StorageError as error:
+        return {"approval_id": binding.approval_id, "code": error.code, "problem": str(error)}
+    return {
+        "approval_id": approval.approval_id,
+        "sha256": digest,
+        "matches_binding": digest == binding.approval_sha256,
+        "effective": approval.effective_at(now),
+        "approved_at": approval.approved_at.isoformat(),
+        "expires_at": approval.expires_at.isoformat(),
+        "node_stable_id": approval.node_stable_id,
+        "tag": approval.tag,
+        "tailnet_suffix": approval.tailnet_suffix,
+        "classes": list(approval.classes),
+    }
+
+
+def _vault_secret_summary(layout: AssetLayout, present: bool) -> JsonValue:
+    """The key fingerprint and which tokens exist; never a secret."""
+    from .storage_binding import library_key_fingerprint, vault_token_present
+
+    if not present:
+        return {"key_fingerprint": None, "write_token": False, "read_token": False}
+    try:
+        return {
+            "key_fingerprint": library_key_fingerprint(layout),
+            "write_token": vault_token_present(layout, "write"),
+            "read_token": vault_token_present(layout, "read"),
+        }
+    except StorageError as error:
+        return {"code": error.code, "problem": str(error)}
+
+
+def _vault_state(layout: AssetLayout, library_id: str | None) -> JsonValue:
+    from .library_generations import VaultRecords
+
+    if library_id is None:
+        return None
+    state = VaultRecords(layout).read_state(library_id)
+    return None if state is None else cast(JsonValue, state.model_dump(mode="json"))
+
+
+def _vault_show(options: argparse.Namespace) -> int:
+    from .storage_binding import read_library_identity, read_storage_binding
+
+    layout = _vault_layout(options)
+    identity = read_library_identity(layout)
+    binding = read_storage_binding(layout)
+    now = datetime.now(UTC)
+    document: dict[str, JsonValue] = {
+        "library_id": None if identity is None else identity.library_id,
+        "binding": None if binding is None else binding.model_dump(mode="json"),
+        "approval": _vault_approval_summary(layout, binding, now),
+        "secrets": _vault_secret_summary(layout, identity is not None),
+        "state": _vault_state(layout, None if identity is None else identity.library_id),
+    }
+    if options.json:
+        _json_print(document)
+        return 0
+    for line in _vault_show_lines(document):
+        print(line)
+    return 0
+
+
+def _vault_show_lines(document: Mapping[str, JsonValue]) -> list[str]:
+    binding = document["binding"]
+    lines = [f"library: {document['library_id'] or 'not initialized'}"]
+    if not isinstance(binding, Mapping):
+        lines.append("binding: none (Vault · off)")
+    else:
+        lines.append(f"binding: {binding['backend']} {binding['endpoint']}")
+        lines.append(f"namespace: {binding['namespace']}")
+        lines.append(f"classes: {', '.join(cast(list[str], binding['classes']))}")
+    for name in ("approval", "secrets", "state"):
+        value = document[name]
+        lines.append(f"{name}: {'none' if value is None else json.dumps(value, sort_keys=True)}")
+    return lines
+
+
+def _vault_status_line(state: str, message: str | None) -> str:
+    texts = {
+        "off": "Vault · off",
+        "up-to-date": "Vault · up to date",
+        "waiting": "Vault · waiting to copy",
+        "unreachable": "Vault unreachable",
+    }
+    return texts.get(state, f"Vault · {message}")
+
+
+def _vault_status(options: argparse.Namespace) -> int:
+    from .library_generations import VaultRecords
+    from .storage_binding import open_library_vault
+    from .storage_ports import library_head_ref
+
+    layout = _vault_layout(options)
+    state = "off"
+    code: str | None = None
+    message: str | None = None
+    generation = 0
+    try:
+        vault = open_library_vault(layout)
+        if vault is not None:
+            recorded = VaultRecords(layout).read_state(vault.library_id)
+            generation = 0 if recorded is None else recorded.generation
+            head = vault.ref_store.read(library_head_ref(vault.library_id))
+            state = (
+                "up-to-date"
+                if recorded is not None
+                and head is not None
+                and recorded.head is not None
+                and (head.version, head.target) == (recorded.head.version, recorded.head.target)
+                else "waiting"
+            )
+    except StorageError as error:
+        state = "unreachable" if error.retryable else "failed"
+        code, message = error.code, str(error)
+    document: dict[str, JsonValue] = {
+        "state": state,
+        "line": _vault_status_line(state, message),
+        "generation": generation,
+        # A file count needs a replication pass; `vault push --dry-run` reports it.
+        "waiting_files": None,
+        "code": code,
+        "message": message,
+    }
+    if options.json:
+        _json_print(document)
+    else:
+        print(document["line"])
+    return 0
+
+
+def _vault_push(options: argparse.Namespace) -> int:
+    from .library_generations import push_generation
+
+    layout = _vault_layout(options)
+    vault = _open_bound_vault(layout)
+    result = push_generation(
+        layout,
+        blob_store=vault.blob_store,
+        ref_store=vault.ref_store,
+        library_id=vault.library_id,
+        destination=vault.destination,
+        classes=vault.classes,
+        chunk_bytes=vault.chunk_bytes,
+        full=options.full,
+        dry_run=options.dry_run,
+    )
+    _json_print(
+        {
+            "outcome": result.outcome,
+            "library_id": result.library_id,
+            "generation": result.generation,
+            "manifest_sha256": result.manifest_sha256,
+            "head_version": None if result.head is None else result.head.version,
+            "adopted_generation": result.adopted_generation,
+            "uploaded_files": result.uploaded_files,
+            "reused_files": result.reused_files,
+            "sent_blobs": result.sent_blobs,
+            "sent_bytes": result.sent_bytes,
+            "waiting_paths": list(result.waiting_paths),
+            "owners": [
+                {
+                    "owner": owner.owner,
+                    "state": owner.state,
+                    "carried": owner.carried,
+                    "reason": owner.reason,
+                    "problem_path": owner.problem_path,
+                    "held_back_by": owner.held_back_by,
+                }
+                for owner in result.waiting_owners
+            ],
+            "source_change": None if result.source_change is None else str(result.source_change),
+        }
+    )
+    return result.exit_status
+
+
+def _vault_verify(options: argparse.Namespace) -> int:
+    from .library_generations import verify_generation
+
+    layout = _vault_layout(options)
+    vault = _open_bound_vault(layout)
+    report = verify_generation(
+        layout,
+        blob_store=vault.blob_store,
+        ref_store=vault.ref_store,
+        library_id=vault.library_id,
+        generation=options.generation,
+        paths=tuple(options.paths) if options.paths else None,
+        classes=tuple(options.classes) if options.classes else None,
+    )
+    _json_print(
+        {
+            "library_id": report.library_id,
+            "generation": report.generation,
+            "manifest_sha256": report.manifest_sha256,
+            "created_at": report.created_at.isoformat(),
+            "checked": len(report.entries),
+            "present": report.count("present"),
+            "pinned": report.count("pinned"),
+            "missing": report.count("missing"),
+            "mismatch": report.count("mismatch"),
+            "unknown_paths": list(report.unknown_paths),
+            "problems": [
+                {
+                    "path": entry.path,
+                    "file_class": entry.file_class,
+                    "state": entry.state,
+                    "detail": entry.detail,
+                }
+                for entry in report.entries
+                if entry.state in ("missing", "mismatch")
+            ],
+            "ok": report.ok,
+        }
+    )
+    return report.exit_status
+
+
+def _vault_restore(options: argparse.Namespace) -> int:
+    from .library_generations import VaultRecords, restore_library
+    from .storage_binding import open_vault_for_restore
+
+    layout = _vault_layout(options)
+    if (options.generation is None) != (options.manifest_sha256 is None):
+        raise _vault_usage(
+            "restoring a named generation needs both --generation and --manifest-sha256"
+        )
+    named_vault = options.endpoint is not None and options.backend == "tailnet-vault"
+    if named_vault and options.namespace is None:
+        raise _vault_usage(
+            "restoring from a tailnet vault this Mac is not bound to needs --namespace as well: "
+            "it names the vault's namespace for this library"
+        )
+    if options.endpoint is None:
+        vault = _open_bound_vault(layout)
+        stores = vault.stores
+        records = VaultRecords(layout)
+    else:
+        stores = open_vault_for_restore(
+            layout,
+            backend=options.backend,
+            endpoint=options.endpoint,
+            namespace=options.namespace,
+            node_stable_id=options.node_stable_id,
+            tailnet_suffix=options.tailnet_suffix,
+        )
+        records = None
+    target = Path(os.path.abspath(Path(options.target).expanduser()))
+    result = restore_library(
+        target,
+        blob_store=stores.blob_store,
+        ref_store=stores.ref_store,
+        library_id=stores.library_id,
+        generation=options.generation,
+        manifest_sha256=options.manifest_sha256,
+        accept_latest=options.accept_latest,
+        records=records,
+        runtime_root=None if options.runtime_root is None else Path(options.runtime_root),
+    )
+    _json_print(
+        {
+            "target": str(result.target),
+            "library_id": result.library_id,
+            "generation": result.generation,
+            "manifest_sha256": result.manifest_sha256,
+            "created_at": result.created_at.isoformat(),
+            "class_counts": dict(sorted(result.class_counts.items())),
+            "restored_files": result.restored_files,
+            "restored_bytes": result.restored_bytes,
+            "pins": [
+                {"path": pin.path, "state": pin.state, "reason": pin.reason} for pin in result.pins
+            ],
+        }
+    )
+    # A pin is only expected to land when a runtime was named to re-link it from.
+    return 1 if options.runtime_root is not None and result.pin_missing else 0
+
+
+def _vault_audit(options: argparse.Namespace) -> int:
+    from .storage_binding import (
+        audit_vault_access,
+        read_access_records,
+        read_request_records,
+        read_storage_binding,
+    )
+
+    layout = _vault_layout(options)
+    binding = read_storage_binding(layout)
+    namespace = options.namespace or (None if binding is None else binding.namespace)
+    if namespace is None:
+        raise _vault_usage("auditing needs a namespace: bind the vault first, or pass --namespace")
+    report = audit_vault_access(
+        read_access_records(Path(options.access_log).expanduser()),
+        read_request_records(layout),
+        namespace,
+    )
+    _json_print(
+        {
+            "namespace": report.namespace,
+            "server_accesses": report.server_accesses,
+            "mac_requests": report.mac_requests,
+            "matched": report.matched,
+            "unanswered": report.unanswered,
+            "refused_at_server": report.refused_at_server,
+            "unexplained": [
+                {
+                    "time": access.time.isoformat(),
+                    "operation": access.operation,
+                    "ref": access.ref,
+                    "status": access.status,
+                    "bytes": access.bytes,
+                    "scope": access.scope,
+                    "user_login": access.user_login,
+                }
+                for access in report.unexplained
+            ],
+            "ok": not report.unexplained,
+        }
+    )
+    return report.exit_status
+
+
+def _vault_key_create(options: argparse.Namespace) -> int:
+    from .storage_binding import (
+        check_recovery_sheet_target,
+        create_library_vault_key,
+        write_library_recovery_sheet,
+    )
+
+    layout = _vault_layout(options)
+    if bool(options.sheet_out) == bool(options.print_to_terminal):
+        raise _vault_usage(
+            "creating a library key needs exactly one of --sheet-out PATH (a new private file "
+            "outside the library) or --print-to-terminal"
+        )
+    sheet_path: Path | None = None
+    if options.sheet_out:
+        sheet_path = check_recovery_sheet_target(layout, _new_output_path(Path(options.sheet_out)))
+    elif not _stdout_is_a_terminal():
+        raise VaultCommandError(
+            "VAULT_CLI.NOT_A_TERMINAL",
+            "--print-to-terminal prints the recovery sheet, which holds the library key, so it "
+            "is refused unless standard output is a terminal; use --sheet-out PATH instead",
+        )
+    created = create_library_vault_key(layout)
+    if sheet_path is None:
+        # The only output: the sheet itself, on a terminal nothing is capturing.
+        print(created.sheet)
+        return 0
+    try:
+        written = write_library_recovery_sheet(layout, sheet_path, created.sheet)
+    except StorageError as error:
+        # The key exists now and the sheet may not: say so, because `vault key create` will
+        # refuse to make a second key and no command renders a sheet from the Keychain.
+        raise storage_error(error.code, _sheet_not_written(created, sheet_path, error)) from error
+    _json_print(
+        {
+            "library_id": created.library_id,
+            "key_fingerprint": created.fingerprint,
+            "recovery_sheet": str(written),
+        }
+    )
+    return 0
+
+
+def _sheet_not_written(created: LibraryKeyCreation, path: Path, error: StorageError) -> str:
+    """What to do when the key is in the Keychain but its sheet may not be on disk."""
+    from .storage_contracts import keychain_item_names
+
+    item = keychain_item_names(created.library_id).key
+    return (
+        f"{error}; library {created.library_id}'s key {created.fingerprint} is now in the login "
+        f"Keychain as item {item} and nothing has been copied to a vault yet, so unless {path} "
+        f"holds a complete recovery sheet, delete that item (`security delete-generic-password "
+        f"-s {item}`) and run `voice-lab vault key create` again against a writable path, so the "
+        "key and its offline sheet are made together"
+    )
+
+
+def _vault_key_import(options: argparse.Namespace) -> int:
+    from .storage_binding import import_library_vault_key
+
+    layout = _vault_layout(options)
+    if options.sheet == "-":
+        text = _read_standard_input("a recovery sheet")
+    else:
+        text = _read_recovery_sheet_file(Path(options.sheet).expanduser())
+    fingerprint = import_library_vault_key(layout, text)
+    _json_print({"library_id": _library_id_of(layout), "key_fingerprint": fingerprint})
+    return 0
+
+
+def _read_recovery_sheet_file(path: Path) -> str:
+    with open_regular_no_follow(path, nonblocking=True) as stream:
+        data = stream.read(MAX_CLI_SECRET_INPUT_BYTES + 1)
+    if len(data) > MAX_CLI_SECRET_INPUT_BYTES:
+        raise VoiceLabError(f"a recovery sheet exceeds {MAX_CLI_SECRET_INPUT_BYTES} bytes: {path}")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise VoiceLabError(f"a recovery sheet must be UTF-8 text: {path}") from error
+
+
+def _library_id_of(layout: AssetLayout) -> str:
+    from .storage_binding import require_library_identity
+
+    return require_library_identity(layout).library_id
+
+
+def _vault_key_show(options: argparse.Namespace) -> int:
+    from .storage_binding import library_key_fingerprint
+
+    layout = _vault_layout(options)
+    _json_print(
+        {"library_id": _library_id_of(layout), "key_fingerprint": library_key_fingerprint(layout)}
+    )
+    return 0
+
+
+def _vault_namespace(layout: AssetLayout, named: str | None) -> str:
+    from .storage_binding import read_storage_binding
+
+    binding = read_storage_binding(layout)
+    namespace = named or (None if binding is None else binding.namespace)
+    if namespace is None:
+        raise _vault_usage(
+            "the tokens belong to one vault namespace: bind the vault first, or pass --namespace"
+        )
+    return namespace
+
+
+def _vault_token_create(options: argparse.Namespace) -> int:
+    from .storage_binding import create_vault_tokens
+
+    layout = _vault_layout(options)
+    tokens = create_vault_tokens(layout, _vault_namespace(layout, options.namespace))
+    _json_print(
+        {
+            "library_id": tokens.library_id,
+            "namespace": tokens.namespace,
+            "write_token_sha256": tokens.write_token_sha256,
+            "read_token_sha256": tokens.read_token_sha256,
+            "tokens_kept_in": "the login Keychain; neither token is printed",
+        }
+    )
+    return 0
+
+
+def _vault_token_import(options: argparse.Namespace) -> int:
+    from .storage_binding import import_vault_token
+
+    layout = _vault_layout(options)
+    digest = import_vault_token(
+        layout, options.scope, _read_standard_input(f"a {options.scope} vault token")
+    )
+    _json_print(
+        {
+            "library_id": _library_id_of(layout),
+            "scope": options.scope,
+            "token_sha256": digest,
+        }
+    )
+    return 0
+
+
 def _add_consent_scope_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--subject-id", default="cole-self")
     parser.add_argument("--consent-id", default="cole-self-v1")
@@ -3486,6 +4161,146 @@ def build_parser() -> argparse.ArgumentParser:
     consent_revoke_parser.add_argument("--expected-sha256", required=True)
     consent_revoke_parser.add_argument("--confirm-revoke", action="store_true")
     consent_revoke_parser.set_defaults(handler=_consent_revoke)
+
+    vault = commands.add_parser(
+        "vault", help="bind, approve and operate the library's encrypted vault"
+    )
+    vault_commands = vault.add_subparsers(dest="vault_command", required=True)
+
+    def _vault_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        parser.add_argument("--asset-root")
+        return parser
+
+    def _vault_destination_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--approval-id", required=True)
+        parser.add_argument("--endpoint", required=True)
+        parser.add_argument("--tailnet-suffix", required=True)
+        parser.add_argument("--node-stable-id", required=True)
+        parser.add_argument("--namespace", required=True)
+        parser.add_argument(
+            "--classes", nargs="+", required=True, choices=VAULT_FILE_CLASSES, metavar="CLASS"
+        )
+        parser.add_argument("--approved-at", type=_aware_datetime)
+        parser.add_argument("--expires-at", type=_aware_datetime, required=True)
+        parser.add_argument("--approved-by", required=True)
+        parser.add_argument("--statement", required=True)
+
+    vault_init = _vault_arguments(
+        vault_commands.add_parser("init", help="record which library this Mac holds")
+    )
+    vault_init.add_argument("--library-id", help="adopt an existing vault library's id")
+    vault_init.set_defaults(handler=_vault_init)
+
+    vault_approve = _vault_arguments(
+        vault_commands.add_parser(
+            "approve", help="preview, then author, a standing destination approval"
+        )
+    )
+    _vault_destination_arguments(vault_approve)
+    vault_approve.add_argument("--preview", action="store_true")
+    vault_approve.add_argument("--reviewed-approval-sha256", type=_sha256_argument)
+    vault_approve.add_argument("--i-approve-this-destination", action="store_true")
+    vault_approve.set_defaults(handler=_vault_approve)
+
+    vault_bind = _vault_arguments(
+        vault_commands.add_parser("bind", help="bind this library to one vault")
+    )
+    vault_bind.add_argument("--backend", required=True, choices=VAULT_BACKENDS)
+    vault_bind.add_argument("--endpoint", required=True)
+    vault_bind.add_argument("--namespace", required=True)
+    vault_bind.add_argument(
+        "--classes", nargs="+", required=True, choices=VAULT_FILE_CLASSES, metavar="CLASS"
+    )
+    vault_bind.add_argument("--approval-id")
+    vault_bind.add_argument("--approval-sha256", type=_sha256_argument)
+    vault_bind.add_argument("--replace", action="store_true")
+    vault_bind.add_argument("--reset-state", action="store_true")
+    vault_bind.set_defaults(handler=_vault_bind)
+
+    vault_show = _vault_arguments(
+        vault_commands.add_parser("show", help="the binding, its approval and this Mac's records")
+    )
+    vault_show.add_argument("--json", action="store_true")
+    vault_show.set_defaults(handler=_vault_show)
+
+    vault_status = _vault_arguments(
+        vault_commands.add_parser("status", help="one line, as the recording app shows it")
+    )
+    vault_status.add_argument("--json", action="store_true")
+    vault_status.set_defaults(handler=_vault_status)
+
+    vault_push = _vault_arguments(
+        vault_commands.add_parser("push", help="copy the library's current files to the vault")
+    )
+    vault_push.add_argument("--dry-run", action="store_true")
+    vault_push.add_argument(
+        "--full", action="store_true", help="re-upload every file instead of reusing chunks"
+    )
+    vault_push.set_defaults(handler=_vault_push)
+
+    vault_verify = _vault_arguments(
+        vault_commands.add_parser("verify", help="download and check every chunk of a generation")
+    )
+    vault_verify.add_argument("--generation", type=_positive_number)
+    vault_verify.add_argument("--path", dest="paths", action="append", default=[])
+    vault_verify.add_argument(
+        "--class", dest="classes", action="append", default=[], choices=VAULT_FILE_CLASSES
+    )
+    vault_verify.set_defaults(handler=_vault_verify)
+
+    vault_restore = _vault_arguments(
+        vault_commands.add_parser("restore", help="restore one generation into an empty root")
+    )
+    vault_restore.add_argument("--target", required=True)
+    vault_restore.add_argument("--runtime-root")
+    restore_generation = vault_restore.add_mutually_exclusive_group(required=True)
+    restore_generation.add_argument("--accept-latest", action="store_true")
+    restore_generation.add_argument("--generation", type=_positive_number)
+    vault_restore.add_argument("--manifest-sha256", type=_sha256_argument)
+    vault_restore.add_argument("--backend", choices=VAULT_BACKENDS, default="tailnet-vault")
+    vault_restore.add_argument("--endpoint", help="restore onto a Mac with no binding")
+    vault_restore.add_argument("--namespace")
+    vault_restore.add_argument("--node-stable-id")
+    vault_restore.add_argument("--tailnet-suffix")
+    vault_restore.set_defaults(handler=_vault_restore)
+
+    vault_audit = _vault_arguments(
+        vault_commands.add_parser("audit", help="hold the vault's access log against this Mac's")
+    )
+    vault_audit.add_argument("--access-log", required=True)
+    vault_audit.add_argument("--namespace")
+    vault_audit.set_defaults(handler=_vault_audit)
+
+    vault_key = vault_commands.add_parser("key", help="the library key in the login Keychain")
+    vault_key_commands = vault_key.add_subparsers(dest="vault_key_command", required=True)
+    vault_key_create = _vault_arguments(
+        vault_key_commands.add_parser("create", help="create the key and its recovery sheet")
+    )
+    vault_key_create.add_argument("--sheet-out")
+    vault_key_create.add_argument("--print-to-terminal", action="store_true")
+    vault_key_create.set_defaults(handler=_vault_key_create)
+    vault_key_import = _vault_arguments(
+        vault_key_commands.add_parser("import", help="restore the key from its recovery sheet")
+    )
+    vault_key_import.add_argument("--sheet", required=True, help="a sheet file, or - for stdin")
+    vault_key_import.set_defaults(handler=_vault_key_import)
+    vault_key_show = _vault_arguments(
+        vault_key_commands.add_parser("show", help="the key's fingerprint, never the key")
+    )
+    vault_key_show.set_defaults(handler=_vault_key_show)
+
+    vault_token = vault_commands.add_parser("token", help="the vault tokens in the login Keychain")
+    vault_token_commands = vault_token.add_subparsers(dest="vault_token_command", required=True)
+    vault_token_create = _vault_arguments(
+        vault_token_commands.add_parser("create", help="create both tokens; print only hashes")
+    )
+    vault_token_create.add_argument("--namespace")
+    vault_token_create.set_defaults(handler=_vault_token_create)
+    vault_token_import = _vault_arguments(
+        vault_token_commands.add_parser("import", help="keep one token read from standard input")
+    )
+    vault_token_import.add_argument("--scope", required=True, choices=("write", "read"))
+    vault_token_import.set_defaults(handler=_vault_token_import)
 
     return parser
 

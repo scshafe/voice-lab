@@ -15,9 +15,9 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, BinaryIO, Final, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from .errors import SecurityError
+from .errors import ContractError, SecurityError
 
 _CHUNK_BYTES = 1024 * 1024
 # darwin <sys/stdio.h>: the renameatx_np flag that fails with EEXIST instead of replacing.
@@ -362,6 +362,50 @@ def write_new_private_file(path: Path, data: bytes, *, mode: int = 0o600) -> Non
             pass
         raise
     fsync_directory(path.parent)
+
+
+def require_evidence_file(path: Path, *, max_bytes: int | None = None) -> os.stat_result:
+    """Return ``path``'s metadata when it is one plain, unshared evidence file.
+
+    The rule every reviewed record on this Mac is read under — approvals, gates, bindings and
+    the vault's own records: one regular file, not a symbolic link, with exactly one link, and
+    no larger than the caller's bound.
+    Params: ``path``; ``max_bytes``, the largest size accepted (no bound when ``None``).
+    Returns: the ``lstat`` metadata.
+    Raises: ``FileNotFoundError`` when nothing is there; ``SecurityError`` for a link, a
+    non-regular file or a hard-linked one; ``ContractError`` when it is too large.
+    """
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SecurityError(f"evidence must be a regular non-link file: {path}")
+    if metadata.st_nlink != 1:
+        raise SecurityError(f"hard-linked evidence is forbidden: {path}")
+    if max_bytes is not None and metadata.st_size > max_bytes:
+        raise ContractError(f"evidence exceeds {max_bytes} bytes: {path}")
+    return metadata
+
+
+def read_canonical_model[ModelT: BaseModel](
+    path: Path, model_type: type[ModelT], *, max_bytes: int
+) -> ModelT:
+    """Read one record whose file must be exactly its canonical JSON plus a newline.
+
+    Params: ``path``; ``model_type``, the strict contract it must be; ``max_bytes``, the
+    largest file accepted.
+    Returns: the validated record.
+    Raises: as ``require_evidence_file``; ``ContractError`` when the bytes are not valid for
+    the contract or are not the record's canonical form.
+    """
+    require_evidence_file(path, max_bytes=max_bytes)
+    try:
+        with open_regular_no_follow(path) as stream:
+            payload = stream.read(max_bytes + 1)
+        record = model_type.model_validate_json(payload)
+    except (ValidationError, ValueError) as error:
+        raise ContractError(f"invalid canonical evidence {path}: {error}") from error
+    if payload != canonical_json_bytes(record) + b"\n":
+        raise ContractError(f"JSON evidence is not canonical: {path}")
+    return record
 
 
 def read_json_object(path: Path) -> Mapping[str, Any]:

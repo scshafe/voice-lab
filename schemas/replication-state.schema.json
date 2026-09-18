@@ -77,8 +77,11 @@
     }
   },
   "additionalProperties": false,
-  "description": "The Mac's record of the newest generation it pushed (``provenance/vault/state.json``).\n\nGeneration 0 means nothing was pushed yet, and only then are ``manifest_sha256`` and\n``head`` null; ``head`` is always this library's head ref.",
+  "description": "The Mac's record of the newest generation it pushed (``provenance/vault/state.json``).\n\nGeneration 0 means nothing was pushed yet, and only then are ``manifest_sha256``, ``head``\nand ``ledger_tail_sha256`` null; ``head`` is always this library's head ref.\n``destination_sha256`` is the ``destination_digest`` of the ``LedgerDestination`` the\ngeneration went to, so a push whose binding names another vault, namespace or node is\nrefused instead of continuing this library's chain somewhere else.\n``ledger_tail_sha256`` is the ``ledger_entry_digest`` of the ledger entry that records\nthis generation \u2014 its ``upload-completed`` entry, or (before that entry is written, and in\nthe window between writing it and recording it here) the ``upload-started`` entry it\npairs with. No later entry's chain digest covers the ledger's last entry, so this is what\nmakes an edit of it visible.",
   "properties": {
+    "destination_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
     "generation": {
       "$ref": "#/$defs/StorageCounter"
     },
@@ -86,6 +89,16 @@
       "anyOf": [
         {
           "$ref": "#/$defs/RefValue"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ledger_tail_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
         },
         {
           "type": "null"
@@ -120,6 +133,8 @@
     "generation",
     "manifest_sha256",
     "head",
+    "destination_sha256",
+    "ledger_tail_sha256",
     "updated_at"
   ],
   "title": "ReplicationState",

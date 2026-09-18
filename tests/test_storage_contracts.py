@@ -20,7 +20,7 @@ import subprocess
 import sys
 import unicodedata
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, get_args
 
@@ -41,6 +41,7 @@ from cole_voice_lab.storage_contracts import (
     STORAGE_SCHEMA_MODELS,
     LedgerDestination,
     LedgerEntry,
+    LibraryIdentity,
     LibraryManifest,
     ManifestEntry,
     ManifestEnvelope,
@@ -50,14 +51,17 @@ from cole_voice_lab.storage_contracts import (
     StorageBinding,
     UtcTimestamp,
     VaultAccessRecord,
+    VaultDestinationApproval,
     VaultNamespaceConfig,
     VaultRequestRecord,
+    destination_digest,
     keychain_item_names,
     ledger_entry_digest,
     manifest_digest,
     manifest_path_key,
     manifest_payload_digest,
     manifest_plan,
+    new_library_id,
 )
 from cole_voice_lab.storage_ports import (
     MAX_BLOB_BYTES,
@@ -85,6 +89,7 @@ FIXED = datetime(2026, 9, 17, 12, tzinfo=UTC)
 HELLO_SHA256 = hashlib.sha256(b"hello").hexdigest()
 NAMES = keychain_item_names(LIBRARY)
 TAILNET_ENDPOINT = "voice-lab-vault.colobus-stargazer.ts.net"
+TAILNET_SUFFIX = "colobus-stargazer.ts.net"
 LOCAL_ENDPOINT = "/Volumes/Library Copy/voice-lab-vault"
 PATTERN = "String should match pattern"
 EXTRA = "Extra inputs are not permitted"
@@ -329,8 +334,10 @@ def test_keychain_item_names_are_fixed_by_the_library_id() -> None:
     assert names == (
         "private.cole.voice-lab.vault.cole-self.key",
         "private.cole.voice-lab.vault.cole-self.token",
+        "private.cole.voice-lab.vault.cole-self.read-token",
     )
-    assert (names.key, names.token) == names
+    assert (names.key, names.token, names.read_token) == names
+    assert len(set(names)) == len(names)
     assert keychain_item_names("cole-other") != names
 
 
@@ -627,6 +634,34 @@ def envelope() -> Payload:
     }
 
 
+def library_identity() -> Payload:
+    return {
+        "schema_version": "cole-voice-lab.vault-library-identity/v1",
+        "library_id": LIBRARY,
+        "created_at": TIME,
+    }
+
+
+def destination_approval() -> Payload:
+    return {
+        "schema_version": "cole-voice-lab.vault-destination-approval/v1",
+        "approval_id": "vault-2026-09-17",
+        "approved": True,
+        "library_id": LIBRARY,
+        "backend": "tailnet-vault",
+        "endpoint": TAILNET_ENDPOINT,
+        "tailnet_suffix": TAILNET_SUFFIX,
+        "node_stable_id": "nQRJBE7CNTRL",
+        "tag": "tag:voice-lab-vault",
+        "namespace": "cole",
+        "classes": ["derived-edits", "prompt-database", "recordings", "records"],
+        "approved_at": TIME,
+        "expires_at": "2027-09-17T12:00:00Z",
+        "approved_by": "Cole",
+        "statement": "Copies of this library may be kept, encrypted, on cole-ubuntu-pc.",
+    }
+
+
 def tailnet_binding() -> Payload:
     return {
         "schema_version": "cole-voice-lab.storage-binding/v1",
@@ -636,6 +671,7 @@ def tailnet_binding() -> Payload:
         "library_id": LIBRARY,
         "classes": ["derived-edits", "prompt-database", "recordings", "records"],
         "approval_id": "vault-2026-09-17",
+        "approval_sha256": "a" * 64,
         "key_item": NAMES.key,
         "token_item": NAMES.token,
         "created_at": TIME,
@@ -647,6 +683,7 @@ def local_binding() -> Payload:
         "backend": "local-directory",
         "endpoint": LOCAL_ENDPOINT,
         "approval_id": None,
+        "approval_sha256": None,
         "token_item": None,
     }
 
@@ -658,6 +695,8 @@ def fresh_state() -> Payload:
         "generation": 0,
         "manifest_sha256": None,
         "head": None,
+        "destination_sha256": "c" * 64,
+        "ledger_tail_sha256": None,
         "updated_at": TIME,
     }
 
@@ -667,6 +706,7 @@ def pushed_state() -> Payload:
         "generation": 3,
         "manifest_sha256": "f" * 64,
         "head": ref_value() | {"version": 3},
+        "ledger_tail_sha256": "b" * 64,
     }
 
 
@@ -784,6 +824,8 @@ SYNTHETIC: dict[str, Build] = {
     "library-manifest-entry": file_entry,
     "library-manifest": manifest,
     "library-manifest-envelope": envelope,
+    "vault-library-identity": library_identity,
+    "vault-destination-approval": destination_approval,
     "storage-binding": tailnet_binding,
     "replication-state": pushed_state,
     "replication-ledger-entry": completed_entry,
@@ -803,6 +845,9 @@ TIMESTAMP_FIELDS = [
     (RefValue, "updated_at"),
     (ManifestPlan, "created_at"),
     (LibraryManifest, "created_at"),
+    (LibraryIdentity, "created_at"),
+    (VaultDestinationApproval, "approved_at"),
+    (VaultDestinationApproval, "expires_at"),
     (StorageBinding, "created_at"),
     (ReplicationState, "updated_at"),
     (LedgerEntry, "recorded_at"),
@@ -907,6 +952,9 @@ def test_a_record_of_another_schema_version_is_refused(name: str) -> None:
     [
         pytest.param(model, field, id=f"{model.__name__}-{field}")
         for model, field in TIMESTAMP_FIELDS
+        # An approval's expiry must follow its approval, so it cannot also be FIXED; its own
+        # test below covers the same rules for it.
+        if (model, field) != (VaultDestinationApproval, "expires_at")
     ],
 )
 def test_every_storage_timestamp_is_an_explicit_instant_kept_in_utc(
@@ -1478,14 +1526,17 @@ def test_a_binding_holds_names_but_no_secret() -> None:
         "library_id",
         "classes",
         "approval_id",
+        "approval_sha256",
         "key_item",
         "token_item",
         "created_at",
     ]
     tailnet = validate(StorageBinding, tailnet_binding())
     local = validate(StorageBinding, local_binding())
-    assert (tailnet.key_item, tailnet.token_item) == NAMES
+    assert (tailnet.key_item, tailnet.token_item) == (NAMES.key, NAMES.token)
     assert (local.key_item, local.token_item) == (NAMES.key, None)
+    # The read token is never named by a binding: it is for a restore onto another Mac.
+    assert NAMES.read_token not in canonical_json_bytes(tailnet).decode("utf-8")
 
 
 @pytest.mark.parametrize(
@@ -1583,6 +1634,17 @@ def test_a_valid_binding_is_accepted(build: Build) -> None:
         (tailnet_binding, {"approval_id": "Vault"}, PATTERN),
         (
             tailnet_binding,
+            {"approval_sha256": None},
+            "approval_sha256 is required for tailnet-vault",
+        ),
+        (
+            local_binding,
+            {"approval_sha256": "a" * 64},
+            "approval_sha256 is required for tailnet-vault and forbidden for local-directory",
+        ),
+        (tailnet_binding, {"approval_sha256": "A" * 64}, PATTERN),
+        (
+            tailnet_binding,
             {"key_item": keychain_item_names("cole-other").key},
             "key_item must be private.cole.voice-lab.vault.cole-self.key",
         ),
@@ -1599,6 +1661,165 @@ def test_an_invalid_binding_is_refused(
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         validate(model, build() | changes)
+
+
+# -- LibraryIdentity and VaultDestinationApproval ------------------------------------------
+
+
+def test_a_fresh_library_id_names_the_day_and_is_a_ref_segment() -> None:
+    made = {new_library_id(FIXED) for _ in range(16)}
+
+    assert len(made) == 16
+    for library_id in made:
+        assert library_id.startswith("lib-20260917-")
+        assert validate_library_id(library_id) == library_id
+        assert library_head_ref(library_id) == f"libraries/{library_id}/head"
+        assert validate(LibraryIdentity, library_identity() | {"library_id": library_id})
+    shifted = new_library_id(datetime(2026, 9, 18, 1, tzinfo=timezone(timedelta(hours=13))))
+    assert shifted.startswith("lib-20260917-")
+    with pytest.raises(ValueError, match="storage timestamps require an explicit timezone"):
+        new_library_id(datetime(2026, 9, 17, 12))
+
+
+@pytest.mark.parametrize(
+    ("build", "changes", "message"),
+    [
+        (library_identity, {"library_id": "Cole"}, PATTERN),
+        (library_identity, {"library_id": ""}, PATTERN),
+        (library_identity, {"library_id": "a" * 65}, "at most 64 characters"),
+        (library_identity, {"created_at": "2026-09-17T12:00:00"}, "explicit timezone"),
+        (library_identity, {"schema_version": "cole-voice-lab.vault-library-identity/v2"}, "Input"),
+        (library_identity, {"where": "cole-mac"}, EXTRA),
+    ],
+)
+def test_an_invalid_library_identity_is_refused(
+    build: Build, changes: Payload, message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        validate(LibraryIdentity, build() | changes)
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        destination_approval,
+        lambda: destination_approval() | {"classes": ["records", "training"]},
+        lambda: destination_approval() | {"expires_at": "2027-09-18T12:00:00Z"},
+        lambda: destination_approval() | {"approved_by": " Cole "},
+        lambda: (
+            destination_approval()
+            | {"endpoint": f"vault.deep.{TAILNET_SUFFIX}", "tailnet_suffix": TAILNET_SUFFIX}
+        ),
+        lambda: (
+            destination_approval()
+            | {"endpoint": "vault.example.net", "tailnet_suffix": "example.net"}
+        ),
+    ],
+)
+def test_a_valid_destination_approval_is_accepted(build: Build) -> None:
+    approval = validate(VaultDestinationApproval, build())
+
+    assert approval.endpoint.endswith(f".{approval.tailnet_suffix}")
+    assert approval.tag == "tag:voice-lab-vault"
+    assert approval.approved_by == approval.approved_by.strip()
+
+
+def test_an_approval_is_effective_only_between_its_two_instants() -> None:
+    approval = validate(VaultDestinationApproval, destination_approval())
+
+    assert approval.effective_at(approval.approved_at)
+    assert approval.effective_at(approval.expires_at - timedelta(seconds=1))
+    assert not approval.effective_at(approval.approved_at - timedelta(seconds=1))
+    assert not approval.effective_at(approval.expires_at)
+    # The instant is compared in UTC, whatever offset it arrives with.
+    elsewhere = (approval.expires_at - timedelta(seconds=1)).astimezone(
+        timezone(timedelta(hours=-7))
+    )
+    assert approval.effective_at(elsewhere)
+    with pytest.raises(ValueError, match="storage timestamps require an explicit timezone"):
+        approval.effective_at(datetime(2026, 9, 17, 12))
+
+
+@pytest.mark.parametrize(
+    ("build", "changes", "message"),
+    [
+        (destination_approval, {"approved": False}, "Input should be True"),
+        (destination_approval, {"backend": "local-directory"}, "Input should be 'tailnet-vault'"),
+        (destination_approval, {"tag": "tag:other"}, "Input should be 'tag:voice-lab-vault'"),
+        (destination_approval, {"approval_id": "Vault"}, PATTERN),
+        (destination_approval, {"library_id": "Cole"}, PATTERN),
+        (destination_approval, {"namespace": "Cole"}, PATTERN),
+        (destination_approval, {"node_stable_id": "n-1"}, PATTERN),
+        (destination_approval, {"node_stable_id": ""}, PATTERN),
+        (destination_approval, {"classes": []}, "at least 1 item"),
+        (destination_approval, {"classes": ["training", "records"]}, "classes must be sorted"),
+        (
+            destination_approval,
+            {"endpoint": f"vault.{TAILNET_SUFFIX}", "tailnet_suffix": "other.ts.net"},
+            "the endpoint must be a name in the approved tailnet",
+        ),
+        (
+            destination_approval,
+            {"endpoint": TAILNET_SUFFIX},
+            "the endpoint must be a name in the approved tailnet",
+        ),
+        (
+            destination_approval,
+            {"endpoint": f"https://{TAILNET_ENDPOINT}"},
+            "a tailnet-vault endpoint is a lowercase DNS",
+        ),
+        (destination_approval, {"tailnet_suffix": "ts"}, "a tailnet-vault endpoint"),
+        (destination_approval, {"tailnet_suffix": f"{TAILNET_SUFFIX}."}, "a tailnet-vault"),
+        (
+            destination_approval,
+            {"expires_at": TIME},
+            "expires_at must follow approved_at",
+        ),
+        (
+            destination_approval,
+            {"expires_at": "2026-09-17T11:00:00Z"},
+            "expires_at must follow approved_at",
+        ),
+        (
+            destination_approval,
+            {"expires_at": "2027-09-19T12:00:00Z"},
+            "an approval stands for at most 366 days",
+        ),
+        (destination_approval, {"approved_by": "   "}, "at least 1 character"),
+        (destination_approval, {"approved_by": "c" * 257}, "at most 256 characters"),
+        (destination_approval, {"statement": ""}, "at least 1 character"),
+        (destination_approval, {"statement": "s" * 4097}, "at most 4096 characters"),
+        (destination_approval, {"approved_at": "2026-09-17T12:00:00"}, "explicit timezone"),
+        (destination_approval, {"consent_sha256": "a" * 64}, EXTRA),
+    ],
+)
+def test_an_invalid_destination_approval_is_refused(
+    build: Build, changes: Payload, message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        validate(VaultDestinationApproval, build() | changes)
+
+
+def test_the_longest_standing_approval_is_a_leap_year() -> None:
+    approved = datetime(2028, 1, 1, tzinfo=UTC)
+    payload = destination_approval() | {"approved_at": approved.isoformat().replace("+00:00", "Z")}
+    longest = (approved + timedelta(days=366)).isoformat().replace("+00:00", "Z")
+    too_long = (approved + timedelta(days=366, seconds=1)).isoformat().replace("+00:00", "Z")
+
+    assert validate(VaultDestinationApproval, payload | {"expires_at": longest})
+    with pytest.raises(ValidationError, match="at most 366 days"):
+        validate(VaultDestinationApproval, payload | {"expires_at": too_long})
+
+
+def test_a_destination_digest_names_every_field_of_the_destination() -> None:
+    destination = validate(LedgerDestination, tailnet_destination())
+    digest = destination_digest(destination)
+
+    assert digest == hashlib.sha256(canonical_json_bytes(destination)).hexdigest()
+    assert digest != destination_digest(validate(LedgerDestination, local_destination()))
+    for change in ({"namespace": "spare"}, {"node_stable_id": "n" * 12}, {"tag": "tag:other-1"}):
+        other = validate(LedgerDestination, tailnet_destination() | change)
+        assert destination_digest(other) != digest
 
 
 # -- ReplicationState ---------------------------------------------------------------------
@@ -1648,6 +1869,19 @@ def test_a_valid_replication_state_is_accepted(build: Build) -> None:
         (pushed_state, {"head": ref_value() | {"version": 0}}, "greater than or equal to 1"),
         (pushed_state, {"manifest_sha256": "F" * 64}, PATTERN),
         (pushed_state, {"library_id": "Cole"}, PATTERN),
+        (
+            fresh_state,
+            {"ledger_tail_sha256": "b" * 64},
+            "ledger_tail_sha256 is null exactly for generation 0",
+        ),
+        (
+            pushed_state,
+            {"ledger_tail_sha256": None},
+            "ledger_tail_sha256 is null exactly for generation 0",
+        ),
+        (pushed_state, {"ledger_tail_sha256": "B" * 64}, PATTERN),
+        (pushed_state, {"destination_sha256": None}, "Input should be a valid string"),
+        (pushed_state, {"destination_sha256": "C" * 64}, PATTERN),
     ),
 )
 def test_an_invalid_replication_state_is_refused(

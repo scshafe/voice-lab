@@ -224,6 +224,12 @@ def ledger_path(layout: AssetLayout, sequence: int) -> Path:
     return layout.root / f"provenance/vault/ledger/{sequence:08d}.json"
 
 
+def manifest_copies(layout: AssetLayout) -> list[Path]:
+    """The manifest copies this Mac keeps, in name order; empty before the first push."""
+    directory = layout.root / "provenance/vault/manifests"
+    return sorted(directory.iterdir()) if directory.is_dir() else []
+
+
 def new_target(tmp_path: Path, name: str = "restore") -> Path:
     return private_directory(tmp_path.resolve() / name) / "assets"
 
@@ -1407,6 +1413,131 @@ def test_the_ledger_tolerates_crash_leftovers_and_refuses_to_overflow(
     assert set(vault.blob_files()) == blobs and len(ledger(layout)) == 4
 
 
+def test_a_state_that_names_another_destination_stops_the_push(
+    library: AssetLayout, vault: Vault
+) -> None:
+    """A binding that moved cannot continue this library's chain: rebind and reset instead."""
+    first = push(library, vault)
+    state = VaultRecords(library).read_state(LIBRARY_ID)
+    assert state is not None and state.destination_sha256 == LOCAL_DESTINATION.digest
+    elsewhere = replace(LOCAL_DESTINATION, namespace="spare")
+    change(library, "2")
+
+    with pytest.raises(StorageIntegrityError, match="another destination than the binding names"):
+        push(library, vault, destination=elsewhere)
+    with pytest.raises(StorageIntegrityError, match="rebind"):
+        push(library, vault, destination=TAILNET_DESTINATION)
+    assert VaultRecords(library).read_state(LIBRARY_ID) == state
+    assert len(ledger(library)) == 2
+    # Verification takes no destination, so it still reads the generation that was pushed.
+    assert verify(library, vault).generation == 1
+    assert push(library, vault).generation == first.generation + 1
+
+
+def test_a_state_that_names_another_ledger_entry_stops_the_push(
+    library: AssetLayout, vault: Vault
+) -> None:
+    """state.json names the entry that recorded it, so editing the ledger's tail shows."""
+    push(library, vault)
+    change(library, "2")
+    push(library, vault)
+    state = VaultRecords(library).read_state(LIBRARY_ID)
+    assert state is not None
+    assert state.ledger_tail_sha256 == ledger_entry_digest(ledger(library)[-1])
+
+    # The last entry is the one no later entry's chain digest covers.
+    rewrite_entry(library, 4, byte_count=0)
+    for command in (lambda: push(library, vault), lambda: verify(library, vault)):
+        with pytest.raises(StorageIntegrityError, match="the entry was changed"):
+            command()
+    rewrite_entry(library, 4, byte_count=ledger(library)[-1].byte_count)
+
+    # A state that names an entry the ledger never held is refused just as loudly.
+    rewrite(
+        state_path(library),
+        canonical_json_bytes(state.model_copy(update={"ledger_tail_sha256": "0" * 64})) + b"\n",
+    )
+    with pytest.raises(StorageIntegrityError, match="names ledger entry 0{64}"):
+        push(library, vault)
+
+
+def test_a_push_interrupted_before_its_state_is_finished_by_the_next_one(
+    library: AssetLayout, vault: Vault
+) -> None:
+    """The window between the completed entry and the state rewrite is not a broken ledger."""
+    push(library, vault)
+    change(library, "2")
+    push(library, vault)
+    entries = ledger(library)
+    state = VaultRecords(library).read_state(LIBRARY_ID)
+    assert state is not None and entries[-1].kind == "upload-completed"
+
+    # As a crash between the ledger entry and the second state write leaves it.
+    started = entries[-2]
+    rewrite(
+        state_path(library),
+        canonical_json_bytes(
+            state.model_copy(update={"ledger_tail_sha256": ledger_entry_digest(started)})
+        )
+        + b"\n",
+    )
+    assert verify(library, vault).ok
+    change(library, "3")
+    third = push(library, vault)
+
+    assert third.generation == 3
+    settled = VaultRecords(library).read_state(LIBRARY_ID)
+    assert settled is not None
+    assert settled.ledger_tail_sha256 == ledger_entry_digest(ledger(library)[-1])
+
+
+def test_a_full_push_uploads_every_file_again_and_dry_runs_write_nothing(
+    library: AssetLayout, vault: Vault
+) -> None:
+    """``--full`` is the documented fix when verify finds a blob the vault lost."""
+    first = push(library, vault)
+    assert first.outcome == "pushed"
+    blobs = set(vault.blob_files())
+
+    planned = push(library, vault, dry_run=True)
+    assert planned.outcome == "up-to-date" and set(vault.blob_files()) == blobs
+
+    full = push(library, vault, full=True)
+    assert full.outcome == "pushed" and full.generation == 2
+    assert full.uploaded_files == first.uploaded_files and full.reused_files == 0
+    # Sealing is randomized, so every re-uploaded chunk is a new blob beside the old one.
+    assert set(vault.blob_files()) > blobs
+    assert verify(library, vault).ok
+
+    change(library, "2")
+    # Everything the dry run must leave exactly as it found it, captured before it runs.
+    before_blobs = set(vault.blob_files())
+    before_state = VaultRecords(library).read_state(LIBRARY_ID)
+    before_manifests = sorted(path.name for path in manifest_copies(library))
+    before_ledger = len(ledger(library))
+    dry = push(library, vault, dry_run=True)
+    assert (dry.outcome, dry.generation, dry.uploaded_files) == ("dry-run", 2, 1)
+    assert dry.exit_status == 0 and dry.sent_bytes > 0
+    assert set(vault.blob_files()) == before_blobs
+    assert VaultRecords(library).read_state(LIBRARY_ID) == before_state
+    assert sorted(path.name for path in manifest_copies(library)) == before_manifests
+    assert len(ledger(library)) == before_ledger == 4
+    assert push(library, vault).generation == 3
+
+
+def test_a_dry_run_refuses_a_destination_the_state_does_not_name(
+    library: AssetLayout, vault: Vault
+) -> None:
+    """A dry run answers for the push it previews, so it makes the same refusal."""
+    push(library, vault)
+    change(library, "2")
+    elsewhere = replace(LOCAL_DESTINATION, namespace="spare")
+
+    with pytest.raises(StorageIntegrityError, match="another destination than the binding names"):
+        push(library, vault, destination=elsewhere, dry_run=True)
+    assert push(library, vault, dry_run=True).outcome == "dry-run"
+
+
 # -- the Mac-side records --------------------------------------------------------------------
 
 
@@ -1430,6 +1561,8 @@ def test_unsafe_or_foreign_vault_records_are_refused_never_repaired(
         generation=1,
         manifest_sha256=first.manifest_sha256,
         head=first.head.model_copy(update={"name": library_head_ref("other-library")}),
+        destination_sha256=LOCAL_DESTINATION.digest,
+        ledger_tail_sha256=ledger_entry_digest(ledger(library)[-1]),
         updated_at=FIXED,
     )
     write_canonical_json(path, other)

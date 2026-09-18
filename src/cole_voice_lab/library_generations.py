@@ -113,6 +113,7 @@ from .storage_contracts import (
     PlannedManifestEntry,
     ReplicationState,
     StorageBackend,
+    destination_digest,
     ledger_entry_digest,
     manifest_digest,
     manifest_path_key,
@@ -200,7 +201,7 @@ type HeadProblem = Literal[
     "fork",
     "chain",
 ]
-type PushOutcome = Literal["pushed", "up-to-date", "source-changed"]
+type PushOutcome = Literal["pushed", "up-to-date", "source-changed", "dry-run"]
 type OwnerState = Literal["complete", "changed", "refused"]
 type VerifyState = Literal["present", "mismatch", "missing", "pinned"]
 type PinState = Literal["linked", "copied", "missing"]
@@ -307,6 +308,11 @@ class DestinationContext:
             node_stable_id=self.node_stable_id,
             tag=self.tag,
         )
+
+    @property
+    def digest(self) -> str:
+        """The ``destination_digest`` ``state.json`` records for this destination."""
+        return destination_digest(self.ledger_destination)
 
 
 # -- Mac-side records ------------------------------------------------------------------------
@@ -616,6 +622,25 @@ class ReplicationLedger:
                 "ones its upload started with"
             )
 
+    def _require_named_tail(self, state: ReplicationState, entry: LedgerEntry) -> None:
+        """Hold the entry that records ``state``'s generation against the digest it names.
+
+        ``state.ledger_tail_sha256`` is that entry's own digest, or — in the window between
+        writing an ``upload-completed`` entry and recording it in ``state.json``, and while a
+        completion is still pending — the digest of the ``upload-started`` entry it pairs
+        with, which is exactly its ``previous_entry_sha256``. Nothing else is accepted, so
+        editing the one entry no chain digest covers is visible.
+        """
+        accepted = {ledger_entry_digest(entry)}
+        if entry.kind == "upload-completed" and entry.previous_entry_sha256 is not None:
+            accepted.add(entry.previous_entry_sha256)
+        if state.ledger_tail_sha256 not in accepted:
+            raise _integrity(
+                f"ledger entry {entry.sequence:08d} records the generation {state.generation} "
+                f"upload {STATE_NAME} names, but {STATE_NAME} names ledger entry "
+                f"{state.ledger_tail_sha256}, which it is not; the entry was changed"
+            )
+
     def require_recorded(self, state: ReplicationState | None) -> tuple[LedgerEntry, ...]:
         """Every entry, once the chain and the upload ``state.json`` names are proven.
 
@@ -624,12 +649,14 @@ class ReplicationLedger:
         ``upload-completed`` entry recorded (same manifest and head version), unless the
         entries after it are the unanswered ``upload-started`` entries of later attempts, or
         the state's own generation is still waiting for its completion (a push that stopped
-        between ``state.json`` and its last entry).
+        between ``state.json`` and its last entry). That entry must also be the one
+        ``state.ledger_tail_sha256`` names (``_require_named_tail``).
         Params: ``state``, the replication state read for this library (``None`` when this
         Mac has pushed nothing).
         Returns: the entries, as ``entries``.
-        Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) as ``entries``, or when no
-        entry records the state's generation.
+        Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) as ``entries``, when no
+        entry records the state's generation, or when the entry that does is not the one the
+        state names.
         """
         entries = self.entries()
         if state is None or state.head is None:
@@ -641,10 +668,12 @@ class ReplicationLedger:
                     state.manifest_sha256,
                     state.head.version,
                 ):
+                    self._require_named_tail(state, entry)
                     return entries
                 break
             if entry.generation == state.generation:
                 # The completion this Mac is about to write for its own started upload.
+                self._require_named_tail(state, entry)
                 return entries
         raise _integrity(
             f"the ledger does not record the generation {state.generation} upload "
@@ -952,10 +981,10 @@ def _complete(
     stored: StoredManifest,
     head: RefValue,
     previous: LibraryManifest | None,
-) -> None:
+) -> LedgerEntry:
     blobs, size = _sent(stored, previous)
     manifest = stored.manifest
-    vault.ledger.append(
+    return vault.ledger.append(
         kind="upload-completed",
         library_id=vault.library_id,
         generation=manifest.generation,
@@ -970,25 +999,42 @@ def _complete(
     )
 
 
+def _state(
+    vault: _Vault, finish: _Finish, stored: StoredManifest, head: RefValue, tail: str
+) -> ReplicationState:
+    return ReplicationState(
+        library_id=vault.library_id,
+        generation=stored.manifest.generation,
+        manifest_sha256=stored.digest,
+        head=head,
+        destination_sha256=finish.destination.digest,
+        ledger_tail_sha256=tail,
+        updated_at=finish.clock(),
+    )
+
+
 def _finish(
     vault: _Vault,
     finish: _Finish,
     stored: StoredManifest,
     head: RefValue,
     previous: LibraryManifest | None,
+    started: LedgerEntry,
 ) -> ReplicationState:
-    """Record a generation the head now names: local copy, state, completed entry."""
+    """Record a generation the head now names: local copy, state, completed entry.
+
+    ``state.json`` is written twice: first naming the ``upload-started`` entry (so a crash
+    before the completion still leaves a state the next push can settle), then naming the
+    ``upload-completed`` entry once it is on disk. A crash between the two leaves a state
+    naming the started entry, which ``ReplicationLedger.require_recorded`` accepts because
+    that digest is the completed entry's ``previous_entry_sha256``.
+    """
     vault.records.write_manifest_copy(stored.manifest)
-    state = ReplicationState(
-        library_id=vault.library_id,
-        generation=stored.manifest.generation,
-        manifest_sha256=stored.digest,
-        head=head,
-        updated_at=finish.clock(),
-    )
-    vault.records.write_state(state)
-    _complete(vault, finish, stored, head, previous)
-    return state
+    vault.records.write_state(_state(vault, finish, stored, head, ledger_entry_digest(started)))
+    completed = _complete(vault, finish, stored, head, previous)
+    settled = _state(vault, finish, stored, head, ledger_entry_digest(completed))
+    vault.records.write_state(settled)
+    return settled
 
 
 def _adopt(
@@ -1010,16 +1056,18 @@ def _adopt(
     stored = read_stored_manifest(vault.blob_store, head.target, library_id=vault.library_id)
     manifest = stored.manifest
     entries = vault.ledger.require_recorded(state)
+    started = entries[-1] if entries else None
     if (
         manifest.generation != generation + 1
         or manifest.previous_manifest_sha256 != digest
-        or not _started_this(entries[-1] if entries else None, vault, manifest, finish)
+        or started is None
+        or not _started_this(started, vault, manifest, finish)
     ):
         raise _head_failure(
             "fork", f"{detail}, and the head names a generation this Mac did not start"
         )
     previous = None if digest is None else _kept_copy(vault.records, generation, digest)
-    adopted = _finish(vault, finish, stored, head, previous)
+    adopted = _finish(vault, finish, stored, head, previous, started)
     return _Resolved(adopted, stored, manifest.generation)
 
 
@@ -1029,21 +1077,40 @@ def _settle(
     stored: StoredManifest,
     head: RefValue,
     entries: tuple[LedgerEntry, ...],
-) -> None:
+    state: ReplicationState | None,
+) -> ReplicationState | None:
     """Complete the ledger when the state already names the generation its last entry started."""
     if not _started_this(entries[-1] if entries else None, vault, stored.manifest, finish):
-        return
+        return state
     manifest = stored.manifest
     previous = _kept_copy(vault.records, manifest.generation - 1, manifest.previous_manifest_sha256)
-    _complete(vault, finish, stored, head, previous)
+    completed = _complete(vault, finish, stored, head, previous)
+    settled = _state(vault, finish, stored, head, ledger_entry_digest(completed))
+    vault.records.write_state(settled)
+    return settled
 
 
-def _resolve_head(vault: _Vault, finish: _Finish | None) -> _Resolved:
+def _resolve_head(
+    vault: _Vault, finish: _Finish | None, destination: DestinationContext | None = None
+) -> _Resolved:
     """Prove that the vault's head is the one this Mac left (see ``push_generation``).
 
+    ``destination`` is checked whether or not this pass may write (``finish``), so a dry run
+    refuses exactly where the push it previews would.
     Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) naming the failed check.
     """
     state = vault.records.read_state(vault.library_id)
+    if (
+        state is not None
+        and destination is not None
+        and state.destination_sha256 != destination.digest
+    ):
+        raise _integrity(
+            f"{STATE_NAME} records copies of library {vault.library_id} to another destination "
+            f"than the binding names ({destination.backend} "
+            f"{destination.endpoint} namespace {destination.namespace}); rebind "
+            "with --reset-state to start this library's copy there from generation 1"
+        )
     generation, digest, expected = _pushed(state)
     head = vault.ref_store.read(vault.head_name)
     following = vault.records.read_manifest_copy(generation + 1)
@@ -1095,7 +1162,7 @@ def _resolve_head(vault: _Vault, finish: _Finish | None) -> _Resolved:
         )
     entries = vault.ledger.require_recorded(state)
     if finish is not None:
-        _settle(vault, finish, stored, head, entries)
+        state = _settle(vault, finish, stored, head, entries, state)
     return _Resolved(state, stored, None)
 
 
@@ -1163,10 +1230,13 @@ class PushResult:
     """The outcome of one ``push_generation``.
 
     ``outcome``: ``pushed`` (a new generation is the head), ``up-to-date`` (the files equal
-    the head's, so nothing was written) or ``source-changed`` (a file changed between the
+    the head's, so nothing was written), ``source-changed`` (a file changed between the
     pass and its upload; the push stopped after its ``upload-started`` entry, nothing is
     the head that was not before, and another push will do; ``source_change`` says what
-    moved, as a retryable ``changed`` problem). ``generation``, ``manifest_sha256`` and
+    moved, as a retryable ``changed`` problem) or ``dry-run`` (a pass ran and the generation
+    was planned, but nothing was read again, uploaded or written; ``uploaded_files``,
+    ``sent_blobs`` and ``sent_bytes`` are then what a push would send).
+    ``generation``, ``manifest_sha256`` and
     ``head`` describe the vault's head after the call (generation 0 and ``None`` when nothing
     was ever pushed). ``adopted_generation`` names an interrupted earlier push this call
     finished first. ``owners`` lists every owner
@@ -1344,14 +1414,20 @@ def _plan_files(
 
 
 def _new_contents(
-    plan: ManifestPlan, reusable: Mapping[_ContentKey, tuple[BlobRef, ...]]
+    plan: ManifestPlan,
+    reusable: Mapping[_ContentKey, tuple[BlobRef, ...]],
+    readable: Collection[str],
 ) -> list[PlannedManifestEntry]:
-    """One entry per file content the vault does not hold yet, in plan order."""
+    """One entry per file content the vault does not hold yet, in plan order.
+
+    Only an entry whose path this pass read can be uploaded; a content the pass did not read
+    is always in ``reusable``, because it comes from the previous manifest.
+    """
     seen: set[_ContentKey] = set(reusable)
     new: list[PlannedManifestEntry] = []
     for entry in plan.entries:
         key = _ContentKey(entry.sha256, entry.size)
-        if entry.kind == "file" and entry.size > 0 and key not in seen:
+        if entry.kind == "file" and entry.size > 0 and key not in seen and entry.path in readable:
             seen.add(key)
             new.append(entry)
     return new
@@ -1418,6 +1494,8 @@ def push_generation(
     classes: Collection[FileClass],
     chunk_bytes: int,
     clock: Clock = utc_now,
+    full: bool = False,
+    dry_run: bool = False,
     ledger: ReplicationLedger | None = None,
     sources: Sequence[ReplicationSource] | None = None,
 ) -> PushResult:
@@ -1444,13 +1522,20 @@ def push_generation(
     ``library_id``; ``destination``, as the ledger records it; ``classes``, the destination's
     classes; ``chunk_bytes``, the largest piece read or put (1 to ``MAX_CHUNK_BYTES``; the
     composition root passes the sealed store's ``MAX_SEALED_PLAINTEXT_BYTES``); ``clock``;
+    ``full``, which re-uploads every file this pass reads instead of reusing the previous
+    generation's chunks and writes a generation even when nothing changed (the fix when
+    ``verify_generation`` finds a blob the vault no longer holds); ``dry_run``, which runs
+    the head check and the pass, plans the generation and reports what it would send without
+    reading a file again, uploading anything or writing any record (an interrupted push is
+    then reported as a fork rather than finished, because finishing it would write);
     ``ledger`` (default: the layout's); ``sources`` (default: ``library_sources()``).
     Returns: the ``PushResult``.
     Raises: ``ValueError`` for no or an unknown class or a bad chunk size, and
     ``StorageNameError`` for a bad library id (before any I/O); ``PushRunningError``;
     ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) when the head check fails (message
     ``vault head check failed (<check>)``, with ``(fork)`` also when the head changed during
-    the push), or for an unsafe or broken ``provenance/vault`` record; every error
+    the push), when ``state.json`` records another destination than ``destination``, or for
+    an unsafe or broken ``provenance/vault`` record; every error
     ``collect_pass`` raises; every ``StorageError`` the stores raise (the push stops; a
     started entry without a completed one records it).
     """
@@ -1468,11 +1553,13 @@ def push_generation(
     finish = _Finish(destination, clock)
     sources = library_sources() if sources is None else sources
     with records.push_lock():
-        resolved = _resolve_head(vault, finish)
+        resolved = _resolve_head(vault, None if dry_run else finish, destination)
         sink = _PushSink(layout.root)
         try:
             passed = collect_pass(layout, sources, sink, classes=wanted, chunk_bytes=chunk_bytes)
-            return _push(vault, finish, resolved, passed, sink, sources, wanted, chunk_bytes)
+            return _push(
+                vault, finish, resolved, passed, sink, sources, wanted, chunk_bytes, full, dry_run
+            )
         finally:
             sink.close()
 
@@ -1486,6 +1573,8 @@ def _push(
     sources: Sequence[ReplicationSource],
     wanted: tuple[FileClass, ...],
     chunk_bytes: int,
+    full: bool,
+    dry_run: bool,
 ) -> PushResult:
     stored = resolved.stored
     previous = None if stored is None else stored.manifest
@@ -1498,11 +1587,29 @@ def _push(
         classes=wanted,
         entries=files.entries,
     )
-    reusable = {
+    held = {
         _ContentKey(entry.sha256, entry.size): entry.chunks
         for entry in (() if previous is None else previous.entries)
         if entry.kind == "file" and entry.size > 0
     }
+    readable = set(sink.items)
+    # ``--full`` re-uploads every file this pass read, whatever the previous generation holds
+    # (the fix when ``vault verify`` finds a blob the vault lost). A file the pass did not
+    # read cannot be re-uploaded and keeps its chunks either way.
+    reusable = (
+        held
+        if not full
+        else {
+            key: refs
+            for key, refs in held.items()
+            if key
+            not in {
+                _ContentKey(entry.sha256, entry.size)
+                for entry in plan.entries
+                if entry.path in readable
+            }
+        }
+    )
     reused = sum(
         entry.kind == "file" and _ContentKey(entry.sha256, entry.size) in reusable
         for entry in plan.entries
@@ -1522,13 +1629,22 @@ def _push(
         sent_bytes=0,
         adopted_generation=resolved.adopted,
     )
-    if previous is not None and (plan.classes, plan.entries) == (
-        previous.classes,
-        manifest_plan(previous).entries,
+    if (
+        not full
+        and previous is not None
+        and (plan.classes, plan.entries) == (previous.classes, manifest_plan(previous).entries)
     ):
         return unchanged
-    new = _new_contents(plan, reusable)
-    vault.ledger.append(
+    new = _new_contents(plan, reusable, readable)
+    if dry_run:
+        return replace(
+            unchanged,
+            outcome="dry-run",
+            uploaded_files=len(new),
+            sent_blobs=sum(-(-entry.size // chunk_bytes) for entry in new),
+            sent_bytes=sum(entry.size for entry in new),
+        )
+    started = vault.ledger.append(
         kind="upload-started",
         library_id=vault.library_id,
         generation=plan.generation,
@@ -1542,7 +1658,7 @@ def _push(
         recorded_at=finish.clock(),
     )
     progress = _Progress()
-    chunks = dict(reusable)
+    chunks = dict(held)
     try:
         for entry in new:
             item = replace(
@@ -1577,7 +1693,7 @@ def _push(
         raise _head_failure(
             "fork", f"the vault's head changed while generation {plan.generation} was pushed"
         ) from error
-    _finish(vault, finish, written, head, previous)
+    _finish(vault, finish, written, head, previous, started)
     blobs, size = _sent(written, previous)
     return replace(
         unchanged,

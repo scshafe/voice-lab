@@ -1,0 +1,139 @@
+{
+  "$defs": {
+    "Endpoint": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "FileClass": {
+      "enum": [
+        "records",
+        "prompt-database",
+        "recordings",
+        "derived-edits",
+        "training"
+      ],
+      "type": "string"
+    },
+    "FileClasses": {
+      "items": {
+        "$ref": "#/$defs/FileClass"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "LibraryId": {
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+      "type": "string"
+    },
+    "Namespace": {
+      "pattern": "^[a-z][a-z0-9-]{0,62}$",
+      "type": "string"
+    },
+    "NodeStableId": {
+      "pattern": "^[A-Za-z0-9]{1,64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "TailnetName": {
+      "maxLength": 253,
+      "minLength": 1,
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "cole_voice_lab__storage_contracts__NonBlank__1": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "cole_voice_lab__storage_contracts__NonBlank__2": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Cole's standing authorization to copy a library to one tailnet vault.\n\nIt is authored by ``voice-lab vault approve`` after the preview's digest is reviewed, kept\nwrite-once at 0400 under ``provenance/vault/approvals/``, and named by a binding with its\ndigest. It binds the destination to a node, not to a name: the endpoint must be a name in\n``tailnet_suffix``, the node answering must have ``node_stable_id`` and carry ``tag``, and\nthe copy may hold only ``classes`` (``training`` \u2014 fine-tune runs and datasets \u2014 only when\nit is listed, which is the opt-in). It is effective from ``approved_at`` until\n``expires_at``, which is at most ``MAX_APPROVAL_DAYS`` days later, so a standing approval\nis renewed rather than forgotten. A ``local-directory`` destination needs no approval, so\n``backend`` is always ``tailnet-vault``. It names no consent record: vault storage is not\na hosted transfer (D-020 says why) and carries no secret.",
+  "properties": {
+    "approval_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "approved": {
+      "const": true,
+      "title": "Approved",
+      "type": "boolean"
+    },
+    "approved_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "approved_by": {
+      "$ref": "#/$defs/cole_voice_lab__storage_contracts__NonBlank__1"
+    },
+    "backend": {
+      "const": "tailnet-vault",
+      "default": "tailnet-vault",
+      "title": "Backend",
+      "type": "string"
+    },
+    "classes": {
+      "$ref": "#/$defs/FileClasses"
+    },
+    "endpoint": {
+      "$ref": "#/$defs/Endpoint"
+    },
+    "expires_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "library_id": {
+      "$ref": "#/$defs/LibraryId"
+    },
+    "namespace": {
+      "$ref": "#/$defs/Namespace"
+    },
+    "node_stable_id": {
+      "$ref": "#/$defs/NodeStableId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.vault-destination-approval/v1",
+      "default": "cole-voice-lab.vault-destination-approval/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "statement": {
+      "$ref": "#/$defs/cole_voice_lab__storage_contracts__NonBlank__2"
+    },
+    "tag": {
+      "const": "tag:voice-lab-vault",
+      "default": "tag:voice-lab-vault",
+      "title": "Tag",
+      "type": "string"
+    },
+    "tailnet_suffix": {
+      "$ref": "#/$defs/TailnetName"
+    }
+  },
+  "required": [
+    "approval_id",
+    "approved",
+    "library_id",
+    "endpoint",
+    "tailnet_suffix",
+    "node_stable_id",
+    "namespace",
+    "classes",
+    "approved_at",
+    "expires_at",
+    "approved_by",
+    "statement"
+  ],
+  "title": "VaultDestinationApproval",
+  "type": "object"
+}

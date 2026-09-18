@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import secrets
 import unicodedata
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Final, Literal, NamedTuple, Self
 
 from pydantic import AfterValidator, Field, StringConstraints, field_validator, model_validator
@@ -82,6 +83,13 @@ TAILSCALE_TAG_PATTERN: Final = r"^tag:[A-Za-z][A-Za-z0-9-]{0,123}$"
 # 256 bits ``secrets.token_bytes(32)`` returned. The server keeps only sha256(token) hex.
 VAULT_TOKEN_PREFIX: Final = "cvlv_"
 VAULT_TOKEN_PATTERN: Final = rf"^{VAULT_TOKEN_PREFIX}[A-Za-z0-9_-]{{43}}$"
+# The one tag a vault node may carry, and the longest a standing destination approval may
+# stand (Cole's rule is twelve months; a leap year is 366 days).
+VAULT_NODE_TAG: Final = "tag:voice-lab-vault"
+MAX_APPROVAL_DAYS: Final = 366
+# ``lib-<yyyymmdd>-<12 hex>``: the shape ``voice-lab vault init`` gives a fresh library.
+LIBRARY_ID_PREFIX: Final = "lib-"
+NEW_LIBRARY_ID_HEX: Final = 12
 # One ``DOMAIN.FAILURE`` storage code as a logged or transmitted string. The codes themselves
 # are ``storage_ports.StorageErrorCode``, which imports this module, so a record spells the
 # shape and ``tests/test_storage_server.py`` pins the two to each other.
@@ -178,6 +186,7 @@ class KeychainItemNames(NamedTuple):
 
     key: str
     token: str
+    read_token: str
 
 
 def keychain_item_names(library_id: str) -> KeychainItemNames:
@@ -185,12 +194,41 @@ def keychain_item_names(library_id: str) -> KeychainItemNames:
 
     Params: ``library_id``.
     Returns: ``private.cole.voice-lab.vault.<library_id>.key`` (the library key, used for
-    every backend) and ``private.cole.voice-lab.vault.<library_id>.token`` (the vault access
-    token, used by ``tailnet-vault``).
+    every backend), ``….token`` (the vault's write token) and ``….read-token`` (its read
+    token); both tokens are used by ``tailnet-vault`` alone, and a binding names only the
+    write one, since the read token is for a restore onto another Mac.
     Raises: ``StorageNameError`` when ``library_id`` is not a valid library id.
     """
     prefix = f"{KEYCHAIN_ITEM_PREFIX}{validate_library_id(library_id)}"
-    return KeychainItemNames(key=f"{prefix}.key", token=f"{prefix}.token")
+    return KeychainItemNames(
+        key=f"{prefix}.key", token=f"{prefix}.token", read_token=f"{prefix}.read-token"
+    )
+
+
+def new_library_id(created_at: datetime) -> str:
+    """A fresh library id: ``lib-<yyyymmdd>-<12 random hex>``.
+
+    Params: ``created_at``, the time whose UTC date names the library.
+    Returns: the id, which is a valid library id and a ``models.StableId``.
+    Raises: ``ValueError`` when ``created_at`` carries no timezone.
+    """
+    day = _utc(created_at).strftime("%Y%m%d")
+    return validate_library_id(
+        f"{LIBRARY_ID_PREFIX}{day}-{secrets.token_bytes(NEW_LIBRARY_ID_HEX // 2).hex()}"
+    )
+
+
+def destination_digest(destination: LedgerDestination) -> str:
+    """The digest that names one destination: SHA-256 of its canonical JSON bytes.
+
+    ``ReplicationState.destination_sha256`` records it, so a push to another vault (or to
+    another namespace of the same vault) is refused rather than mistaken for this one's next
+    generation.
+    Params: ``destination``, as a ledger entry names it.
+    Returns: 64 lowercase hex characters.
+    Raises: nothing.
+    """
+    return canonical_sha256(destination)
 
 
 def manifest_path_key(path: str) -> str:
@@ -347,6 +385,12 @@ type RefName = Annotated[
 type LibraryId = Annotated[str, StringConstraints(pattern=LIBRARY_ID_PATTERN, max_length=64)]
 type Namespace = Annotated[str, StringConstraints(pattern=NAMESPACE_PATTERN)]
 type Endpoint = Annotated[str, StringConstraints(min_length=1, max_length=MAX_ENDPOINT_LENGTH)]
+type TailnetName = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=MAX_DNS_NAME_LENGTH),
+    AfterValidator(validate_tailnet_endpoint),
+]
+type NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 type NodeStableId = Annotated[str, StringConstraints(pattern=NODE_STABLE_ID_PATTERN)]
 type TailscaleTag = Annotated[str, StringConstraints(pattern=TAILSCALE_TAG_PATTERN)]
 type PinSource = Annotated[str, StringConstraints(pattern=PIN_SOURCE_PATTERN, max_length=256)]
@@ -565,12 +609,81 @@ class ManifestEnvelope(ContractModel):
         return self
 
 
+class LibraryIdentity(ContractModel):
+    """Which library this Mac holds (``provenance/vault/library.json``; never copied).
+
+    ``voice-lab vault init`` writes it once, either with a fresh ``lib-<yyyymmdd>-<12 hex>``
+    id or with the id of an existing vault library (restoring onto another Mac). Every later
+    vault command — approving a destination, binding one, creating the key or the tokens —
+    takes the library id from here, so no command can be given the wrong one by hand.
+    """
+
+    schema_version: Literal["cole-voice-lab.vault-library-identity/v1"] = (
+        "cole-voice-lab.vault-library-identity/v1"
+    )
+    library_id: LibraryId
+    created_at: UtcTimestamp
+
+
+class VaultDestinationApproval(ContractModel):
+    """Cole's standing authorization to copy a library to one tailnet vault.
+
+    It is authored by ``voice-lab vault approve`` after the preview's digest is reviewed, kept
+    write-once at 0400 under ``provenance/vault/approvals/``, and named by a binding with its
+    digest. It binds the destination to a node, not to a name: the endpoint must be a name in
+    ``tailnet_suffix``, the node answering must have ``node_stable_id`` and carry ``tag``, and
+    the copy may hold only ``classes`` (``training`` — fine-tune runs and datasets — only when
+    it is listed, which is the opt-in). It is effective from ``approved_at`` until
+    ``expires_at``, which is at most ``MAX_APPROVAL_DAYS`` days later, so a standing approval
+    is renewed rather than forgotten. A ``local-directory`` destination needs no approval, so
+    ``backend`` is always ``tailnet-vault``. It names no consent record: vault storage is not
+    a hosted transfer (D-020 says why) and carries no secret.
+    """
+
+    schema_version: Literal["cole-voice-lab.vault-destination-approval/v1"] = (
+        "cole-voice-lab.vault-destination-approval/v1"
+    )
+    approval_id: StableId
+    approved: Literal[True]
+    library_id: LibraryId
+    backend: Literal["tailnet-vault"] = "tailnet-vault"
+    endpoint: Endpoint
+    tailnet_suffix: TailnetName
+    node_stable_id: NodeStableId
+    tag: Literal["tag:voice-lab-vault"] = VAULT_NODE_TAG
+    namespace: Namespace
+    classes: FileClasses
+    approved_at: UtcTimestamp
+    expires_at: UtcTimestamp
+    approved_by: NonBlank = Field(max_length=256)
+    statement: NonBlank = Field(max_length=4_096)
+
+    @model_validator(mode="after")
+    def _the_approval_names_one_node_for_a_bounded_time(self) -> Self:
+        problem = _endpoint_problem(self.backend, self.endpoint)
+        if problem is not None:
+            raise ValueError(problem)
+        if not self.endpoint.endswith(f".{self.tailnet_suffix}"):
+            raise ValueError("the endpoint must be a name in the approved tailnet")
+        if self.expires_at <= self.approved_at:
+            raise ValueError("expires_at must follow approved_at")
+        if self.expires_at - self.approved_at > timedelta(days=MAX_APPROVAL_DAYS):
+            raise ValueError(f"an approval stands for at most {MAX_APPROVAL_DAYS} days")
+        return self
+
+    def effective_at(self, now: datetime) -> bool:
+        """Whether the approval stands at ``now`` (``approved_at <= now < expires_at``)."""
+        return self.approved_at <= _utc(now) < self.expires_at
+
+
 class StorageBinding(ContractModel):
     """Which vault a library copies to, and what it copies (``provenance/vault/binding.json``).
 
-    ``tailnet-vault`` names a lowercase DNS ``endpoint`` and requires ``approval_id`` and
-    ``token_item``; ``local-directory`` names an absolute, normalized directory and has
-    neither. ``classes`` (sorted, unique) are the file classes copied to that destination on
+    ``tailnet-vault`` names a lowercase DNS ``endpoint`` and requires ``approval_id``,
+    ``approval_sha256`` (the digest of the approval file the operator reviewed at bind time,
+    re-checked every time the vault is opened) and ``token_item``; ``local-directory`` names
+    an absolute, normalized directory and has none of the three.
+    ``classes`` (sorted, unique) are the file classes copied to that destination on
     every backend, so ``training`` goes only where the binding opts in; for ``tailnet-vault``
     the approval must also cover each of them, which is checked where the approval is loaded.
     ``key_item`` and ``token_item`` are always the names ``keychain_item_names`` derives from
@@ -586,6 +699,7 @@ class StorageBinding(ContractModel):
     library_id: LibraryId
     classes: FileClasses
     approval_id: StableId | None
+    approval_sha256: Sha256 | None
     key_item: str = Field(min_length=1, max_length=256)
     token_item: str | None = Field(min_length=1, max_length=256)
     created_at: UtcTimestamp
@@ -600,6 +714,10 @@ class StorageBinding(ContractModel):
             raise ValueError(
                 "approval_id is required for tailnet-vault and forbidden for local-directory"
             )
+        if (self.approval_sha256 is not None) != tailnet:
+            raise ValueError(
+                "approval_sha256 is required for tailnet-vault and forbidden for local-directory"
+            )
         names = keychain_item_names(self.library_id)
         if self.key_item != names.key:
             raise ValueError(f"key_item must be {names.key}")
@@ -613,8 +731,16 @@ class StorageBinding(ContractModel):
 class ReplicationState(ContractModel):
     """The Mac's record of the newest generation it pushed (``provenance/vault/state.json``).
 
-    Generation 0 means nothing was pushed yet, and only then are ``manifest_sha256`` and
-    ``head`` null; ``head`` is always this library's head ref.
+    Generation 0 means nothing was pushed yet, and only then are ``manifest_sha256``, ``head``
+    and ``ledger_tail_sha256`` null; ``head`` is always this library's head ref.
+    ``destination_sha256`` is the ``destination_digest`` of the ``LedgerDestination`` the
+    generation went to, so a push whose binding names another vault, namespace or node is
+    refused instead of continuing this library's chain somewhere else.
+    ``ledger_tail_sha256`` is the ``ledger_entry_digest`` of the ledger entry that records
+    this generation — its ``upload-completed`` entry, or (before that entry is written, and in
+    the window between writing it and recording it here) the ``upload-started`` entry it
+    pairs with. No later entry's chain digest covers the ledger's last entry, so this is what
+    makes an edit of it visible.
     """
 
     schema_version: Literal["cole-voice-lab.replication-state/v1"] = (
@@ -624,6 +750,8 @@ class ReplicationState(ContractModel):
     generation: StorageCounter
     manifest_sha256: Sha256 | None
     head: RefValue | None
+    destination_sha256: Sha256
+    ledger_tail_sha256: Sha256 | None
     updated_at: UtcTimestamp
 
     @model_validator(mode="after")
@@ -633,6 +761,8 @@ class ReplicationState(ContractModel):
             raise ValueError("manifest_sha256 is null exactly for generation 0")
         if (self.head is not None) != pushed:
             raise ValueError("head is null exactly for generation 0")
+        if (self.ledger_tail_sha256 is not None) != pushed:
+            raise ValueError("ledger_tail_sha256 is null exactly for generation 0")
         if self.head is not None and self.head.name != library_head_ref(self.library_id):
             raise ValueError("head must be this library's head ref")
         return self
@@ -883,6 +1013,8 @@ STORAGE_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "library-manifest-entry": ManifestEntry,
     "library-manifest": LibraryManifest,
     "library-manifest-envelope": ManifestEnvelope,
+    "vault-library-identity": LibraryIdentity,
+    "vault-destination-approval": VaultDestinationApproval,
     "storage-binding": StorageBinding,
     "replication-state": ReplicationState,
     "replication-ledger-entry": LedgerEntry,
