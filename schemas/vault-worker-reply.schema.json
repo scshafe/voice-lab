@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "VaultStorageErrorCode": {
+      "enum": [
+        "STORAGE.UNAVAILABLE",
+        "STORAGE.TIMEOUT",
+        "STORAGE.UNAUTHORIZED",
+        "STORAGE.NOT_FOUND",
+        "STORAGE.CONFLICT",
+        "STORAGE.TOO_LARGE",
+        "STORAGE.QUOTA",
+        "STORAGE.INTEGRITY",
+        "STORAGE.IDENTITY_MISMATCH",
+        "STORAGE.NOT_APPROVED",
+        "STORAGE.NOT_BOUND",
+        "STORAGE.PROTOCOL"
+      ],
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The one frame a pass writes on stdout, and the only thing the service reads from it.\n\n``outcome`` is ``pushed`` (a new generation is the vault's head), ``up-to-date`` (the\nvault already held every file this pass read) or ``failed``. ``generation`` is the head's\ngeneration afterwards (0 when nothing was ever pushed) and ``waiting_files`` counts files\nno generation holds yet. ``code`` is the storage refusal behind a failure (absent when\nthe failure was not the vault's), ``retryable`` whether trying again may succeed by\nitself, and ``message`` says what happened (always for a failure; for a success only when\nan owner held files back).",
+  "properties": {
+    "code": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VaultStorageErrorCode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "generation": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Generation",
+      "type": "integer"
+    },
+    "message": {
+      "anyOf": [
+        {
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Message"
+    },
+    "outcome": {
+      "enum": [
+        "pushed",
+        "up-to-date",
+        "failed"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "retryable": {
+      "default": false,
+      "title": "Retryable",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.vault-worker-reply/v1",
+      "default": "cole-voice-lab.vault-worker-reply/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "waiting_files": {
+      "default": 0,
+      "maximum": 1000000000,
+      "minimum": 0,
+      "title": "Waiting Files",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "outcome"
+  ],
+  "title": "VaultWorkerReply",
+  "type": "object"
+}

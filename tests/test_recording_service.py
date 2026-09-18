@@ -40,6 +40,8 @@ from cole_voice_lab.recording_contracts import (
     ServiceRequest,
     ShutdownCommand,
     SnapshotCommand,
+    VaultStatusCommand,
+    VaultStatusEvent,
     recording_frame_bytes,
 )
 from cole_voice_lab.recording_ownership import (
@@ -1504,3 +1506,97 @@ def test_retained_background_updates_reach_the_app_right_after_its_handshake(
     session.close()
     session.publish_event("closed", ended, retain=True)
     assert list(session.completed()) == []
+
+
+def test_only_a_vault_supervisor_failure_is_kept_for_the_app_across_its_handshake(
+    session: RecordingServiceSession,
+) -> None:
+    """S10.5's split: the status lane retains nothing, so it evicts no fine-tune outcome."""
+    from cole_voice_lab.library_replication_service import (
+        OFF_STATUS,
+        VAULT_STATUS_REQUEST_ID,
+        VAULT_SUPERVISOR_REQUEST_ID,
+        VaultStatus,
+        vault_status_event,
+    )
+    from cole_voice_lab.recording_contracts import RecordingError
+
+    copying = vault_status_event(
+        VaultStatus(state="copying", generation=3), operation_id=VAULT_STATUS_REQUEST_ID
+    )
+    stopped = RecordingError(
+        code="RECORDING.WRITE_FAILED",
+        message="the library vault supervisor stopped",
+        retryable=True,
+    )
+    session.publish_event(VAULT_STATUS_REQUEST_ID, copying)
+    session.publish_error(VAULT_SUPERVISOR_REQUEST_ID, stopped, retain=True)
+    assert list(session.completed()) == []
+
+    reply = session.submit(handshake())
+
+    assert reply is not None and reply.error is None
+    responses = list(session.completed())
+    # The status the app missed is recovered by its own vault-status request, not replayed.
+    assert [response.meta.request_id for response in responses] == [
+        "handshake",
+        VAULT_SUPERVISOR_REQUEST_ID,
+    ]
+    assert responses[-1].data is None and responses[-1].error == stopped
+    # After the handshake every status reaches the app at once, take-less.
+    session.publish_event(VAULT_STATUS_REQUEST_ID, copying)
+    published = list(session.completed())
+    assert [response.meta.request_id for response in published] == [VAULT_STATUS_REQUEST_ID]
+    assert published[0].data == copying and published[0].meta.take_id is None
+    assert vault_status_event(OFF_STATUS, operation_id=VAULT_STATUS_REQUEST_ID).state == "off"
+
+
+def test_both_backends_answer_vault_status_from_memory_without_an_open_context(
+    layout: AssetLayout,
+) -> None:
+    """The vault line reaches the app before a context, and never reads a file to do it."""
+    from test_recording_takes import DEVICE, store_suite
+
+    from cole_voice_lab.library_replication_service import OFF_STATUS, VaultStatus
+    from cole_voice_lab.recording_service import RecordingTakesBackend
+    from cole_voice_lab.recording_takes import RecordingTakeStore
+
+    reference, snapshot = activate_catalog(layout, store_suite(2))
+    store = RecordingTakeStore(layout)
+    group = store.open_group(snapshot.suite, SUBJECT, DEVICE, "synthetic-host")
+    workspace = workspace_backend(layout)
+    takes = RecordingTakesBackend(store, group.group_id)
+    ask = VaultStatusCommand(operation_id="op-vault-status")
+
+    class Supervisor:
+        """Only the one member the backends touch; nothing else is reachable from here."""
+
+        def __init__(self, status: VaultStatus) -> None:
+            self.status = status
+            self.commits = 0
+
+        def notify_commit(self) -> None:
+            self.commits += 1
+
+    try:
+        assert workspace.store.get_cursor(SUBJECT) is None  # no context is open
+        for backend in (workspace, takes):
+            # No supervisor at all is "Vault . off", not a refusal.
+            answer = backend.execute(request(ask), RecordingCancellation())
+            assert answer == VaultStatusEvent(operation_id=ask.operation_id, state="off")
+            supervisor = Supervisor(VaultStatus(state="waiting", waiting_files=7, generation=3))
+            backend.vault = supervisor
+            waiting = backend.execute(request(ask), RecordingCancellation())
+            assert isinstance(waiting, VaultStatusEvent)
+            assert (waiting.state, waiting.waiting_files, waiting.generation) == ("waiting", 7, 3)
+            # A read-only status never counts as a commit; a mutation does.
+            assert supervisor.commits == 0
+        assert OFF_STATUS.state == "off"
+        opened = execute(
+            workspace,
+            referenced_context(reference),
+        )
+        assert opened is not None
+        assert workspace.vault is not None and workspace.vault.commits == 1
+    finally:
+        workspace.index.close()

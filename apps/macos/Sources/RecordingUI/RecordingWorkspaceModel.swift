@@ -86,6 +86,12 @@ public final class RecordingWorkspaceModel: ObservableObject {
     var fineTuneStatusTask: Task<Void, Never>?
     /// Fixture-only fine-tune transport; a configured workspace reaches its service.
     var fineTuneRequests: RecordingFineTuneRequests?
+    /// Library-vault state (RecordingVault.swift); kept apart from `state` so no vault event
+    /// reaches the take, the selection, Save or navigation.
+    @Published public internal(set) var vault = RecordingVaultStatus()
+    var vaultStatusTask: Task<Void, Never>?
+    /// Fixture-only vault transport; a configured workspace reaches its service.
+    var vaultRequests: RecordingVaultRequests?
     /// Status-region ordering (RecordingStatusRegion.swift): recording status changes and
     /// fine-tune outcomes share one sequence; the clock times the recording status hold.
     var statusClock: @MainActor () -> ContinuousClock.Instant = { ContinuousClock.now }
@@ -352,6 +358,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
             async let native: Void = recorderHandshake()
             try await serviceHandshake()
             scheduleFineTuneStatus()
+            scheduleVaultStatus()
             try await native
             var updated = state; updated.serviceReady = true; publish(updated)
             _ = try result(await requests.recorderSnapshot())
@@ -376,6 +383,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
         let delivered: RecordingJSON?
         do { delivered = try await requireCatalog(requests) } catch { failCatalog(error); delivered = nil }
         scheduleFineTuneStatus()
+        scheduleVaultStatus()
         guard let reference = delivered else { return false }
         do {
             let revision = try await expectedSelectionRevision(requests)
@@ -503,6 +511,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
             let delivered: RecordingJSON?
             do { delivered = try await requireCatalog(requests) } catch { failCatalog(error); delivered = nil }
             scheduleFineTuneStatus()
+            scheduleVaultStatus()
             guard let reference = delivered else { return }
             let revision = try await expectedSelectionRevision(requests)
             let operation = newOperation("reconnect-context")
@@ -842,6 +851,8 @@ public final class RecordingWorkspaceModel: ObservableObject {
                 applyFineTuneSupervisorError(event.error)
                 // Speak requests run under the same supervisor.
                 if let message = event.error.object?["message"]?.string { speak.supervisorFailed(message) }
+            } else if event.error != .null, event.meta.request_id == Self.vaultSupervisorRequestID {
+                applyVaultSupervisorError(event.error)
             }
             return
         }
@@ -871,6 +882,7 @@ public final class RecordingWorkspaceModel: ObservableObject {
                 Task { [weak self] in await self?.refreshRecoveryInventory() }
             }
         case "fine-tune-progress", "fine-tune", "fine-tune-status": applyFineTuneEvent(event.data)
+        case "vault-status": applyVaultStatus(event.data)
         case "synthesis": speak.applySynthesisEvent(event.data)
         case "history": applyHistory(event.data)
         case "derivative": handleDerivative(event.data)
@@ -1048,6 +1060,8 @@ public final class RecordingWorkspaceModel: ObservableObject {
         scheduledRecoveryRefresh?.cancel(); scheduledRecoveryRefresh = nil
         statusHoldTask?.cancel(); statusHoldTask = nil
         fineTuneOutcomeHoldTask?.cancel(); fineTuneOutcomeHoldTask = nil
+        fineTuneStatusTask?.cancel(); fineTuneStatusTask = nil
+        vaultStatusTask?.cancel(); vaultStatusTask = nil
         reviewTask?.cancel(); reviewTask = nil
         speak.close()
         for consumer in consumers { consumer.cancel() }

@@ -365,12 +365,13 @@ Every piece of code that stores or reads the lab's data depends on storage and c
     - a missing Keychain item.
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_storage_binding.py tests/test_vault_cli.py && .venv/bin/python -I -B -m cole_voice_lab.schema --check`
 
-- [ ] **Step 10: Background copying in the service**
+- [x] **Step 10: Background copying in the service**
   - Add the supervisor.
   - Add the `vault-status` command and event, with their Swift contract twins.
   - Report supervisor failures the same way the fine-tune supervisor does.
   - A test against the real service measures Save latency and refusals while an upload is stalled.
-  - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_library_replication_service.py tests/test_recording_service.py tests/test_recording_contracts.py && scripts/verify-native-recording --suite contracts`
+  - ~~Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_library_replication_service.py tests/test_recording_service.py tests/test_recording_contracts.py && scripts/verify-native-recording --suite contracts`~~
+  - Verify *(amended 2026-09-17, Step 10: the native audit, the schema check and mypy belong in it)*: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_library_replication_service.py tests/test_recording_service.py tests/test_recording_contracts.py tests/test_recording_native_audit.py && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m cole_voice_lab.schema --check && PYTHONDONTWRITEBYTECODE=1 .venv/bin/mypy src/cole_voice_lab && scripts/verify-native-recording --suite contracts`
 
 - [ ] **Step 11: Fine-tune run archive**
   - Add `finetune archive` (with `--remove-local-copy`), `finetune restore-run` and `archived.json`.
@@ -519,3 +520,5 @@ The first draft was reviewed on 2026-09-17 by `rigorous-architect` (the storage 
 **Amended 2026-09-17 (Step 5):** the replication sources live in `library_replication.py`, one per owner, and declare which owners their files refer to; an owner whose referent changed during a pass is held back with it.
 
 **Amended 2026-09-17 (Step 9):** the `vault` group gained `init`, `key` and `token` commands and `push --dry-run|--full`; the binding names the approval's digest; the replication state names its destination and ledger tail.
+
+**Amended 2026-09-17 (Step 10):** the step's verify line now also runs the native audit, the schema check and mypy.

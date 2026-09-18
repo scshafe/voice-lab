@@ -97,6 +97,7 @@ from .recording_contracts import (
     SnapshotCommand,
     SynthesizeCommand,
     TakeEvent,
+    VaultStatusCommand,
     recording_frame_bytes,
 )
 from .recording_discovery import RecordingDiscoveryCoordinator
@@ -114,9 +115,10 @@ from .recording_takes import RecordingSelectionError, RecordingTakeStore
 from .storage_binding import catalog_store_build_resources, open_catalog_reader
 
 if TYPE_CHECKING:
+    from .library_replication_service import VaultStatus, VaultSupervisor
     from .recording_analysis import RecordingAnalysisQueue
     from .recording_edit_jobs import RecordingEditCoordinator
-    from .recording_finetune_jobs import FineTuneSupervisor
+    from .recording_finetune_jobs import FineTuneJobEvent, FineTuneSupervisor
 
 CONTROL_READ_BYTES = 16_384
 MAX_PENDING_REQUESTS = 16
@@ -381,6 +383,55 @@ def _fine_tune_event(
         raise RecordingServiceError(error.code, _bounded_message(str(error))) from error
 
 
+# Commands whose success leaves durable evidence the vault copies. The backends nudge the
+# vault supervisor after each one, which only sets a flag: the quiet period decides when a
+# pass actually runs, so a burst of saves costs nothing.
+type CommittingServiceCommand = (
+    OpenContextCommand
+    | ContinueLegacyRecordingCommand
+    | ReserveTakeCommand
+    | RegisterSealCommand
+    | SaveTakeCommand
+    | EditTakeCommand
+    | DecisionCommand
+    | ReviewTakeCommand
+    | RetakeCommand
+    | NavigateCommand
+    | RecoverCommand
+    | FineTuneCommand
+    | CancelFineTuneCommand
+)
+COMMITTING_COMMANDS: tuple[type[CommittingServiceCommand], ...] = (
+    OpenContextCommand,
+    ContinueLegacyRecordingCommand,
+    ReserveTakeCommand,
+    RegisterSealCommand,
+    SaveTakeCommand,
+    EditTakeCommand,
+    DecisionCommand,
+    ReviewTakeCommand,
+    RetakeCommand,
+    NavigateCommand,
+    RecoverCommand,
+    FineTuneCommand,
+    CancelFineTuneCommand,
+)
+
+
+def _vault_status_event(
+    vault: VaultSupervisor | None, command: VaultStatusCommand
+) -> ReliableEvent:
+    """Answer ``vault-status`` from the supervisor's memory alone.
+
+    It shares the metadata queue with Save, so it reads no file, takes no lock and reaches no
+    vault: a service that copies nowhere answers ``off`` just as quickly as one that copies.
+    """
+    from .library_replication_service import OFF_STATUS, vault_status_event
+
+    status: VaultStatus = OFF_STATUS if vault is None else vault.status
+    return vault_status_event(status, operation_id=command.operation_id)
+
+
 class UnpreparedRecordingBackend:
     """Honest bridge baseline before durable take/index capabilities are attached."""
 
@@ -438,6 +489,7 @@ class RecordingTakesBackend:
         self.analysis_queue = analysis_queue
         self.recovery_index = recovery_index
         self.finetune_jobs: FineTuneSupervisor | None = None
+        self.vault: VaultSupervisor | None = None
 
     @property
     def state_revision(self) -> int:
@@ -455,11 +507,22 @@ class RecordingTakesBackend:
     def execute(
         self, request: ServiceRequest, cancellation: RecordingCancellation
     ) -> ReliableEvent:
+        """Answer one command, then nudge the vault supervisor when it committed evidence."""
+        event = self._execute(request, cancellation)
+        if self.vault is not None and isinstance(request.data, COMMITTING_COMMANDS):
+            self.vault.notify_commit()
+        return event
+
+    def _execute(
+        self, request: ServiceRequest, cancellation: RecordingCancellation
+    ) -> ReliableEvent:
         cancellation.check()
         command = request.data
         try:
             if isinstance(command, FINETUNE_SERVICE_COMMANDS):
                 return _fine_tune_event(self.finetune_jobs, command, cancellation)
+            if isinstance(command, VaultStatusCommand):
+                return _vault_status_event(self.vault, command)
             if isinstance(command, ReserveTakeCommand):
                 reservation = self.store.reserve(
                     operation_id=command.operation_id,
@@ -590,6 +653,7 @@ class RecordingWorkspaceBackend:
         self._pinned_catalog: PinnedCatalog | None = None
         self.analysis_queue = analysis_queue
         self.finetune_jobs: FineTuneSupervisor | None = None
+        self.vault: VaultSupervisor | None = None
         self.index = index or RecordingIndex(layout, subject_id=subject_id)
         self.index.begin_recovery_scan(scan_generation="recovery-" + uuid4().hex)
         self.store = store or RecordingTakeStore(
@@ -744,6 +808,15 @@ class RecordingWorkspaceBackend:
     def execute(
         self, request: ServiceRequest, cancellation: RecordingCancellation
     ) -> ReliableEvent:
+        """Answer one command, then nudge the vault supervisor when it committed evidence."""
+        event = self._execute(request, cancellation)
+        if self.vault is not None and isinstance(request.data, COMMITTING_COMMANDS):
+            self.vault.notify_commit()
+        return event
+
+    def _execute(
+        self, request: ServiceRequest, cancellation: RecordingCancellation
+    ) -> ReliableEvent:
         cancellation.check()
         command = request.data
         try:
@@ -763,6 +836,9 @@ class RecordingWorkspaceBackend:
                     cancellation,
                     pinned=lambda: self.pinned_catalog().reference,
                 )
+            if isinstance(command, VaultStatusCommand):
+                # The vault's state is memory, not the open context: it answers before one.
+                return _vault_status_event(self.vault, command)
             if isinstance(command, CatalogCommand):
                 # A catalog this root refuses is never shown, exactly as open-context refuses it.
                 pinned = self._served_catalog()
@@ -1640,6 +1716,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     # settings name it. Absent: fine-tuning is unavailable.
     parser.add_argument("--finetune-runtime-root", type=_finetune_runtime_root)
     options = parser.parse_args(argv)
+    from .library_replication_service import (
+        VAULT_STATUS_REQUEST_ID,
+        VAULT_SUPERVISOR_REQUEST_ID,
+        VaultSupervisor,
+        vault_status_event,
+    )
     from .recording_analysis import RecordingAnalysisQueue, RecordingAnalysisSupervisor
     from .recording_edit_jobs import RecordingEditCoordinator
     from .recording_finetune_jobs import FineTuneJobQueue, FineTuneSupervisor
@@ -1651,8 +1733,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     analysis_supervisor = None
     recovery_supervisor = None
     edit_coordinator = None
+    vault_supervisor: VaultSupervisor | None = None
     index = None
     workspace = None
+
+    def notify_vault() -> None:
+        """Tell the vault supervisor a background owner committed; it only sets a flag."""
+        if vault_supervisor is not None:
+            vault_supervisor.notify_commit()
+
     try:
         layout = AssetLayout.validate(options.asset_root)
         build = recording_service_build_identity()
@@ -1723,21 +1812,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             backend=backend,
         )
         if workspace is not None:
-            edit_coordinator = RecordingEditCoordinator(
-                workspace.store,
-                published=lambda event: session.publish_event(
+
+            def publish_derivative(event: DerivativeEvent | ReviewActionEvent) -> None:
+                # derived/recording-edits is written: the vault copies it on the next pass.
+                notify_vault()
+                session.publish_event(
                     "derivative-" + event.recipe_sha256
                     if isinstance(event, DerivativeEvent)
                     else event.operation_id,
                     event,
-                ),
+                )
+
+            edit_coordinator = RecordingEditCoordinator(
+                workspace.store,
+                published=publish_derivative,
                 failed=lambda error: session.publish_error("edit-supervisor", error),
             )
             workspace.edit_coordinator = edit_coordinator
         if analysis_queue is not None:
+
+            def publish_analysis(operation_id: str, result: RecordingAnalysisResult) -> None:
+                # An analysis job's files are published: the vault copies them next pass.
+                notify_vault()
+                session.publish_analysis(operation_id, result)
+
             analysis_supervisor = RecordingAnalysisSupervisor(
                 analysis_queue,
-                on_result=session.publish_analysis,
+                on_result=publish_analysis,
                 on_failure=lambda error: session.publish_error("analysis-supervisor", error),
                 block_fd=options.analysis_test_block_fd,
             )
@@ -1767,20 +1868,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             recovery_supervisor.start()
         if finetune_queue is not None:
             assert isinstance(backend, (RecordingWorkspaceBackend, RecordingTakesBackend))
+
             # A job's outcome and a supervision failure reach the app even when they happen
             # before its handshake (a job the previous service left running is recovered then).
+            def publish_outcome(request_id: str, event: FineTuneJobEvent) -> None:
+                # A job ended: its run record is final, so the vault may copy the run.
+                notify_vault()
+                session.publish_event(request_id, event, retain=True)
+
             finetune_supervisor = FineTuneSupervisor(
                 finetune_queue,
                 on_event=session.publish_event,
-                on_outcome=lambda request_id, event: session.publish_event(
-                    request_id, event, retain=True
-                ),
+                on_outcome=publish_outcome,
                 on_failure=lambda error: session.publish_error(
                     "finetune-supervisor", error, retain=True
                 ),
             )
             backend.finetune_jobs = finetune_supervisor
             finetune_supervisor.start()
+        if isinstance(backend, (RecordingWorkspaceBackend, RecordingTakesBackend)):
+            # The vault copies in a worker process of its own; this one never reads audio.
+            # A library bound to no vault starts no thread and publishes nothing at all.
+            vault_supervisor = VaultSupervisor(
+                layout,
+                on_status=lambda status: session.publish_event(
+                    VAULT_STATUS_REQUEST_ID,
+                    vault_status_event(status, operation_id=VAULT_STATUS_REQUEST_ID),
+                ),
+                on_failure=lambda error: session.publish_error(
+                    VAULT_SUPERVISOR_REQUEST_ID, error, retain=True
+                ),
+            )
+            backend.vault = vault_supervisor
+            vault_supervisor.start()
         serve_recording_pipes(session, sys.stdin.fileno(), sys.stdout.fileno())
         return 0
     except (VoiceLabError, ValidationError, OSError, ValueError) as error:
@@ -1805,6 +1925,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
     finally:
+        if vault_supervisor is not None:
+            # It never raises, so every close below it still runs.
+            vault_supervisor.close()
         if finetune_supervisor is not None:
             finetune_supervisor.close()
         if finetune_queue is not None:

@@ -42,6 +42,7 @@ def _startup_role(argv: list[str], original_argv: list[str]) -> tuple[str, str |
     if (
         module
         in {
+            "cole_voice_lab.library_replication_service",
             "cole_voice_lab.recording_analysis",
             "cole_voice_lab.recording_edit_jobs",
             "cole_voice_lab.recording_finetune_jobs",

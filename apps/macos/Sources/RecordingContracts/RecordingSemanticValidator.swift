@@ -362,6 +362,14 @@ enum RecordingSemanticValidator {
                 try require(field("data.selection.take_id") == field("data.take_id"), "Edit and decision must identify the displayed take")
             }
             if title == "RecorderRequest" && command == "start" { try require(field("meta.process_generation") == field("data.reservation.process_generation"), "Start generation mismatch") }
+        case "VaultStatusEvent":
+            // Mirrors Python VaultStatusEvent; absent and null read alike.
+            let vaultState = string("state")
+            try require(present("unreachable_since") == (vaultState == "unreachable"), "Only an unreachable vault is unreachable since a time")
+            try require(present("code") == ["unreachable", "failed"].contains(vaultState), "An unreachable or failed vault names its storage code, others none")
+            try require(!present("code") || present("message"), "A vault refusal says what is wrong")
+            try require(!present("message") || !["off", "up-to-date", "copying"].contains(vaultState), "A vault that is off, up to date or copying carries no message")
+            try require(vaultState != "off" || (number("waiting_files") == 0 && number("generation") == 0 && !present("last_pushed_at")), "A vault that is off has copied nothing")
         case "RecorderStateEvent":
             if ["starting", "recording", "stopping", "draft"].contains(string("transport")) { try require(present("take_id"), "Active state requires its take identity") }
             try require(present("take_id") || number("written_frames") == 0, "Frames require a take identity")

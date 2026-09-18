@@ -1430,7 +1430,8 @@
           "save": "#/$defs/SaveTakeCommand",
           "shutdown": "#/$defs/ShutdownCommand",
           "snapshot": "#/$defs/SnapshotCommand",
-          "synthesize": "#/$defs/SynthesizeCommand"
+          "synthesize": "#/$defs/SynthesizeCommand",
+          "vault-status": "#/$defs/VaultStatusCommand"
         },
         "propertyName": "command"
       },
@@ -1500,6 +1501,9 @@
         },
         {
           "$ref": "#/$defs/CancelSynthesisCommand"
+        },
+        {
+          "$ref": "#/$defs/VaultStatusCommand"
         },
         {
           "$ref": "#/$defs/SnapshotCommand"
@@ -1612,6 +1616,26 @@
     "UtcTimestamp": {
       "format": "date-time",
       "type": "string"
+    },
+    "VaultStatusCommand": {
+      "additionalProperties": false,
+      "description": "Ask where the library vault stands: off, copying, waiting, unreachable or failed.",
+      "properties": {
+        "command": {
+          "const": "vault-status",
+          "default": "vault-status",
+          "title": "Command",
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "title": "VaultStatusCommand",
+      "type": "object"
     }
   },
   "additionalProperties": false,

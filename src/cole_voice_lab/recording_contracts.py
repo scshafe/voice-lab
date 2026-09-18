@@ -1279,6 +1279,37 @@ class CancelSynthesisCommand(ContractModel):
     cancelled_operation_id: StableId
 
 
+# The library vault: encrypted copies of this library on another machine. The service's vault
+# supervisor copies in a worker process and answers this command from memory alone.
+type VaultState = Literal["off", "up-to-date", "waiting", "copying", "unreachable", "failed"]
+# The storage codes a vault refusal carries. This is the wire's own closed copy of
+# ``storage_ports.StorageErrorCode``: the vault's failures travel in this field, never in
+# ``ErrorCode``, so a new storage code never regenerates every schema that nests
+# ``RecordingError``. ``tests/test_recording_contracts.py`` holds the two lists equal.
+type VaultStorageErrorCode = Literal[
+    "STORAGE.UNAVAILABLE",
+    "STORAGE.TIMEOUT",
+    "STORAGE.UNAUTHORIZED",
+    "STORAGE.NOT_FOUND",
+    "STORAGE.CONFLICT",
+    "STORAGE.TOO_LARGE",
+    "STORAGE.QUOTA",
+    "STORAGE.INTEGRITY",
+    "STORAGE.IDENTITY_MISMATCH",
+    "STORAGE.NOT_APPROVED",
+    "STORAGE.NOT_BOUND",
+    "STORAGE.PROTOCOL",
+]
+MAX_VAULT_WAITING_FILES: Final = 1_000_000_000
+
+
+class VaultStatusCommand(ContractModel):
+    """Ask where the library vault stands: off, copying, waiting, unreachable or failed."""
+
+    command: Literal["vault-status"] = "vault-status"
+    operation_id: StableId
+
+
 type RecorderCommand = Annotated[
     HandshakeCommand
     | PrepareRecorderCommand
@@ -1311,6 +1342,7 @@ type ServiceCommand = Annotated[
     | FineTuneStatusCommand
     | SynthesizeCommand
     | CancelSynthesisCommand
+    | VaultStatusCommand
     | SnapshotCommand
     | ShutdownCommand,
     Field(discriminator="command"),
@@ -2019,6 +2051,49 @@ class SynthesisEvent(ContractModel):
         return self
 
 
+class VaultStatusEvent(ContractModel):
+    """Reply to ``vault-status``, and the background update when the vault's state changes.
+
+    ``state`` is what the app shows: ``off`` (this library is bound to no vault),
+    ``up-to-date`` (the vault holds this library's files), ``waiting`` (files are waiting to
+    be copied, or an owner held its files back), ``copying`` (a pass is running),
+    ``unreachable`` (the vault has answered with a retryable failure since
+    ``unreachable_since``) or ``failed`` (a refusal that stops copying until the app is
+    relaunched; the binding is read once, when the service starts, so rebinding takes effect
+    only at the next launch, which is what ``voice-lab vault bind`` tells the user).
+    ``waiting_files`` counts files no generation holds yet. ``generation`` is the newest
+    generation this service pushed (0 when it has pushed none) and ``last_pushed_at`` when it
+    did. ``code`` is the storage refusal behind an unreachable or failed vault, and
+    ``message`` says what is wrong in the app's words.
+    """
+
+    event: Literal["vault-status"] = "vault-status"
+    operation_id: StableId
+    state: VaultState
+    waiting_files: int = Field(default=0, ge=0, le=MAX_VAULT_WAITING_FILES)
+    unreachable_since: UtcTimestamp | None = None
+    last_pushed_at: UtcTimestamp | None = None
+    generation: int = Field(default=0, ge=0, le=MAX_RECORDING_REVISION)
+    code: VaultStorageErrorCode | None = None
+    message: str | None = Field(default=None, min_length=1, max_length=1024)
+
+    @model_validator(mode="after")
+    def _state_evidence(self) -> VaultStatusEvent:
+        if (self.unreachable_since is not None) != (self.state == "unreachable"):
+            raise ValueError("only an unreachable vault is unreachable since a time")
+        if (self.code is not None) != (self.state in {"unreachable", "failed"}):
+            raise ValueError("an unreachable or failed vault names its storage code, others none")
+        if self.code is not None and self.message is None:
+            raise ValueError("a vault refusal says what is wrong")
+        if self.message is not None and self.state in {"off", "up-to-date", "copying"}:
+            raise ValueError("a vault that is off, up to date or copying carries no message")
+        if self.state == "off" and (
+            self.waiting_files or self.generation or self.last_pushed_at is not None
+        ):
+            raise ValueError("a vault that is off has copied nothing")
+        return self
+
+
 class RecordingRecoveryStatus(ContractModel):
     take_id: StableId
     status: Literal[
@@ -2221,6 +2296,7 @@ type ReliableEvent = Annotated[
     | FineTuneEvent
     | FineTuneStatusEvent
     | SynthesisEvent
+    | VaultStatusEvent
     | RecoveryEvent
     | RecoveryInventoryEvent
     | RecoveryInventoryChangedEvent

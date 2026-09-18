@@ -50,6 +50,7 @@ from cole_voice_lab.recording_contracts import (
     CatalogSnapshot,
     ContextEvent,
     ContinueLegacyRecordingCommand,
+    ErrorCode,
     FineTuneEvent,
     FineTuneProgressEvent,
     FineTuneRunSummary,
@@ -89,6 +90,8 @@ from cole_voice_lab.recording_contracts import (
     ServiceRequest,
     SynthesisEvent,
     SynthesizeCommand,
+    VaultStatusEvent,
+    VaultStorageErrorCode,
     WaveformBucket,
     WaveformSnapshot,
     catalog_snapshot_path,
@@ -747,6 +750,7 @@ def synthetic_commands() -> list[tuple[str, type[RecorderRequest | ServiceReques
             None,
         ),
         ("fine-tune-status", {"operation_id": "op-fine-tune-status"}, None),
+        ("vault-status", {"operation_id": "op-vault-status"}, None),
     ]
     result = []
     for number, (name, body, take_id) in enumerate(command_cases):
@@ -1255,6 +1259,7 @@ def generate_recording_conformance_fixtures(directory: Path) -> None:
         + prompt_equality_cases()
         + finetune_cases()
         + speech_cases()
+        + vault_cases()
     ):
         filename = f"{'valid' if valid else 'invalid'}-{case}.json"
         _write_fixture(directory / filename, payload)
@@ -2865,6 +2870,218 @@ def test_speech_rules_name_what_is_wrong() -> None:
         )
     command = SynthesizeCommand(operation_id="op", text="Hi.", model="base")
     assert (command.nfe_steps, command.reference_prompt_id) == (32, None)
+
+
+VAULT_OPERATION = "op-vault-status"
+VAULT_STORAGE_CODES: tuple[str, ...] = get_args(VaultStorageErrorCode.__value__)
+
+
+def vault_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
+    """Library-vault status: take-less, each state carrying exactly its own evidence."""
+    values = synthetic_contracts()
+    response_meta = values["recording-response"].meta.model_copy(update={"take_id": None})
+    request_meta = values["recording-service-request"].meta.model_dump(mode="json")
+    since = datetime(2026, 9, 17, 14, 2, tzinfo=UTC)
+    pushed_at = datetime(2026, 9, 17, 13, 55, tzinfo=UTC)
+
+    def response(event: VaultStatusEvent) -> dict[str, Any]:
+        return RecordingResponse(data=event, error=None, meta=response_meta).model_dump(mode="json")
+
+    def request(**data: Any) -> dict[str, Any]:
+        return {"data": data, "error": None, "meta": request_meta | {"take_id": None}}
+
+    def status(**changes: Any) -> VaultStatusEvent:
+        fields: dict[str, Any] = {"operation_id": VAULT_OPERATION, "state": "up-to-date"}
+        return VaultStatusEvent(**(fields | changes))
+
+    ask = request(command="vault-status", operation_id=VAULT_OPERATION)
+    up_to_date = response(status(generation=7, last_pushed_at=pushed_at))
+    copying = response(status(state="copying", generation=7, last_pushed_at=pushed_at))
+    waiting = response(status(state="waiting", waiting_files=12, generation=7))
+    unreachable = response(
+        status(
+            state="unreachable",
+            code="STORAGE.UNAVAILABLE",
+            message="the vault did not answer",
+            unreachable_since=since,
+            generation=7,
+        )
+    )
+    failed = response(
+        status(
+            state="failed",
+            code="STORAGE.NOT_APPROVED",
+            message="the destination approval expired on 2026-09-16",
+        )
+    )
+    valid: list[tuple[str, str, dict[str, Any]]] = [
+        ("status-request", "recording-service-request", ask),
+        ("off", "recording-response", response(status(state="off"))),
+        ("up-to-date", "recording-response", up_to_date),
+        ("copying", "recording-response", copying),
+        ("waiting", "recording-response", waiting),
+        (
+            "waiting-for-an-owner",
+            "recording-response",
+            response(status(state="waiting", message="waiting for fine-tune-runs")),
+        ),
+        ("waiting-never-pushed", "recording-response", response(status(state="waiting"))),
+        ("unreachable", "recording-response", unreachable),
+        ("failed", "recording-response", failed),
+    ]
+
+    absent = object()
+
+    def changed(payload: dict[str, Any], path: tuple[Any, ...], value: Any) -> dict[str, Any]:
+        result = copy.deepcopy(payload)
+        target = result
+        for key in path[:-1]:
+            target = target[key]
+        if value is absent:
+            del target[path[-1]]
+        else:
+            target[path[-1]] = value
+        return result
+
+    def event(field: str, value: Any, payload: dict[str, Any] = up_to_date) -> dict[str, Any]:
+        return changed(payload, ("data", field), value)
+
+    off = response(status(state="off"))
+    invalid: list[tuple[str, str, dict[str, Any]]] = [
+        ("state-absent", "recording-response", event("state", absent)),
+        ("unknown-state", "recording-response", event("state", "paused")),
+        ("off-with-a-generation", "recording-response", changed(off, ("data", "generation"), 1)),
+        (
+            "off-with-waiting-files",
+            "recording-response",
+            changed(off, ("data", "waiting_files"), 3),
+        ),
+        (
+            "off-with-a-push-time",
+            "recording-response",
+            changed(off, ("data", "last_pushed_at"), "2026-09-17T13:55:00Z"),
+        ),
+        (
+            "unreachable-without-a-time",
+            "recording-response",
+            changed(unreachable, ("data", "unreachable_since"), None),
+        ),
+        (
+            "unreachable-since-while-up-to-date",
+            "recording-response",
+            event("unreachable_since", "2026-09-17T14:02:00Z"),
+        ),
+        (
+            "unreachable-since-without-a-zone",
+            "recording-response",
+            changed(unreachable, ("data", "unreachable_since"), "2026-09-17T14:02:00"),
+        ),
+        ("failed-without-a-code", "recording-response", changed(failed, ("data", "code"), None)),
+        (
+            "failed-without-a-message",
+            "recording-response",
+            changed(failed, ("data", "message"), None),
+        ),
+        (
+            "waiting-with-a-code",
+            "recording-response",
+            changed(
+                changed(waiting, ("data", "code"), "STORAGE.INTEGRITY"),
+                ("data", "message"),
+                "a blob does not match its digest",
+            ),
+        ),
+        ("code-while-up-to-date", "recording-response", event("code", "STORAGE.TIMEOUT")),
+        ("unknown-code", "recording-response", changed(failed, ("data", "code"), "STORAGE.NOPE")),
+        ("message-while-up-to-date", "recording-response", event("message", "all copied")),
+        ("message-while-copying", "recording-response", event("message", "copying", copying)),
+        ("empty-message", "recording-response", changed(failed, ("data", "message"), "")),
+        (
+            "message-too-long",
+            "recording-response",
+            changed(failed, ("data", "message"), "x" * 1_025),
+        ),
+        ("waiting-files-negative", "recording-response", event("waiting_files", -1, waiting)),
+        ("waiting-files-float", "recording-response", event("waiting_files", 12.5, waiting)),
+        (
+            "waiting-files-over",
+            "recording-response",
+            event("waiting_files", 1_000_000_001, waiting),
+        ),
+        ("generation-negative", "recording-response", event("generation", -1)),
+        ("take-bound", "recording-response", changed(up_to_date, ("meta", "take_id"), "take-a")),
+        ("operation-id-unstable", "recording-response", event("operation_id", "Vault")),
+        (
+            "request-operation-id-unstable",
+            "recording-service-request",
+            changed(ask, ("data", "operation_id"), "Vault"),
+        ),
+        (
+            "request-operation-id-absent",
+            "recording-service-request",
+            changed(ask, ("data", "operation_id"), absent),
+        ),
+        # The STORAGE codes travel in the event's own field; they are not wire ErrorCodes.
+        (
+            "storage-code-is-not-a-wire-error",
+            "recording-response",
+            RecordingResponse(
+                data=None,
+                error=RecordingError(
+                    code="RECORDING.WRITE_FAILED", message="Synthetic", retryable=True
+                ),
+                meta=response_meta,
+            ).model_dump(mode="json")
+            | {
+                "error": {
+                    "code": "STORAGE.UNAVAILABLE",
+                    "message": "Synthetic",
+                    "retryable": True,
+                    "details": [],
+                }
+            },
+        ),
+    ]
+    return [(f"vault-{name}", model, True, "shared", payload) for name, model, payload in valid] + [
+        (f"vault-{name}", model, False, "shared", payload) for name, model, payload in invalid
+    ]
+
+
+@pytest.mark.parametrize("case", vault_cases(), ids=lambda case: case[0])
+def test_vault_status_messages_bind_their_state_evidence(case: Any) -> None:
+    _, name, valid, _, payload = case
+    encoded = json.dumps(payload)
+    if valid:
+        message = RECORDING_SCHEMA_MODELS[name].model_validate_json(encoded)
+        assert message.meta.take_id is None
+    else:
+        with pytest.raises(ValidationError):
+            RECORDING_SCHEMA_MODELS[name].model_validate_json(encoded)
+
+
+def test_vault_rules_name_what_is_wrong() -> None:
+    for changes, message in (
+        ({"state": "up-to-date", "unreachable_since": datetime.now(UTC)}, "unreachable since"),
+        ({"state": "unreachable"}, "unreachable since"),
+        ({"state": "failed", "message": "gone"}, "names its storage code"),
+        ({"state": "up-to-date", "code": "STORAGE.TIMEOUT"}, "names its storage code"),
+        ({"state": "up-to-date", "message": "all done"}, "carries no message"),
+        ({"state": "off", "generation": 2}, "has copied nothing"),
+    ):
+        fields: dict[str, Any] = {"operation_id": VAULT_OPERATION}
+        with pytest.raises(ValidationError, match=message):
+            VaultStatusEvent(**(fields | changes))
+    with pytest.raises(ValidationError, match="says what is wrong"):
+        VaultStatusEvent(operation_id=VAULT_OPERATION, state="failed", code="STORAGE.NOT_BOUND")
+
+
+def test_the_wire_vault_codes_are_exactly_the_storage_codes() -> None:
+    from cole_voice_lab.storage_ports import StorageErrorCode
+
+    assert VAULT_STORAGE_CODES == get_args(StorageErrorCode.__value__)
+    # The vault's refusals travel in the event's own field; ErrorCode gains no STORAGE member,
+    # so a new storage code never regenerates every schema that nests RecordingError.
+    assert not [code for code in get_args(ErrorCode.__value__) if code.startswith("STORAGE.")]
 
 
 @pytest.mark.parametrize("case", finetune_cases(), ids=lambda case: case[0])

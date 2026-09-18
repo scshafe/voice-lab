@@ -102,6 +102,7 @@ def test_actual_near_match_identity_preflight_fails_closed(audit_root: Path) -> 
 @pytest.mark.parametrize(
     ("module", "arguments"),
     [
+        ("cole_voice_lab.library_replication_service", ["--worker"]),
         ("cole_voice_lab.recording_analysis", ["--worker"]),
         ("cole_voice_lab.recording_edit_jobs", ["--worker"]),
         ("cole_voice_lab.recording_finetune_jobs", ["--worker"]),

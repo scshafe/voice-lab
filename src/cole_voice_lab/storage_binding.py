@@ -110,6 +110,7 @@ __all__ = [
     "keychain_client",
     "library_identity_path",
     "library_key_fingerprint",
+    "library_vault_binding",
     "open_catalog_editor",
     "open_catalog_reader",
     "open_library_vault",
@@ -1039,6 +1040,28 @@ class LibraryVault:
         return self.stores.request_log
 
 
+def library_vault_binding(layout: AssetLayout) -> StorageBinding | None:
+    """Where this library copies to, or ``None`` when it is bound to no vault ("Vault · off").
+
+    These are ``open_library_vault``'s first two checks on their own, and they build no
+    adapter, read no Keychain item and reach no vault: the recording service's supervisor
+    asks this much to learn whether to copy at all, and its worker process opens the vault.
+    Params: ``layout``, the validated asset root.
+    Returns: the binding, or ``None`` when there is none and nothing was ever copied.
+    Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) when a replication state records copies
+    of this library without a binding, or the binding is unreadable, invalid or of an unknown
+    backend; ``StorageIntegrityError`` for an unsafe ``provenance/vault`` directory.
+    """
+    binding = read_storage_binding(layout)
+    if binding is None and _state_present(layout):
+        raise _not_bound(
+            f"{layout.root}/provenance/vault/state.json records copies of this library, but "
+            f"{binding_path(layout)} is gone; bind the vault again with `voice-lab vault "
+            "bind` before the library is copied anywhere"
+        )
+    return binding
+
+
 def open_library_vault(layout: AssetLayout) -> LibraryVault | None:
     """Open the library's vault, or report that the library is not bound to one.
 
@@ -1057,14 +1080,8 @@ def open_library_vault(layout: AssetLayout) -> LibraryVault | None:
     from .library_generations import DestinationContext
     from .storage_http_client import ExpectedIdentity
 
-    binding = read_storage_binding(layout)
+    binding = library_vault_binding(layout)
     if binding is None:
-        if _state_present(layout):
-            raise _not_bound(
-                f"{layout.root}/provenance/vault/state.json records copies of this library, but "
-                f"{binding_path(layout)} is gone; bind the vault again with `voice-lab vault "
-                "bind` before the library is copied anywhere"
-            )
         return None
     identity = require_library_identity(layout)
     if binding.library_id != identity.library_id:

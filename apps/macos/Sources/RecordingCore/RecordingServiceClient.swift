@@ -164,6 +164,18 @@ public final class RecordingServiceClient: Sendable {
         .object(["command": .string("fine-tune-status"), "operation_id": .string(operationID)])
     }
 
+    /// Read-only: where the library vault stands (a VaultStatusEvent). The service answers it
+    /// from the supervisor's memory, before and without an open context, so it never waits on
+    /// a copy; later changes arrive as unsolicited events whose request id is "vault-status".
+    public func vaultStatus(operationID: String) async throws -> RecordingWireEnvelope {
+        try await command(Self.vaultStatusCommand(operationID: operationID), takeID: nil,
+                          timeout: Self.fineTuneRequestTimeout)
+    }
+
+    static func vaultStatusCommand(operationID: String) -> RecordingJSON {
+        .object(["command": .string("vault-status"), "operation_id": .string(operationID)])
+    }
+
     /// F5 flow steps the service uses when a Speak request names none.
     public static let speechDefaultSteps = 32
 

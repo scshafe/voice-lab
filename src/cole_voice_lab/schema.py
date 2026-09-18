@@ -32,6 +32,7 @@ from .datasets import (
 from .diagnostic_roots import DiagnosticRootMarker
 from .finetune import FINETUNE_SCHEMA_MODELS
 from .intake import IntakeReceipt
+from .library_replication_service import VAULT_SUPERVISOR_SCHEMA_MODELS
 from .models import (
     CandidateSpec,
     CaptureManifest,
@@ -82,6 +83,7 @@ from .storage_contracts import STORAGE_SCHEMA_MODELS
 # refuses any name this literal would register twice.
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     **STORAGE_SCHEMA_MODELS,
+    **VAULT_SUPERVISOR_SCHEMA_MODELS,
     **NATIVE_RECORDING_APPLICATION_SCHEMA_MODELS,
     "recording-python-runtime-receipt": RecordingPythonRuntimeReceipt,
     **RECORDING_SCHEMA_MODELS,
