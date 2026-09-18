@@ -259,6 +259,15 @@ glyph beside it, and text contrast stays at least 4.5:1 in both appearances. Thi
 an explicit choice on top of "Preserve native light/dark contrast"; geometry, waveform
 extrema and the dB display scale are unchanged.
 
+**Not built yet — a library vault line (plan `2026-09-17-library-vault-on-ubuntu-pc.md`,
+Step 12):** The sidebar shows nothing about the library vault, the encrypted copy of the
+library that the `voice-lab vault` commands keep. The recording service already answers a
+`vault-status` command and publishes `vault-status` events (states `off`, `up-to-date`,
+`waiting`, `copying`, `unreachable` and `failed`), and the app's model applies them, but no
+view shows them and this section specifies no line. Until Step 12 the state is read with
+`voice-lab vault status` in a terminal, and the native `vault` suite that would check the
+line is not built either.
+
 ### Keyboard behavior
 
 | Input | Behavior |
@@ -1459,7 +1468,11 @@ The latest finished run, reported by `fine-tune-status`, is the run with the new
 `finished_at` among `derived/finetune/*/run.json` with status finished. On equal times the
 greater run id wins. The same reply lists up to 32 finished runs in that order, and the
 Speak page's Latest is the first of them (§17). Runs made by `voice-lab finetune run` with
-the default output root count too.
+the default output root count too. Each run in that reply also says where its checkpoints
+are — `local` on this Mac, or `archived` after `voice-lab finetune archive
+--remove-local-copy` removed them once the vault copy was verified — and whether the run is
+in the vault at all. The two are separate facts, and the app's model carries both; nothing
+in the window shows them yet (plan `2026-09-17-library-vault-on-ubuntu-pc.md`, Step 12).
 
 ## 17. Speak page
 
@@ -1547,6 +1560,13 @@ prompt, the menu reads "Chosen by the service" and the service uses the run's fi
 The reference is the run's level-normalized training copy, read with its exact prompt text.
 Both menus are disabled while a request is queued or running. Every request uses 32 F5
 flow steps; the page has no control for them.
+
+A run whose checkpoints were archived is listed like any other, by its run id, with nothing
+to mark it. Speaking with it is refused by the service, and Latest is refused too when the
+newest finished run is the archived one; the refusal's message, which names
+`voice-lab finetune restore-run --run <id>`, appears on the status line below. Base still speaks, because it borrows only that run's reference clip, which stays on
+the Mac. Marking archived runs in the menu, and a reason that keeps Speak from asking, are
+plan `2026-09-17-library-vault-on-ubuntu-pc.md`, Step 12, and are not built.
 
 ### Speak, Generating and Cancel
 

@@ -75,6 +75,16 @@ these tests does not require the mini's exact installed Homebrew Python.
 - exact durable-schema set and schema drift check
 - repository asset-leak guard
 
+`pyproject.toml` sets `python_files` to `test_*.py` and `*_conformance.py`, so the
+port conformance suites are collected with everything else. `tests/catalog_conformance.py`
+is written only against the catalog port and obtains stores through the composition
+root. `tests/storage_conformance.py` runs every check once per storage backend: the
+local store, the sealed store over it, the vault client against a vault server on the
+loopback, and the sealed store over that client, which is what the Mac actually pushes.
+A check that needs a capability or a damage hook is its own test and starts by requiring
+it, so a backend without one is reported skipped with a reason naming the capability;
+no assertion is quietly dropped inside a passing test.
+
 Tests generate small synthetic PCM WAV fixtures in pytest-owned temporary
 directories. They never require a microphone, model download, Tailnet peer, or
 human recording. Real runtime probes and renders are opt-in and write immutable
@@ -97,3 +107,37 @@ weights: immutable input/source hashes, path confinement, fresh-process worker
 invocations, structured failures, normalization evidence, and exact-digest
 resume. Real smoke results are a separate operator gate, never a unit-test side
 effect.
+
+Library-vault tests cover the storage contracts and their error table
+(`tests/test_storage_contracts.py`), the local store's root refusals, locks and
+crash sweep (`test_storage_local.py`), sealing with the library key and its recovery
+sheet (`test_storage_sealing.py`), the vault server's endpoints, refusals and access
+log (`test_storage_server.py`), the client's identity check, retries and TLS path
+(`test_storage_http_client.py`), binding and the `vault` commands
+(`test_storage_binding.py`, `test_vault_cli.py`), path classification and replication
+sources (`test_replication_sources.py`), the manifest chain with verify and restore
+(`test_library_replication.py`), the service's background copying
+(`test_library_replication_service.py`), and the fine-tune run archive round trip
+(`test_finetune_archive.py`). Three helper modules are imported by those tests and
+never collected themselves: `tests/vault_library_fixtures.py` (synthetic libraries and
+a sealed local vault), `tests/vault_binding_fixtures.py` (a fake Keychain, a recorded
+tailnet answer and a loopback vault) and `tests/vault_service_fixture.py` (a real
+recording service with a vault it can reach).
+
+`tests/test_storage_import_boundary.py` parses every module under `src/` and every
+script in `scripts/`, including function-local imports and `importlib` names, and fails
+if anything but the composition root, the adapters themselves, the vault server or the
+two native fixture seeders imports an adapter; `cryptography` is allowed in the sealing
+module alone. No test touches the real login Keychain, runs `tailscale`, or reaches a
+network beyond the loopback. The Keychain, the tailnet resolver and the vault connection
+are injected seams. The Keychain is a dictionary, or a fake `security` script in
+`tmp_path` whose argv, standard input and environment the test inspects; an autouse guard
+in that module refuses to run the real tool. Every other vault test injects a dictionary
+Keychain through `tests/vault_binding_fixtures.install_vault_seams`. The resolver answers from
+recorded JSON. Every server is one the test starts itself. The client's plain-HTTP mode
+is a separate test-only constructor, and AST checks prove that no command, flag or
+environment variable can reach it.
+
+Two runs of this surface are planned and do not exist yet: the same storage conformance
+suite against the built container image (library-vault plan, Step 13) and a native
+`vault` suite driving the app's visible vault line (Step 12).

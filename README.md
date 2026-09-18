@@ -29,6 +29,15 @@ an explicit private asset root and are rejected by the repository guard.
 scripts/verify
 ```
 
+The optional `vault` extra adds the library vault's single encryption
+dependency. The `dev` extra pins the same version, and both `scripts/verify`'s
+strict type check and the native application build now require it to be
+installed. The reviewed route is `scripts/bootstrap-desktop --with-vault`, which
+adds `requirements/vault-macos.txt` to the pinned desktop install and stays a
+preview until `--execute --allow-downloads` is given; that lock also installs on
+its own with `--require-hashes --no-deps --only-binary=:all:`. The vault itself
+is described in [docs/LIBRARY_VAULT.md](docs/LIBRARY_VAULT.md).
+
 ## First pilot
 
 The complete operator flow is in [docs/RUNBOOK.md](docs/RUNBOOK.md). The short

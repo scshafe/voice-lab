@@ -188,6 +188,105 @@ Both files are read without a lock and without writing; a damaged one is refused
 The app does not see work started from the command line, so do not press Fine-tune model or
 Speak while it runs.
 
+## Archiving a finished run
+
+A finished run is the largest thing in the library: 3–4 GB, of which about 2.7 GB is
+checkpoints. `voice-lab finetune archive` copies a run to the library vault, proves the copy
+is readable there, and can then remove the run's checkpoints from the Mac;
+`voice-lab finetune restore-run` brings them back. The vault itself — the encrypted,
+content-addressed copy of the whole library — is described in
+[LIBRARY_VAULT.md](LIBRARY_VAULT.md).
+
+```sh
+voice-lab finetune archive     --asset-root <library> --run <run-id> [--remove-local-copy]
+voice-lab finetune restore-run --asset-root <library> --run <run-id> [--runtime-root <f5-runtime>]
+```
+
+**Runs are an opt-in.** A fine-tuned checkpoint and the dataset's clips are enough to clone
+the voice, so they are their own file class, `training`. Archiving needs a library bound to a
+vault whose binding copies that class (`voice-lab vault bind --classes … training`) and, for
+a tailnet vault, a destination approval that covers it too. Anything else is
+`STORAGE.NOT_APPROVED`, naming the opt-in; an unbound library is `STORAGE.NOT_BOUND`. No
+vault is deployed yet: the container and the first copy are Steps 13 and 15 of the library
+vault plan (`.claude/plans/2026-09-17-library-vault-on-ubuntu-pc.md`), and the rule that lets
+an encrypted copy leave the Mac at all — the standing approval, the ledger entry before each
+upload, and the change to the transfer rule it rests on — is D-020 and the AGENTS.md and
+SECURITY.md changes of that plan's Step 14, which are not written yet.
+
+**What `archive` does**, in order. It refuses a run that is not `finished`, and refuses while
+the app's service holds a fine-tune job or a Speak request (`FINETUNE.JOB_ACTIVE`). It then
+pushes the whole library once, which is how a run reaches the vault; a push whose pass did
+not carry this Mac's fine-tune runs (a pass that meets a job or a Speak request keeps the
+previous generation's run entries) archives nothing and says so. It verifies the run in the
+generation that push left: every chunk of every entry under `derived/finetune/<run-id>/` is
+downloaded, decrypted and compared with the digest the manifest names, so nothing rests on
+the vault's word. Only then does it write `archived.json`, and push once more so that record
+is in the vault too. The command prints a JSON document with the generation, the manifest
+digest, the number of verified files and what was removed.
+
+| Path under `derived/finetune/<run-id>/` | What it is |
+| --- | --- |
+| `archived.json` | the vault holds a verified copy: library id, destination digest, generation, manifest digest, and every file of the run with its digest, size and kind (`finetune-run-archive`) |
+| `local-removal.json` | the checkpoints were removed from this Mac, and the generation whose manifest holds them (`finetune-run-removal`) |
+| `local-removal-restored-<n>.json` | the removal record of a finished restore, kept as history |
+
+Each is written once, 0600, beside `run.json`, and is never replaced.
+
+**`--remove-local-copy`** removes the run's checkpoints, and only those: `checkpoints/**` and
+nothing else. `run.json`, the dataset, the corpus record and both sample sets stay, because
+every status reply reads them and Speak reads the dataset clips. The removal verifies the run
+in the vault again, asks the app's job and Speak questions again (the first check is minutes
+and gigabytes old by then), writes `local-removal.json` before the first unlink, and hashes
+every file it is about to unlink first: a file that is not the one the record names is
+refused (`FINETUNE.SOURCE_CHANGED`), because a run retrained after its archive has newer
+checkpoints the vault never took. A crash in the middle leaves the record, and either
+`restore-run` or the same command again finishes the job. The directories stay, so the
+runtime's `ckpts/<run-id>` symlink still points at `checkpoints/`.
+
+**The pinned base weights.** `checkpoints/pretrained_<name>.safetensors` is a hard link to
+the runtime's pinned F5 base weights (1.35 GB). The vault records it by that pin and never
+holds its bytes, and unlinking it frees nothing, because the runtime holds the same file.
+Removing a run therefore frees about 2.7 GB of checkpoints, not the run's full size.
+
+**Local or archived.** Each run summary in the service's `fine-tune-status` reply carries
+`location` (`local` or `archived`) and `in_vault` (`archived.json` is there); they are
+independent facts. A run counts as archived only while `local-removal.json` is beside its
+`run.json` **and** a file that record names is missing. Both halves matter: a whole-library
+restore writes the checkpoints back beside the record it also carries, so a library restored
+from the vault reports its runs as `local`, and a crash between the record and the first
+unlink leaves a run that can still speak. A removal record that cannot be read at all counts
+as archived, so a damaged record never offers Speak a run whose checkpoints are gone. The app
+shows none of this yet; the Speak page's archived blocker and the Library's vault line are
+Step 12 of the plan above.
+
+**An archived run is refused.** `finetune dataset`, `finetune train`, `finetune run` and
+`finetune synthesize` refuse it with `FINETUNE.RUN_ARCHIVED` and one wording: run `<run-id>`
+is archived, restore it with `voice-lab finetune restore-run --run <run-id>`. Speak refuses
+the same way, for a named run and for `latest`. `base` does not: it speaks with the pinned
+base weights and only borrows the newest finished run's dataset clip as its reference, and a
+removal never takes the dataset.
+
+**`restore-run`** needs `local-removal.json`; a run that was never removed has nothing to
+restore. It refuses while the app holds a job or a Speak request, checks free space (the
+files' bytes, a tenth more, and a 256 MiB margin), then downloads and decrypts each file,
+checks it against the manifest entry, and renames it into place from a private temporary
+without ever replacing anything. A file already there with the recorded bytes is kept. With
+`--runtime-root` it re-links the pinned base weights and refuses a runtime that does not hold
+the pinned bytes (`FINETUNE.PRETRAINED_MISMATCH`, naming it); without one the pin is reported
+missing and everything else is still restored, because only F5's trainer reads that link and
+a Mac rebuilt from the vault often has no runtime yet. Last, `local-removal.json` is renamed
+to `local-removal-restored-<n>.json`, and that is what makes the run local again. When every
+recorded file is back already — a whole-library restore, or a crash before the first unlink —
+no vault is opened at all and only the record is kept as history.
+
+**The removed files stay in the vault.** The removal record names the generation whose
+manifest holds them, and this Mac keeps a copy of every manifest under
+`provenance/vault/manifests/`. Each later generation carries those entries forward from that
+copy, so the vault's newest generation still names a removed run's checkpoints and a
+whole-library restore brings them back. While the copy is missing (`voice-lab vault bind
+--reset-state` moves the copies aside), `vault push` reports the removed files as waiting
+instead of carrying them, and both `--remove-local-copy` and `restore-run` refuse by name.
+
 ## From the app
 
 The native recording app (a build whose settings name `finetune_runtime_root`,
@@ -248,10 +347,13 @@ without `run.json` does not. `finetune.finished_finetune_runs` summarizes the ne
 (`finetune_run_summary`, which reads each run's `run.json`, dataset, corpus and samples
 records), and `finetune.latest_finished_finetune_run` is the first of them. A published
 catalog's `corpus.json` is about 1.5 MB, so the service keeps each listed run's summary
-(`finetune.FineTuneSummaryCache`) and reads a run again only when one of its five records
-(`run.json`, `dataset/dataset.json`, `dataset/corpus.json` and both `samples.json`) has
-changed identity (device, inode, mode, size, modification or change time) or appeared or
-disappeared. A repeated status reply therefore reads only the `run.json` files. With 32 such
+(`finetune.FineTuneSummaryCache`) and reads a run again only when one of its seven records
+(`run.json`, `dataset/dataset.json`, `dataset/corpus.json`, both `samples.json` and the two
+archive records of "Archiving a finished run" above) has changed identity (device, inode,
+mode, size, modification or change time) or appeared or disappeared, or when the run is no
+longer where the summary says it is (`finetune.finetune_run_location`, which records alone
+would miss: a removal resumed from an interrupted one's record writes no record, it only
+unlinks). A repeated status reply therefore reads only the `run.json` files. With 32 such
 runs the tests measured 1.26 s for the first reply and 6 ms for a repeat. A record that
 cannot be read is never kept, so it fails every reply until it is repaired. The status reply
 carries these as `finished_runs` (each with its Speak `reference_prompt_ids`) and
@@ -377,6 +479,9 @@ service remembers its last 64 ended requests for resends and cancels.
   every choice is refused `FINETUNE.NO_FINISHED_RUN`.
 - Any other value must name a finished run (`FINETUNE.NO_FINISHED_RUN` names the missing or
   unfinished run). A run named `latest` or `base` cannot be chosen by its id.
+- The run that would speak must still have its checkpoints, else `FINETUNE.RUN_ARCHIVED`
+  names the restore command ("Archiving a finished run" above). `base` is never refused for
+  that: it borrows the newest run's dataset clip, which a removal never takes.
 - The run's `run.json`, `dataset/dataset.json` and `dataset/corpus.json` must bind each
   other and the directory (`finetune.load_finetune_run_inputs`), else
   `FINETUNE.SOURCE_CHANGED`.
@@ -441,7 +546,8 @@ only when it holds nothing but `job.json`, `speech-01.wav`, the JSON writer's te
 files and directories only). Anything else under `derived/speech/` is left in place untouched
 and stops nothing: another file or a link in such a directory, a file directly in
 `derived/speech/` (a Finder `.DS_Store` too) and a directory with another name. Nothing removes finished clips; they accumulate under
-`derived/speech/`.
+`derived/speech/`. They also never leave the Mac: the library vault does not copy
+`derived/speech/**` (D-019).
 
 **Deadline and cancel.** A worker may run 120 seconds (`SPEECH_DEADLINE_SECONDS`), counted
 from its start, so loading the model is included. Past that the service kills its process

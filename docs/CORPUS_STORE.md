@@ -5,9 +5,13 @@ against. It is a SQLite database inside the library plus one immutable snapshot 
 published version. `voice-lab catalog …` edits it, and the app loads the active version from
 the recording service at launch, so a prompt change is an edit, a publish, an activate and a
 relaunch, never a rebuild. New recording groups reference a published version instead of
-embedding the whole catalog. Module: `src/cole_voice_lab/corpus_store.py`
-(`@canonical corpus_store`); standard sentence sets: `src/cole_voice_lab/standard_prompt_sets.py`
-(`@canonical standard_prompt_sets`); schema: `migrations/20260916100000_create_corpus_prompt_catalog_store.sql`.
+embedding the whole catalog. Ports: `src/cole_voice_lab/catalog_ports.py`
+(`@canonical catalog_ports`); the one implementation: `src/cole_voice_lab/corpus_store_sqlite.py`
+(`@canonical corpus_store_sqlite`); the catalog logic every implementation shares:
+`src/cole_voice_lab/corpus_store.py` (`@canonical corpus_store`); the one opener:
+`src/cole_voice_lab/storage_binding.py` (`@canonical storage_binding`); standard sentence sets:
+`src/cole_voice_lab/standard_prompt_sets.py` (`@canonical standard_prompt_sets`);
+schema: `migrations/20260916100000_create_corpus_prompt_catalog_store.sql`.
 Decision: D-017. Rollout state: `migrations/active/corpus-store.md` (deleted when the rollout
 completes).
 
@@ -17,7 +21,7 @@ Everything is under `<library>/provenance/corpus/`:
 
 | Path | Mode | What it is |
 | --- | --- | --- |
-| `provenance/corpus/` | 0700 | the store directory; created only by `voice-lab catalog init` (or the store API with `create=True`, as test fixtures do) |
+| `provenance/corpus/` | 0700 | the store directory; created only by `voice-lab catalog init` (or an editor opened with `create=True`, as test fixtures do) |
 | `corpus.sqlite3` | 0600 | the database (WAL journal, schema version 1 in `PRAGMA user_version`) |
 | `corpus.sqlite3-wal`, `-shm`, `-journal` | 0600 | SQLite's own sidecars, present only while needed |
 | `.corpus.lease` | 0600 | held with a shared `flock` for as long as a process has the store open |
@@ -29,18 +33,27 @@ Everything is under `<library>/provenance/corpus/`:
 Any other entry in `provenance/corpus/` or `snapshots/` makes the store refuse to open
 (`CORPUS.STORE_UNSAFE`), so keep backups and notes elsewhere.
 
-These processes open the store, always through `open_corpus_store`:
+No caller names an implementation. The store is opened through the composition root, as a
+context manager: `storage_binding.open_catalog_reader(layout)` for a reader and
+`storage_binding.open_catalog_editor(layout, create=…)` for an editor. What they return are the
+two ports, `CatalogReader` and `CatalogEditor(CatalogReader)` (`catalog_ports`), which own the
+records the store returns and every `CORPUS.*` error class. Behind them today is the one
+implementation, `corpus_store_sqlite.CorpusStore(layout, create=…, clock=…)`; `create` and
+`clock` are its constructor arguments, and only `storage_binding` (and the two native fixture
+seeders) constructs it.
 
 | Opener | How | When |
 | --- | --- | --- |
-| `voice-lab catalog init` | `create=True` | once, to create and seed the store |
-| every other `voice-lab catalog` command | `create=False` | for the length of the command; `import-harvard` and `import-arctic` close it while they read or fetch the source and open it again to import |
-| `prompts show`, `prompts coverage-report`, `finetune …` with a published `--catalog` | `create=False` | only to resolve the name; closed before any evidence is read |
-| the recording service | `create=False` | once per process, to pin the active catalog; closed at once |
-| the fine-tune worker of a group-scoped recording service (`recording_finetune_jobs`) | `create=False` | once per job whose request pins no version, to read the subject's active version; closed before the snapshot file or any evidence is read. The native app's workspace service pins its version in every job request, so its worker never opens the store; a Speak request's worker never opens it either |
+| `voice-lab catalog init` | `open_catalog_editor(create=True)` | once, to create and seed the store |
+| `catalog list`, `show`, `export` | `open_catalog_reader` | for the length of the command |
+| every other `voice-lab catalog` command | `open_catalog_editor` | for the length of the command; `import-harvard` and `import-arctic` check with a reader, close it while they read or fetch the source, and open an editor to import |
+| `prompts show`, `prompts coverage-report`, `finetune …` with a published `--catalog` | `open_catalog_reader` | only to resolve the name; closed before any evidence is read |
+| the recording service | `open_catalog_reader` | once per process, to pin the active catalog; closed at once |
+| the fine-tune worker of a group-scoped recording service (`recording_finetune_jobs`) | `open_catalog_reader` | once per job whose request pins no version, to read the subject's active version; closed before the snapshot file or any evidence is read. The native app's workspace service pins its version in every job request, so its worker never opens the store; a Speak request's worker never opens it either |
 
-`create=False` never creates `provenance/corpus/` or the database file; a missing store is
-`CORPUS.STORE_MISSING`. Every open, with either flag, still changes the store directory:
+Only an editor opened with `create=True` creates `provenance/corpus/` or the database file; a
+missing store is otherwise `CORPUS.STORE_MISSING`. Opening a reader is not side-effect free
+either: on SQLite every open, with either port, still changes the store directory:
 
 - it takes the lease and the lock, creating `.corpus.lease` and `.corpus.lock` when absent;
 - it creates an empty `snapshots/` when absent;
@@ -253,7 +266,7 @@ purpose refuses, for a store whose rows were written some other way.
 ### Every editor goes through the store
 
 The rules above, the keep-recordings rules under "Editing" and the reading rule are the
-store's, not the command line's: `CorpusStore.add_prompt`, `import_prompt_suite`,
+store's, not the command line's: `CatalogEditor.add_prompt`, `import_prompt_suite`,
 `initialize_catalog`, `edit_prompt` and `create_catalog` apply them inside their write
 transaction, and `edit_prompt(dry_run=True)` applies them to a preview. Any editor (the
 `voice-lab catalog` commands today, an in-app editor later) must write through these methods
@@ -263,6 +276,21 @@ passes the typo-class bound, and an editor passes it only on the operator's expl
 `standard_prompt_sets.standard_prompt_set`, which applies the strict parse and the pinned
 digest (see "Standard sentence sets"). The command line decides only what the store cannot
 know: that a new catalog id is not a built-in name, and which flag combinations make sense.
+
+### A second implementation of the ports
+
+`catalog_ports` is the whole contract, and `tests/catalog_conformance.py` is its test: it is
+written only against the ports, obtains stores only through `storage_binding`, and any second
+implementation must pass it unchanged. What is the SQLite store's own — its lock, lease,
+directory guards, migrations and clock — is tested in `tests/test_corpus_store_sqlite.py`, and
+the shared catalog logic in `tests/test_corpus_store.py`.
+
+One rule is settled in advance for an implementation that does not keep the library's files: it
+returns snapshot bytes, it does not publish them. One Mac-side mirror checks those bytes with
+`corpus_store.require_referenced_snapshot` and writes them under `provenance/corpus/snapshots`
+while holding `.corpus.lock`, so every reader still finds a verified file at the path each
+reference names and nothing reads a snapshot it has not checked. That mirror belongs to the plan
+that adds such an implementation; no such implementation exists today.
 
 ## `--catalog id[@version]`
 
@@ -524,11 +552,24 @@ be published or edited. Without the snapshots every version is unreadable
 (`CORPUS.SNAPSHOT_MISSING`), and so is every v2 group that references one, including the
 history of its takes.
 
-Copy while nothing has the store open. The app opens it only for a moment at launch; a
+Copy the files while nothing has the store open. The app opens it only for a moment at launch; a
 `voice-lab catalog` command holds it for its whole run (the importers release it while they
 read or fetch the source); a published `--catalog` name holds it only while the name is
 resolved. If a `corpus.sqlite3-wal` file is present, copy it with the
 database.
+
+The library vault copies the database another way and needs no quiet moment
+([LIBRARY_VAULT.md](LIBRARY_VAULT.md)). It opens the database read-only through a `mode=ro`
+URI, takes SQLite's one-step online backup into a private scratch file under
+`tmp/.vault-<random>/` (0700 directory, 0600 file), sets the copy's journal mode to `DELETE`,
+checks it with `PRAGMA quick_check`, and copies those bytes under the database's own path
+(`library_replication.backup_database`). It never opens the store through
+`open_catalog_reader`, never opens the database file outside SQLite (an `os.open` would drop
+the calling process's own database locks), and never takes `.corpus.lock` or any other lock a
+lab writer takes, so a copy runs while the app and the command line are using the store and
+still records the last committed state. It lists `snapshots/` after the backup,
+so every snapshot the copied database names is present; a snapshot file still hard-linked to a
+publish's scratch name is left for the next copy.
 
 A restored store must again be owned by you, with 0700 directories and 0600 files, no symlinks,
 no hard links and no extra entries, or it refuses to open (`CORPUS.STORE_UNSAFE`). The store is

@@ -67,6 +67,53 @@ weights, and recognizable synthetic outputs are biometric assets.
 - `config/site.example.toml` is documentation, not an operative configuration or
   policy mechanism.
 
+## Library vault (built, not yet deployed)
+
+The vault is an encrypted durable copy of the library on Cole's own Linux host,
+reached over the tailnet. The code is built and committed; the container, the
+deployment and the rule changes it needs are not. No library is bound to a
+vault and nothing has been uploaded.
+
+- Everything is sealed on the Mac before it leaves. Each blob is encrypted with
+  AES-256-GCM under a 256-bit library key kept in the login Keychain, whose
+  only other copy is a recovery sheet Cole keeps offline. The key never leaves
+  the Mac, and no binding can turn encryption off.
+- The vault holds ciphertext blobs addressed by the digest of their ciphertext,
+  plus named pointers. It applies no lab rule and is never trusted: a file
+  counts as present only after its bytes have been downloaded and decrypted.
+- A generation's manifest is itself sealed, chained to the digest of the
+  previous manifest, and pinned by a head the Mac compares with the generation
+  and digest it recorded locally. A head that is older, forks, fails to
+  decrypt, or belongs to another library or destination is refused before
+  anything is uploaded.
+- Every upload is preceded by a ledger entry naming the destination, the file
+  classes and the payload digest of the generation's manifest plan; a
+  completion entry follows the head swap. The whole chain is re-read and
+  checked before an entry is appended.
+- Uploading to a tailnet vault requires a standing destination approval with a
+  mandatory expiry, naming the node's stable Tailscale ID, its tag, the tailnet
+  and the namespace. The client re-checks that identity before each session,
+  connects to the address the check returned, and verifies TLS for the endpoint
+  name. Nothing is pinned to a certificate.
+- Fine-tune checkpoints and datasets are a separate file class that both the
+  binding and the approval must list, so they are copied only on an opt-in.
+- A local copy is removed only by an explicit per-run command, after that run's
+  bytes have been fetched from the vault and decrypted again, and only the
+  run's checkpoints are removed.
+- The server keeps only the SHA-256 of each namespace's read and write tokens;
+  the raw tokens stay in the Mac's login Keychain.
+
+Two limits are accepted rather than hidden:
+
+- Sealing does not hide sizes. A sealed blob is exactly 33 bytes longer than
+  its contents, so the host learns each chunk's size and the time it arrived,
+  can link blobs of equal size, and can guess that a file of a distinctive size
+  is stored. The format's version byte leaves room for padding later.
+- The rule changes this design needs — a standing destination approval instead
+  of a per-transfer one — are still pending in D-020, at Step 14 of the
+  library-vault plan. Until that decision is recorded and the vault is deployed
+  (Step 15), the network and transfer rules above stand exactly as written.
+
 ## Deliberately avoided
 
 - Voice-authentication phrases in the recording script.

@@ -65,7 +65,7 @@ fine-tune runtime (an ordinary, unreserved flag; the configuration has no key fo
 Omit `--recording-group-id`; the typed context response owns the current group.
 
 The configuration names two peers, the recorder helper and the service; the app starts
-both. The service starts one further process of its own when Fine-tune model or Speak is
+both. The service starts a worker process of its own when Fine-tune model or Speak is
 pressed: the fine-tune worker, `<service python> -m cole_voice_lab.recording_finetune_jobs
 --worker --asset-root ROOT --operation-id OP`. The same worker serves both kinds of work: a
 fine-tune job (a `FineTuneWorkerRequest`, stage frames, one `FineTuneWorkerReply`) or one
@@ -79,6 +79,30 @@ closes, and the service kills the group when the work is cancelled, a Speak requ
 its 120-second deadline, or the service stops. At most one worker runs at a time: Speak and
 fine-tuning share that one slot. A Speak request exists only in the service's memory. See
 [FINETUNE.md](FINETUNE.md), "From the app" and "Speak page".
+
+The service runs one further kind of process of its own. A vault supervisor thread decides
+when the library is copied to its encrypted vault: it starts a pass once the library has
+stood still after a durable commit, and at least once every rescan interval, so evidence the
+command line wrote is copied too. It never copies in the service process. Each pass runs as
+`python -I -B -m cole_voice_lab.library_replication_service --worker --asset-root ROOT`, an
+isolated interpreter leading a new session, with a fixed environment (a plain `PATH`,
+bytecode off, and this user's home read from the password database rather than inherited) and
+nothing but a pipe in and a pipe out. That worker opens the vault, reads and seals the library's audio,
+pushes one generation, and writes exactly one JSON frame on its stdout; its stderr is
+discarded, so it can never leave a library path or a secret behind. It kills its own process
+group when its stdin closes, so it dies with the service, and the supervisor kills that group
+when the service stops. Like the fine-tune worker it is not a configured peer and has no
+handshake or build identity of its own. No pass starts while a fine-tune job or a Speak
+request is running, a pass takes no lock a writer takes, and a library bound to no vault
+starts no thread and no worker at all.
+
+The app asks where that copy stands with `vault-status`, a command that names no take and
+needs no open context. The service answers it from the supervisor's memory alone: it reads no
+file, takes no lock and reaches no vault, so a service that copies nowhere answers as quickly
+as one that copies. The supervisor also publishes the status when it changes, and reports its
+own end on the `vault-supervisor` error lane, as the fine-tune supervisor does. The Library
+footer line that shows this to the user, and the native `vault` suite that exercises it, are
+not built yet: they are Step 12 of the library vault plan.
 
 Preserve the lexical virtual-environment launcher path in `service.executable`.
 Hash its resolved interpreter for the identity, but launch the venv path: resolving
@@ -182,12 +206,24 @@ builds an explicitly named `Cole Voice Recorder Preview.app` plus an adjacent pr
 `.runtime` directory. Building is separate from installing: the builder never launches an
 app, never installs anything, never downloads a tool, and refuses to overwrite an existing
 output. It freezes the source, builds a local wheel without isolation, creates a no-pip
-virtual environment containing only the five installed Pydantic-family distributions,
-generates canonical schemas, release-compiles the Swift app and helper, signs the helper
-and then the bundle with a local ad-hoc hardened audio-input entitlement, and writes the
-external private configuration and build manifests after signing. Local ad-hoc signing is
-neither Developer ID nor notarization, and it does not promise that microphone
+virtual environment containing only the eight installed service distributions (the five
+Pydantic-family ones plus `cffi`, `cryptography` and `pycparser`, which the vault worker
+needs for sealing), generates canonical schemas, release-compiles the Swift app and helper,
+signs the helper and then the bundle with a local ad-hoc hardened audio-input entitlement,
+and writes the external private configuration and build manifests after signing. Local ad-hoc
+signing is neither Developer ID nor notarization, and it does not promise that microphone
 authorization persists across rebuilds.
+
+The three sealing distributions come from `requirements/vault-macos.txt`, the reviewed
+hash-locked file the optional `vault` extra installs (`scripts/bootstrap-desktop --with-vault`
+puts it into a development environment). Only the sealing module imports `cryptography`; the
+recording service process never loads it, and the vault worker does. A missing distribution
+fails closed, with a refusal naming that lock rather than a bare packaging error. The
+distribution identity evaluates each `Requires-Dist` environment marker against the running
+interpreter, so a requirement the markers exclude here is not demanded and a marker outside
+the understood subset is refused instead of guessed. The only `RECORD` rows it drops are the
+`../../../bin/<name>` launchers a distribution declares as `console_scripts` or `gui_scripts`
+entry points; every other row that leaves the distribution's own tree is still refused.
 
 The builder's arguments are `--output`, `--settings`, `--source-root`, `--python` and
 `--synthetic-pcm`. Its first check binds the declared purpose to the root
@@ -209,7 +245,9 @@ The service build identity (`recording_service_build_identity`) covers every pac
 projection migrations, including `20260916110000_create_recording_prompt_alias_projection.sql`,
 and the corpus store migration `20260916100000_create_corpus_prompt_catalog_store.sql`.
 Changing any of them changes `service_build`, so verification refuses a frozen runtime
-built from other migrations.
+built from other migrations. The vault work moved both identities: the package gained the
+vault modules, and the frozen environment gained the three sealing distributions. Any preview
+built before those commits therefore matches neither identity and has to be rebuilt.
 
 The effective bundle minimum is derived from the actual Mach-O metadata of the app, helper
 and service executables rather than declared. The Swift code keeps a macOS 13 deployment
