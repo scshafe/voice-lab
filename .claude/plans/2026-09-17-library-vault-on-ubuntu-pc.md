@@ -373,7 +373,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - ~~Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_library_replication_service.py tests/test_recording_service.py tests/test_recording_contracts.py && scripts/verify-native-recording --suite contracts`~~
   - Verify *(amended 2026-09-17, Step 10: the native audit, the schema check and mypy belong in it)*: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_library_replication_service.py tests/test_recording_service.py tests/test_recording_contracts.py tests/test_recording_native_audit.py && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m cole_voice_lab.schema --check && PYTHONDONTWRITEBYTECODE=1 .venv/bin/mypy src/cole_voice_lab && scripts/verify-native-recording --suite contracts`
 
-- [ ] **Step 11: Fine-tune run archive**
+- [x] **Step 11: Fine-tune run archive**
   - Add `finetune archive` (with `--remove-local-copy`), `finetune restore-run` and `archived.json`.
   - Add the run's location to `fine-tune-status`, with Swift twins.
   - Make Speak and `finetune synthesize` refuse an archived run.

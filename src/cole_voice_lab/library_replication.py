@@ -8,6 +8,9 @@ that streams bounded chunks, hashes them, and proves the file kept its identity 
 digest its seal or record names. An owner whose files moved during the pass is reported
 ``changed`` and one whose files are unsafe or contradict their records ``refused``; either way
 nothing it read counts as fresh, and the next generation keeps that owner's previous entries.
+A file a source removed from the Mac on purpose (an archived fine-tune run's checkpoints) is
+offered as a ``CarriedPath`` instead: there are no bytes to read, and the generation builder keeps
+the entry of the generation that holds it, so the vault's newest manifest still names it.
 Each source names its referents (the owners whose files its files name); a referent is always
 read after its referrers, so everything a referrer names already exists when its referent is
 read, and an owner whose referent did not complete is reported ``changed`` too (it falls back
@@ -81,6 +84,7 @@ __all__ = [
     "MAX_CHUNK_BYTES",
     "MAX_RECORD_BYTES",
     "PRETRAINED_PIN_SOURCE",
+    "CarriedPath",
     "CorpusDatabaseSource",
     "FileIdentity",
     "FineTuneRunSource",
@@ -439,7 +443,36 @@ class WithheldPath:
     reason: str
 
 
-type SourceEntry = ReplicationItem | WithheldPath
+@dataclass(frozen=True, slots=True)
+class CarriedPath:
+    """A file that is gone from the Mac on purpose and whose stored entry must be kept.
+
+    A fine-tune run whose checkpoints were archived and then removed (``local-removal.json``)
+    has no bytes left to read, but the vault still holds them: the generation the removal
+    record names has the entry, with its chunks. A pass offers this instead of a
+    ``ReplicationItem``, and the generation builder copies that generation's entry into the
+    new one, so the vault's newest manifest keeps naming the file and a restore of the newest
+    generation still brings the run back. ``sha256``, ``size`` and ``kind`` are what the
+    removal record names: the entry that is carried must be exactly that content.
+    Raises (on construction): ``ValueError`` when a pin carries no pin source, or a file one.
+    """
+
+    path: str
+    file_class: FileClass
+    kind: EntryKind
+    mode: RestoreMode
+    sha256: str
+    size: int
+    generation: int
+    reason: str
+    pin_source: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.kind == "pin") != (self.pin_source is not None):
+            raise ValueError("a carried pin names its pin source; a carried file none")
+
+
+type SourceEntry = ReplicationItem | WithheldPath | CarriedPath
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,7 +516,8 @@ class OwnerResult:
     were fine but one of whose referents did not complete is ``changed`` with ``held_back_by``
     naming that referent (its ``problem_path`` is the referent's; follow ``held_back_by`` to
     the owner that failed). ``withheld`` lists the copied-class files the source left out,
-    with why.
+    with why; ``carried`` the files that are gone from the Mac on purpose and whose stored
+    entry an earlier generation still holds (``CarriedPath``).
     """
 
     owner: str
@@ -494,6 +528,7 @@ class OwnerResult:
     problem: SourceProblem | None = None
     problem_path: str | None = None
     held_back_by: str | None = None
+    carried: tuple[CarriedPath, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1530,6 +1565,56 @@ class FineTuneRunSource:
         )
 
     @staticmethod
+    def _removed(
+        layout: AssetLayout, directory: str, run_id: str, before: _RunState
+    ) -> Generator[SourceEntry, None, None]:
+        """Carry the entries of a run whose checkpoints were archived and then removed.
+
+        ``local-removal.json`` names the generation whose manifest holds the removed files;
+        every later generation carries those entries, so the vault's newest generation still
+        names them and a restore of it brings the whole run back. A named file that is still
+        there (a crash between the record and the unlinks) is left to the ordinary read.
+        Raises: ``SourceChangedError`` (``invalid``) when the record names another run or a
+        file its classification does not carry the way the record does.
+        """
+        from .finetune import FINETUNE_REMOVAL_NAME, FineTuneRunRemoval
+
+        listing = f"{directory}/{FINETUNE_REMOVAL_NAME}"
+        if listing not in before.files:
+            return
+        removal = _parse(
+            FineTuneRunRemoval, _read_record(layout.root, listing, private=False), listing
+        )
+        if removal.run_id != run_id:
+            raise SourceChangedError(listing, "invalid", "names another run")
+        for file in removal.files:
+            path = f"{directory}/{file.path}"
+            if path in before.files:
+                continue
+            rule = classify(path).rule
+            if rule.name not in _fine_tune_rules() or (file.kind == "pin") != (
+                rule.transfer == "pin"
+            ):
+                raise SourceChangedError(
+                    listing, "invalid", f"names {file.path}, which is not one of its run's files"
+                )
+            yield CarriedPath(
+                path=path,
+                file_class="training",
+                kind=file.kind,
+                mode=rule.mode,
+                sha256=file.sha256,
+                size=file.size,
+                generation=removal.generation,
+                reason=(
+                    f"removed from this Mac after the copy in generation {removal.generation} "
+                    f"was verified; restore it with `voice-lab finetune restore-run --run "
+                    f"{run_id}`"
+                ),
+                pin_source=PRETRAINED_PIN_SOURCE if file.kind == "pin" else None,
+            )
+
+    @staticmethod
     def _bind_samples(
         layout: AssetLayout,
         listing: str,
@@ -1580,6 +1665,7 @@ class FineTuneRunSource:
         expected: dict[str, tuple[str | None, int | None]] = {run_path: _digest(run_bytes)}
         for checkpoint in run.checkpoints:
             expected[checkpoint.relative_path] = (checkpoint.sha256, checkpoint.size_bytes)
+        yield from self._removed(layout, directory, run.run_id, before)
         withheld = {
             folder: _SAMPLES_UNRECORDED
             for folder in before.synthesizing
@@ -1959,6 +2045,8 @@ def _require_offered(source: ReplicationSource, entry: SourceEntry) -> None:
     rule = classify(entry.path).rule
     if isinstance(entry, WithheldPath):
         agrees = True
+    elif isinstance(entry, CarriedPath):
+        agrees = (entry.kind == "pin") == (rule.transfer == "pin") and entry.mode == rule.mode
     else:
         agrees = (
             (entry.kind == "pin") == (rule.transfer == "pin")
@@ -2009,6 +2097,7 @@ def _run_source(
 ) -> OwnerResult:
     entries: list[PassEntry] = []
     withheld: list[WithheldPath] = []
+    carried: list[CarriedPath] = []
     failed: tuple[ReplicationItem, SourceChangedError] | None = None
     generator = source.items(layout)
     try:
@@ -2028,6 +2117,9 @@ def _run_source(
             if isinstance(produced, WithheldPath):
                 withheld.append(produced)
                 continue
+            if isinstance(produced, CarriedPath):
+                carried.append(produced)
+                continue
             try:
                 entries.append(_transfer(source.name, produced, sink, chunk_bytes))
             except SourceChangedError as error:
@@ -2041,10 +2133,13 @@ def _run_source(
             reason=str(error),
             problem=error.problem,
             problem_path=error.path,
+            carried=tuple(carried),
         )
     finally:
         generator.close()
-    return OwnerResult(source.name, "complete", tuple(entries), tuple(withheld))
+    return OwnerResult(
+        source.name, "complete", tuple(entries), tuple(withheld), carried=tuple(carried)
+    )
 
 
 def _require_referrer_order(sources: Sequence[ReplicationSource]) -> None:
@@ -2093,6 +2188,7 @@ def _hold_back(
                 problem="changed",
                 problem_path=blocking.problem_path,
                 held_back_by=blocking.owner,
+                carried=result.carried,
             )
         settled[source.name] = result
     return tuple(settled[source.name] for source in sources)

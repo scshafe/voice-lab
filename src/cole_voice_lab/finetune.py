@@ -15,7 +15,12 @@ core as the listening samples; ``FineTuneDigestCache`` lets repeated requests re
 digests of unchanged runtime files and checkpoints instead of hashing gigabytes again, and
 ``FineTuneSummaryCache`` lets repeated status replies reuse the summaries of unchanged runs.
 ``discard_unfinished_speech`` removes what an interrupted Speak request left. The synthesizer
-keeps F5-TTS's temporary files in a private work directory inside its output directory.
+keeps F5-TTS's temporary files in a private work directory inside its output directory. A
+finished run can also leave the Mac: once the library vault holds a verified copy, ``archived.json``
+(``FineTuneRunArchive``) records that, ``local-removal.json`` (``FineTuneRunRemoval``) records the
+checkpoints removed from this Mac, and ``finetune_run_location`` is what the app's status, Speak
+and the command line read to tell a local run from an archived one (an archived run is refused
+until ``voice-lab finetune restore-run`` brings its checkpoints back).
 Related: prompt_coverage.py (readers), recording_index.py (retained predicate),
 recording_finetune_jobs.py (the service's job queue and worker), docs/FINETUNE.md
 (operator guide), DECISIONS.md D-016.
@@ -34,11 +39,11 @@ import stat
 import subprocess
 import threading
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Annotated, Final, Literal, cast
+from typing import IO, TYPE_CHECKING, Annotated, Final, Literal, NamedTuple, cast
 
 from pydantic import (
     AfterValidator,
@@ -52,11 +57,15 @@ from pydantic import (
 
 from .audio import CANONICAL_SAMPLE_RATE_HZ
 from .canonical import (
+    canonical_json_bytes,
     canonical_sha256,
+    fsync_directory,
     open_regular_no_follow,
+    rename_no_replace,
     sha256_file,
     sha256_stream,
     write_canonical_json,
+    write_new_private_file,
 )
 from .catalog_ports import CorpusSnapshotSecurityError
 from .corpus_store import require_referenced_snapshot
@@ -103,13 +112,26 @@ from .recording_index_backfill import legacy_projection_records
 from .recording_library import RecordingLibrary
 from .recording_takes import TAKE_PROVENANCE_ROOT, RecordingTakeStore
 from .resources import resource_path
+from .storage_contracts import LibraryId
 
 FINETUNE_CORPUS_SCHEMA: Final = "cole-voice-lab.finetune-corpus/v1"
 FINETUNE_HYPERPARAMETERS_SCHEMA: Final = "cole-voice-lab.finetune-hyperparameters/v1"
 FINETUNE_DATASET_SCHEMA: Final = "cole-voice-lab.finetune-dataset/v1"
 FINETUNE_RUN_SCHEMA: Final = "cole-voice-lab.finetune-run/v1"
+FINETUNE_ARCHIVE_SCHEMA: Final = "cole-voice-lab.finetune-run-archive/v1"
+FINETUNE_REMOVAL_SCHEMA: Final = "cole-voice-lab.finetune-run-removal/v1"
 # Every run lives in <asset root>/derived/finetune/<run id>/ (the CLI's --output-root default).
 FINETUNE_OUTPUT_ROOT: Final = "derived/finetune"
+# A run's archive records, beside its run.json. archived.json says the vault holds a verified
+# copy; local-removal.json says the large files were removed from this Mac and names the
+# generation they can be read back from. A restore renames the removal record to
+# local-removal-restored-<n>.json, so the history of removals and restores is kept.
+FINETUNE_ARCHIVE_NAME: Final = "archived.json"
+FINETUNE_REMOVAL_NAME: Final = "local-removal.json"
+FINETUNE_REMOVAL_RESTORED_PREFIX: Final = "local-removal-restored-"
+# Only the run's checkpoints are removed: every record a run summary, the run ordering, Speak
+# resolution and the dataset need stays on the Mac.
+FINETUNE_REMOVABLE_DIRECTORY: Final = "checkpoints"
 FINETUNE_FFMPEG: Final = Path("/opt/homebrew/bin/ffmpeg")
 # run.json, dataset.json, corpus.json and samples.json are read through this bound.
 MAX_FINETUNE_RECORD_BYTES: Final = 64 * 1024 * 1024
@@ -129,8 +151,10 @@ type FineTuneDatePrecision = Literal["take", "session", "unknown"]
 # Every fine-tune failure code. The recording service sends these under their own code, so
 # recording_contracts.ErrorCode lists exactly this set (tests/test_finetune.py checks it).
 # JOB_ACTIVE, INTERRUPTED and SYNTHESIS_DEADLINE belong to the service's job path (the CLI
-# also refuses JOB_ACTIVE); NO_FINISHED_RUN refuses Speak before any fine-tune finished; a
-# cancelled job carries no error at all.
+# also refuses JOB_ACTIVE); NO_FINISHED_RUN refuses Speak before any fine-tune finished;
+# RUN_ARCHIVED refuses a run whose checkpoints were removed after the vault copy was verified
+# (``voice-lab finetune restore-run`` brings them back); a cancelled job carries no error at
+# all.
 type FineTuneErrorCode = Literal[
     "FINETUNE.CATALOG_HELD_OUT",
     "FINETUNE.CHECKPOINT_MISSING",
@@ -149,6 +173,7 @@ type FineTuneErrorCode = Literal[
     "FINETUNE.REQUIREMENTS_MISSING",
     "FINETUNE.RUNTIME_FAILED",
     "FINETUNE.RUNTIME_UNAVAILABLE",
+    "FINETUNE.RUN_ARCHIVED",
     "FINETUNE.RUN_EXISTS",
     "FINETUNE.SOURCE_CHANGED",
     "FINETUNE.SYNTHESIS_DEADLINE",
@@ -369,11 +394,89 @@ class FineTuneRun(ContractModel):
         return self
 
 
+class FineTuneArchivedFile(ContractModel):
+    """One file of an archived run, as the vault generation that holds it names it.
+
+    ``path`` is relative to the run directory (``checkpoints/model_last.pt``), so an archive
+    record survives a restore into another asset root. ``kind`` is ``pin`` for the hard link
+    to the runtime's pretrained weights, which the vault records by its pin and never holds.
+    """
+
+    path: RelativePath
+    sha256: Sha256
+    size: int = Field(ge=0)
+    kind: Literal["file", "pin"]
+
+
+class FineTuneRunArchive(ContractModel):
+    """``archived.json``: this run has a verified encrypted copy in the library vault.
+
+    Written once, after one push put the run in the vault and a verify downloaded and
+    decrypted every chunk of every entry the run owns. ``generation`` and ``manifest_sha256``
+    name the generation that was verified and ``files`` every file of the run it holds.
+    The record says nothing about what is still on the Mac: ``local-removal.json``
+    (``FineTuneRunRemoval``) does.
+    """
+
+    schema_version: Literal["cole-voice-lab.finetune-run-archive/v1"] = FINETUNE_ARCHIVE_SCHEMA
+    run_id: StableId
+    library_id: LibraryId
+    destination_sha256: Sha256
+    generation: int = Field(ge=1)
+    manifest_sha256: Sha256
+    archived_at: UtcTimestamp
+    files: tuple[FineTuneArchivedFile, ...] = Field(min_length=1, max_length=10_000)
+
+    @model_validator(mode="after")
+    def _one_entry_per_file(self) -> FineTuneRunArchive:
+        paths = [file.path for file in self.files]
+        if len(paths) != len(set(paths)):
+            raise ValueError("an archive record names each file once")
+        return self
+
+
+class FineTuneRunRemoval(ContractModel):
+    """``local-removal.json``: the run's large files were removed from this Mac.
+
+    Written once, before the first unlink, so a crash in the middle leaves the record and
+    ``voice-lab finetune restore-run`` can finish the job. ``generation`` and
+    ``manifest_sha256`` name the generation whose manifest copy holds the removed files'
+    chunks; every later generation carries those entries forward, so the vault keeps naming
+    them. ``files`` are the removed files, relative to the run directory, and every one of
+    them is under ``checkpoints/``: the record is what the removal unlinks by, so the rule
+    that a removal never takes a record the app's status or Speak needs is enforced here,
+    where the record is read, and not only where it is written. The record is renamed to
+    ``local-removal-restored-<n>.json`` once the files are back.
+    """
+
+    schema_version: Literal["cole-voice-lab.finetune-run-removal/v1"] = FINETUNE_REMOVAL_SCHEMA
+    run_id: StableId
+    generation: int = Field(ge=1)
+    manifest_sha256: Sha256
+    removed_at: UtcTimestamp
+    files: tuple[FineTuneArchivedFile, ...] = Field(min_length=1, max_length=10_000)
+
+    @model_validator(mode="after")
+    def _one_entry_per_file(self) -> FineTuneRunRemoval:
+        paths = [file.path for file in self.files]
+        if len(paths) != len(set(paths)):
+            raise ValueError("a removal record names each file once")
+        prefix = f"{FINETUNE_REMOVABLE_DIRECTORY}/"
+        outside = sorted(path for path in paths if not path.startswith(prefix))
+        if outside:
+            raise ValueError(
+                f"a removal record names only {prefix} files, never {', '.join(outside)}"
+            )
+        return self
+
+
 FINETUNE_SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "finetune-corpus": FineTuneCorpus,
     "finetune-hyperparameters": FineTuneHyperparameters,
     "finetune-dataset": FineTuneDataset,
     "finetune-run": FineTuneRun,
+    "finetune-run-archive": FineTuneRunArchive,
+    "finetune-run-removal": FineTuneRunRemoval,
 }
 
 
@@ -2008,6 +2111,44 @@ def speech_reference_candidates(
 _MAX_SUMMARY_SAMPLES: Final = 64
 
 
+class FineTuneRunLocation(NamedTuple):
+    """Where a run's checkpoints are, and whether the vault holds a verified copy."""
+
+    location: Literal["local", "archived"]
+    in_vault: bool
+
+
+def finetune_run_location(layout: AssetLayout, run_root: str) -> FineTuneRunLocation:
+    """Whether a run's checkpoints are gone, and whether the vault holds a verified copy.
+
+    A run is ``archived`` while ``local-removal.json`` is beside its ``run.json`` **and** a
+    file that record names is missing: those are the two halves of being archived, and a run
+    whose files are all there can speak whatever its records say. The record travels with the
+    run (a whole-library restore writes it back beside the checkpoints it also restores) and a
+    crash can leave it written before the first unlink, so the record alone would refuse a run
+    that is completely local. Only the file names are looked at, never their bytes, because a
+    status reply asks this of every listed run; a record that cannot be read at all is taken
+    as ``archived``, so a damaged record never offers Speak a run whose checkpoints are gone.
+    ``in_vault`` is whether ``archived.json`` is there.
+    Params: ``layout``; ``run_root``, the run's asset-root-relative directory.
+    Returns: the location.
+    Raises: ``SecurityError`` when ``run_root`` has a symlinked component.
+    """
+    directory = confined_path(layout.root, run_root)
+    in_vault = os.path.lexists(directory / FINETUNE_ARCHIVE_NAME)
+    record = directory / FINETUNE_REMOVAL_NAME
+    if not os.path.lexists(record):
+        return FineTuneRunLocation("local", in_vault)
+    try:
+        removal = _read_finetune_record(record, FineTuneRunRemoval)
+    except (FineTuneError, SecurityError):
+        return FineTuneRunLocation("archived", in_vault)
+    gone = any(
+        not os.path.lexists(_run_record(layout, run_root, file.path)) for file in removal.files
+    )
+    return FineTuneRunLocation("archived" if gone else "local", in_vault)
+
+
 def finetune_run_summary(layout: AssetLayout, run_root: str) -> FineTuneRunSummary:
     """The app's view of one run: ``run.json`` plus its dataset, corpus and samples.
 
@@ -2016,6 +2157,7 @@ def finetune_run_summary(layout: AssetLayout, run_root: str) -> FineTuneRunSumma
     reference choices (``speech_reference_candidates``). Sample paths come from
     ``samples/{finetuned,base}/samples.json`` and only for a finished run; a finished run
     whose sampling never completed has none. Every path is asset-root-relative.
+    ``location`` and ``in_vault`` come from ``finetune_run_location``.
     Params: ``run_root`` is the run's asset-root-relative directory
     (``derived/finetune/<run id>``).
     Returns: the summary.
@@ -2024,6 +2166,7 @@ def finetune_run_summary(layout: AssetLayout, run_root: str) -> FineTuneRunSumma
     """
     run, dataset, corpus = load_finetune_run_inputs(layout, run_root)
     directory = confined_path(layout.root, run_root)
+    location, in_vault = finetune_run_location(layout, run_root)
     sample_paths: dict[str, tuple[str, ...]] = {"finetuned": (), "base": ()}
     if run.status == "finished":
         for label in sample_paths:
@@ -2048,6 +2191,8 @@ def finetune_run_summary(layout: AssetLayout, run_root: str) -> FineTuneRunSumma
             reference_prompt_ids=speech_reference_candidates(dataset, corpus)[
                 :_MAX_SUMMARY_SAMPLES
             ],
+            location=location,
+            in_vault=in_vault,
             error=run.error,
         )
     except ValueError as error:
@@ -2101,13 +2246,19 @@ def finished_finetune_run_ids(
     return tuple(run_id for _, run_id in sorted(finished, reverse=True))
 
 
-# The records a run summary is read from, relative to the run directory.
+# The records a run summary is read from (or, for the two archive records, looked for),
+# relative to the run directory. Archiving and removing a run changes none of the first five,
+# so without the last two the summary cache would keep reporting a removed run as local. They
+# are not enough on their own: a removal resumed from a record an interrupted one left writes
+# no record at all, it only unlinks, so the cache asks `finetune_run_location` as well.
 _SUMMARY_RECORDS: Final = (
     "run.json",
     "dataset/dataset.json",
     "dataset/corpus.json",
     "samples/finetuned/samples.json",
     "samples/base/samples.json",
+    FINETUNE_ARCHIVE_NAME,
+    FINETUNE_REMOVAL_NAME,
 )
 # A file's identity: device, inode, type and mode, size, modification and change times.
 type _RecordIdentity = tuple[int, int, int, int, int, int] | None
@@ -2149,7 +2300,11 @@ class FineTuneSummaryCache:
     record is over a megabyte, so re-reading 32 runs for every status reply takes about a
     second. An entry is used only while every one of those files (or its absence) has the
     identity it had when the summary was read: device, inode, mode, size, modification and
-    change time. A summary is kept only when no record changed while it was read, and only
+    change time. Records alone would not see a run leave the Mac: a removal resumed from the
+    record an interrupted one left writes no record, it only unlinks the checkpoints the
+    record already names, so an entry is also used only while the run is still where the
+    summary says it is (``finetune_run_location``, two metadata reads for a run that was never
+    archived). A summary is kept only when no record changed while it was read, and only
     for the runs of the latest listing. A record that cannot be read is never cached, so a
     damaged record fails every reply until it is repaired. Thread-safe.
     """
@@ -2164,7 +2319,7 @@ class FineTuneSummaryCache:
         """The summaries of ``run_roots``, in order; entries for other runs are dropped.
 
         Raises: as ``finetune_run_summary`` for a run whose records changed, were never read
-        or cannot be identified.
+        or cannot be identified, and as ``finetune_run_location`` for an unsafe ``run_root``.
         """
         with self._lock:
             known = {root: self._entries[root] for root in run_roots if root in self._entries}
@@ -2174,7 +2329,13 @@ class FineTuneSummaryCache:
             directory = confined_path(layout.root, run_root)
             before = _record_identities(directory)
             entry = known.get(run_root)
-            if before is not None and entry is not None and entry[0] == before:
+            if (
+                before is not None
+                and entry is not None
+                and entry[0] == before
+                and finetune_run_location(layout, run_root)
+                == (entry[1].location, entry[1].in_vault)
+            ):
                 summary = entry[1]
             else:
                 summary = finetune_run_summary(layout, run_root)
@@ -2225,6 +2386,203 @@ def latest_finished_finetune_run(
     return runs[0] if runs else None
 
 
+# -- archiving a finished run to the library vault ---------------------------------------------
+
+
+def _run_record(layout: AssetLayout, run_root: str, name: str) -> Path:
+    return confined_path(layout.root, f"{run_root}/{name}")
+
+
+def read_run_archive(layout: AssetLayout, run_root: str) -> FineTuneRunArchive | None:
+    """A run's ``archived.json``, or ``None`` when it has none.
+
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when the record is unreadable or not a
+    valid archive record; ``SecurityError`` for a symlinked component.
+    """
+    path = _run_record(layout, run_root, FINETUNE_ARCHIVE_NAME)
+    return None if not os.path.lexists(path) else _read_finetune_record(path, FineTuneRunArchive)
+
+
+def read_run_removal(layout: AssetLayout, run_root: str) -> FineTuneRunRemoval | None:
+    """A run's ``local-removal.json``, or ``None`` when its files are all local.
+
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when the record is unreadable or not a
+    valid removal record; ``SecurityError`` for a symlinked component.
+    """
+    path = _run_record(layout, run_root, FINETUNE_REMOVAL_NAME)
+    return None if not os.path.lexists(path) else _read_finetune_record(path, FineTuneRunRemoval)
+
+
+def require_finished_run(layout: AssetLayout, run_root: str, run_id: str) -> FineTuneRun:
+    """The run's ``run.json``, which must name this run and be finished.
+
+    Archiving copies a run that is done: an unfinished run's checkpoints are still being
+    written, and ``run.json`` is written finished before the samples are, which is why the
+    caller also refuses while the app holds a fine-tune job or a Speak request.
+    Returns: the run record.
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when the record is missing, invalid or
+    names another run; FINETUNE.NO_FINISHED_RUN when the run is not finished.
+    """
+    run = _read_finetune_record(_run_record(layout, run_root, "run.json"), FineTuneRun)
+    if run.run_id != run_id or run.run_root != run_root:
+        raise FineTuneError(
+            "FINETUNE.SOURCE_CHANGED",
+            f"fine-tune record {run_root}/run.json names run {run.run_id} at {run.run_root}",
+        )
+    if run.status != "finished":
+        raise _no_finished_run(
+            f"fine-tune run {run_id} is {run.status}, not finished; only a finished run is archived"
+        )
+    return run
+
+
+def removable_run_files(
+    files: Sequence[FineTuneArchivedFile],
+) -> tuple[FineTuneArchivedFile, ...]:
+    """The archived files ``--remove-local-copy`` removes: the run's checkpoints, nothing else.
+
+    Every other file of a run is small and is read by the app on every status reply (the run
+    record, the dataset and corpus records, the sample sets) or by Speak (the dataset clips),
+    so removing one would turn every status reply into ``latest_run_error``.
+    """
+    prefix = f"{FINETUNE_REMOVABLE_DIRECTORY}/"
+    return tuple(file for file in files if file.path.startswith(prefix))
+
+
+def write_run_archive(
+    layout: AssetLayout, run_root: str, archive: FineTuneRunArchive
+) -> tuple[Path, str]:
+    """Write ``archived.json`` beside the run's ``run.json``, once (0600).
+
+    Returns: the path and the digest of the bytes written.
+    Raises: ``FineTuneError`` FINETUNE.RUN_EXISTS when the run already has an archive record;
+    ``OSError`` from the write; ``SecurityError`` for a symlinked component.
+    """
+    return _write_run_record(layout, run_root, FINETUNE_ARCHIVE_NAME, archive)
+
+
+def write_run_removal(
+    layout: AssetLayout, run_root: str, removal: FineTuneRunRemoval
+) -> tuple[Path, str]:
+    """Write ``local-removal.json`` beside the run's ``run.json``, once (0600).
+
+    It is written before the first unlink, so a crash in the middle of a removal leaves the
+    record and ``voice-lab finetune restore-run`` (or a second removal) can finish the job.
+    Returns: the path and the digest of the bytes written.
+    Raises: ``FineTuneError`` FINETUNE.RUN_EXISTS when the run already has a removal record;
+    ``OSError`` from the write; ``SecurityError`` for a symlinked component.
+    """
+    return _write_run_record(layout, run_root, FINETUNE_REMOVAL_NAME, removal)
+
+
+def _write_run_record(
+    layout: AssetLayout, run_root: str, name: str, record: BaseModel
+) -> tuple[Path, str]:
+    path = _run_record(layout, run_root, name)
+    data = canonical_json_bytes(record) + b"\n"
+    try:
+        write_new_private_file(path, data, mode=0o600)
+    except FileExistsError as error:
+        raise FineTuneError(
+            "FINETUNE.RUN_EXISTS", f"{run_root}/{name} already exists; it is never replaced"
+        ) from error
+    return path, hashlib.sha256(data).hexdigest()
+
+
+def _recorded_file_state(
+    layout: AssetLayout, run_root: str, file: FineTuneArchivedFile
+) -> Literal["gone", "recorded", "other-bytes"]:
+    """Whether the named file is absent, exactly the record's file, or something else."""
+    path = _run_record(layout, run_root, file.path)
+    if not os.path.lexists(path):
+        return "gone"
+    metadata = os.lstat(path)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != file.size:
+        return "other-bytes"
+    return "recorded" if sha256_file(path)[0] == file.sha256 else "other-bytes"
+
+
+def run_files_are_the_recorded_ones(
+    layout: AssetLayout, run_root: str, files: Sequence[FineTuneArchivedFile]
+) -> bool:
+    """Whether every named file is in the run with exactly the bytes the record names.
+
+    A whole-library restore writes an archived run's files back beside its removal record, and
+    a crash can leave the record written before the first unlink; in both the run is complete
+    and ``voice-lab finetune restore-run`` has nothing to fetch, only the record to keep as
+    history.
+    Raises: ``SecurityError`` for a symlinked component; ``OSError`` from the filesystem.
+    """
+    return all(_recorded_file_state(layout, run_root, file) == "recorded" for file in files)
+
+
+def remove_run_files(
+    layout: AssetLayout, run_root: str, files: Sequence[FineTuneArchivedFile]
+) -> tuple[str, ...]:
+    """Unlink the named run-relative files, each proved first to be the file the record names.
+
+    Every file is hashed before anything is unlinked and must have exactly the size and digest
+    the removal record names. That check is the only thing binding these bytes to the bytes
+    the vault was proved to hold: a run retrained (or otherwise rewritten) after its archive
+    has newer checkpoints that no generation holds, and unlinking those on an older record's
+    word would lose them for good. A file that is already gone is not an error.
+    The directories stay: the runtime's ``ckpts/<run id>`` symlink points at
+    ``checkpoints/``, and a restore writes the files back into the same place.
+    Returns: the paths that were unlinked, in order.
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when a named file is not the file the
+    record names or cannot be unlinked; ``SecurityError`` for a symlinked component.
+    """
+    removable: list[FineTuneArchivedFile] = []
+    for file in files:
+        state = _recorded_file_state(layout, run_root, file)
+        if state == "other-bytes":
+            raise FineTuneError(
+                "FINETUNE.SOURCE_CHANGED",
+                f"{run_root}/{file.path} is not the file {run_root}/{FINETUNE_REMOVAL_NAME} "
+                "names, so the vault holds other bytes than this Mac does; nothing was removed",
+            )
+        if state == "recorded":
+            removable.append(file)
+    removed: list[str] = []
+    for file in removable:
+        path = _run_record(layout, run_root, file.path)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise FineTuneError(
+                "FINETUNE.SOURCE_CHANGED", f"{run_root}/{file.path} cannot be removed: {error}"
+            ) from error
+        removed.append(file.path)
+    return tuple(removed)
+
+
+def keep_removal_history(layout: AssetLayout, run_root: str) -> Path:
+    """Rename a finished restore's ``local-removal.json`` to the next kept history name.
+
+    Returns: the path the record was renamed to.
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when the record cannot be renamed;
+    ``SecurityError`` for a symlinked component.
+    """
+    directory = confined_path(layout.root, run_root)
+    number = 1
+    while True:
+        target = directory / f"{FINETUNE_REMOVAL_RESTORED_PREFIX}{number}.json"
+        try:
+            rename_no_replace(directory / FINETUNE_REMOVAL_NAME, target)
+        except FileExistsError:
+            number += 1
+            continue
+        except OSError as error:
+            raise FineTuneError(
+                "FINETUNE.SOURCE_CHANGED",
+                f"{run_root}/{FINETUNE_REMOVAL_NAME} cannot be kept as history: {error}",
+            ) from error
+        fsync_directory(directory)
+        return target
+
+
 @dataclass(frozen=True, slots=True)
 class SpeechResolution:
     """What a Speak request resolved to: the model that speaks and its reference clip.
@@ -2253,6 +2611,17 @@ def _no_finished_run(message: str) -> FineTuneError:
     return FineTuneError("FINETUNE.NO_FINISHED_RUN", message)
 
 
+def archived_run_message(run_id: str) -> str:
+    """The one wording every archived-run refusal uses (Speak, the worker and the CLI)."""
+    return (
+        f"run {run_id} is archived; restore it with `voice-lab finetune restore-run --run {run_id}`"
+    )
+
+
+def _archived_run(run_id: str) -> FineTuneError:
+    return FineTuneError("FINETUNE.RUN_ARCHIVED", archived_run_message(run_id))
+
+
 def resolve_speech_model(
     layout: AssetLayout,
     model: str,
@@ -2270,7 +2639,9 @@ def resolve_speech_model(
     run's first clip.
     Returns: the resolution; every record in it was read and bound here.
     Raises: ``FineTuneError`` FINETUNE.NO_FINISHED_RUN when no run has finished (whatever
-    was chosen) or the named run is missing or not finished; FINETUNE.REFERENCE_MISSING when
+    was chosen) or the named run is missing or not finished; FINETUNE.RUN_ARCHIVED when the
+    run that would speak is archived (``base`` is not, it only borrows the newest run's
+    reference clip); FINETUNE.REFERENCE_MISSING when
     ``reference_prompt_id`` has no clip in the reference run's dataset;
     FINETUNE.SOURCE_CHANGED as ``finished_finetune_run_ids`` and
     ``load_finetune_run_inputs``; ``SecurityError`` for a symlinked run directory;
@@ -2300,6 +2671,11 @@ def resolve_speech_model(
         )
     if run.status != "finished":
         raise _no_finished_run(f"fine-tune run {run_id} is {run.status}, not finished")
+    # ``base`` speaks with the pinned pretrained weights and only borrows this run's dataset
+    # clip as its reference, and a removal never takes the dataset; only the run itself
+    # cannot speak without its checkpoints.
+    if model != "base" and finetune_run_location(layout, run_root).location == "archived":
+        raise _archived_run(run_id)
     clips = {clip.prompt_id: clip for clip in dataset.clips}
     if reference_prompt_id is not None:
         reference = clips.get(reference_prompt_id)

@@ -114,7 +114,8 @@ struct RecordingFineTuneTests {
                  loss: 0.52, eta: 2520, message: message)
     }
 
-    static func summary(_ runID: String = RecordingFineTuneTests.runID, status: String = "finished") -> RecordingJSON {
+    static func summary(_ runID: String = RecordingFineTuneTests.runID, status: String = "finished",
+                        location: String? = nil, inVault: Bool? = nil) -> RecordingJSON {
         let root = "derived/finetune/\(runID)"
         var run: [String: RecordingJSON] = [
             "run_id": .string(runID), "run_root": .string(root), "status": .string(status),
@@ -127,6 +128,8 @@ struct RecordingFineTuneTests {
             run["finetuned_sample_paths"] = .array([.string("\(root)/samples/finetuned/sample-01.wav")])
             run["base_sample_paths"] = .array([.string("\(root)/samples/base/sample-01.wav")])
         }
+        if let location { run["location"] = .string(location) }
+        if let inVault { run["in_vault"] = .boolean(inVault) }
         return .object(run)
     }
 
@@ -284,6 +287,15 @@ struct RecordingFineTuneTests {
         status.phase = .failed; status.message = "the F5 trainer exited with status 1"
         status.supervisorFailure = Self.supervisorFailure
         #expect(status.statusLine == Self.supervisorFailure)
+    }
+
+    @Test func aRunSummarySaysWhereItsCheckpointsAreAndWhetherTheVaultHasThem() throws {
+        let local = try #require(RecordingFineTuneRunSummary(Self.summary()))
+        #expect((local.location, local.inVault, local.isArchived) == ("local", false, false))
+        let archived = try #require(RecordingFineTuneRunSummary(Self.summary(location: "archived", inVault: true)))
+        #expect((archived.location, archived.inVault, archived.isArchived) == ("archived", true, true))
+        let copied = try #require(RecordingFineTuneRunSummary(Self.summary(inVault: true)))
+        #expect((copied.location, copied.inVault, copied.isArchived) == ("local", true, false))
     }
 
     @Test @MainActor func theStatusRegionShowsTheFineTuneLineUntilTheChannelCloses() async throws {

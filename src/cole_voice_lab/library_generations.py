@@ -87,6 +87,7 @@ from .library_classification import FILE_CLASSES, matching_rules
 from .library_replication import (
     MAX_CHUNK_BYTES,
     PRETRAINED_PIN_SOURCE,
+    CarriedPath,
     OwnerResult,
     PassEntry,
     PassResult,
@@ -148,6 +149,8 @@ __all__ = [
     "ReplicationLedger",
     "RestoreRefusedError",
     "RestoreResult",
+    "RestoredFile",
+    "RestoredFiles",
     "StoredManifest",
     "VaultRecords",
     "VerifiedEntry",
@@ -155,6 +158,7 @@ __all__ = [
     "push_generation",
     "read_stored_manifest",
     "restore_library",
+    "restore_run_files",
     "store_manifest",
     "verify_generation",
 ]
@@ -1345,6 +1349,7 @@ class _Plan(NamedTuple):
     entries: tuple[PlannedManifestEntry, ...]
     owners: tuple[OwnerOutcome, ...]
     waiting: tuple[str, ...]
+    chunks: Mapping[_ContentKey, tuple[BlobRef, ...]]
 
 
 def _owner_entries(owner: OwnerResult) -> tuple[list[PlannedManifestEntry], str | None]:
@@ -1358,18 +1363,59 @@ def _owner_entries(owner: OwnerResult) -> tuple[list[PlannedManifestEntry], str 
     return planned, None
 
 
+class _Carrier:
+    """Resolves the stored entry of a file a source removed from the Mac on purpose.
+
+    The previous generation's entry counts when it is exactly the content the removal record
+    names; otherwise the generation that record names is read from this Mac's manifest copies
+    (each copy once). A file neither holds is waiting: the vault does not have it, so the new
+    generation cannot name it either.
+    """
+
+    def __init__(self, records: VaultRecords, by_path: Mapping[str, ManifestEntry]) -> None:
+        self._records = records
+        self._by_path = by_path
+        self._copies: dict[int, LibraryManifest | None] = {}
+        self.chunks: dict[_ContentKey, tuple[BlobRef, ...]] = {}
+
+    def entry(self, carried: CarriedPath) -> ManifestEntry | None:
+        content = (carried.sha256, carried.size, carried.kind)
+        found = self._by_path.get(carried.path)
+        if found is None or (found.sha256, found.size, found.kind) != content:
+            found = self._from_copy(carried, content)
+        if found is not None and found.kind == "file" and found.size > 0:
+            self.chunks[_ContentKey(found.sha256, found.size)] = found.chunks
+        return found
+
+    def _from_copy(
+        self, carried: CarriedPath, content: tuple[str, int, str]
+    ) -> ManifestEntry | None:
+        if carried.generation not in self._copies:
+            self._copies[carried.generation] = self._records.read_manifest_copy(carried.generation)
+        manifest = self._copies[carried.generation]
+        if manifest is None:
+            return None
+        found = next((item for item in manifest.entries if item.path == carried.path), None)
+        if found is None or (found.sha256, found.size, found.kind) != content:
+            return None
+        return found
+
+
 def _plan_files(
     result: PassResult,
     previous: LibraryManifest | None,
     sources: Sequence[ReplicationSource],
     wanted: frozenset[str],
+    records: VaultRecords,
 ) -> _Plan:
     """The files a generation carries: each complete owner's view, others' previous entries.
 
     A complete owner's withheld files keep their previous entries (a file is never dropped
     because it is temporarily unfit to copy); a file that is simply gone is dropped. A
-    changed or refused owner keeps every previous entry whose path its rules decide. An owner
-    whose entry names a path a restore could not write is refused.
+    changed or refused owner keeps every previous entry whose path its rules decide. A file
+    an owner reports carried (removed from the Mac on purpose, ``CarriedPath``) keeps the
+    entry of the generation that holds it, chunks and all, whatever state its owner is in. An
+    owner whose entry names a path a restore could not write is refused.
     """
     owner_of_rule = {rule: source.name for source in sources for rule in source.rules}
     earlier: dict[str, list[ManifestEntry]] = {}
@@ -1380,9 +1426,26 @@ def _plan_files(
         if name is not None and entry.file_class in wanted:
             earlier.setdefault(name, []).append(entry)
             by_path[entry.path] = entry
+    carrier = _Carrier(records, by_path)
     files: dict[str, PlannedManifestEntry] = {}
     outcomes: list[OwnerOutcome] = []
     waiting: list[str] = []
+
+    def carry(owner: OwnerResult) -> int:
+        kept = 0
+        for removed in owner.carried:
+            # A pass offers a carried path only for a wanted class, and a file this pass read
+            # always wins over the entry a generation kept.
+            if removed.path in files:
+                continue
+            stored = carrier.entry(removed)
+            if stored is None:
+                waiting.append(removed.path)
+            else:
+                files[stored.path] = _planned(stored)
+                kept += 1
+        return kept
+
     for owner in result.owners:
         kept = earlier.get(owner.owner, [])
         state, reason, problem_path = owner.state, owner.reason, owner.problem_path
@@ -1400,16 +1463,26 @@ def _plan_files(
                     else:
                         files[old.path] = _planned(old)
                         carried += 1
-                outcomes.append(OwnerOutcome(owner.owner, "complete", carried))
+                outcomes.append(OwnerOutcome(owner.owner, "complete", carried + carry(owner)))
                 continue
             state, problem_path = "refused", unrestorable
             reason = f"{unrestorable}: a restore could not write a file of this name"
         files.update((entry.path, _planned(entry)) for entry in kept)
         outcomes.append(
-            OwnerOutcome(owner.owner, state, len(kept), reason, problem_path, owner.held_back_by)
+            OwnerOutcome(
+                owner.owner,
+                state,
+                len(kept) + carry(owner),
+                reason,
+                problem_path,
+                owner.held_back_by,
+            )
         )
     return _Plan(
-        tuple(files[path] for path in sorted(files)), tuple(outcomes), tuple(sorted(waiting))
+        tuple(files[path] for path in sorted(files)),
+        tuple(outcomes),
+        tuple(sorted(waiting)),
+        carrier.chunks,
     )
 
 
@@ -1578,7 +1651,7 @@ def _push(
 ) -> PushResult:
     stored = resolved.stored
     previous = None if stored is None else stored.manifest
-    files = _plan_files(passed, previous, sources, frozenset(wanted))
+    files = _plan_files(passed, previous, sources, frozenset(wanted), vault.records)
     plan = ManifestPlan(
         library_id=vault.library_id,
         generation=resolved.generation + 1,
@@ -1592,6 +1665,9 @@ def _push(
         for entry in (() if previous is None else previous.entries)
         if entry.kind == "file" and entry.size > 0
     }
+    # A file a run removed from the Mac is read from no source, so its chunks come from the
+    # generation its removal record names, through this Mac's manifest copies.
+    held.update(files.chunks)
     readable = set(sink.items)
     # ``--full`` re-uploads every file this pass read, whatever the previous generation holds
     # (the fix when ``vault verify`` finds a blob the vault lost). A file the pass did not
@@ -2265,3 +2341,131 @@ def restore_library(
         restored_bytes=sum(entry.size for entry in files),
         pins=outcomes,
     )
+
+
+# -- restoring the files of one archived fine-tune run -----------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RestoredFile:
+    """One file ``restore_run_files`` put back: ``written`` from the vault, or already ``kept``."""
+
+    path: str
+    size: int
+    state: Literal["written", "kept"]
+
+
+@dataclass(frozen=True, slots=True)
+class RestoredFiles:
+    """What ``restore_run_files`` put back into a library that is already there."""
+
+    files: tuple[RestoredFile, ...]
+    pins: tuple[PinOutcome, ...]
+
+    @property
+    def written_bytes(self) -> int:
+        return sum(file.size for file in self.files if file.state == "written")
+
+    @property
+    def pin_missing(self) -> tuple[PinOutcome, ...]:
+        """The pin entries whose files are not in place."""
+        return tuple(pin for pin in self.pins if pin.state == "missing")
+
+
+def restore_run_files(
+    root: Path,
+    *,
+    blob_store: BlobStore,
+    entries: Sequence[ManifestEntry],
+    runtime_root: Path | None = None,
+    free_bytes: Callable[[Path], int] | None = None,
+) -> RestoredFiles:
+    """Write named manifest entries back into a library that is already on this Mac.
+
+    ``restore_library`` builds a whole library in a staging directory; this puts a few files
+    back where they were, which is what an archived fine-tune run's checkpoints need. Before
+    anything is written the filesystem must have the entries' bytes plus a tenth plus
+    ``RESTORE_MARGIN_BYTES`` free. Each file entry is downloaded, decrypted and reassembled
+    into a private temporary beside its place and renamed there without ever replacing
+    anything; a file that is already there with the entry's digest and size is kept as it is
+    (a removal a crash interrupted), and one that is there with other bytes is refused. Pin
+    entries are hard-linked (or copied) from ``runtime_root`` exactly as a restore does, and
+    reported ``missing`` with their reason otherwise; a pin whose file a crash left in place
+    is kept (``linked``) when it still has the pinned bytes, and refused when it does not.
+    Params: ``root``, the asset root (an existing library); ``blob_store``, the library's
+    sealed store; ``entries``, the manifest entries to put back (paths asset-root-relative);
+    ``runtime_root``; ``free_bytes``, the free space of a directory's filesystem (``None``:
+    ask the filesystem).
+    Returns: the ``RestoredFiles``.
+    Raises: ``RestoreRefusedError`` (``unrestorable-path``) for an entry a restore could not
+    write, (``insufficient-space``), (``target-not-empty``) when a file is there with other
+    bytes; ``StorageError`` (``STORAGE.NOT_FOUND``) for a missing chunk;
+    ``StorageIntegrityError`` when a chunk or a reassembled file fails its check; ``OSError``
+    from the filesystem.
+    """
+    for entry in entries:
+        _restorable_parts(entry.path)
+    files = [entry for entry in entries if entry.kind == "file"]
+    pins = [entry for entry in entries if entry.kind == "pin"]
+    needed = sum(entry.size for entry in entries)
+    required = needed + needed // RESTORE_MARGIN_DIVISOR + RESTORE_MARGIN_BYTES
+    available = (_free_bytes if free_bytes is None else free_bytes)(root)
+    if available < required:
+        raise RestoreRefusedError(
+            "insufficient-space",
+            f"restoring {len(entries)} files needs {required} bytes free under {root}, but "
+            f"{available} are",
+        )
+    return RestoredFiles(
+        files=tuple(_restore_one(blob_store, root, entry) for entry in files),
+        pins=tuple(_restore_one_pin(root, entry, runtime_root) for entry in pins),
+    )
+
+
+def _restore_one_pin(root: Path, entry: ManifestEntry, runtime_root: Path | None) -> PinOutcome:
+    """Re-link a pin, or keep the file a removal a crash interrupted left in place."""
+    destination = root.joinpath(*PurePosixPath(entry.path).parts)
+    if not os.path.lexists(destination):
+        return _restore_pin(root, entry, runtime_root)
+    metadata = os.lstat(destination)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_size != entry.size
+        or _sha256_of(destination) != entry.sha256
+    ):
+        raise RestoreRefusedError(
+            "target-not-empty", f"{entry.path} is already there and is not the file it pins"
+        )
+    return PinOutcome(entry.path, str(entry.pin_source), "linked")
+
+
+def _restore_one(blob_store: BlobStore, root: Path, entry: ManifestEntry) -> RestoredFile:
+    parts = PurePosixPath(entry.path).parts
+    directory = _make_directories(root, parts[:-1])
+    destination = directory / parts[-1]
+    if os.path.lexists(destination):
+        metadata = os.lstat(destination)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != entry.size:
+            raise RestoreRefusedError(
+                "target-not-empty", f"{entry.path} is already there and is not the file it names"
+            )
+        if _sha256_of(destination) != entry.sha256:
+            raise RestoreRefusedError(
+                "target-not-empty", f"{entry.path} is already there with other bytes"
+            )
+        return RestoredFile(entry.path, entry.size, "kept")
+    temporary = directory / f".{parts[-1]}.restoring-{secrets.token_hex(8)}"
+    try:
+        with os.fdopen(os.open(temporary, _CREATE_FLAGS, 0o600), "wb") as stream:
+            for piece in _entry_plaintext(blob_store, entry):
+                stream.write(piece)
+            stream.flush()
+            os.fchmod(stream.fileno(), entry.mode)
+            os.fsync(stream.fileno())
+        rename_no_replace(temporary, destination)
+    except BaseException:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+        raise
+    fsync_directory(directory)
+    return RestoredFile(entry.path, entry.size, "written")

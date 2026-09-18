@@ -40,7 +40,15 @@ public struct RecordingFineTuneRunSummary: Equatable, Sendable {
     /// The run's reference-candidate prompts with a clip in its dataset, in catalog order: the
     /// reference clips Speak offers for this run.
     public let referencePromptIDs: [String]
+    /// Where the run's checkpoints are: `local` on this Mac, or `archived` (removed after the
+    /// library vault's copy was verified; `voice-lab finetune restore-run` brings them back).
+    public let location: String
+    /// Whether the library vault holds a verified copy of the run.
+    public let inVault: Bool
     public let error: String?
+
+    /// Whether the run's checkpoints were removed, so it cannot speak until it is restored.
+    public var isArchived: Bool { location == "archived" }
 
     /// The service's `FineTuneRunSummary`, already validated on the wire; nil for any other shape.
     public init?(_ json: RecordingJSON) {
@@ -60,6 +68,8 @@ public struct RecordingFineTuneRunSummary: Equatable, Sendable {
         self.finetunedSamplePaths = (object["finetuned_sample_paths"]?.array ?? []).compactMap(\.string)
         self.baseSamplePaths = (object["base_sample_paths"]?.array ?? []).compactMap(\.string)
         self.referencePromptIDs = (object["reference_prompt_ids"]?.array ?? []).compactMap(\.string)
+        self.location = object["location"]?.string ?? "local"
+        if case .boolean(let stored)? = object["in_vault"] { self.inVault = stored } else { self.inVault = false }
         self.error = object["error"]?.string
     }
 }

@@ -53,7 +53,13 @@ import cole_voice_lab.recording_finetune_jobs as finetune_jobs
 from cole_voice_lab.canonical import canonical_sha256, write_canonical_json
 from cole_voice_lab.capture import REJECTED_LOG_NAME, ReadyMarker, RejectedTakeLog
 from cole_voice_lab.errors import SecurityError, VoiceLabError
-from cole_voice_lab.finetune import FineTuneSample, FineTuneSampleSet
+from cole_voice_lab.finetune import (
+    FineTuneArchivedFile,
+    FineTuneRunArchive,
+    FineTuneRunRemoval,
+    FineTuneSample,
+    FineTuneSampleSet,
+)
 from cole_voice_lab.intake import accept_capture_session, validate_capture_package
 from cole_voice_lab.library_classification import (
     CLASSIFICATION_RULES,
@@ -70,6 +76,7 @@ from cole_voice_lab.library_replication import (
     MAX_CHUNK_BYTES,
     PRETRAINED_PIN_SOURCE,
     CaptureSessionSource,
+    CarriedPath,
     CorpusDatabaseSource,
     FineTuneRunSource,
     OwnerResult,
@@ -131,6 +138,12 @@ CATALOG_ID = "cole-pilot"
 PACKAGE_PROMPTS = ("room-tone-start", "reference-neutral-01")
 RUN_FINISHED = "run-finished"
 RUNTIME_WEIGHTS = b"pretrained-weights"
+# The finished fixture run was archived and one of its checkpoints removed: the pass must
+# still offer that file, so the vault keeps naming it.
+REMOVED_GENERATION = 3
+REMOVED_CHECKPOINT = FineTuneArchivedFile(
+    path="checkpoints/model_9.pt", sha256="c" * 64, size=1_024, kind="file"
+)
 CONSENT_HISTORY_BYTES = b'{"consent":"an earlier synthetic version"}\n'
 
 
@@ -404,8 +417,29 @@ def add_fine_tune_runs(layout: AssetLayout, runtime: Path) -> None:
     weights = write_file(runtime, "pretrained/model.safetensors", RUNTIME_WEIGHTS)
     os.link(weights, run / "checkpoints/pretrained_model.safetensors")
     write_file(run, "train.log", b"epoch 1\n", mode=0o644)
-    write_file(run, "archived.json")
-    write_file(run, "local-removal.json")
+    archived_at = started + timedelta(minutes=20)
+    write_canonical_json(
+        run / "archived.json",
+        FineTuneRunArchive(
+            run_id=RUN_FINISHED,
+            library_id="lib-20260917-0123456789ab",
+            destination_sha256="a" * 64,
+            generation=REMOVED_GENERATION,
+            manifest_sha256="b" * 64,
+            archived_at=archived_at,
+            files=(REMOVED_CHECKPOINT,),
+        ),
+    )
+    write_canonical_json(
+        run / "local-removal.json",
+        FineTuneRunRemoval(
+            run_id=RUN_FINISHED,
+            generation=REMOVED_GENERATION,
+            manifest_sha256="b" * 64,
+            removed_at=archived_at,
+            files=(REMOVED_CHECKPOINT,),
+        ),
+    )
     write_file(run, "local-removal-restored-1.json")
     write_file(run, f".run.json.tmp-{HEX16}")
     write_file(run, "samples/finetuned/synthesis-tmp/reference.wav", b"RIFF")
@@ -2020,6 +2054,110 @@ def runs(tmp_path: Path) -> AssetLayout:
 def run_owner(layout: AssetLayout, sink: RecordingSink | None = None) -> OwnerResult:
     result, _ = run_pass(layout, (FineTuneRunSource(),), sink, classes=("training",))
     return result.owner("fine-tune-runs")
+
+
+def test_a_removed_checkpoint_is_carried_from_the_generation_its_record_names(
+    runs: AssetLayout,
+) -> None:
+    owner = run_owner(runs)
+    path = f"derived/finetune/{RUN_FINISHED}/{REMOVED_CHECKPOINT.path}"
+
+    assert owner.state == "complete"
+    assert [item.path for item in owner.carried] == [path]
+    carried = owner.carried[0]
+    assert (carried.file_class, carried.kind, carried.mode) == ("training", "file", 0o600)
+    assert (carried.sha256, carried.size) == (REMOVED_CHECKPOINT.sha256, REMOVED_CHECKPOINT.size)
+    assert carried.generation == REMOVED_GENERATION
+    assert "restore-run" in carried.reason
+    # The file is gone, so nothing was read for it and nothing withheld it.
+    assert path not in {entry.path for entry in owner.entries}
+    assert path not in {item.path for item in owner.withheld}
+
+
+def test_a_carried_path_names_its_pin_source_exactly_when_it_is_a_pin() -> None:
+    fields: dict[str, Any] = {
+        "path": f"derived/finetune/{RUN_FINISHED}/checkpoints/model_9.pt",
+        "file_class": "training",
+        "mode": 0o600,
+        "sha256": "c" * 64,
+        "size": 1_024,
+        "generation": REMOVED_GENERATION,
+        "reason": "removed",
+    }
+    with pytest.raises(ValueError, match="names its pin source"):
+        CarriedPath(**fields, kind="pin")
+    with pytest.raises(ValueError, match="names its pin source"):
+        CarriedPath(**fields, kind="file", pin_source=PRETRAINED_PIN_SOURCE)
+
+    assert CarriedPath(**fields, kind="file").pin_source is None
+    assert CarriedPath(**fields, kind="pin", pin_source=PRETRAINED_PIN_SOURCE).kind == "pin"
+
+
+def test_a_removal_record_that_names_another_run_or_file_refuses_the_owner(
+    runs: AssetLayout,
+) -> None:
+    record = runs.root / "derived/finetune" / RUN_FINISHED / "local-removal.json"
+    removal = FineTuneRunRemoval.model_validate_json(record.read_bytes())
+    record.chmod(0o600)
+    write_canonical_json(record, removal.model_copy(update={"run_id": "run-other"}))
+
+    refused = run_owner(runs)
+
+    assert (refused.state, refused.problem) == ("refused", "invalid")
+    assert refused.problem_path == f"derived/finetune/{RUN_FINISHED}/local-removal.json"
+    assert "names another run" in str(refused.reason)
+
+    record.chmod(0o600)
+    write_canonical_json(
+        record,
+        removal.model_copy(
+            update={
+                "files": (
+                    FineTuneArchivedFile(
+                        path="checkpoints/model_9.pt", sha256="d" * 64, size=8, kind="pin"
+                    ),
+                )
+            }
+        ),
+    )
+
+    outside = run_owner(runs)
+
+    assert (outside.state, outside.problem) == ("refused", "invalid")
+    assert "not one of its run's files" in str(outside.reason)
+
+    # A record naming anything but a checkpoint -- a summary record every status reply reads,
+    # say -- is refused by the record itself, wherever it is read.
+    record.chmod(0o600)
+    write_canonical_json(
+        record,
+        removal.model_copy(
+            update={
+                "files": (
+                    FineTuneArchivedFile(path="run.json", sha256="d" * 64, size=8, kind="file"),
+                )
+            }
+        ),
+    )
+
+    summary = run_owner(runs)
+
+    assert (summary.state, summary.problem) == ("refused", "invalid")
+    assert "is not a valid FineTuneRunRemoval record" in str(summary.reason)
+
+
+def test_a_removed_file_that_came_back_is_read_again_instead_of_carried(
+    runs: AssetLayout,
+) -> None:
+    checkpoints = runs.root / "derived/finetune" / RUN_FINISHED / "checkpoints"
+    write_file(checkpoints, "model_9.pt", b"a checkpoint that was restored", mode=0o600)
+
+    owner = run_owner(runs)
+
+    assert owner.state == "complete" and owner.carried == ()
+    assert f"derived/finetune/{RUN_FINISHED}/checkpoints/model_9.pt" in {
+        entry.path for entry in owner.entries
+    }
 
 
 def queued_job() -> FineTuneJobHead:

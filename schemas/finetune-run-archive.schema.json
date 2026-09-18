@@ -1,0 +1,110 @@
+{
+  "$defs": {
+    "FineTuneArchivedFile": {
+      "additionalProperties": false,
+      "description": "One file of an archived run, as the vault generation that holds it names it.\n\n``path`` is relative to the run directory (``checkpoints/model_last.pt``), so an archive\nrecord survives a restore into another asset root. ``kind`` is ``pin`` for the hard link\nto the runtime's pretrained weights, which the vault records by its pin and never holds.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "file",
+            "pin"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size",
+        "kind"
+      ],
+      "title": "FineTuneArchivedFile",
+      "type": "object"
+    },
+    "LibraryId": {
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+      "type": "string"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``archived.json``: this run has a verified encrypted copy in the library vault.\n\nWritten once, after one push put the run in the vault and a verify downloaded and\ndecrypted every chunk of every entry the run owns. ``generation`` and ``manifest_sha256``\nname the generation that was verified and ``files`` every file of the run it holds.\nThe record says nothing about what is still on the Mac: ``local-removal.json``\n(``FineTuneRunRemoval``) does.",
+  "properties": {
+    "archived_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "destination_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/FineTuneArchivedFile"
+      },
+      "maxItems": 10000,
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "generation": {
+      "minimum": 1,
+      "title": "Generation",
+      "type": "integer"
+    },
+    "library_id": {
+      "$ref": "#/$defs/LibraryId"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "run_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-run-archive/v1",
+      "default": "cole-voice-lab.finetune-run-archive/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "library_id",
+    "destination_sha256",
+    "generation",
+    "manifest_sha256",
+    "archived_at",
+    "files"
+  ],
+  "title": "FineTuneRunArchive",
+  "type": "object"
+}

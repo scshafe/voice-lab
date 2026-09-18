@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, get_args
 
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
@@ -754,8 +754,16 @@ def _finetune_corpus(options: argparse.Namespace) -> int:
 def _finetune_dataset(options: argparse.Namespace) -> int:
     from .finetune import materialize_finetune_dataset
 
-    layout, corpus = _finetune_select(options)
     run_id = _finetune_run_id(options)
+    # Rewriting dataset/ in place would leave run.json, and the archive record built from it,
+    # naming clips the run no longer has. Asked before the corpus is selected, so an archived
+    # run is named rather than whatever the selection would say first.
+    _refuse_an_archived_run(
+        AssetLayout.validate(_asset_root(options.asset_root)),
+        f"{options.output_root}/{run_id}",
+        run_id,
+    )
+    layout, corpus = _finetune_select(options)
     dataset = materialize_finetune_dataset(
         layout,
         corpus,
@@ -820,6 +828,9 @@ def _finetune_train(options: argparse.Namespace) -> int:
     layout = AssetLayout.validate(_asset_root(options.asset_root))
     _refuse_during_app_gpu_work(layout)
     run_root = f"{options.output_root}/{options.run_id}"
+    # Training rewrites run.json and resumes from a checkpoint an archive removed, so it
+    # would leave the run disagreeing with its archive record.
+    _refuse_an_archived_run(layout, run_root, options.run_id)
     corpus, dataset = _finetune_load_run_inputs(layout, run_root)
     runtime = describe_finetune_runtime(Path(options.runtime_root))
     run = run_f5_finetune(
@@ -865,12 +876,28 @@ def _finetune_synthesize_one(
     )
 
 
+def _refuse_an_archived_run(layout: AssetLayout, run_root: str, run_id: str) -> None:
+    """Refuse a command that writes into, or reads a checkpoint of, an archived run.
+
+    Raises: ``FineTuneError`` FINETUNE.RUN_ARCHIVED when the run's checkpoints were removed
+    after its vault copy was verified.
+    """
+    from .finetune import FineTuneError, archived_run_message, finetune_run_location
+
+    if finetune_run_location(layout, run_root).location == "archived":
+        raise FineTuneError("FINETUNE.RUN_ARCHIVED", archived_run_message(run_id))
+
+
 def _finetune_synthesize(options: argparse.Namespace) -> int:
     from .finetune import describe_finetune_runtime
 
     layout = AssetLayout.validate(_asset_root(options.asset_root))
     _refuse_during_app_gpu_work(layout)
     run_root = f"{options.output_root}/{options.run_id}"
+    # Every --checkpoint value writes a sample set into the run and reads its dataset clip,
+    # and `last` reads a checkpoint an archive removed. This command never reads run.json, so
+    # the archive record is what it asks.
+    _refuse_an_archived_run(layout, run_root, options.run_id)
     _corpus, dataset = _finetune_load_run_inputs(layout, run_root)
     runtime = describe_finetune_runtime(Path(options.runtime_root))
     if options.checkpoint == "last":
@@ -898,8 +925,11 @@ def _finetune_run(options: argparse.Namespace) -> int:
 
     layout = AssetLayout.validate(_asset_root(options.asset_root))
     _refuse_during_app_gpu_work(layout)
-    resolved = _resolve_catalog(options.catalog, options.asset_root, BUILTIN_CATALOG_RESOURCES)
     run_id = _finetune_run_id(options)
+    # The whole pipeline rewrites dataset/, run.json and checkpoints/ of an existing run id,
+    # so it does everything `finetune train` is refused for and more.
+    _refuse_an_archived_run(layout, f"{options.output_root}/{run_id}", run_id)
+    resolved = _resolve_catalog(options.catalog, options.asset_root, BUILTIN_CATALOG_RESOURCES)
     result = run_finetune_pipeline(
         layout,
         resolved.catalog,
@@ -964,6 +994,390 @@ def _finetune_fetch_pretrained(options: argparse.Namespace) -> int:
         {
             "files": [str(path) for path in paths],
             "runtime": runtime.identity.model_dump(mode="json"),
+        }
+    )
+    return 0
+
+
+def _finetune_run_root(options: argparse.Namespace) -> str:
+    return f"{options.output_root}/{options.run}"
+
+
+def _vault_for_training(layout: AssetLayout) -> LibraryVault:
+    """The bound vault, which must copy the ``training`` class.
+
+    Fine-tune checkpoints and datasets are a separate opt-in class: a binding (and, for a
+    tailnet vault, the destination approval behind it) either covers ``training`` or no run
+    ever leaves this Mac.
+    Raises: ``StorageError`` (``STORAGE.NOT_BOUND``, ``STORAGE.NOT_APPROVED``).
+    """
+    vault = _open_bound_vault(layout)
+    if "training" not in vault.classes:
+        raise storage_error(
+            "STORAGE.NOT_APPROVED",
+            "this library's vault does not take fine-tune runs; its classes are "
+            f"{', '.join(vault.classes)}. Opt in by binding it again with `voice-lab vault bind "
+            "--classes … training` (a tailnet vault also needs an approval that covers training)",
+        )
+    return vault
+
+
+class _Generation(NamedTuple):
+    """The generation a push left as the vault's head."""
+
+    number: int
+    manifest_sha256: str
+
+
+def _finetune_push(vault: LibraryVault, layout: AssetLayout) -> _Generation:
+    """One push of the whole library, which is how a run reaches the vault.
+
+    The fine-tune owner must have completed in this pass. A pass that meets a fine-tune job or
+    a Speak request reports that owner ``changed`` and keeps the previous generation's
+    entries, which is a fine outcome for a copy but not for an archive: the generation would
+    then name an older run, and a removal resting on it would unlink files the vault never
+    took. ``PushResult.exit_status`` does not see that (only a refused owner raises it), so it
+    is checked here.
+    Raises: ``VoiceLabError`` when the push did not put this Mac's view of the runs in the
+    vault, or when the vault holds no generation at all.
+    """
+    from .library_generations import push_generation
+    from .library_replication import FineTuneRunSource
+
+    result = push_generation(
+        layout,
+        blob_store=vault.blob_store,
+        ref_store=vault.ref_store,
+        library_id=vault.library_id,
+        destination=vault.destination,
+        classes=vault.classes,
+        chunk_bytes=vault.chunk_bytes,
+    )
+    if result.outcome not in ("pushed", "up-to-date") or result.exit_status != 0:
+        raise VoiceLabError(
+            f"the copy to the vault did not finish ({result.outcome}); run `voice-lab vault "
+            "push` and read its report, then archive again"
+        )
+    runs = FineTuneRunSource().name
+    waiting = [owner for owner in result.waiting_owners if owner.owner == runs]
+    if waiting:
+        raise VoiceLabError(
+            f"the copy to the vault did not carry this Mac's fine-tune runs ({waiting[0].reason}"
+            "), so the vault still holds the runs of an earlier generation; nothing was "
+            "archived or removed"
+        )
+    if result.generation < 1 or result.manifest_sha256 is None:
+        raise VoiceLabError(
+            "the vault holds no generation of this library yet, so there is nothing to archive"
+        )
+    return _Generation(result.generation, result.manifest_sha256)
+
+
+def _finetune_run_entries(
+    records: Any, generation: int, manifest_sha256: str, run_root: str
+) -> list[Any]:
+    """Every manifest entry of ``run_root`` in the generation this Mac keeps a copy of.
+
+    Raises: ``VoiceLabError`` when the copy is missing (a removal could never be undone
+    without it), is not the manifest the caller's record names, or holds none of the run's
+    files.
+    """
+    from .storage_contracts import manifest_digest
+
+    manifest = records.read_manifest_copy(generation)
+    if manifest is None:
+        raise VoiceLabError(
+            f"this Mac keeps no manifest copy of generation {generation} under "
+            "provenance/vault/manifests, so the run's files could not be read back"
+        )
+    if manifest_digest(manifest) != manifest_sha256:
+        raise VoiceLabError(
+            f"this Mac's manifest copy of generation {generation} is not the one the run's "
+            "record names"
+        )
+    entries = [
+        entry
+        for entry in manifest.entries
+        if entry.path == run_root or entry.path.startswith(f"{run_root}/")
+    ]
+    if not entries:
+        raise VoiceLabError(f"generation {generation} holds no file of {run_root}")
+    return entries
+
+
+def _finetune_verify_run(
+    vault: LibraryVault, layout: AssetLayout, run_root: str, pushed: _Generation
+) -> Any:
+    """Download and decrypt every chunk of the run's entries; the vault's word counts for none.
+
+    The generation is named rather than resolved from the head: the push and the verify take
+    ``.push.lock`` separately, so the service's own vault supervisor can leave a newer
+    generation as the head in between, and the entries that authorize an unlink must be
+    exactly the entries the records name.
+    Raises: ``VoiceLabError`` when any entry is missing or does not match, or when the
+    generation's manifest is not the one the push left.
+    """
+    from .library_generations import verify_generation
+
+    report = verify_generation(
+        layout,
+        blob_store=vault.blob_store,
+        ref_store=vault.ref_store,
+        library_id=vault.library_id,
+        generation=pushed.number,
+        paths=(run_root,),
+    )
+    if report.manifest_sha256 != pushed.manifest_sha256:
+        raise VoiceLabError(
+            f"generation {pushed.number} in the vault is not the one this push left, so "
+            "nothing was archived or removed"
+        )
+    if report.exit_status != 0:
+        problems = ", ".join(
+            f"{entry.path} ({entry.state})"
+            for entry in report.entries
+            if entry.state in ("missing", "mismatch")
+        )
+        detail = problems or "the generation names none of the run's files"
+        raise VoiceLabError(
+            f"the vault's copy of {run_root} did not verify, so nothing was archived or "
+            f"removed: {detail}"
+        )
+    return report
+
+
+def _finetune_archived_files(entries: list[Any], run_root: str) -> tuple[Any, ...]:
+    from .finetune import FineTuneArchivedFile
+
+    return tuple(
+        FineTuneArchivedFile(
+            path=entry.path.removeprefix(f"{run_root}/"),
+            sha256=entry.sha256,
+            size=entry.size,
+            kind=entry.kind,
+        )
+        for entry in entries
+    )
+
+
+def _finetune_archive(options: argparse.Namespace) -> int:
+    """Copy one finished run to the vault, verify it there, and record that it is archived."""
+    from .finetune import (
+        FineTuneRunArchive,
+        read_run_archive,
+        require_finished_run,
+        write_run_archive,
+    )
+    from .library_generations import VaultRecords
+
+    layout = AssetLayout.validate(_asset_root(options.asset_root))
+    _refuse_during_app_gpu_work(layout)
+    run_root = _finetune_run_root(options)
+    require_finished_run(layout, run_root, options.run)
+    vault = _vault_for_training(layout)
+    records = VaultRecords(layout)
+    pushed = _finetune_push(vault, layout)
+    _finetune_verify_run(vault, layout, run_root, pushed)
+    archive = read_run_archive(layout, run_root)
+    written: str | None = None
+    if archive is None:
+        entries = _finetune_run_entries(records, pushed.number, pushed.manifest_sha256, run_root)
+        archive = FineTuneRunArchive(
+            run_id=options.run,
+            library_id=vault.library_id,
+            destination_sha256=vault.destination.digest,
+            generation=pushed.number,
+            manifest_sha256=pushed.manifest_sha256,
+            archived_at=utc_now(),
+            files=_finetune_archived_files(entries, run_root),
+        )
+        written = str(write_run_archive(layout, run_root, archive)[0])
+        # The record itself belongs in the vault, so a restore of the newest generation
+        # brings back a run that says it is archived.
+        pushed = _finetune_push(vault, layout)
+    document: dict[str, JsonValue] = {
+        "run_id": options.run,
+        "run_root": run_root,
+        "archived_at": archive.archived_at.isoformat(),
+        "archive_record": written,
+        "generation": pushed.number,
+        "manifest_sha256": pushed.manifest_sha256,
+        "verified_files": len(archive.files),
+        "removed": None,
+    }
+    if options.remove_local_copy:
+        document["removed"] = _finetune_remove_local_copy(
+            options, vault, layout, records, run_root, pushed
+        )
+    _json_print(document)
+    return 0
+
+
+def _finetune_remove_local_copy(
+    options: argparse.Namespace,
+    vault: LibraryVault,
+    layout: AssetLayout,
+    records: Any,
+    run_root: str,
+    pushed: _Generation,
+) -> JsonValue:
+    """Remove the run's checkpoints, after a fresh verify and with the record written first.
+
+    The app's fine-tune job and Speak request are asked again here. The check the command
+    opened with is minutes old by now — a whole-library push and two whole-run verifies (for a
+    real run, gigabytes of upload, download and decryption) happened in between — and a Speak
+    request that started in that window resolved a run whose checkpoint is about to go.
+    Both questions are two metadata reads.
+    """
+    from .finetune import (
+        FineTuneRunRemoval,
+        read_run_removal,
+        removable_run_files,
+        remove_run_files,
+        write_run_removal,
+    )
+
+    removal = read_run_removal(layout, run_root)
+    record: str | None = None
+    if removal is None:
+        _finetune_verify_run(vault, layout, run_root, pushed)
+        entries = _finetune_run_entries(records, pushed.number, pushed.manifest_sha256, run_root)
+        files = removable_run_files(_finetune_archived_files(entries, run_root))
+        if not files:
+            raise VoiceLabError(
+                f"generation {pushed.number} holds no checkpoint of {run_root}; there is "
+                "nothing whose local copy could be removed"
+            )
+        _refuse_during_app_gpu_work(layout)
+        removal = FineTuneRunRemoval(
+            run_id=options.run,
+            generation=pushed.number,
+            manifest_sha256=pushed.manifest_sha256,
+            removed_at=utc_now(),
+            files=files,
+        )
+        record = str(write_run_removal(layout, run_root, removal)[0])
+    _refuse_during_app_gpu_work(layout)
+    removed = remove_run_files(layout, run_root, removal.files)
+    return {
+        "removal_record": record,
+        "generation": removal.generation,
+        "manifest_sha256": removal.manifest_sha256,
+        "files": list(removed),
+        "freed_bytes": sum(
+            file.size for file in removal.files if file.path in set(removed) and file.kind == "file"
+        ),
+    }
+
+
+def _finetune_restored_already(
+    options: argparse.Namespace, layout: AssetLayout, run_root: str, removal: Any
+) -> int:
+    """Finish a restore whose files are all back already: keep the record as history."""
+    from .finetune import keep_removal_history
+
+    history = keep_removal_history(layout, run_root)
+    _json_print(
+        {
+            "run_id": options.run,
+            "run_root": run_root,
+            "generation": removal.generation,
+            "manifest_sha256": removal.manifest_sha256,
+            "restored": [
+                {"path": f"{run_root}/{file.path}", "size": file.size, "state": "kept"}
+                for file in removal.files
+                if file.kind == "file"
+            ],
+            "restored_bytes": 0,
+            "pins": [
+                {"path": f"{run_root}/{file.path}", "state": "linked", "reason": None}
+                for file in removal.files
+                if file.kind == "pin"
+            ],
+            "removal_history": str(history),
+        }
+    )
+    return 0
+
+
+def _finetune_restore_run(options: argparse.Namespace) -> int:
+    """Bring an archived run's removed files back from the vault, into the same run directory.
+
+    Without ``--runtime-root`` the pinned base weights are reported ``missing`` rather than
+    refused, exactly as ``voice-lab vault restore`` reports them. Nothing in the lab reads
+    that hard link after training — Speak and ``finetune synthesize`` read ``model_last.pt``,
+    and only F5's trainer seeds or resumes from the pin — so a restore that brings back
+    everything Speak needs is a success, and the run goes back to ``local``. The runtime lives
+    outside the library and is not restored with it, so on a Mac rebuilt from the vault there
+    is often no runtime to link from yet; refusing there would leave the checkpoints
+    unrestorable for the one thing they are wanted for. Naming a runtime asks for the link,
+    and a runtime that does not hold the pinned bytes is then refused by name.
+    """
+    from .finetune import (
+        FineTuneError,
+        keep_removal_history,
+        read_run_removal,
+        require_finished_run,
+        run_files_are_the_recorded_ones,
+    )
+    from .library_generations import VaultRecords, restore_run_files
+
+    layout = AssetLayout.validate(_asset_root(options.asset_root))
+    _refuse_during_app_gpu_work(layout)
+    run_root = _finetune_run_root(options)
+    require_finished_run(layout, run_root, options.run)
+    removal = read_run_removal(layout, run_root)
+    if removal is None:
+        raise VoiceLabError(
+            f"fine-tune run {options.run} has no {run_root}/local-removal.json; nothing of it "
+            "was removed from this Mac"
+        )
+    if run_files_are_the_recorded_ones(layout, run_root, removal.files):
+        # Nothing left this run: a whole-library restore wrote its files back beside the
+        # record it also carries, or a crash landed before the first unlink. No vault is
+        # needed (a Mac restored from the vault has none bound yet) and none is opened; the
+        # record is kept as history, which is what leaves the run local again.
+        return _finetune_restored_already(options, layout, run_root, removal)
+    vault = _open_bound_vault(layout)
+    records = VaultRecords(layout)
+    entries = _finetune_run_entries(records, removal.generation, removal.manifest_sha256, run_root)
+    wanted = {f"{run_root}/{file.path}": file for file in removal.files}
+    missing = sorted(wanted.keys() - {entry.path for entry in entries})
+    if missing:
+        raise VoiceLabError(
+            f"generation {removal.generation} does not hold {', '.join(missing)}, so the run "
+            "cannot be restored from it"
+        )
+    runtime_root = None if options.runtime_root is None else Path(options.runtime_root)
+    result = restore_run_files(
+        layout.root,
+        blob_store=vault.blob_store,
+        entries=[entry for entry in entries if entry.path in wanted],
+        runtime_root=runtime_root,
+    )
+    # A pin is only expected to land when a runtime was named to re-link it from; see the
+    # docstring for why a restore without one reports the pin rather than refusing.
+    if runtime_root is not None and result.pin_missing:
+        raise FineTuneError(
+            "FINETUNE.PRETRAINED_MISMATCH",
+            f"{runtime_root} does not hold the weights {run_root}/run.json pins: "
+            + "; ".join(f"{pin.path} ({pin.reason})" for pin in result.pin_missing),
+        )
+    history = keep_removal_history(layout, run_root)
+    _json_print(
+        {
+            "run_id": options.run,
+            "run_root": run_root,
+            "generation": removal.generation,
+            "manifest_sha256": removal.manifest_sha256,
+            "restored": [
+                {"path": file.path, "size": file.size, "state": file.state} for file in result.files
+            ],
+            "restored_bytes": result.written_bytes,
+            "pins": [
+                {"path": pin.path, "state": pin.state, "reason": pin.reason} for pin in result.pins
+            ],
+            "removal_history": str(history),
         }
     )
     return 0
@@ -3619,6 +4033,34 @@ def build_parser() -> argparse.ArgumentParser:
     finetune_fetch.add_argument("--runtime-root", required=True)
     finetune_fetch.add_argument("--allow-downloads", action="store_true")
     finetune_fetch.set_defaults(handler=_finetune_fetch_pretrained)
+
+    finetune_archive = finetune_commands.add_parser(
+        "archive",
+        help="copy one finished run to the library vault, verify it there and record it as "
+        "archived",
+    )
+    finetune_archive.add_argument("--asset-root")
+    finetune_archive.add_argument("--output-root", default="derived/finetune")
+    finetune_archive.add_argument("--run", required=True, help="the run id to archive")
+    finetune_archive.add_argument(
+        "--remove-local-copy",
+        action="store_true",
+        help="after the copy verifies, remove the run's checkpoints from this Mac",
+    )
+    finetune_archive.set_defaults(handler=_finetune_archive)
+
+    finetune_restore_run = finetune_commands.add_parser(
+        "restore-run", help="bring an archived run's removed files back from the library vault"
+    )
+    finetune_restore_run.add_argument("--asset-root")
+    finetune_restore_run.add_argument("--output-root", default="derived/finetune")
+    finetune_restore_run.add_argument("--run", required=True, help="the run id to restore")
+    finetune_restore_run.add_argument(
+        "--runtime-root",
+        help="the fine-tune runtime to re-link the pinned base weights from; without it the "
+        "pin is reported missing and the rest of the run is still restored",
+    )
+    finetune_restore_run.set_defaults(handler=_finetune_restore_run)
 
     catalog = commands.add_parser(
         "catalog", help="edit, import, publish and activate prompt catalogs (the corpus store)"

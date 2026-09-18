@@ -121,6 +121,7 @@ type ErrorCode = Literal[
     "FINETUNE.REQUIREMENTS_MISSING",
     "FINETUNE.RUNTIME_FAILED",
     "FINETUNE.RUNTIME_UNAVAILABLE",
+    "FINETUNE.RUN_ARCHIVED",
     "FINETUNE.RUN_EXISTS",
     "FINETUNE.SOURCE_CHANGED",
     "FINETUNE.SYNTHESIS_DEADLINE",
@@ -1899,6 +1900,13 @@ class FineTuneRunSummary(ContractModel):
     pretrained weights, for comparison). ``reference_prompt_ids`` are the run's
     reference-candidate prompts that have a clip in its dataset, in catalog order: the
     reference choices Speak offers for this run (empty: Speak uses the run's first clip).
+
+    ``in_vault`` says the run was copied to the library vault and verified there
+    (``archived.json`` is beside its ``run.json``); ``location`` says where its checkpoints
+    are: ``local`` (they are on this Mac) or ``archived`` (they were removed after the copy
+    was verified, and ``voice-lab finetune restore-run`` brings them back). The two are
+    independent facts, so an operator who deletes the archive record of a removed run still
+    sees ``archived`` rather than a run summary that refuses to be built.
     """
 
     run_id: StableId
@@ -1912,6 +1920,8 @@ class FineTuneRunSummary(ContractModel):
     finetuned_sample_paths: tuple[RelativePath, ...] = Field(default=(), max_length=64)
     base_sample_paths: tuple[RelativePath, ...] = Field(default=(), max_length=64)
     reference_prompt_ids: tuple[StableId, ...] = Field(default=(), max_length=64)
+    location: Literal["local", "archived"] = "local"
+    in_vault: bool = False
     error: str | None = Field(default=None, min_length=1, max_length=4_096)
 
     @model_validator(mode="after")

@@ -1966,6 +1966,25 @@ def finetune_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
             ),
         ),
         (
+            "run-archived",
+            "recording-response",
+            response(
+                FineTuneEvent(
+                    operation_id="op-fine-tune",
+                    run=synthetic_finetune_run(location="archived", in_vault=True),
+                )
+            ),
+        ),
+        (
+            "run-in-vault-but-still-local",
+            "recording-response",
+            response(
+                FineTuneEvent(
+                    operation_id="op-fine-tune", run=synthetic_finetune_run(in_vault=True)
+                )
+            ),
+        ),
+        (
             "run-running",
             "recording-response",
             response(
@@ -2242,6 +2261,21 @@ def finetune_cases() -> list[tuple[str, str, bool, str, dict[str, Any]]]:
             changed(
                 finished, (*run, "base_sample_paths", 0), FINETUNE_RUN_ROOT + "-2/sample-01.wav"
             ),
+        ),
+        (
+            "run-unknown-location",
+            "recording-response",
+            changed(finished, (*run, "location"), "removed"),
+        ),
+        (
+            "run-location-absent",
+            "recording-response",
+            changed(finished, (*run, "location"), None),
+        ),
+        (
+            "run-in-vault-not-a-flag",
+            "recording-response",
+            changed(finished, (*run, "in_vault"), "yes"),
         ),
         (
             "run-running-with-finish",
@@ -3098,7 +3132,7 @@ def test_finetune_messages_bind_their_state_and_relative_run_paths(case: Any) ->
 
 def test_every_finetune_code_is_a_valid_wire_error() -> None:
     names = {name for name, *_ in finetune_cases()}
-    assert len(FINETUNE_WIRE_CODES) == 22
+    assert len(FINETUNE_WIRE_CODES) == 23
     for code in FINETUNE_WIRE_CODES:
         assert f"finetune-error-{code.lower().replace('.', '-').replace('_', '-')}" in names
     assert {

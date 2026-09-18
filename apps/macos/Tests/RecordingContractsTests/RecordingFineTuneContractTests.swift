@@ -20,7 +20,8 @@ import Testing
         "FINETUNE.CORPUS_PROJECTION_FAILED", "FINETUNE.DOWNLOADS_NOT_ALLOWED", "FINETUNE.DOWNLOAD_FAILED", "FINETUNE.EMPTY_CORPUS",
         "FINETUNE.FFMPEG_FAILED", "FINETUNE.FFMPEG_UNAVAILABLE", "FINETUNE.INTERRUPTED", "FINETUNE.JOB_ACTIVE",
         "FINETUNE.NO_FINISHED_RUN", "FINETUNE.PRETRAINED_MISMATCH", "FINETUNE.REFERENCE_MISSING",
-        "FINETUNE.REQUIREMENTS_MISSING", "FINETUNE.RUNTIME_FAILED", "FINETUNE.RUNTIME_UNAVAILABLE", "FINETUNE.RUN_EXISTS",
+        "FINETUNE.REQUIREMENTS_MISSING", "FINETUNE.RUNTIME_FAILED", "FINETUNE.RUNTIME_UNAVAILABLE",
+        "FINETUNE.RUN_ARCHIVED", "FINETUNE.RUN_EXISTS",
         "FINETUNE.SOURCE_CHANGED", "FINETUNE.SYNTHESIS_DEADLINE", "FINETUNE.TRAINING_FAILED", "FINETUNE.UNSUPPORTED_TEXT",
     ]
 
@@ -148,6 +149,8 @@ import Testing
             ("finished without samples", run(noSamples)),
             ("running", run(noSamples.merging(["status": .string("running"), "finished_at": .null]) { $1 })),
             ("failed", run(noSamples.merging(["status": .string("failed"), "error": .string("training ended without model_last.pt")]) { $1 })),
+            ("archived", run(["location": .string("archived"), "in_vault": .boolean(true)])),
+            ("in the vault but still local", run(["in_vault": .boolean(true)])),
         ]
         for (name, summary) in accepted {
             #expect(try accepts(responses, response(data: runEvent(summary))), "\(name) is a valid run")
@@ -171,6 +174,9 @@ import Testing
             ("no prompts", run(["prompt_count": .integer(0)])),
             ("negative seconds", run(["retained_seconds": .number(-1)])),
             ("absolute runtime path", run(["pretrained_path": .string("/Users/synthetic/pretrained.pt")])),
+            ("an unknown location", run(["location": .string("removed")])),
+            ("a null location", run(["location": .null])),
+            ("in_vault that is not a flag", run(["in_vault": .string("yes")])),
         ]
         for (name, summary) in refused {
             #expect(try !accepts(responses, response(data: runEvent(summary))), "\(name) must fail closed")
@@ -386,7 +392,7 @@ import Testing
 
     @Test func everyFineTuneFailureIsAWireErrorCode() throws {
         let responses = try validator("recording-response")
-        #expect(fineTuneCodes.count == 22)
+        #expect(fineTuneCodes.count == 23)
         for code in fineTuneCodes {
             let error = RecordingJSON.object(["code": .string(code), "message": .string("Synthetic"), "retryable": .boolean(false)])
             #expect(try accepts(responses, response(error: error)), "\(code) is a wire error code")

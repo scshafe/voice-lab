@@ -1,0 +1,97 @@
+{
+  "$defs": {
+    "FineTuneArchivedFile": {
+      "additionalProperties": false,
+      "description": "One file of an archived run, as the vault generation that holds it names it.\n\n``path`` is relative to the run directory (``checkpoints/model_last.pt``), so an archive\nrecord survives a restore into another asset root. ``kind`` is ``pin`` for the hard link\nto the runtime's pretrained weights, which the vault records by its pin and never holds.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "file",
+            "pin"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size",
+        "kind"
+      ],
+      "title": "FineTuneArchivedFile",
+      "type": "object"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``local-removal.json``: the run's large files were removed from this Mac.\n\nWritten once, before the first unlink, so a crash in the middle leaves the record and\n``voice-lab finetune restore-run`` can finish the job. ``generation`` and\n``manifest_sha256`` name the generation whose manifest copy holds the removed files'\nchunks; every later generation carries those entries forward, so the vault keeps naming\nthem. ``files`` are the removed files, relative to the run directory, and every one of\nthem is under ``checkpoints/``: the record is what the removal unlinks by, so the rule\nthat a removal never takes a record the app's status or Speak needs is enforced here,\nwhere the record is read, and not only where it is written. The record is renamed to\n``local-removal-restored-<n>.json`` once the files are back.",
+  "properties": {
+    "files": {
+      "items": {
+        "$ref": "#/$defs/FineTuneArchivedFile"
+      },
+      "maxItems": 10000,
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "generation": {
+      "minimum": 1,
+      "title": "Generation",
+      "type": "integer"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "removed_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "run_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.finetune-run-removal/v1",
+      "default": "cole-voice-lab.finetune-run-removal/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "generation",
+    "manifest_sha256",
+    "removed_at",
+    "files"
+  ],
+  "title": "FineTuneRunRemoval",
+  "type": "object"
+}
