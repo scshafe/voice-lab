@@ -1,0 +1,9 @@
+# First join only. Recreate tailscale with the base file alone after deleting the key.
+services:
+  tailscale:
+    environment:
+      TS_AUTHKEY: file:/run/secrets/ts_authkey
+    secrets: [ts_authkey]
+secrets:
+  ts_authkey:
+    file: ${TS_AUTHKEY_FILE:?Set the external private single-use auth-key file for this join}

@@ -1,0 +1,80 @@
+name: cole-voice-lab-vault
+services:
+  vault:
+    image: ${VAULT_IMAGE:?Set VAULT_IMAGE to the reviewed locally built image}
+    pull_policy: never
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777"]
+    mem_limit: 512m
+    cpus: 2.0
+    pids_limit: 128
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks: [vault-internal]
+    volumes:
+      - type: bind
+        source: ${VAULT_DATA_DIR:?Set an absolute private large-disk directory}
+        target: /var/lib/voice-lab-vault
+        bind: {create_host_path: false}
+    secrets: [vault_config]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+    healthcheck:
+      test: [CMD, python, -I, -B, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+  tailscale:
+    image: ${TAILSCALE_IMAGE:?Set the reviewed tailscale/tailscale v1.102.2 digest pin}
+    hostname: voice-lab-vault
+    # Userspace serve ingress needs neither a tun device nor Linux capabilities.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777"]
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    restart: unless-stopped
+    networks: [vault-internal, egress]
+    environment:
+      TS_HOSTNAME: voice-lab-vault
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_AUTH_ONCE: "true"
+      TS_ACCEPT_DNS: "false"
+      TS_USERSPACE: "true"
+      TS_SOCKET: /tmp/tailscaled.sock
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_EXTRA_ARGS: --advertise-tags=tag:voice-lab-vault
+      TS_ENABLE_HEALTH_CHECK: "true"
+      TS_LOCAL_ADDR_PORT: 127.0.0.1:9002
+    volumes:
+      - type: bind
+        source: ${VAULT_TS_STATE_DIR:?Set the private persistent node-state directory}
+        target: /var/lib/tailscale
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${VAULT_SERVE_CONFIG_DIR:?Set the directory containing serve.json}
+        target: /config
+        read_only: true
+        bind: {create_host_path: false}
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:9002/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+networks:
+  vault-internal: {internal: true}
+  egress: {driver: bridge}
+secrets:
+  vault_config:
+    file: ${VAULT_CONFIG_FILE:?Set the absolute configuration file containing token hashes only}

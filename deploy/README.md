@@ -2,6 +2,10 @@
 
 These files are reviewed templates, not an automatically active service.
 
+The [encrypted library vault](vault/README.md) has a separate offline image build,
+disposable local container check, and dedicated Tailscale sidecar deployment.
+Its templates are built but not deployed; all remote setup happens with Cole.
+
 ## Mini intake
 
 1. Initialize the explicit asset root with `voice-lab assets init`.

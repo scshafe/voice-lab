@@ -215,10 +215,10 @@ Every piece of code that stores or reads the lab's data depends on storage and c
 - **No approval, no upload.** Nothing is uploaded without a matching, unexpired approval.
 - **Request log.** Every request the Mac sends is logged in `provenance/vault/requests/`.
 
-**Vault server** (`storage_server.py`, `@canonical storage_server`, console script `cole-voice-lab-vault`).
-- It serves `LocalBlobStore` and `LocalRefStore` for each namespace. It imports no recording, capture, catalog, consent or model module, and a test checks this.
+**Vault server** (`storage_server.py`, `@canonical storage_server`, ~~console script `cole-voice-lab-vault`~~ entry point `python -I -B -m cole_voice_lab.storage_server`; a second console script breaks capture-kit installs).
+- It serves `LocalBlobStore` and `LocalRefStore` for each namespace. It imports no recording, capture, catalog, consent or ~~model~~ ML module, and a test checks this. Shared `models`, `errors`, `paths` and `canonical` are allowed; package initialization already imports the strict contracts in `models`.
 - **Tokens.** Each namespace has a read token and a write token.
-  - Only their hashes are stored in the server's configuration; the tokens arrive as Docker secrets.
+  - Only their hashes are stored in the server's configuration; ~~the tokens arrive as Docker secrets~~ the hashed configuration arrives as a read-only Docker secret. Raw tokens remain in the Mac's login Keychain.
   - A token works only in its own namespace.
   - Requests are authenticated before any body is read.
 - **Limits.** `Content-Length` is required and capped at 16 MiB plus overhead. Worker threads are bounded, and requests have timeouts.
@@ -240,12 +240,12 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - CPU, memory and PID limits, a tmpfs `/tmp`, and a healthcheck;
   - no host ports, and log rotation;
   - the data directory bind-mounted from the large disk, with `create_host_path: false`.
-- **Auth key.** Single-use, expiring within an hour, and deleted once the node has joined.
+- **Auth key.** Single-use, ~~expiring within an hour~~ with the shortest expiry the console offers, and deleted once the node has joined. The join-only compose override is removed on subsequent starts.
 - **Tailnet policy.**
   - Only Cole may apply `tag:voice-lab-vault`.
   - Only Cole's Mac may reach it, and only on port 443.
   - The tag may reach nothing.
-- **Mission Control.** The registry entry is bookkeeping only; the approval does not depend on it.
+- **Endpoint inventory.** ~~The Mission Control registry entry~~ A record where Cole keeps tailnet endpoints is bookkeeping only; the approval does not depend on it. No Mission Control endpoint registry exists today.
 
 **Proof that implementations can be swapped.**
 - **Storage conformance** (`tests/storage_conformance.py`) runs the `BlobStore` and `RefStore` checks against:
@@ -324,7 +324,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_library_replication.py tests/test_pilot_v2_coverage.py tests/test_prompt_coverage.py`
 
 - [x] **Step 7: Vault server**
-  - Add `storage_server.py` and the `cole-voice-lab-vault` console script, with:
+  - Add `storage_server.py` and ~~the `cole-voice-lab-vault` console script~~ the `python -I -B -m cole_voice_lab.storage_server` entry point, with:
     - the namespace configuration;
     - hashed read and write tokens, compared in constant time;
     - authentication before the body is read;
@@ -391,12 +391,12 @@ Every piece of code that stores or reads the lab's data depends on storage and c
     scripts directory, so the Verify command obeys the Python invocation rule.
   - Verify: `scripts/verify-native-recording --suite vault && scripts/verify-native-recording --suite workspace && scripts/verify-native-recording --suite speak`
 
-- [ ] **Step 13: Container image and deployment files**
+- [x] **Step 13: Container image and deployment files**
   - `deploy/vault/Dockerfile`:
     - a digest-pinned `python:3.12-slim` base;
     - the wheel plus `requirements/vault-linux.txt` (pydantic only, hashed, for x86_64 and arm64);
     - a non-root UID;
-    - the `cole-voice-lab-vault` entry point.
+    - ~~the `cole-voice-lab-vault` entry point~~ `python -I -B -m cole_voice_lab.storage_server`, with one-time provisioning kept out of the normal command.
   - `deploy/vault/compose.yaml`: the networks, sidecar, secrets and hardening described above.
   - `deploy/vault/tailnet-policy.md`: the tag owner and access rules to apply.
   - `deploy/vault/README.md`, the runbook:
@@ -404,9 +404,14 @@ Every piece of code that stores or reads the lab's data depends on storage and c
     - the data path on the large disk;
     - creating and rotating tokens;
     - creating the auth key and deleting it after the node joins;
-    - reserving the Mission Control endpoint;
+    - ~~reserving the Mission Control endpoint~~ recording the endpoint in Cole's chosen inventory;
     - backing up the data directory.
-  - `scripts/verify-vault-container` builds the image on the Mac's Colima, publishes the port on `127.0.0.1` only, and runs the storage conformance suite against it.
+  - The Tailscale sidecar image is supplied as a version-and-digest pin at deployment with Cole; Step 13 neither pulls nor starts it.
+  - `scripts/verify-vault-container` stages a private context under the Mac's home cache and builds offline using Colima's legacy builder (no buildx/compose installed), publishes the test server port on `127.0.0.1` only with plain `docker run`, and runs the storage conformance suite against it. Linux wheels and the pinned base must already be cached; it never downloads them.
+  - The verifier validates and pins a local Docker endpoint before any daemon call;
+    ambient remote contexts must not redirect build, test or cleanup. Cleanup
+    attempts every owned resource with deadlines and removes private credentials
+    even if a Docker cleanup fails or is interrupted.
   - Verify: `scripts/verify-vault-container && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_operator_scripts.py`
 
 - [ ] **Step 14: Decision record, rules and docs**
@@ -537,3 +542,15 @@ before checking its box and committing; no push or deployment is implied.
 existing Python module under `-I -B` with an explicit sibling-script import path.
 The exact Verify line is unchanged; the entry no longer depends on implicit
 Python path insertion or bytecode environment settings.
+
+**Amended 2026-09-19 (Step 13):** applied the previously recorded X3–X5 and
+S13.1–S13.8 corrections: module entry rather than a second console script,
+shared-contract imports allowed, hashed configuration rather than raw server
+tokens, shortest available auth-key expiry, endpoint inventory rather than an
+absent Mission Control registry, offline legacy-builder/plain-run verification
+from a private home-cache context, one-time provisioning, and the sidecar pin
+chosen with Cole at deployment. These corrections preserve the deployed design
+and the exact Verify command.
+The Step 13 review also requires an explicit local-daemon boundary (Docker's
+ambient context may be remote) and bounded, interruption-safe cleanup, plus
+independent ref scopes for cases sharing the disposable test namespace.

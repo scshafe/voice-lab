@@ -29,13 +29,16 @@ import os
 import shutil
 import socket
 import stat
+import sys
 import threading
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, chdir, contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Protocol, get_args
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -74,6 +77,10 @@ CHILD_TIMEOUT_SECONDS = 120.0
 WRITERS = 4
 PAYLOAD = b"synthetic conformance payload"
 HEAD = library_head_ref("conformance-library")
+LIBRARIES_REF = "libraries"
+ANOTHER_HEAD = library_head_ref("another-library")
+FRESH_REF = "fresh"
+TOP_LEVEL_REF = "top-level"
 
 type BlobDamage = Literal[
     "flipped-byte",
@@ -340,7 +347,7 @@ class LocalSpec:
         elif corruption == "oversized":
             payload = canonical_json_bytes(value) + b" " * 4096 + b"\n"
         elif corruption == "another-name":
-            other = value.model_copy(update={"name": library_head_ref("another-library")})
+            other = value.model_copy(update={"name": ANOTHER_HEAD})
             payload = canonical_json_bytes(other) + b"\n"
         else:
             payload = json.dumps(value.model_dump(mode="json"), indent=1).encode() + b"\n"
@@ -554,7 +561,7 @@ class HttpSpec(LocalSpec):
     """
 
     port: int
-    token: str
+    token: str = field(repr=False)
     namespace: str = HTTP_NAMESPACE
     name: ClassVar[str] = "http"
     errors_name_backing_paths: ClassVar[bool] = False
@@ -638,6 +645,83 @@ class SealedHttpSpec(HttpSpec):
         return SealedBlobStore(
             super().open_blob_store(), key=sealed_test_key(), library_id=SEALED_LIBRARY
         )
+
+
+@dataclass(frozen=True)
+class ContainerHttpSpec(HttpSpec):
+    """Real installed server, with no access to its backing files or fault-injection hooks."""
+
+    name: ClassVar[str] = "container-http"
+    address: str = "127.0.0.1"
+
+    @property
+    def backing_root(self) -> None:
+        return None
+
+    def reopen_server_stores(self) -> None:
+        """The container owns its stores; a client cannot rebuild them."""
+
+    def client(self) -> VaultConnection:
+        return VaultConnection.loopback_for_tests(
+            self.port,
+            "test",
+            lambda: self.token,
+            address=self.address,
+            timeout=HTTP_TIMEOUT_SECONDS,
+            sleep=no_sleep,
+        )
+
+
+def container_settings(environment: dict[str, str]) -> tuple[str, int, Path] | None:
+    """Read the explicit disposable-container opt-in; reject any non-loopback destination.
+
+    No hostname resolution, proxy, tailnet identity or real namespace is possible here.
+    Raises ValueError for incomplete, nonliteral, or non-test configuration.
+    """
+    url = environment.get("COLE_VOICE_LAB_VAULT_CONTAINER_URL")
+    token_file = environment.get("COLE_VOICE_LAB_VAULT_CONTAINER_TOKEN_FILE")
+    namespace = environment.get("COLE_VOICE_LAB_VAULT_CONTAINER_NAMESPACE", "test")
+    if url is None and token_file is None:
+        return None
+    if not url or not token_file or namespace != "test":
+        raise ValueError("container conformance needs both URL/token file and namespace test")
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "::1"}
+        or parsed.port is None
+        or not 1 <= parsed.port <= 65535
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("container conformance URL must be literal loopback HTTP with a port")
+    return parsed.hostname, parsed.port, Path(token_file)
+
+
+@contextmanager
+def container_http_spec(base: Path) -> Iterator[ContainerHttpSpec]:
+    settings = container_settings(dict(os.environ))
+    if settings is None:
+        raise ValueError("container conformance requires explicit opt-in")
+    address, port, token_file = settings
+    metadata = token_file.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or token_file.resolve() != token_file
+        or metadata.st_size > 128
+    ):
+        raise ValueError("container test token must be a private owned 0600 regular file")
+    token = token_file.read_text()
+    hash_token(token)
+    yield ContainerHttpSpec(
+        root=base, scratch=base, port=port, token=token, namespace="test", address=address
+    )
 
 
 @contextmanager
@@ -744,12 +828,36 @@ SPECS: list[SpecFactory] = [
     SpecFactory("http", http_spec),
     SpecFactory("sealed-http", sealed_http_spec),
 ]
+if container_settings(dict(os.environ)) is not None:
+    SPECS.append(SpecFactory("container-http", container_http_spec))
+
+
+def scope_container_case(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every mutable valid ref/absence probe a fresh family, preserving its prefixes."""
+    scope = uuid.uuid4().hex
+    prefix = f"libraries-{scope}"
+    for name, value in {
+        "HEAD": f"{prefix}/conformance-library/head",
+        "LIBRARIES_REF": prefix,
+        "ANOTHER_HEAD": f"{prefix}/another-library/head",
+        "FRESH_REF": f"fresh-{scope}",
+        "TOP_LEVEL_REF": f"top-level-{scope}",
+        "PAYLOAD": f"synthetic {scope}".encode(),
+    }.items():
+        monkeypatch.setattr(sys.modules[__name__], name, value)
 
 
 @pytest.fixture(params=SPECS, ids=lambda factory: factory.id)
-def spec(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[StorageSpec]:
+def spec(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[StorageSpec]:
     base = Path(os.path.realpath(tmp_path)) / "spec"
     base.mkdir(mode=0o700)
+    if request.param.id == "container-http":
+        # One disposable namespace serves the entire suite. Isolate each case's mutable
+        # ref family and absence probes without translating store operations/responses.
+        # Spawned workers already receive the head and payload as explicit arguments.
+        scope_container_case(monkeypatch)
     with request.param.make(base) as made:
         yield made
 
@@ -1066,11 +1174,11 @@ def test_a_ref_that_skipped_validation_is_refused_and_changes_nothing(
     storage_failure("STORAGE.PROTOCOL", lambda: blobs.has(ref))
     storage_failure("STORAGE.PROTOCOL", lambda: refs.swap(HEAD, expected_version=1, target=ref))
     storage_failure(
-        "STORAGE.PROTOCOL", lambda: refs.swap("fresh", expected_version=None, target=ref)
+        "STORAGE.PROTOCOL", lambda: refs.swap(FRESH_REF, expected_version=None, target=ref)
     )
     # A swap that stored such a target would leave a ref that neither read nor swap accepts.
     assert refs.read(HEAD) == current
-    assert refs.read("fresh") is None
+    assert refs.read(FRESH_REF) is None
     assert refs.swap(HEAD, expected_version=1, target=current.target).version == 2
 
 
@@ -1182,8 +1290,8 @@ def test_a_missing_ref_reads_as_none(spec: StorageSpec) -> None:
     refs = spec.open_ref_store()
     assert refs.read(HEAD) is None
     refs.swap(HEAD, expected_version=None, target=spec.open_blob_store().put(PAYLOAD))
-    assert refs.read(library_head_ref("another-library")) is None
-    assert refs.read("libraries") is None
+    assert refs.read(ANOTHER_HEAD) is None
+    assert refs.read(LIBRARIES_REF) is None
     assert refs.read(f"{HEAD}/deeper") is None
 
 
@@ -1204,7 +1312,13 @@ def test_versions_count_up_from_one_and_read_returns_the_latest(spec: StorageSpe
 def test_refs_with_shared_prefixes_are_independent(spec: StorageSpec) -> None:
     blobs = spec.open_blob_store()
     refs = spec.open_ref_store()
-    names = ("libraries", "libraries.json/head", "libraries/head.json", "libraries/head", HEAD)
+    names = (
+        LIBRARIES_REF,
+        f"{LIBRARIES_REF}.json/head",
+        f"{LIBRARIES_REF}/head.json",
+        f"{LIBRARIES_REF}/head",
+        HEAD,
+    )
     values = {
         name: refs.swap(name, expected_version=None, target=blobs.put(name.encode()))
         for name in names
@@ -1361,7 +1475,7 @@ def test_every_entry_behind_the_store_is_private(spec: StorageSpec) -> None:
     blobs = spec.open_blob_store()
     refs = spec.open_ref_store()
     refs.swap(HEAD, expected_version=None, target=blobs.put(PAYLOAD))
-    refs.swap("top-level", expected_version=None, target=blobs.put(b""))
+    refs.swap(TOP_LEVEL_REF, expected_version=None, target=blobs.put(b""))
     entries = [root, *sorted(root.rglob("*"))]
     kinds = set()
     for path in entries:

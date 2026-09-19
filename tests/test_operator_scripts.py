@@ -28,6 +28,19 @@ from cole_voice_lab.registry import ReviewedBuildToolchainLock, ReviewedBuildToo
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize(
+    "name", ("stage-vault-image", "verify-vault-container", "check-vault-deployment")
+)
+def test_vault_operator_wrappers_are_isolated_and_explain_their_scope(name: str) -> None:
+    script = REPOSITORY / "scripts" / name
+    parsed = _run("/bin/sh", "-n", str(script))
+    assert parsed.returncode == 0, parsed.stderr
+    help_result = _run(str(script), "--help")
+    assert help_result.returncode == 0 and help_result.stdout.startswith("usage:")
+    assert "-I -B" in script.read_text()
+    assert "PYTHONDONTWRITEBYTECODE=1" in script.read_text()
+
+
 def _run(
     *arguments: str,
     cwd: Path | None = None,
