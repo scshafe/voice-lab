@@ -18,7 +18,7 @@ import re
 import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +61,34 @@ def _no_ambient_asset_root(monkeypatch: pytest.MonkeyPatch) -> None:
 def _writable_tmp_path(tmp_path: Path) -> Iterator[None]:
     yield
     restore_permissions(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("state", "count", "expected"),
+    [
+        ("off", None, "Vault · off"),
+        ("up-to-date", None, "Vault · up to date"),
+        ("copying", None, "Vault · copying"),
+        ("waiting", None, "Vault · waiting to copy"),
+        ("waiting", 0, "Vault · waiting to copy"),
+        ("waiting", 1, "Vault · 1 file waiting"),
+        ("waiting", 12, "Vault · 12 files waiting"),
+        ("unreachable", None, "Vault unreachable"),
+        ("failed", None, "Vault · approval expired"),
+    ],
+)
+def test_vault_status_uses_the_app_words(state: str, count: int | None, expected: str) -> None:
+    from cole_voice_lab.cli import _vault_status_line
+
+    assert _vault_status_line(state, "approval expired", waiting_files=count) == expected
+
+
+def test_vault_outage_line_formats_the_known_start_in_local_24_hour_time() -> None:
+    from cole_voice_lab.cli import _vault_status_line
+
+    since = datetime(2026, 9, 18, 21, 2, tzinfo=UTC)
+    expected = f"Vault unreachable since {since.astimezone():%H:%M}"
+    assert _vault_status_line("unreachable", None, unreachable_since=since) == expected
 
 
 @dataclass

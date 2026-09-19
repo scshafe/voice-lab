@@ -258,11 +258,11 @@ public final class RecordingSpeakModel: ObservableObject {
     /// (the pinned base weights, with the newest run's reference). Empty without a finished run.
     public var modelChoices: [RecordingSpeakModelChoice] {
         guard let latest = runs.first else { return [] }
-        var choices = [RecordingSpeakModelChoice(id: RecordingSpeakModelChoice.latestID, title: "Latest · " + latest.runID,
+        var choices = [RecordingSpeakModelChoice(id: RecordingSpeakModelChoice.latestID, title: "Latest · " + latest.runID + (latest.location == "archived" ? " · Archived" : ""),
                                                  referenceRunID: latest.runID, referencePromptIDs: latest.referencePromptIDs)]
         // A run named like a keyword cannot be chosen by its id.
         for run in runs.dropFirst() where ![RecordingSpeakModelChoice.latestID, RecordingSpeakModelChoice.baseID].contains(run.runID) {
-            choices.append(RecordingSpeakModelChoice(id: run.runID, title: run.runID, referenceRunID: run.runID,
+            choices.append(RecordingSpeakModelChoice(id: run.runID, title: run.runID + (run.location == "archived" ? " · Archived" : ""), referenceRunID: run.runID,
                                                      referencePromptIDs: run.referencePromptIDs))
         }
         choices.append(RecordingSpeakModelChoice(id: RecordingSpeakModelChoice.baseID, title: "Base",
@@ -331,6 +331,10 @@ public final class RecordingSpeakModel: ObservableObject {
         guard runsKnown else { return workspace?.fineTune.availabilityError ?? Self.checkingReason }
         if workspace?.fineTune.runtimeConfigured == false { return Self.noRuntimeReason }
         if let runsError { return runsError }
+        if selectedModelID != RecordingSpeakModelChoice.baseID,
+           let run = runs.first(where: { $0.runID == selectedModel?.referenceRunID }), run.location == "archived" {
+            return "Archived — restore with voice-lab finetune restore-run --run \(run.runID)"
+        }
         return runs.isEmpty ? Self.noFinishedRunReason : nil
     }
 

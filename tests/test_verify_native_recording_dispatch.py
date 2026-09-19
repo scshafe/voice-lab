@@ -63,7 +63,7 @@ def test_verifier_preserves_all_existing_evidence_before_build(
     }
 
 
-@pytest.mark.parametrize("suite", ["acceptance", "all", "recovery"])
+@pytest.mark.parametrize("suite", ["acceptance", "all", "recovery", "vault"])
 @pytest.mark.parametrize("external_scratch", [False, True])
 def test_fresh_dispatch_reaches_full_suite_or_recovery_inventory_without_running_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suite: str, external_scratch: bool
@@ -107,17 +107,23 @@ def test_fresh_dispatch_reaches_full_suite_or_recovery_inventory_without_running
     assert commands[0][:3] == ["xcrun", "swift", "build"]
     assert commands[0][commands[0].index("--scratch-path") + 1] == str(scratch / "native-recording")
     expected = (
-        "RecordingRecoveryTests|RecordingRecoveryInventoryTests"
+        "RecordingVaultTests"
+        if suite == "vault"
+        else "RecordingRecoveryTests|RecordingRecoveryInventoryTests"
         if suite == "recovery"
         else "RecordingReviewTests|RecordingPlaybackTests|RecordingWaveformTests|"
         "NativeCaptureTests|SyntheticCaptureBackendTests|RecordingHarnessTests"
     )
     assert commands[-1][-2:] == ["--filter", expected]
-    if suite != "recovery":
+    if suite not in {"recovery", "vault"}:
         assert commands[-1][3:5] == ["--sanitize", "address"]
     assert commands[-1][commands[-1].index("--scratch-path") + 1] == str(
         scratch
-        / ("native-recording-tests" if suite == "recovery" else "native-recording-review-address")
+        / (
+            "native-recording-tests"
+            if suite in {"recovery", "vault"}
+            else "native-recording-review-address"
+        )
     )
     assert not (root / "verification.json").exists()
 

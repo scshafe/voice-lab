@@ -3428,14 +3428,27 @@ def _vault_show_lines(document: Mapping[str, JsonValue]) -> list[str]:
     return lines
 
 
-def _vault_status_line(state: str, message: str | None) -> str:
+def _vault_status_line(
+    state: str,
+    message: str | None,
+    *,
+    waiting_files: int | None = None,
+    unreachable_since: datetime | None = None,
+) -> str:
+    """The app's vault wording, with local 24-hour time when an outage start is known."""
+    if state == "waiting" and waiting_files:
+        noun = "file" if waiting_files == 1 else "files"
+        return f"Vault · {waiting_files} {noun} waiting"
+    if state == "unreachable" and unreachable_since is not None:
+        return f"Vault unreachable since {unreachable_since.astimezone():%H:%M}"
     texts = {
         "off": "Vault · off",
         "up-to-date": "Vault · up to date",
         "waiting": "Vault · waiting to copy",
+        "copying": "Vault · copying",
         "unreachable": "Vault unreachable",
     }
-    return texts.get(state, f"Vault · {message}")
+    return texts.get(state, f"Vault · {message or 'copying stopped'}")
 
 
 def _vault_status(options: argparse.Namespace) -> int:

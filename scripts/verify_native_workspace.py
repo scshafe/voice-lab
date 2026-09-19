@@ -434,7 +434,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("transport", "review", "review-legacy", "recovery", "finetune", "speak"),
+        choices=("transport", "review", "review-legacy", "recovery", "finetune", "speak", "vault"),
         default="transport",
     )
     parser.add_argument("--accepted-legacy", action="store_true")
@@ -449,6 +449,11 @@ def main() -> None:
     options = parser.parse_args()
     os.umask(0o077)
     root = private_fixture_root(options.output, package=options.package)
+    if options.suite == "vault":
+        from native_vault_fixture import run_vault_suite
+
+        run_vault_suite(root, package=options.package, binary_directory=options.binary_directory)
+        return
     if options.suite == "finetune":
         from native_finetune_fixture import run_finetune_suite
 

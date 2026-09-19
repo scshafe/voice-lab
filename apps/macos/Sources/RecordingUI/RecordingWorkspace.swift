@@ -86,6 +86,10 @@ public struct RecordingWorkspace: View {
             }
             Text(model.state.historyCompleteness == "complete" ? (model.state.promptCursor == nil ? "Library up to date" : "More prompt status available") : "Library \(model.state.historyCompleteness)")
                 .font(.system(size: RecordingLayout.supportingTextSize)).foregroundStyle(RecordingPalette.supportingText)
+            Text(verbatim: model.vault.statusLine)
+                .font(.system(size: RecordingLayout.supportingTextSize)).foregroundStyle(RecordingPalette.supportingText)
+                .lineLimit(1).truncationMode(.tail).help(model.vault.statusLine)
+                .accessibilityIdentifier("library.vault-status")
         }
         .padding(16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .controlBackgroundColor))

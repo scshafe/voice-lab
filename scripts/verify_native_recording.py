@@ -55,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
             "review-sanitizers",
             "finetune",
             "speak",
+            "vault",
             "recovery",
             "packaged-app",
             "acceptance",
@@ -207,6 +208,31 @@ def main(argv: list[str] | None = None) -> int:
                 if accepted:
                     command.append("--accepted-legacy")
                 run(command, cwd=repository)
+    if args.suite in {"vault", "all"}:
+        run(
+            swift + ["test"] + test_location + test_flags + ["--filter", "RecordingVaultTests"],
+            cwd=repository,
+        )
+        run(
+            [
+                str(repository / ".venv/bin/python"),
+                "-I",
+                "-B",
+                "-c",
+                "import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); "
+                "runpy.run_module('verify_native_workspace', run_name='__main__')",
+                str(repository / "scripts"),
+                "--suite",
+                "vault",
+                "--package",
+                str(package),
+                "--binary-directory",
+                str(binary_directory),
+                "--output",
+                str(artifacts / "vault"),
+            ],
+            cwd=repository,
+        )
     if args.suite in {"workspace", "all"}:
         run(
             swift + ["test"] + test_location + test_flags + ["--filter", "RecordingWorkspaceTests"],
@@ -711,6 +737,10 @@ print(json.dumps(report))
         speak = artifacts / "speak"
         identity["speak"] = json.loads((speak / "native/speak-report.json").read_text())
         identity["speak_python"] = json.loads((speak / "python-speak-evidence.json").read_text())
+    if args.suite in {"vault", "all"}:
+        vault = artifacts / "vault"
+        identity["vault"] = json.loads((vault / "native/vault-report.json").read_text())
+        identity["vault_python"] = json.loads((vault / "python-vault-evidence.json").read_text())
     if args.suite in {"acceptance", "all"}:
         # The state inventory is checked from the rendered files themselves, so a phase
         # that stopped being drawn is a missing artifact rather than a silent gap.

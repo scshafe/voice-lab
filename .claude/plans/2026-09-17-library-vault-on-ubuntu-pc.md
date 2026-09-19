@@ -380,13 +380,15 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - Tests use the stub runtime and a loopback vault.
   - Verify: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_finetune_archive.py tests/test_speech_synthesis.py tests/test_recording_finetune_jobs.py && scripts/verify-native-recording --suite contracts`
 
-- [ ] **Step 12: Vault status in the app**
+- [x] **Step 12: Vault status in the app**
   - The Library footer shows one line: "Vault · up to date", "Vault · 12 files waiting", "Vault unreachable since 14:02", or "Vault · off".
   - Speak shows "Archived — restore with …" for an archived run.
   - Add a native `vault` suite. It uses a loopback vault, a fresh token and synthetic audio, and covers:
     - a recorded fixture take being copied;
     - an outage and recovery;
     - Speak on an archived run.
+  - Run the native verifier entry with `-I -B`, explicitly adding its sibling
+    scripts directory, so the Verify command obeys the Python invocation rule.
   - Verify: `scripts/verify-native-recording --suite vault && scripts/verify-native-recording --suite workspace && scripts/verify-native-recording --suite speak`
 
 - [ ] **Step 13: Container image and deployment files**
@@ -522,3 +524,16 @@ The first draft was reviewed on 2026-09-17 by `rigorous-architect` (the storage 
 **Amended 2026-09-17 (Step 9):** the `vault` group gained `init`, `key` and `token` commands and `push --dry-run|--full`; the binding names the approval's digest; the replication state names its destination and ledger tail.
 
 **Amended 2026-09-17 (Step 10):** the step's verify line now also runs the native audit, the schema check and mypy.
+
+**Amended 2026-09-19 (execution workflow):** the previous session's
+`vault-step-wf_de151946-0e0.js` requires Claude's workflow runtime, which is not
+available in this Codex session. Its sequence is retained through the available
+agent tools: implement, three independent review lenses, a separate skeptic for
+each nonempty review, fix surviving findings, and independent recheck (with a
+second fix/recheck if needed). The orchestrator runs each step's Verify line
+before checking its box and committing; no push or deployment is implied.
+
+**Amended 2026-09-19 (Step 12):** the native verifier shell entry now starts its
+existing Python module under `-I -B` with an explicit sibling-script import path.
+The exact Verify line is unchanged; the entry no longer depends on implicit
+Python path insertion or bytecode environment settings.

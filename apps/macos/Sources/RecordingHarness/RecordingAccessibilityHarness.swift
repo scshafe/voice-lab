@@ -9,7 +9,7 @@ extension RecordingHarness {
     /// The Speak page's controls, which the accessibility gate requires on that page only.
     static let speakIdentifiers = ["speak.text", "speak.model", "speak.reference", "speak.generate", "speak.cancel",
                                    "speak.play-pause", "speak.position", "speak.clips", "speak.save-as", "speak.status"]
-    static let recordIdentifiers = ["library.continueMissing", "library.search", "library.filter", "library.labels", "library.coverage", "trim.start", "trim.end", "playback.play-pause", "transport.record-stop", "transport.save-next", "transport.fine-tune", "recording.labels", "recording.script", "recording.instructions", "recording.status"]
+    static let recordIdentifiers = ["library.continueMissing", "library.search", "library.filter", "library.labels", "library.coverage", "library.vault-status", "trim.start", "trim.end", "playback.play-pause", "transport.record-stop", "transport.save-next", "transport.fine-tune", "recording.labels", "recording.script", "recording.instructions", "recording.status"]
 
     /// Hosts the window's page container: the Record page (its identifiers, labels, roles and
     /// region geometry), then the Speak page (its identifiers, no Record machinery), then the

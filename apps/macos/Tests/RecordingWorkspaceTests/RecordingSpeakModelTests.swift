@@ -211,6 +211,26 @@ struct RecordingSpeakModelTests {
 
     // MARK: client
 
+    @Test @MainActor func archivedLatestAndNamedRunsExplainRestoreWithoutSubmittingAndBaseKeepsItsReference() async throws {
+        let service = ScriptedSpeak()
+        let archived = [Self.latestRun, Self.earlierRun].map { run in
+            RecordingJSON.object(run.object!.merging(["location": .string("archived"), "in_vault": .boolean(true)]) { $1 })
+        }
+        let (model, _) = await workspace(service, runs: archived)
+        defer { model.close() }
+        for (selection, runID) in [("latest", Self.runID), (Self.earlierRunID, Self.earlierRunID)] {
+            model.speak.selectedModelID = selection
+            #expect(model.speak.selectedModel?.title.hasSuffix(" · Archived") == true)
+            #expect(model.speak.unavailableReason == "Archived — restore with voice-lab finetune restore-run --run \(runID)")
+            model.speak.speak()
+            #expect(service.sent.isEmpty)
+        }
+        model.speak.selectedModelID = "base"
+        #expect(model.speak.canSpeak)
+        #expect(model.speak.selectedModel?.referenceRunID == Self.runID)
+        #expect(model.speak.selectedModel?.title == "Base")
+    }
+
     @Test func theClientsSpeakCommandsAreRequestSchemaShapesAndTheRequestIDNeverEqualsTheOperation() async throws {
         let schema = try Data(contentsOf: Self.repository.appendingPathComponent("schemas/recording-service-request.schema.json"))
         func requireRequest(_ command: RecordingJSON) throws {

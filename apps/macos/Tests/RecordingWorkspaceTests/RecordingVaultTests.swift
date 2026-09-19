@@ -10,6 +10,32 @@ import Testing
 /// Mirrors tests/test_library_replication_service.py.
 @Suite(.serialized)
 struct RecordingVaultTests {
+    @Test func sidebarWordsCoverCountsOutageAndFailures() throws {
+        var value = RecordingVaultStatus()
+        #expect(value.statusLine == "Vault · checking")
+        for (state, line) in [("off", "Vault · off"), ("up-to-date", "Vault · up to date"),
+                              ("copying", "Vault · copying"), ("waiting", "Vault · waiting to copy")] {
+            value.state = state
+            #expect(value.statusLine == line)
+        }
+        value.waitingFiles = 1
+        #expect(value.statusLine == "Vault · 1 file waiting")
+        value.waitingFiles = 12
+        #expect(value.statusLine == "Vault · 12 files waiting")
+        value.state = "unreachable"
+        let zone = try #require(TimeZone(secondsFromGMT: -7 * 3600))
+        for timestamp in ["2026-09-18T21:02:00Z", "2026-09-18T21:02:00.123456+00:00"] {
+            value.unreachableSince = timestamp
+            #expect(value.statusLine(timeZone: zone) == "Vault unreachable since 14:02")
+        }
+        value.state = "failed"
+        value.message = "approval expired"
+        #expect(value.statusLine == "Vault · approval expired")
+        value.supervisorFailure = Self.supervisorFailure
+        value.state = "up-to-date"
+        #expect(value.statusLine == "Vault · " + Self.supervisorFailure)
+    }
+
     static let supervisorFailure = "the library vault supervisor stopped; copies resume when the app is relaunched"
 
     private static let repository = URL(fileURLWithPath: #filePath)

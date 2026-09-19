@@ -24,6 +24,38 @@ public struct RecordingVaultStatus: Equatable, Sendable {
     /// Whether the app has heard anything about the vault yet.
     public var known: Bool { state != nil }
 
+    /// The sidebar's one-line status. The CLI's `_vault_status_line` uses the same words.
+    public var statusLine: String { statusLine(timeZone: .current) }
+
+    /// Format an outage in local 24-hour time; a timezone seam keeps the wording testable.
+    public func statusLine(timeZone: TimeZone) -> String {
+        if let supervisorFailure { return "Vault · \(supervisorFailure)" }
+        switch state {
+        case "off": return "Vault · off"
+        case "up-to-date": return "Vault · up to date"
+        case "copying": return "Vault · copying"
+        case "waiting":
+            if waitingFiles == 0 { return "Vault · waiting to copy" }
+            return "Vault · \(waitingFiles) \(waitingFiles == 1 ? "file" : "files") waiting"
+        case "unreachable":
+            let parser = ISO8601DateFormatter()
+            parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            var date = unreachableSince.flatMap { parser.date(from: $0) }
+            if date == nil {
+                parser.formatOptions = [.withInternetDateTime]
+                date = unreachableSince.flatMap { parser.date(from: $0) }
+            }
+            guard let date else { return "Vault unreachable" }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = timeZone
+            formatter.dateFormat = "HH:mm"
+            return "Vault unreachable since \(formatter.string(from: date))"
+        case "failed": return "Vault · \(message ?? "copying stopped")"
+        default: return message.map { "Vault · \($0)" } ?? "Vault · checking"
+        }
+    }
+
     /// The service's `VaultStatusEvent`, already validated on the wire; nil for any other shape.
     public init?(_ json: RecordingJSON) {
         guard let object = json.object, object["event"]?.string == "vault-status",
