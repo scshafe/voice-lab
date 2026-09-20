@@ -70,14 +70,15 @@ weights, and recognizable synthetic outputs are biometric assets.
 ## Library vault (built, not yet deployed)
 
 The vault is an encrypted durable copy of the library on Cole's own Linux host,
-reached over the tailnet. The code is built and committed; the container, the
-deployment and the rule changes it needs are not. No library is bound to a
-vault and nothing has been uploaded.
+reached over the tailnet. The implementation, container templates and D-020
+policy are built; deployment remains outstanding. No real library is bound to
+a vault and none of Cole's library has been uploaded. The Mac keeps its working
+database and files; this is storage, never a remote catalog or model service.
 
 - Everything is sealed on the Mac before it leaves. Each blob is encrypted with
   AES-256-GCM under a 256-bit library key kept in the login Keychain, whose
-  only other copy is a recovery sheet Cole keeps offline. The key never leaves
-  the Mac, and no binding can turn encryption off.
+  only other copy is a recovery sheet Cole keeps offline. The key is never sent
+  to the vault, and no binding can turn encryption off.
 - The vault holds ciphertext blobs addressed by the digest of their ciphertext,
   plus named pointers. It applies no lab rule and is never trusted: a file
   counts as present only after its bytes have been downloaded and decrypted.
@@ -91,8 +92,11 @@ vault and nothing has been uploaded.
   completion entry follows the head swap. The whole chain is re-read and
   checked before an entry is appended.
 - Uploading to a tailnet vault requires a standing destination approval with a
-  mandatory expiry, naming the node's stable Tailscale ID, its tag, the tailnet
-  and the namespace. The client re-checks that identity before each session,
+  12-month expiry (at most 366 days), naming the library, endpoint, namespace,
+  file classes, node's stable Tailscale ID, `tag:voice-lab-vault` and MagicDNS
+  suffix. The binding pins the approval's file digest. This D-020 exception
+  replaces a separate per-upload approval only for encrypted storage on Cole's
+  approved host. The client re-checks that identity before each session,
   connects to the address the check returned, and verifies TLS for the endpoint
   name. Nothing is pinned to a certificate.
 - Fine-tune checkpoints and datasets are a separate file class that both the
@@ -102,6 +106,21 @@ vault and nothing has been uploaded.
   run's checkpoints are removed.
 - The server keeps only the SHA-256 of each namespace's read and write tokens;
   the raw tokens stay in the Mac's login Keychain.
+- The server runs as UID/GID 10001 with a read-only root, dropped capabilities,
+  no privilege gain and an internal-only network. A dedicated Tailscale sidecar
+  supplies HTTPS; no host port is published and Funnel is absent. The deployment
+  policy permits only Cole's Mac to reach the tagged node's port 443 and gives
+  that tag no outbound grant; existing broad rules must be reviewed at deployment.
+- Vault storage needs destination approval but no approved consent record: Cole's
+  own host holds opaque ciphertext and never synthesizes or runs a model.
+  `ConsentRecord.hosted_transfer_allowed` remains `Literal[False]`; hosted GPU
+  use still requires its own approval. D-019's separate question about consent
+  for local fine-tuning and Speak remains open. Speak clips (`derived/speech/**`),
+  local vault records, locks, caches and unfinished runs stay on the Mac.
+- D-020 permits the exact optional `vault` encryption dependency, hash-locked
+  with `cffi` and `pycparser` in `requirements/vault-macos.txt`. Only
+  `storage_sealing.py` imports `cryptography`. The frozen Mac service runtime
+  includes the closure for its worker; the server and capture kit omit it.
 
 Two limits are accepted rather than hidden:
 
@@ -109,10 +128,13 @@ Two limits are accepted rather than hidden:
   its contents, so the host learns each chunk's size and the time it arrived,
   can link blobs of equal size, and can guess that a file of a distinctive size
   is stored. The format's version byte leaves room for padding later.
-- The rule changes this design needs — a standing destination approval instead
-  of a per-transfer one — are still pending in D-020, at Step 14 of the
-  library-vault plan. Until that decision is recorded and the vault is deployed
-  (Step 15), the network and transfer rules above stand exactly as written.
+- The host can withhold or delete ciphertext. Encryption protects confidentiality
+  and checks integrity, not availability; there is no second vault destination
+  or automatic backup in this plan. The host's privileged account is therefore
+  outside the plaintext trust boundary, not a guarantee of durable storage.
+
+Mac procedures are in [docs/RUNBOOK.md](docs/RUNBOOK.md#9-library-vault); host
+hardening and deployment gates are in [deploy/vault/README.md](deploy/vault/README.md).
 
 ## Deliberately avoided
 
@@ -120,10 +142,18 @@ Two limits are accepted rather than hidden:
 - Browser capture, automatic gain control, denoising, echo cancellation, or
   destructive cleanup of raw audio.
 - Network-exposed, background, or auto-started capture-console services.
+  The separately approved, tailnet-only vault stores ciphertext and is not a
+  capture console or synthesis endpoint.
 - Long-running synthesis endpoints.
 - Secrets, OAuth tokens, host credentials, or private host keys in configuration.
+  Vault bindings name Keychain items; server configuration contains token hashes,
+  never raw tokens or encryption keys.
 
 ## Revocation
 
 Revocation prevents new experiments and exports. It does not silently delete
 evidence or backups. Deletion is a separate, explicit, audited operation.
+An expired, missing or changed vault approval stops new uploads when the vault
+opens. The storage ports expose no delete operation: removing host data is a
+separate operator action. Destroying both the library key and its recovery sheet
+makes every sealed copy unreadable; token rotation does not change that key.

@@ -37,6 +37,21 @@ def output(command: list[str], *, cwd: Path) -> str:
     return subprocess.check_output(command, cwd=cwd, text=True, stderr=subprocess.STDOUT).strip()
 
 
+def isolated_script(repository: Path, module: str) -> list[str]:
+    """Run a verifier module with explicit fixture imports and no ambient Python path."""
+    return [
+        str(repository / ".venv/bin/python"),
+        "-I",
+        "-B",
+        "-c",
+        "import runpy, sys; sys.path[:0] = [sys.argv.pop(1), sys.argv.pop(1)]; "
+        "runpy.run_module(sys.argv.pop(1), run_name='__main__', alter_sys=True)",
+        str(repository / "scripts"),
+        str(repository / "tests"),
+        module,
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -194,8 +209,7 @@ def main(argv: list[str] | None = None) -> int:
             for mode, accepted in modes:
                 destination = artifacts / (mode + ("-accepted" if accepted else ""))
                 command = [
-                    str(repository / ".venv/bin/python"),
-                    str(repository / "scripts/verify_native_workspace.py"),
+                    *isolated_script(repository, "verify_native_workspace"),
                     "--suite",
                     mode,
                     "--package",
@@ -215,13 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         run(
             [
-                str(repository / ".venv/bin/python"),
-                "-I",
-                "-B",
-                "-c",
-                "import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); "
-                "runpy.run_module('verify_native_workspace', run_name='__main__')",
-                str(repository / "scripts"),
+                *isolated_script(repository, "verify_native_workspace"),
                 "--suite",
                 "vault",
                 "--package",
@@ -243,8 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         for delayed in (False, True):
             run(
                 [
-                    str(repository / ".venv/bin/python"),
-                    str(repository / "scripts/verify_native_workspace.py"),
+                    *isolated_script(repository, "verify_native_workspace"),
                     "--package",
                     str(package),
                     "--binary-directory",
@@ -262,8 +269,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         run(
             [
-                str(repository / ".venv/bin/python"),
-                str(repository / "scripts/verify_native_workspace.py"),
+                *isolated_script(repository, "verify_native_workspace"),
                 "--suite",
                 "finetune",
                 "--package",
@@ -286,8 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         run(
             [
-                str(repository / ".venv/bin/python"),
-                str(repository / "scripts/verify_native_workspace.py"),
+                *isolated_script(repository, "verify_native_workspace"),
                 "--suite",
                 "speak",
                 "--package",
@@ -310,8 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         run(
             [
-                str(repository / ".venv/bin/python"),
-                str(repository / "scripts/verify_native_workspace.py"),
+                *isolated_script(repository, "verify_native_workspace"),
                 "--suite",
                 "recovery",
                 "--package",
@@ -326,16 +330,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.suite in {"packaged-app", "all"}:
         # The rollback replay needs the explicitly named frozen release; without it that
         # case skips, and a skipped rollback must never read as a verified one.
-        rollback = Path(
-            "~/Library/Application Support/Cole Voice Lab/Releases/20260911-pre-native"
-        ).expanduser()
         packaging_environment = dict(os.environ)
-        if rollback.is_dir():
-            packaging_environment["COLE_VOICE_ROLLBACK_RELEASE"] = str(rollback)
         packaging_environment["COVERAGE_FILE"] = str(artifacts / "packaged-app.coverage")
         run(
             [
-                str(repository / ".venv/bin/pytest"),
+                str(repository / ".venv/bin/python"),
+                "-I",
+                "-B",
+                "-m",
+                "pytest",
                 str(repository / "tests/test_native_recording_application.py"),
                 "-q",
             ],
@@ -408,8 +411,7 @@ def main(argv: list[str] | None = None) -> int:
         python = repository / ".venv" / "bin" / "python"
         run(
             [
-                str(python),
-                "tests/test_recording_contracts.py",
+                *isolated_script(repository, "test_recording_contracts"),
                 "--fixtures",
                 str(fixtures),
             ],
@@ -435,7 +437,7 @@ for fixture in fixtures:
         raise RuntimeError('Python/native conformance disagreement: ' + fixture['file'])
 print(json.dumps({'python_checked_swift_encoded': len(fixtures)}))
 """
-        run([str(python), "-c", python_check, str(fixtures / "swift")], cwd=repository)
+        run([str(python), "-I", "-B", "-c", python_check, str(fixtures / "swift")], cwd=repository)
     if args.suite in {"shell", "all"}:
         run(
             swift + ["test"] + test_location + test_flags + ["--filter", "RecordingRuntimeTests"],
@@ -567,6 +569,8 @@ print(json.dumps(report))
             run(
                 [
                     str(repository / ".venv/bin/python"),
+                    "-I",
+                    "-B",
                     "-c",
                     python_check_capture,
                     str(capture_evidence),
@@ -602,12 +606,10 @@ print(json.dumps(report))
         environment["PYTHONPATH"] = (
             str(repository / "tests") + os.pathsep + environment.get("PYTHONPATH", "")
         )
-        python = repository / ".venv" / "bin" / "python"
         bridge = artifacts / "bridge"
         subprocess.run(
             [
-                str(python),
-                str(repository / "scripts" / "verify_native_bridge.py"),
+                *isolated_script(repository, "verify_native_bridge"),
                 "--package",
                 str(package),
                 "--binary-directory",
@@ -622,8 +624,7 @@ print(json.dumps(report))
         )
         subprocess.run(
             [
-                str(python),
-                str(repository / "scripts" / "verify_native_bridge_failures.py"),
+                *isolated_script(repository, "verify_native_bridge_failures"),
                 str(bridge / "bridge.json"),
             ],
             cwd=repository,
@@ -635,9 +636,7 @@ print(json.dumps(report))
         identity["bridge_failures"] = json.loads((bridge / "bridge-failures.json").read_text())
         subprocess.run(
             [
-                str(python),
-                "-B",
-                str(repository / "scripts" / "verify_native_helper_telemetry.py"),
+                *isolated_script(repository, "verify_native_helper_telemetry"),
                 str(bridge / "bridge.json"),
             ],
             cwd=repository,
@@ -669,8 +668,7 @@ print(json.dumps(report))
         )
         subprocess.run(
             [
-                str(repository / ".venv/bin/python"),
-                str(repository / "scripts/verify_native_waveform.py"),
+                *isolated_script(repository, "verify_native_waveform"),
                 "--package",
                 str(package),
                 "--binary-directory",
@@ -685,8 +683,7 @@ print(json.dumps(report))
         )
         subprocess.run(
             [
-                str(repository / ".venv/bin/python"),
-                str(repository / "scripts/verify_native_waveform.py"),
+                *isolated_script(repository, "verify_native_waveform"),
                 "--package",
                 str(package),
                 "--binary-directory",
@@ -708,10 +705,9 @@ print(json.dumps(report))
             (waveform / "process/waveform-process-result.json").read_text()
         )
     if args.suite in {"packaged-app", "all"}:
+        rollback = os.environ.get("COLE_VOICE_ROLLBACK_RELEASE")
         identity["packaged_app_rollback_release_present"] = (
-            Path("~/Library/Application Support/Cole Voice Lab/Releases/20260911-pre-native")
-            .expanduser()
-            .is_dir()
+            Path(rollback).expanduser().is_dir() if rollback else False
         )
     if args.suite in {"recovery", "all"}:
         recovery = artifacts / "recovery"

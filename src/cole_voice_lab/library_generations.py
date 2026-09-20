@@ -58,6 +58,7 @@ Step 6 decisions recorded here:
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import os
@@ -78,6 +79,7 @@ from .canonical import (
     canonical_json_bytes,
     fsync_directory,
     rename_no_replace,
+    rename_no_replace_at,
     require_private_metadata,
     write_canonical_json,
     write_new_private_file,
@@ -190,6 +192,7 @@ _LEDGER_FILE: Final = re.compile(r"([0-9]{8})\.json")
 # canonical.write_new_private_file / write_canonical_json temporaries a crash can leave.
 _LEFTOVER: Final = re.compile(r"\..+\.tmp-[0-9a-f]{16}")
 _READ_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+_DIRECTORY_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _CREATE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 _READ_BYTES: Final = 1024 * 1024
 _SHA256: Final = re.compile("[0-9a-f]{64}")
@@ -2098,6 +2101,74 @@ def _manifest_to_restore(
     return manifest
 
 
+@contextmanager
+def _restore_directory(
+    root_directory: int, parts: Sequence[str], *, create: bool
+) -> Iterator[int | None]:
+    """Traverse checked directory descriptors; missing parents are optional in preflight.
+
+    No component is followed through a symlink. Keeping creation, hashing, publication and
+    cleanup relative to these descriptors also prevents a substituted symlink redirecting
+    those operations. This does not promise protection from all same-user directory moves.
+    """
+    descriptor = os.dup(root_directory)
+    try:
+        for part in parts:
+            try:
+                child = os.open(part, _DIRECTORY_FLAGS, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    yield None
+                    return
+                try:
+                    os.mkdir(part, 0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    # A concurrent creator must still pass the same no-follow open below.
+                    pass
+                os.fsync(descriptor)
+                child = os.open(part, _DIRECTORY_FLAGS, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        yield descriptor
+    except OSError as error:
+        if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise RestoreRefusedError(
+                "unsafe-target", "a restore destination component is a symlink or not a directory"
+            ) from error
+        raise
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _restore_root(root: Path) -> Iterator[int]:
+    """Open the absolute restore root without following any directory component."""
+    validate_absolute_path(str(root))
+    descriptor = os.open(root.anchor, _DIRECTORY_FLAGS)
+    try:
+        with _restore_directory(descriptor, root.parts[1:], create=False) as opened:
+            if opened is None:
+                raise RestoreRefusedError("unsafe-target", f"{root} does not exist")
+            yield opened
+    finally:
+        os.close(descriptor)
+
+
+def _preflight_restore_entry(root_directory: int, entry: ManifestEntry) -> None:
+    parts = _restorable_parts(entry.path)
+    with _restore_directory(root_directory, parts[:-1], create=False) as directory:
+        if directory is None:
+            return
+        try:
+            metadata = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RestoreRefusedError(
+                "unsafe-target", f"{entry.path} is already there and is not a regular file"
+            )
+
+
 def _make_directories(staging: Path, parts: Sequence[str]) -> Path:
     directory = staging
     for part in parts:
@@ -2119,21 +2190,30 @@ def _restore_file(blob_store: BlobStore, staging: Path, entry: ManifestEntry) ->
         os.fsync(stream.fileno())
 
 
-def _sha256_of(path: Path) -> str:
+def _sha256_at(directory: int, name: str) -> str:
     digest = hashlib.sha256()
-    with os.fdopen(os.open(path, _READ_FLAGS), "rb") as stream:
+    with os.fdopen(os.open(name, _READ_FLAGS, dir_fd=directory), "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise RestoreRefusedError(
+                "unsafe-target", "a restore destination is not a regular file"
+            )
         while piece := stream.read(_READ_BYTES):
             digest.update(piece)
     return digest.hexdigest()
 
 
-def _pinned_file(staging: Path, entry: ManifestEntry, runtime_root: Path) -> Path | str:
+def _pinned_file(root_directory: int, entry: ManifestEntry, runtime_root: Path) -> Path | str:
     """The runtime file a restored run pins for ``entry``, or why there is none."""
     from .finetune import FineTuneRun
 
-    run_path = staging.joinpath(*PurePosixPath(entry.path).parents[1].parts, "run.json")
     try:
-        run = FineTuneRun.model_validate_json(run_path.read_bytes())
+        with _restore_directory(
+            root_directory, PurePosixPath(entry.path).parents[1].parts, create=False
+        ) as directory:
+            if directory is None:
+                return "the generation holds no run record for these weights"
+            with os.fdopen(os.open("run.json", _READ_FLAGS, dir_fd=directory), "rb") as stream:
+                run = FineTuneRun.model_validate_json(stream.read())
     except FileNotFoundError:
         return "the generation holds no run record for these weights"
     except ValidationError:
@@ -2158,38 +2238,56 @@ def _pinned_file(staging: Path, entry: ManifestEntry, runtime_root: Path) -> Pat
 
 
 def _restore_pin(staging: Path, entry: ManifestEntry, runtime_root: Path | None) -> PinOutcome:
+    with _restore_root(staging) as root_directory:
+        return _restore_pin_at(root_directory, entry, runtime_root)
+
+
+def _restore_pin_at(
+    root_directory: int, entry: ManifestEntry, runtime_root: Path | None
+) -> PinOutcome:
     """Re-link (or copy) a pinned file from the runtime, only when its bytes match the pin."""
     source = PRETRAINED_PIN_SOURCE
     if entry.pin_source != source:
         return PinOutcome(entry.path, str(entry.pin_source), "missing", "unknown pin source")
     if runtime_root is None:
         return PinOutcome(entry.path, source, "missing", "no runtime root was given")
-    candidate = _pinned_file(staging, entry, runtime_root)
+    candidate = _pinned_file(root_directory, entry, runtime_root)
     if isinstance(candidate, str):
         return PinOutcome(entry.path, source, "missing", candidate)
     parts = PurePosixPath(entry.path).parts
-    directory = _make_directories(staging, parts[:-1])
-    temporary = directory / f".{parts[-1]}.pin-{secrets.token_hex(8)}"
-    state: PinState = "linked"
-    try:
-        os.link(candidate, temporary, follow_symlinks=False)
-    except OSError:
-        state = "copied"
-        with (
-            os.fdopen(os.open(candidate, _READ_FLAGS), "rb") as reader,
-            os.fdopen(os.open(temporary, _CREATE_FLAGS, 0o600), "wb") as writer,
-        ):
-            shutil.copyfileobj(reader, writer, _READ_BYTES)
-            writer.flush()
-            os.fsync(writer.fileno())
-    if _sha256_of(temporary) != entry.sha256:
-        os.unlink(temporary)
-        return PinOutcome(
-            entry.path, source, "missing", "the runtime's weights do not match the run's pin"
-        )
-    if state == "copied":
-        os.chmod(temporary, entry.mode)
-    rename_no_replace(temporary, directory / parts[-1])
+    with _restore_directory(root_directory, parts[:-1], create=True) as directory:
+        assert directory is not None
+        temporary = f".{parts[-1]}.pin-{secrets.token_hex(8)}"
+        state: PinState = "linked"
+        try:
+            try:
+                os.link(candidate, temporary, dst_dir_fd=directory, follow_symlinks=False)
+            except OSError:
+                state = "copied"
+                with (
+                    os.fdopen(os.open(candidate, _READ_FLAGS), "rb") as reader,
+                    os.fdopen(
+                        os.open(temporary, _CREATE_FLAGS, 0o600, dir_fd=directory), "wb"
+                    ) as writer,
+                ):
+                    shutil.copyfileobj(reader, writer, _READ_BYTES)
+                    writer.flush()
+                    os.fchmod(writer.fileno(), entry.mode)
+                    os.fsync(writer.fileno())
+            if _sha256_at(directory, temporary) != entry.sha256:
+                return PinOutcome(
+                    entry.path,
+                    source,
+                    "missing",
+                    "the runtime's weights do not match the run's pin",
+                )
+            rename_no_replace_at(directory, temporary, directory, parts[-1])
+            os.fsync(directory)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
     return PinOutcome(entry.path, source, state)
 
 
@@ -2265,8 +2363,10 @@ def restore_library(
     0600); directories below a ``READ_ONLY_TREES`` tree become 0500, all others 0700; pin
     entries are hard-linked (or copied) from ``runtime_root`` only when the file there has
     the pinned digest, and otherwise listed as missing. Only then is the staging directory
-    renamed to the target (an empty target directory is removed first); on any failure it is
-    removed and nothing is left at the target. ``provenance/vault`` is never written. Before
+    renamed to the target (an empty target directory is removed first). A failure before
+    publication removes the staging tree. After the rename, a failure can leave the complete
+    restored tree at the target; a parent-directory fsync failure is reported and does not
+    establish successful durable completion. ``provenance/vault`` is never written. Before
     the rename the take store is opened once in write mode, which adds only its Mac-only
     scaffolding (the metadata lock and empty directories) that its read-only readers need.
     Params: ``target``, an absolute, normalized path whose parent exists without symbolic
@@ -2384,7 +2484,8 @@ def restore_run_files(
 
     ``restore_library`` builds a whole library in a staging directory; this puts a few files
     back where they were, which is what an archived fine-tune run's checkpoints need. Before
-    anything is written the filesystem must have the entries' bytes plus a tenth plus
+    anything is written every selected destination is checked for unsafe existing path
+    components, and the filesystem must have the entries' bytes plus a tenth plus
     ``RESTORE_MARGIN_BYTES`` free. Each file entry is downloaded, decrypted and reassembled
     into a private temporary beside its place and renamed there without ever replacing
     anything; a file that is already there with the entry's digest and size is kept as it is
@@ -2398,7 +2499,8 @@ def restore_run_files(
     ask the filesystem).
     Returns: the ``RestoredFiles``.
     Raises: ``RestoreRefusedError`` (``unrestorable-path``) for an entry a restore could not
-    write, (``insufficient-space``), (``target-not-empty``) when a file is there with other
+    write, (``unsafe-target``) for a symlink or non-directory destination component,
+    (``insufficient-space``), (``target-not-empty``) when a file is there with other
     bytes; ``StorageError`` (``STORAGE.NOT_FOUND``) for a missing chunk;
     ``StorageIntegrityError`` when a chunk or a reassembled file fails its check; ``OSError``
     from the filesystem.
@@ -2416,56 +2518,72 @@ def restore_run_files(
             f"restoring {len(entries)} files needs {required} bytes free under {root}, but "
             f"{available} are",
         )
-    return RestoredFiles(
-        files=tuple(_restore_one(blob_store, root, entry) for entry in files),
-        pins=tuple(_restore_one_pin(root, entry, runtime_root) for entry in pins),
-    )
-
-
-def _restore_one_pin(root: Path, entry: ManifestEntry, runtime_root: Path | None) -> PinOutcome:
-    """Re-link a pin, or keep the file a removal a crash interrupted left in place."""
-    destination = root.joinpath(*PurePosixPath(entry.path).parts)
-    if not os.path.lexists(destination):
-        return _restore_pin(root, entry, runtime_root)
-    metadata = os.lstat(destination)
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or metadata.st_size != entry.size
-        or _sha256_of(destination) != entry.sha256
-    ):
-        raise RestoreRefusedError(
-            "target-not-empty", f"{entry.path} is already there and is not the file it pins"
+    with _restore_root(root) as root_directory:
+        for entry in entries:
+            _preflight_restore_entry(root_directory, entry)
+        return RestoredFiles(
+            files=tuple(_restore_one(blob_store, root_directory, entry) for entry in files),
+            pins=tuple(_restore_one_pin(root_directory, entry, runtime_root) for entry in pins),
         )
+
+
+def _restore_one_pin(
+    root_directory: int, entry: ManifestEntry, runtime_root: Path | None
+) -> PinOutcome:
+    """Re-link a pin, or keep the file a removal a crash interrupted left in place."""
+    parts = PurePosixPath(entry.path).parts
+    with _restore_directory(root_directory, parts[:-1], create=False) as directory:
+        if directory is None:
+            return _restore_pin_at(root_directory, entry, runtime_root)
+        try:
+            metadata = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            return _restore_pin_at(root_directory, entry, runtime_root)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_size != entry.size
+            or _sha256_at(directory, parts[-1]) != entry.sha256
+        ):
+            raise RestoreRefusedError(
+                "target-not-empty", f"{entry.path} is already there and is not the file it pins"
+            )
     return PinOutcome(entry.path, str(entry.pin_source), "linked")
 
 
-def _restore_one(blob_store: BlobStore, root: Path, entry: ManifestEntry) -> RestoredFile:
+def _restore_one(blob_store: BlobStore, root_directory: int, entry: ManifestEntry) -> RestoredFile:
     parts = PurePosixPath(entry.path).parts
-    directory = _make_directories(root, parts[:-1])
-    destination = directory / parts[-1]
-    if os.path.lexists(destination):
-        metadata = os.lstat(destination)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != entry.size:
-            raise RestoreRefusedError(
-                "target-not-empty", f"{entry.path} is already there and is not the file it names"
-            )
-        if _sha256_of(destination) != entry.sha256:
-            raise RestoreRefusedError(
-                "target-not-empty", f"{entry.path} is already there with other bytes"
-            )
-        return RestoredFile(entry.path, entry.size, "kept")
-    temporary = directory / f".{parts[-1]}.restoring-{secrets.token_hex(8)}"
-    try:
-        with os.fdopen(os.open(temporary, _CREATE_FLAGS, 0o600), "wb") as stream:
-            for piece in _entry_plaintext(blob_store, entry):
-                stream.write(piece)
-            stream.flush()
-            os.fchmod(stream.fileno(), entry.mode)
-            os.fsync(stream.fileno())
-        rename_no_replace(temporary, destination)
-    except BaseException:
-        if os.path.lexists(temporary):
-            os.unlink(temporary)
-        raise
-    fsync_directory(directory)
+    with _restore_directory(root_directory, parts[:-1], create=True) as directory:
+        assert directory is not None
+        try:
+            metadata = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            metadata = None
+        if metadata is not None:
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != entry.size:
+                raise RestoreRefusedError(
+                    "target-not-empty",
+                    f"{entry.path} is already there and is not the file it names",
+                )
+            if _sha256_at(directory, parts[-1]) != entry.sha256:
+                raise RestoreRefusedError(
+                    "target-not-empty", f"{entry.path} is already there with other bytes"
+                )
+            return RestoredFile(entry.path, entry.size, "kept")
+        temporary = f".{parts[-1]}.restoring-{secrets.token_hex(8)}"
+        try:
+            with os.fdopen(
+                os.open(temporary, _CREATE_FLAGS, 0o600, dir_fd=directory), "wb"
+            ) as stream:
+                for piece in _entry_plaintext(blob_store, entry):
+                    stream.write(piece)
+                stream.flush()
+                os.fchmod(stream.fileno(), entry.mode)
+                os.fsync(stream.fileno())
+            rename_no_replace_at(directory, temporary, directory, parts[-1])
+            os.fsync(directory)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
     return RestoredFile(entry.path, entry.size, "written")

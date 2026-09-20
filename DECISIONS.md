@@ -383,6 +383,10 @@ share one GPU slot in the recording service. A fine-tune is refused `FINETUNE.JO
 while a Speak request is queued or running, and a Speak request while a fine-tune is queued
 or running. The Record page and its one action beyond recording are unchanged.
 
+Amended 2026-09-19 (D-020): the encrypted library vault is the separately approved
+storage exception to the transfer wording above. Capture sync, hosted model execution,
+local fine-tuning and Speak retain their own boundaries; the vault never synthesizes.
+
 ## D-019 — In-app speech is a local listening tool
 
 Cole asked on 2026-09-15 for a separate view in the recording app to type text and perform
@@ -439,3 +443,115 @@ Open for Cole (2026-09-16):
   Cole's call.
 
 See docs/FINETUNE.md ("Speak page") and docs/NATIVE_RECORDING_UX.md §17.
+
+Amended 2026-09-19 (D-020): "Nothing leaves the Mac" above describes Speak synthesis
+and its generated clips. The separately approved library vault stores encrypted library
+copies on Cole's own host; `derived/speech/**` remains Mac-only. The vault never runs a
+model and does not extend local listening to another execution boundary. This amendment
+does not answer the first open question above: consent for local fine-tuning and Speak
+still awaits Cole's decision.
+
+## D-020 — The library vault is an encrypted durable copy
+
+Cole decided on 2026-09-17 to keep an encrypted copy of the recording library on
+`cole-ubuntu-pc`, reached through a dedicated tailnet node. The Mac keeps the working
+prompt database and local files. Local `flock`, SQLite WAL, atomic no-replace publication,
+and file identity checks remain local; the vault supplies content-addressed blobs and
+compare-and-set references through storage ports, never a remote filesystem or catalog.
+It is the intended durable copy, with no second vault destination or automatic backup.
+
+The Mac seals every file chunk and manifest with AES-256-GCM before uploading. A fresh
+96-bit nonce and associated data binding the library id prevent cross-library reuse;
+blob references identify ciphertext by SHA-256 and size. The 256-bit library key lives in
+the login Keychain, with an offline recovery sheet kept by Cole. Neither the server nor
+its configuration receives that key. Losing both Keychain key and sheet loses access to
+the sealed library. Read/write tokens are separate credentials: the Mac keeps raw tokens
+in Keychain and the server configuration holds only their SHA-256 hashes. Rotating those
+tokens does not rotate the encryption key.
+
+For this encrypted storage destination, these earlier rules require a scoped amendment:
+
+- AGENTS.md: "No human audio is sent to a hosted service or GPU host without a separate,
+  explicit transfer approval naming the destination and payload digest."
+- AGENTS.md: "Downloads, remote deployment, hosted transfer, model eviction, and raw-asset
+  removal require explicit flags."
+- D-018: "The lab's transfer path (`sync plan`, `intake`, `dataset`) and its consent and
+  transfer rules are unchanged; nothing leaves the Mac."
+- D-019: "Nothing leaves the Mac" and its application of the transfer rule to "moving
+  audio off the Mac."
+
+A standing `VaultDestinationApproval` replaces a separate per-upload approval only for
+encrypted library storage on Cole's approved host. It binds the library id, endpoint
+FQDN, namespace, stable Tailscale node ID, `tag:voice-lab-vault`, MagicDNS suffix and file
+classes, plus approver, statement, effective timestamp and mandatory expiry. Cole chose
+12 months; the contract permits at most 366 days. Preview writes nothing. Confirmation
+reconstructs the same record, including `approved_at`, and requires the preview's digest
+before publishing an immutable approval. The binding pins that approval's file digest.
+Approval and binding are the explicit acts enabling later background copies; they are
+not authorization to deploy a host or remove local data.
+
+Before each client session, the Mac checks the answering node's StableID, tag and DNS
+identity, then connects to that checked address with TLS verified for the approved
+endpoint name. Certificates are not pinned. Before the first new blob of a generation,
+the Mac writes a chained ledger entry naming the destination, classes and plaintext
+manifest-plan payload digest. This plan has no sealed chunk references yet; the completion
+entry records the resulting manifest after the head swap. The manifest chain and local
+state reject rollback and forks. Presence is proven by downloading, decrypting and
+rehashing bytes, not by trusting the host's claim. A new Mac needs a separately retained
+generation and manifest digest for rollback protection; accepting the latest head is an
+explicitly weaker choice when that anchor is unavailable. On a new Mac the pinned pair
+can select only the current head unless the required local manifest chain is separately
+available; an old first-push pair alone cannot retrieve historical generations after
+the head advances. This version has no automatic historical-manifest recovery helper.
+
+The vault needs no approved consent record. It is Cole's own storage host, receives only
+opaque ciphertext, and never executes a model or synthesizes speech. It is not a hosted
+GPU transfer or a new synthesis boundary; `ConsentRecord.hosted_transfer_allowed` stays
+`Literal[False]`. Hosted/GPU transfers still need their separate destination- and
+payload-specific approval. D-019's local listening scope is reconsidered only to make
+this storage distinction: synthesis remains on the Mac that holds the working library,
+and the open question about requiring consent for Speak and fine-tuning remains open.
+
+`training` (datasets and finished fine-tune runs) is a separate opt-in class in both the
+binding and approval; Cole decides whether to include it at deployment. Speak clips
+under `derived/speech/**` remain Mac-only. So do local vault records, locks, leases,
+unfinished runs, machine-bound caches and staging files. The prompt database is copied
+through SQLite backup, not by shipping its live WAL files. Recording continues locally
+while the vault is unreachable; the copier takes no lab writer lock.
+
+A finished run leaves local checkpoint storage only through an explicit per-run
+`finetune archive --run <id> --remove-local-copy`. Archiving first copies and verifies
+the whole run by download, then records the archive. Removal verifies the whole run
+again, checks that no app training or Speak request is active, records the intended
+removal, rehashes the local files and unlinks only `checkpoints/**`. Dataset clips and
+run records stay local, and `restore-run` restores the removed checkpoints. Merely
+copying a run or enabling background copying never removes it. Speak marks Latest and
+named runs Archived and requires restoration when their checkpoints are missing; Base
+continues using its pinned untuned weights and the reference clips that remain local.
+
+Encryption is the exception to the standard-library capture/transfer preference:
+`cryptography` is an exact-version optional `vault` extra, with its `cffi` and `pycparser`
+closure hash-locked in `requirements/vault-macos.txt`. Only `storage_sealing.py` imports
+it. The frozen Mac service runtime carries the closure for its copying worker; capture
+kits and the vault server do not. Optional model stacks remain isolated.
+
+Two limits are accepted. Sealing does not hide sizes or timing: each blob is exactly
+33 bytes longer than its plaintext, permitting size correlation and guesses about
+distinctive files. The host can also withhold or delete data. Encryption detects changed
+content but cannot guarantee availability; there is no automatic second copy. The host's
+privileged account is not trusted with plaintext. The server is a hardened non-root
+container on an internal network, reached only through its dedicated HTTPS sidecar.
+Deployment applies a dedicated tag and access rules with Cole; Tailnet Lock remains off.
+
+As of 2026-09-19, the implementation and deployment templates are built and tested with
+synthetic data. No real library is bound, no library key or tokens have been created for
+it, no vault is deployed, and none of Cole's library has left the Mac. Step 15 requires
+Cole before each remote or tailnet action and pauses for Cole to create credentials and
+store the recovery sheet privately. The pending combined app build/install is a separate
+decision before deployment. Base availability, narrowing the second archive verification,
+and requiring an explicit approval timestamp remain unanswered implementation choices;
+their existing behavior is unchanged by this decision.
+
+See [docs/LIBRARY_VAULT.md](docs/LIBRARY_VAULT.md),
+[docs/RUNBOOK.md](docs/RUNBOOK.md#9-library-vault), and
+[deploy/vault/README.md](deploy/vault/README.md).

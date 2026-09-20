@@ -100,9 +100,10 @@ The app asks where that copy stands with `vault-status`, a command that names no
 needs no open context. The service answers it from the supervisor's memory alone: it reads no
 file, takes no lock and reaches no vault, so a service that copies nowhere answers as quickly
 as one that copies. The supervisor also publishes the status when it changes, and reports its
-own end on the `vault-supervisor` error lane, as the fine-tune supervisor does. The Library
-footer line that shows this to the user, and the native `vault` suite that exercises it, are
-not built yet: they are Step 12 of the library vault plan.
+own end on the `vault-supervisor` error lane, as the fine-tune supervisor does. The sidebar's
+last text line (`library.vault-status`) shows that state without adding a layout region:
+off, checking, copying, up to date, waiting with a known count, an outage time in local
+HH:mm, or the service's failure message. It changes no recording or Save state.
 
 Preserve the lexical virtual-environment launcher path in `service.executable`.
 Hash its resolved interpreter for the identity, but launch the venv path: resolving
@@ -141,7 +142,19 @@ ordered onscreen.
 The native suites (`scripts/verify-native-recording --suite …`, default `all`) are
 `contracts`, `shell`, `capture`, `capture-sanitizers`, `bridge`, `waveform`, `workspace`,
 `transport`, `review`, `accessibility`, `review-sanitizers`, `finetune`, `speak`,
-`recovery`, `packaged-app` and `acceptance`.
+`vault`, `recovery`, `packaged-app` and `acceptance`.
+Host Python dispatch is isolated (`-I -B`) with explicit fixture import paths.
+Packaged rollback replay requires `COLE_VOICE_ROLLBACK_RELEASE`; there is no automatic
+probe of the installed app's Application Support release tree.
+
+`vault` uses `scripts/native_vault_fixture.py` and a copied test-only service wrapper
+with fake Keychain and tailnet identity. It redirects the worker's own isolated command,
+starts a synthetic loopback vault, saves a take, stops and restarts that server, and
+checks the actual hosted `library.vault-status` text through accessibility at copy,
+outage and recovery. The harness never orders its window onscreen. Python independently
+downloads, decrypts and hashes the saved take. It also checks the archived Latest
+blocker, unchanged Base availability and the existing workspace region geometry.
+
 `finetune` replaced `package-preparation`. Its fixture roots
 (`scripts/native_finetune_fixture.py`) add a stub F5 runtime
 (`tests/finetune_stub_runtime.py`) and pass `--finetune-runtime-root` to the service. The

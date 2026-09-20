@@ -1330,9 +1330,9 @@ def test_a_speak_worker_that_breaks_the_protocol_fails_its_request(
     _queue, events, _ = speaking
     if mode == "silent":
         monkeypatch.setattr(jobs_module, "_SEND_DEADLINE_SECONDS", -1.0)
-        command = [sys.executable, "-c", "import time; time.sleep(60)"]
+        command = [sys.executable, "-I", "-B", "-c", "import time; time.sleep(60)"]
     else:
-        command = [sys.executable, "-c", SPEECH_FAKE_WORKER, mode]
+        command = [sys.executable, "-I", "-B", "-c", SPEECH_FAKE_WORKER, mode]
     monkeypatch.setattr(FineTuneSupervisor, "_worker_command", lambda self, job: command)
     supervisor = supervisor_for(speech, speaking)
     supervisor.synthesize(say(model="base"))
@@ -1347,7 +1347,7 @@ def test_a_result_that_arrives_in_pieces_is_assembled(
 ) -> None:
     write_speech_run(speech.layout, "finetune-a")
     _queue, events, _ = speaking
-    command = [sys.executable, "-c", SPEECH_FAKE_WORKER, "split"]
+    command = [sys.executable, "-I", "-B", "-c", SPEECH_FAKE_WORKER, "split"]
     monkeypatch.setattr(FineTuneSupervisor, "_worker_command", lambda self, job: command)
     supervisor = supervisor_for(speech, speaking)
     supervisor.synthesize(say(model="base"))
@@ -1380,7 +1380,7 @@ def test_a_stopping_service_ends_no_speak_request_and_leaves_no_worker(
 
 def dead_pid() -> int:
     """The pid of a process that has already exited and been reaped."""
-    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone = subprocess.Popen([sys.executable, "-I", "-B", "-c", "pass"])
     gone.wait()
     return gone.pid
 
@@ -1853,6 +1853,8 @@ def start_speech_service(
     return subprocess.Popen(
         [
             sys.executable,
+            "-I",
+            "-B",
             str(REPOSITORY / "tests" / "native_finetune_service_fixture.py"),
             "--test-pretrained-pins",
             format_pins(pin),

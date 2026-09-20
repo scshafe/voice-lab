@@ -259,14 +259,17 @@ glyph beside it, and text contrast stays at least 4.5:1 in both appearances. Thi
 an explicit choice on top of "Preserve native light/dark contrast"; geometry, waveform
 extrema and the dB display scale are unchanged.
 
-**Not built yet — a library vault line (plan `2026-09-17-library-vault-on-ubuntu-pc.md`,
-Step 12):** The sidebar shows nothing about the library vault, the encrypted copy of the
-library that the `voice-lab vault` commands keep. The recording service already answers a
-`vault-status` command and publishes `vault-status` events (states `off`, `up-to-date`,
-`waiting`, `copying`, `unreachable` and `failed`), and the app's model applies them, but no
-view shows them and this section specifies no line. Until Step 12 the state is read with
-`voice-lab vault status` in a terminal, and the native `vault` suite that would check the
-line is not built either.
+**Added 2026-09-19 — library vault status (D-020):** The sidebar's last text line
+(identifier `library.vault-status`) shows the encrypted library copy's state. It is
+part of the existing sidebar, not a new layout region. It reads `Vault · off`,
+`Vault · checking`, `Vault · copying`, `Vault · up to date`, `Vault · N files waiting`
+(singular for one), or `Vault · waiting to copy` before a count is known. An outage
+reads `Vault unreachable since HH:mm` in local 24-hour time, or `Vault unreachable`
+when no timestamp is known. A failure displays `Vault · <message>` verbatim; its full
+text is available as help when truncated. Recording and Save remain independent.
+The native `vault` suite checks the hosted text across a real synthetic loopback
+server stop/restart and verifies a saved take by download. The standalone CLI uses
+the same wording, but has no supervisor-memory count or first-outage timestamp.
 
 ### Keyboard behavior
 
@@ -1260,6 +1263,11 @@ cloud sync, App Store distribution, and iOS are separate product decisions.
 2026-09-15. The training rules of D-016 and `docs/FINETUNE.md` are unchanged. Consent,
 transfer and promotion policy are unchanged too. Nothing leaves the Mac.
 
+**Amended 2026-09-19 (D-020):** The separately approved tailnet vault may hold an
+encrypted library copy on Cole's own host. The Mac keeps the working library and
+synthesis boundary; Speak clips stay Mac-only. Hosted/GPU transfer rules remain
+separate, and D-019's local-listening consent question is still open.
+
 **Amended 2026-09-16:** §17 adds a Speak page, under D-019, which Cole asked for on
 2026-09-15. Its clips are for local listening. They are not references, datasets or
 promotion material. The consent, transfer and promotion policy is unchanged; D-019 records
@@ -1471,8 +1479,9 @@ Speak page's Latest is the first of them (§17). Runs made by `voice-lab finetun
 the default output root count too. Each run in that reply also says where its checkpoints
 are — `local` on this Mac, or `archived` after `voice-lab finetune archive
 --remove-local-copy` removed them once the vault copy was verified — and whether the run is
-in the vault at all. The two are separate facts, and the app's model carries both; nothing
-in the window shows them yet (plan `2026-09-17-library-vault-on-ubuntu-pc.md`, Step 12).
+in the vault at all. The two are separate facts. Speak marks archived selections and
+requires restoration (§17); the sidebar's vault line reports copying status, not a
+promise that any selected run is locally usable.
 
 ## 17. Speak page
 
@@ -1561,12 +1570,12 @@ The reference is the run's level-normalized training copy, read with its exact p
 Both menus are disabled while a request is queued or running. Every request uses 32 F5
 flow steps; the page has no control for them.
 
-A run whose checkpoints were archived is listed like any other, by its run id, with nothing
-to mark it. Speaking with it is refused by the service, and Latest is refused too when the
-newest finished run is the archived one; the refusal's message, which names
-`voice-lab finetune restore-run --run <id>`, appears on the status line below. Base still speaks, because it borrows only that run's reference clip, which stays on
-the Mac. Marking archived runs in the menu, and a reason that keeps Speak from asking, are
-plan `2026-09-17-library-vault-on-ubuntu-pc.md`, Step 12, and are not built.
+A run whose checkpoints were removed by archiving has ` · Archived` appended to its
+menu label, including Latest when the newest finished run is archived. Speak is disabled
+with `Archived — restore with voice-lab finetune restore-run --run <id>`; the service
+also refuses an archived request independently. Base remains available: its pinned
+untuned F5-TTS weights use the reference clip that stays on the Mac. An archive receipt
+alone does not mark a run Archived while all its checkpoints remain local.
 
 ### Speak, Generating and Cancel
 
@@ -1588,15 +1597,17 @@ the buttons while nothing is generating.
    request's failure message.
 5. No usable runtime: "Speak is not set up: this app has no F5 runtime to speak with".
 6. The finished runs cannot be read (`latest_run_error`): the service's message.
-7. No finished run: "Fine-tune once before using Speak".
-8. A fine-tune is queued or running: "Speak is unavailable while a fine-tune runs".
-9. A take is starting, recording or stopping: "Speak is unavailable while recording".
-10. A Save is in progress: "Wait for the take to finish saving before using Speak".
-11. A stopped take's recording is still being registered: "Wait for the take to finish
+7. The selected fine-tuned run is archived: "Archived — restore with voice-lab finetune
+   restore-run --run <id>"; Base does not have this blocker.
+8. No finished run: "Fine-tune once before using Speak".
+9. A fine-tune is queued or running: "Speak is unavailable while a fine-tune runs".
+10. A take is starting, recording or stopping: "Speak is unavailable while recording".
+11. A Save is in progress: "Wait for the take to finish saving before using Speak".
+12. A stopped take's recording is still being registered: "Wait for the take to finish
     registering".
-12. A request is queued or running: "Speak is already generating", or "Speak is being
+13. A request is queued or running: "Speak is already generating", or "Speak is being
     cancelled" once Cancel was pressed.
-13. The text rules above.
+14. The text rules above.
 
 Otherwise the help is "Speak the text with the chosen model (⌘↩)".
 

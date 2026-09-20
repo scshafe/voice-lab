@@ -95,12 +95,13 @@ destination, and every vault is wrapped in `SealedBlobStore` there: no binding
 can turn encryption off. The whole design is in
 [docs/LIBRARY_VAULT.md](docs/LIBRARY_VAULT.md).
 
-Not built yet, and planned in
-[the library vault plan](.claude/plans/2026-09-17-library-vault-on-ubuntu-pc.md):
-the app's visible vault line and the native `vault` suite (Step 12), the
-container image and the deployment files (Step 13), the decision record and the
-rule changes the vault needs (Step 14) and the deployment itself (Step 15).
-Nothing is deployed and no library is bound to a vault.
+The app shows copying status in the sidebar and blocks archived fine-tuned
+models in Speak. The native `vault` suite checks that boundary with a synthetic
+loopback server. The hardened container and dedicated HTTPS sidecar templates
+are in [deploy/vault/](deploy/vault/README.md); the server's entry point is
+`python -I -B -m cole_voice_lab.storage_server`. D-020 records the approved
+storage policy. Deployment (Step 15) is still outstanding: no real library is
+bound and no vault host has been started.
 
 ## Trust model
 
@@ -119,7 +120,7 @@ Nothing is deployed and no library is bound to a vault.
   source-ID directory and is serialized against active workers.
 - Static review pages receive blinded audio indices, never the reveal mapping.
 - A vault host is not trusted with plaintext: every blob is sealed on the Mac
-  under a key that never leaves it. Sealing hides content, not sizes or times.
+  under a key never sent to the vault. Sealing hides content, not sizes or times.
 - A vault is not trusted about what it holds: a file counts as present only
   after its chunks are downloaded, decrypted and re-hashed, never on `has()`.
 - A tailnet vault's identity is the node's stable Tailscale ID and its tag,

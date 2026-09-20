@@ -20,7 +20,7 @@ stricter per-runtime estimate and never downloads models implicitly.
 
 This installs a **pending**, non-authorizing consent record. Cole completes the
 explicit approval command personally before voice cloning; an agent must not
-infer or supply the attestation flag on his behalf.
+infer or supply the attestation flag on Cole's behalf.
 
 Consent is least-privilege and checksum-rotated. First preview the exact scope:
 
@@ -602,3 +602,292 @@ Only proceed if the pilot passes and zero-shot results show a meaningful gap.
 Target roughly 90 usable training minutes plus a permanently untouched 10-minute
 holdout. Hosted GPU transfer remains separately prohibited until Cole approves a
 destination- and payload-specific transfer record.
+
+## 9. Library vault
+
+D-020 permits an encrypted library copy on Cole's own approved tailnet host.
+The Mac keeps the working database and files. This is separate from hosted GPU
+transfer and does not authorize synthesis on the vault. The implementation and
+templates are built; **nothing is deployed and no real library is bound yet**.
+See [LIBRARY_VAULT.md](LIBRARY_VAULT.md) for the data model and
+[the host runbook](../deploy/vault/README.md) for container provisioning, policy,
+sidecar join, hashes-only server configuration, access-log rotation and removal.
+
+Before Step 15, decide with Cole whether to do the pending combined app build
+and install first. A new build is needed for the sidebar status and the frozen
+encryption dependency closure; the installed app is not restarted by verification.
+Cole approves every remote or tailnet action, including SSH, policy changes,
+image transfer, container starts and the first upload. The host data path,
+training opt-in, sidecar image pin, direct versus relayed connectivity, and any
+real run archive/removal remain deployment choices. No command below has been
+run against Cole's real library as part of the synthetic verification.
+
+### Prepare the Mac and protect the recovery material
+
+Use the reviewed application environment with the exact vault closure from
+`requirements/vault-macos.txt`. If it is missing, the reviewed bootstrap is
+`scripts/bootstrap-desktop --with-vault`; its execution/download flags are a
+separate approved action. An already downloaded wheelhouse can install the
+lock offline with `--no-index --find-links <wheelhouse> --require-hashes
+--no-deps --only-binary=:all:`. The client uses the actual Tailscale binary at
+`/Applications/Tailscale.app/Contents/MacOS/Tailscale`, not the shell wrapper.
+
+The examples below use `voice-lab` from that environment and Bash variables
+containing reviewed, non-secret values. Set `LAB` to the existing private Mac
+asset root. Initialize its identity once; retain the printed `library_id` with
+the recovery information:
+
+```bash
+LAB='<existing private Mac asset root>'
+VAULT_NAMESPACE='<reviewed namespace>'
+voice-lab vault init --asset-root "$LAB"
+```
+
+Cole, in a private terminal that no agent or log is capturing, creates the key
+and stores its recovery sheet before proceeding:
+
+```bash
+voice-lab vault key create --asset-root "$LAB" \
+  --sheet-out '<new private recovery-sheet path outside repository and library>'
+voice-lab vault key show --asset-root "$LAB"
+```
+
+The sheet contains the key. Keep it offline, never in the repository, library,
+shell arguments, chat or logs. `key show` prints only the fingerprint; compare
+it with the sheet. Pause until Cole confirms the sheet is safely stored. Key
+creation refuses an existing item. If sheet writing fails after Keychain
+creation, follow the command's explicit recovery instruction before uploading;
+there is no command to regenerate a sheet from the stored key. Losing both
+the key and sheet makes the vault unreadable.
+
+Cole also creates distinct read/write tokens privately, using the namespace
+selected for the server:
+
+```bash
+voice-lab vault token create --asset-root "$LAB" --namespace "$VAULT_NAMESPACE"
+```
+
+Only hashes are printed; the raw tokens stay in the login Keychain. Put only
+those hashes in the host configuration described in the deployment runbook.
+The library recovery sheet does not contain the tokens. A new Mac needs a
+surviving read token transferred privately, or a separately approved server
+token replacement. Never run a raw-token creation/export helper through an agent.
+
+### Preview, approve and bind the destination
+
+After the dedicated host node is joined and its identity checked with Cole,
+record its exact endpoint FQDN, StableID, MagicDNS suffix, namespace and
+tag (`tag:voice-lab-vault`). The endpoint must be the dedicated sidecar, not
+the Ubuntu host's unrelated Serve endpoint. Apply the restricted access policy
+first; identity fields are not a substitute for that policy.
+The endpoint field takes a bare lowercase DNS name, without `https://`, a port
+or a path. The client supplies HTTPS and verifies TLS for that name automatically.
+
+Choose a fresh approval id and a timezone-aware expiry 12 months from approval
+(the contract permits no more than 366 days). Start with the four classes below.
+Add `training` to the array only if Cole opts in to datasets and fine-tune runs;
+Speak clips are always excluded. The statement records what Cole is approving.
+These values are not secrets:
+
+```bash
+VAULT_ENDPOINT='<dedicated-node>.<tailnet-suffix>'
+VAULT_NODE_ID='<reviewed StableID>'
+VAULT_SUFFIX='<reviewed MagicDNS suffix>'
+VAULT_NAMESPACE='<reviewed namespace>'
+VAULT_APPROVAL_ID='<new approval id>'
+VAULT_EXPIRES_AT='<timezone-aware expiry>'
+VAULT_STATEMENT='I approve encrypted storage of this library and the listed classes on this destination.'
+VAULT_CLASSES=(records prompt-database recordings derived-edits)
+
+voice-lab vault approve --asset-root "$LAB" --preview \
+  --approval-id "$VAULT_APPROVAL_ID" --endpoint "$VAULT_ENDPOINT" \
+  --node-stable-id "$VAULT_NODE_ID" --tailnet-suffix "$VAULT_SUFFIX" \
+  --namespace "$VAULT_NAMESPACE" --classes "${VAULT_CLASSES[@]}" \
+  --expires-at "$VAULT_EXPIRES_AT" --approved-by Cole \
+  --statement "$VAULT_STATEMENT"
+```
+
+Preview writes nothing and does not contact the host. Review every field,
+including `library_id`, classes and expiry. Because this preview omitted
+`--approved-at`, it generated that timestamp. Copy **both** the printed
+`approval.approved_at` and `approval_sha256` into the variables below. Confirmation
+must pass the same fields and the exact timestamp. Omitting the timestamp again
+would generate a different record and the digest check would refuse it. It is
+also valid to supply a chosen `--approved-at` to both preview and confirmation.
+
+```bash
+VAULT_APPROVED_AT='<exact approval.approved_at from preview>'
+VAULT_APPROVAL_SHA256='<exact approval_sha256 from preview>'
+
+voice-lab vault approve --asset-root "$LAB" \
+  --approval-id "$VAULT_APPROVAL_ID" --endpoint "$VAULT_ENDPOINT" \
+  --node-stable-id "$VAULT_NODE_ID" --tailnet-suffix "$VAULT_SUFFIX" \
+  --namespace "$VAULT_NAMESPACE" --classes "${VAULT_CLASSES[@]}" \
+  --approved-at "$VAULT_APPROVED_AT" --expires-at "$VAULT_EXPIRES_AT" \
+  --approved-by Cole --statement "$VAULT_STATEMENT" \
+  --reviewed-approval-sha256 "$VAULT_APPROVAL_SHA256" --i-approve-this-destination
+
+voice-lab vault bind --asset-root "$LAB" --backend tailnet-vault \
+  --endpoint "$VAULT_ENDPOINT" --namespace "$VAULT_NAMESPACE" \
+  --classes "${VAULT_CLASSES[@]}" --approval-id "$VAULT_APPROVAL_ID" \
+  --approval-sha256 "$VAULT_APPROVAL_SHA256"
+voice-lab vault show --asset-root "$LAB" --json
+```
+
+The binding pins the immutable approval's digest and names Keychain items,
+never secrets. Approval and binding explicitly enable future copying. The
+service reads its binding at startup; coordinate its next launch with Cole
+after the first-copy gate, since that launch enables background passes. An
+expired or mismatched approval refuses new vault opens. Renewal uses a new
+approval id and preview/digest confirmation, then `bind --replace`; changing
+destinations after copying also requires the deliberate `--reset-state`, which
+moves local state and manifest copies aside. That reset is not a routine fix
+for a failed upload, especially when archived checkpoints rely on those copies.
+
+### First copy, verify, and restore drill
+
+Cole approves the first tailnet access and upload. A dry run still contacts the
+vault to check its head, but uploads and writes no records. A real push seals
+bytes locally and writes its ledger entry before the first new upload:
+
+```bash
+voice-lab vault push --asset-root "$LAB" --dry-run
+voice-lab vault push --asset-root "$LAB"
+voice-lab vault status --asset-root "$LAB" --json
+voice-lab vault verify --asset-root "$LAB"
+```
+
+Retain the successful push's `generation` and `manifest_sha256` offline with
+the recovery information. They are an independent rollback anchor, but a new
+Mac can use the pair only while the current remote head still names that
+generation. Once the head advances, restoring an older generation also needs
+that generation's local manifest copy and the intervening manifest copies.
+This version does not retrieve that historical chain automatically on a new
+Mac. Keeping only the first push's pair therefore does not guarantee later
+pinned recovery. Refreshing the retained pair after a verified push helps only
+while it still matches the head; the next background generation can make it
+historical again. There is no automatic offline-anchor update. Verification
+downloads, decrypts and hashes every chunk; a nonzero exit
+or waiting/refused paths is not a successful complete copy. If verification
+finds a missing blob, investigate before using `push --full` to re-upload the
+current generation's files and verifying again. Never remove local files to
+work around a verification failure.
+
+Restore into a new or empty, private, symlink-free directory outside the
+repository and working library. The existing parent must be private and owned
+by the current user. Do not point this command at the working library:
+
+```bash
+voice-lab vault restore --asset-root "$LAB" --target "$VAULT_RESTORE_TARGET" \
+  --generation "$VAULT_GENERATION" --manifest-sha256 "$VAULT_MANIFEST_SHA256"
+```
+
+Set the two anchor variables to the retained push result. On the original Mac,
+older selections can use its retained manifest chain. On a new Mac without
+those copies, the pinned generation must be the current head or the command
+refuses `STORAGE.NOT_FOUND`; the digest alone cannot locate historical ciphertext.
+`--accept-latest`
+is the alternative to the generation/digest pair, not an additional flag. On
+a new Mac with no local state it trusts the host's selected head and cannot
+detect a valid older generation; use the pinned pair when available. Optional
+`--runtime-root <pinned F5 runtime>` relinks the base-weight pin; the vault never
+holds those pretrained bytes. A missing runtime/pin is reported, not downloaded.
+
+Compare `prompts coverage-report` and `finetune corpus` between source and
+restored roots, using the same subject and catalog selection (their `--help`
+lists the selection flags). Verify selected original audio digests and the
+restored prompt database before calling the drill complete. The restore
+rebuilds machine-bound indexes when first opened; it never restores
+`provenance/vault/**` or Speak clips. Test the server-unreachable/recovery status
+with Cole, and confirm recording still works. Archiving the smoke-test run is
+a separate decision, not part of the default drill.
+
+### Restore on a new Mac
+
+Use an empty private control root for the restore credentials and a separate
+empty target for restored data. Initialize the control root with the **same**
+library id from the recovery sheet. Cole imports the key and read token in a
+private terminal; inputs stay outside the repository and both roots:
+
+The explicit-endpoint command below supports only the current head; it does not
+read local manifest copies. An older offline pair is insufficient after background
+copying has advanced the head. Historical selection requires the bound-library
+restore route with the needed trusted local manifest chain, a separate recovery
+procedure if those records survived. There is no command here to reconstruct them.
+If that condition cannot be met, stop and make a separate recovery decision;
+do not silently replace the pin with `--accept-latest`, which accepts the host's
+head without an independent freshness anchor.
+
+```bash
+voice-lab assets init --asset-root "$VAULT_CONTROL_ROOT"
+voice-lab vault init --asset-root "$VAULT_CONTROL_ROOT" --library-id "$VAULT_LIBRARY_ID"
+voice-lab vault key import --asset-root "$VAULT_CONTROL_ROOT" \
+  --sheet '<offline recovery-sheet path>'
+voice-lab vault token import --asset-root "$VAULT_CONTROL_ROOT" --scope read \
+  < '<private read-token input file>'
+voice-lab vault restore --asset-root "$VAULT_CONTROL_ROOT" \
+  --target "$VAULT_RESTORE_TARGET" --endpoint "$VAULT_ENDPOINT" \
+  --namespace "$VAULT_NAMESPACE" --node-stable-id "$VAULT_NODE_ID" \
+  --tailnet-suffix "$VAULT_SUFFIX" --generation "$VAULT_GENERATION" \
+  --manifest-sha256 "$VAULT_MANIFEST_SHA256"
+```
+
+This explicit endpoint route reads with the read token and checked node identity;
+it needs no write approval or binding. Recover the endpoint identity and pinned
+generation from trusted retained records, not solely from the server being
+restored. If the read token is lost, the host operator must replace its hash
+with a newly created credential before a read can succeed; the library key is
+still required and cannot be recovered from the host. After checking the
+restored library, run `vault init --library-id` on that root. The old Mac's
+upload state and ledger were not restored: binding alone cannot resume copying
+to the populated namespace, whose head would be refused as a fork. Do not use
+`--reset-state` to try to adopt it. Resume only through a separately approved
+fresh namespace, new destination approval and binding, while retaining the old
+namespace for recovery. Provision the new namespace with a distinct token pair:
+coordinate replacing this library's Mac token items as described below, retain the
+old read credential privately for recovery, and leave the old namespace's hashes
+unchanged. The encryption key and library id stay the same. Trusted original
+Mac-only vault records, if separately available, require their own reviewed
+recovery procedure; there is no automatic state/ledger recovery helper. The
+Keychain items are keyed by
+library id; importing the same key again when its item already exists is refused.
+
+### Explicit run archiving and credential maintenance
+
+Only with Cole's decision for the named run and a binding/approval that covers
+`training`, archive it while no app training or Speak request is active:
+
+```bash
+voice-lab finetune archive --asset-root "$LAB" --run "$VAULT_RUN_ID"
+```
+
+This copies the library, downloads/decrypts/checks the entire run, writes its
+archive receipt and copies that receipt too. It removes nothing. To reclaim
+checkpoint space, Cole explicitly chooses the additional flag for that run:
+
+```bash
+voice-lab finetune archive --asset-root "$LAB" --run "$VAULT_RUN_ID" --remove-local-copy
+voice-lab finetune restore-run --asset-root "$LAB" --run "$VAULT_RUN_ID" \
+  --runtime-root '<pinned F5 runtime>'
+```
+
+Removal performs a fresh second download verification of the whole run, then
+rehashes the local files and removes only `checkpoints/**` after writing the
+removal record. Dataset clips, run metadata and samples remain local. There is
+no automatic eviction. Missing checkpoints mark Latest/named models Archived
+in Speak; Base still uses its untuned weights and remaining reference clips.
+Restoration rechecks the copied bytes and keeps the removal history.
+
+For audit, copy the host's access log privately with a separately approved
+transfer and run `voice-lab vault audit --asset-root "$LAB" --access-log <file>`.
+It compares the host's answered requests with this Mac's request records;
+unexplained accesses fail. Host log rotation must use copy-truncate, never
+rename, as the server retains the opened inode.
+
+Token rotation is separate from key recovery. `token create` and `token import`
+refuse existing items; there is no automatic overwrite or grace period. Follow
+the host runbook's coordinated stop, explicit Keychain token removal, new pair,
+hash replacement, container recreation and read/write verification. Never
+delete the library encryption-key item while replacing tokens. This plan adds
+no second copy and no scheduled deletion; host data removal requires its own
+explicit approval.

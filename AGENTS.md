@@ -20,10 +20,14 @@ promoting a winning, hash-pinned voice into ChloeSpeech.
 - Recognizable-human synthesis requires a checksum-bound reference and an
   approved, checksum-bound consent record with a matching subject and purpose.
 - No human audio is sent to a hosted service or GPU host without a separate,
-  explicit transfer approval naming the destination and payload digest. (The
-  library vault is built but not deployed; a standing destination approval for
-  it is proposed in D-020, library-vault plan Step 14. Until that decision is
-  recorded, this rule stands exactly as written.)
+  explicit transfer approval naming the destination and payload digest. D-020
+  permits encrypted library storage on Cole's own approved vault: a standing
+  `VaultDestinationApproval` binds the library, endpoint, namespace, stable
+  Tailscale node ID, tag, tailnet suffix and file classes, with a 12-month expiry
+  (at most 366 days). A ledger entry naming the plaintext manifest-plan payload
+  digest must precede each generation's first new blob upload. `training` is a
+  separate opt-in class. Storage needs no synthesis consent; the vault never
+  receives plaintext or executes a model.
 - Model code and weights are identified by immutable revisions. A mutable
   branch, tag, package range, or model alias is not experiment evidence.
 - Incompatible model stacks run in separate environments and communicate
@@ -42,16 +46,21 @@ promoting a winning, hash-pinned voice into ChloeSpeech.
   coverage are the default implementation stack.
 - Prefer standard-library capture and transfer primitives. Optional model and
   metric dependencies belong in isolated runtime environments. Library-vault
-  encryption is the one exception, to be recorded in D-020 (library-vault plan
-  Step 14): `cryptography` is an optional `vault` extra at an exact version,
+  encryption is the D-020 exception: `cryptography` is an optional `vault` extra
+  at an exact version,
   hash-locked with its closure in `requirements/vault-macos.txt`, and only the
-  sealing module imports it.
+  sealing module imports it. The frozen Mac runtime carries that closure;
+  the capture kit and vault server do not.
 - Storage and catalog access go through ports, never a named implementation.
   Only the composition root builds an adapter for the lab; the vault server
   builds the local store it serves, and the two fixture seeders build their own.
   An import-boundary test fails if anything else does.
 - Keep commands non-destructive by default. Downloads, remote deployment,
   hosted transfer, model eviction, and raw-asset removal require explicit flags.
+  Vault approval and binding explicitly enable background encrypted copying.
+  Removing local fine-tune checkpoints requires `finetune archive --run <id>
+  --remove-local-copy` for each run, after download verification. Vault deployment
+  remains a separate, Cole-approved action; documentation is not deployment.
 - Preserve user changes and keep commits reversible.
 
 ## Required verification

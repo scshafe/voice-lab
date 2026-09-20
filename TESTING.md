@@ -70,7 +70,8 @@ these tests does not require the mini's exact installed Homebrew Python.
 
 - Ruff format check and lint
 - strict mypy
-- pytest with branch coverage
+- all synthetic native recording suites, including `vault`
+- pytest with branch coverage (90% minimum)
 - package build
 - exact durable-schema set and schema drift check
 - repository asset-leak guard
@@ -138,6 +139,28 @@ recorded JSON. Every server is one the test starts itself. The client's plain-HT
 is a separate test-only constructor, and AST checks prove that no command, flag or
 environment variable can reach it.
 
-Two runs of this surface are planned and do not exist yet: the same storage conformance
-suite against the built container image (library-vault plan, Step 13) and a native
-`vault` suite driving the app's visible vault line (Step 12).
+`scripts/verify-native-recording --suite vault` checks the actual hosted sidebar
+text during copy, a stopped loopback server and recovery; saves synthetic audio and
+independently downloads, decrypts and hashes the saved take; and checks the archived
+Speak blocker, Base availability and unchanged workspace geometry. The fixture uses
+injected credentials and identity, never the real Keychain or tailnet. Its private
+listener/credential lifecycle also has failure-injection tests.
+
+`scripts/verify-vault-container` is a separate offline gate, not part of
+`scripts/verify`. It requires the reviewed cached base image and Linux wheelhouse,
+uses the validated local Colima socket, builds with the legacy builder, and runs
+storage conformance against a hardened container's test-only loopback port. The
+`container-http` fixture accepts only literal loopback URLs and namespace `test`;
+backing-store damage hooks are unavailable and explicitly skipped. It never starts
+a Tailscale sidecar. See [deploy/vault/README.md](deploy/vault/README.md).
+
+The full gate's direct Python commands, native dispatcher and ordinary synthetic
+host helpers use `-I -B`, with explicit script/fixture module paths where needed.
+Copied fixture services compute and check identity under the same explicit import
+root; the synthetic F5 launcher preserves its emulated runtime arguments while
+isolating its host interpreter. Production worker invocations and deliberate
+startup-audit cases retain the runtime behavior they are testing; this is not a
+claim that every interpreter descendant uses identical flags. Packaged-app rollback replay
+runs only when `COLE_VOICE_ROLLBACK_RELEASE` explicitly names a release; the default
+gate neither discovers nor stats the real Application Support release tree, and a
+skipped rollback case is not reported as verified.

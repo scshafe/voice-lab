@@ -117,7 +117,7 @@ class _MemoryKeychain:
         return (service, account) in self.items
 
 
-def _run_worker(asset_root: Path, stall_directory: Path) -> int:
+def _run_worker(asset_root: Path, stall_directory: Path, remaining: list[str]) -> int:
     from cole_voice_lab import storage_binding, storage_local
     from cole_voice_lab.storage_contracts import keychain_item_names
 
@@ -133,7 +133,9 @@ def _run_worker(asset_root: Path, stall_directory: Path) -> int:
         patch.object(storage_binding, "keychain_client", lambda: keychain),
         patch.object(storage_local, "LocalBlobStore", stalled_store),
     ):
-        return library_replication_service.main(["--worker", "--asset-root", str(asset_root)])
+        return library_replication_service.main(
+            ["--worker", "--asset-root", str(asset_root), *remaining]
+        )
 
 
 def _run_service(asset_root: Path, stall_directory: Path, remaining: list[str]) -> int:
@@ -176,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("exactly one of --test-vault-service and --test-vault-worker")
     asset_root = options.asset_root
     if options.test_vault_worker:
-        return _run_worker(asset_root, options.test_stall_directory)
+        return _run_worker(asset_root, options.test_stall_directory, remaining)
     return _run_service(
         asset_root, options.test_stall_directory, ["--asset-root", str(asset_root), *remaining]
     )

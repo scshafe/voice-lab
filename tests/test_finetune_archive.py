@@ -14,6 +14,7 @@ All audio is synthetic, no training ever runs, and the Keychain is the dictionar
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -52,7 +53,7 @@ from cole_voice_lab.finetune import (
     write_run_archive,
     write_run_removal,
 )
-from cole_voice_lab.library_generations import VaultRecords
+from cole_voice_lab.library_generations import RestoreRefusedError, VaultRecords, restore_run_files
 from cole_voice_lab.models import utc_now
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import RecordingError, SynthesizeCommand
@@ -64,6 +65,7 @@ from cole_voice_lab.recording_finetune_jobs import (
     run_speech_worker_request,
 )
 from cole_voice_lab.recording_takes import write_recording_evidence
+from cole_voice_lab.storage_binding import open_library_vault
 
 RUN_ROOT = f"derived/finetune/{RUN_FINISHED}"
 CHECKPOINT = f"{RUN_ROOT}/checkpoints/model_last.pt"
@@ -878,6 +880,153 @@ def test_a_restore_that_cannot_read_a_chunk_leaves_no_half_written_file(lab: Lab
     assert not lab.run_file(CHECKPOINT).exists()
     assert list(lab.run_file(f"{RUN_ROOT}/checkpoints").glob(".*")) == []
     assert lab.run_file(f"{RUN_ROOT}/{FINETUNE_REMOVAL_NAME}").exists()
+
+
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "file"])
+def test_restore_checks_a_later_checkpoint_parent_before_writing_an_earlier_file(
+    lab: Lab, unsafe_kind: str
+) -> None:
+    nested = lab.run_file(f"{RUN_ROOT}/checkpoints/z")
+    nested.mkdir(mode=0o700)
+    (nested / "extra.pt").write_bytes(b"synthetic extra checkpoint")
+    (nested / "extra.pt").chmod(0o600)
+    lab.archive("--remove-local-copy")
+    nested.rmdir()
+    outside = lab.tmp_path / "outside-restore"
+    outside.mkdir(mode=0o700)
+    if unsafe_kind == "symlink":
+        nested.symlink_to(outside, target_is_directory=True)
+    else:
+        nested.write_bytes(b"not a directory")
+
+    refusal = lab.refuse_restore_run(code="REPLICATION.RESTORE_REFUSED")
+
+    assert "symlink or not a directory" in refusal
+    assert not lab.run_file(CHECKPOINT).exists(), "preflight must check past the first missing file"
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("existing_pin", [False, True])
+def test_restore_preflights_pin_parents_even_after_a_missing_file(
+    lab: Lab, existing_pin: bool
+) -> None:
+    removed = lab.archive("--remove-local-copy")["removed"]
+    entries = lab.entries(removed["generation"])
+    outside = lab.tmp_path / "outside-pin"
+    outside.mkdir(mode=0o700)
+    if existing_pin:
+        (outside / "pretrained_model.safetensors").write_bytes(
+            (lab.runtime / "pretrained/model.safetensors").read_bytes()
+        )
+    before = {path.name: path.read_bytes() for path in outside.iterdir()}
+    lab.run_file(f"{RUN_ROOT}/checkpoints/z").symlink_to(outside, target_is_directory=True)
+    pin = entries[PRETRAINED].model_copy(
+        update={"path": f"{RUN_ROOT}/checkpoints/z/pretrained_model.safetensors"}
+    )
+    vault = open_library_vault(lab.layout)
+    assert vault is not None
+
+    with pytest.raises(RestoreRefusedError, match="symlink or not a directory"):
+        restore_run_files(
+            lab.root,
+            blob_store=vault.blob_store,
+            entries=(entries[CHECKPOINT], pin),
+            runtime_root=lab.runtime,
+        )
+
+    assert not lab.run_file(CHECKPOINT).exists()
+    assert {path.name: path.read_bytes() for path in outside.iterdir()} == before
+
+
+def test_restore_publication_stays_with_the_open_directory_after_symlink_substitution(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    removed = lab.archive("--remove-local-copy")["removed"]
+    entry = lab.entries(removed["generation"])[CHECKPOINT]
+    directory = lab.run_file(f"{RUN_ROOT}/checkpoints")
+    retained = lab.run_file(f"{RUN_ROOT}/retained-checkpoints")
+    outside = lab.tmp_path / "outside-substitution"
+    outside.mkdir(mode=0o700)
+    original = generations_module._entry_plaintext
+
+    def substitute(*args: Any, **options: Any) -> Iterator[bytes]:
+        directory.rename(retained)
+        directory.symlink_to(outside, target_is_directory=True)
+        yield from original(*args, **options)
+
+    monkeypatch.setattr(generations_module, "_entry_plaintext", substitute)
+    vault = open_library_vault(lab.layout)
+    assert vault is not None
+    restored = restore_run_files(lab.root, blob_store=vault.blob_store, entries=(entry,))
+
+    assert restored.files[0].state == "written"
+    assert hashlib.sha256((retained / "model_last.pt").read_bytes()).hexdigest() == entry.sha256
+    assert list(outside.iterdir()) == []
+    assert not list(retained.glob(".*.restoring-*"))
+
+
+@pytest.mark.parametrize("copy_pin", [False, True])
+def test_pin_creation_hashing_and_publication_stay_with_the_open_directory(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch, copy_pin: bool
+) -> None:
+    removed = lab.archive("--remove-local-copy")["removed"]
+    entry = lab.entries(removed["generation"])[PRETRAINED]
+    directory = lab.run_file(f"{RUN_ROOT}/checkpoints")
+    retained = lab.run_file(f"{RUN_ROOT}/retained-checkpoints")
+    outside = lab.tmp_path / "outside-pin-substitution"
+    outside.mkdir(mode=0o700)
+    original = os.link
+
+    def substitute(*args: Any, **options: Any) -> None:
+        directory.rename(retained)
+        directory.symlink_to(outside, target_is_directory=True)
+        if copy_pin:
+            raise OSError(errno.EXDEV, "synthetic cross-device pin copy")
+        original(*args, **options)
+
+    monkeypatch.setattr(generations_module.os, "link", substitute)
+    vault = open_library_vault(lab.layout)
+    assert vault is not None
+    restored = restore_run_files(
+        lab.root, blob_store=vault.blob_store, entries=(entry,), runtime_root=lab.runtime
+    )
+
+    assert restored.pins[0].state == ("copied" if copy_pin else "linked")
+    assert hashlib.sha256((retained / "pretrained_model.safetensors").read_bytes()).hexdigest() == (
+        entry.sha256
+    )
+    assert list(outside.iterdir()) == []
+    assert not list(retained.glob(".*.pin-*"))
+
+
+def test_restore_creates_missing_parents_but_refuses_one_substituted_after_preflight(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    removed = lab.archive("--remove-local-copy")["removed"]
+    entry = lab.entries(removed["generation"])[CHECKPOINT].model_copy(
+        update={"path": f"{RUN_ROOT}/checkpoints/z/deeper/model.pt"}
+    )
+    vault = open_library_vault(lab.layout)
+    assert vault is not None
+    restored = restore_run_files(lab.root, blob_store=vault.blob_store, entries=(entry,))
+    assert restored.files[0].state == "written"
+    assert hashlib.sha256(lab.run_file(entry.path).read_bytes()).hexdigest() == entry.sha256
+
+    outside = lab.tmp_path / "outside-after-preflight"
+    outside.mkdir(mode=0o700)
+    directory = lab.run_file(f"{RUN_ROOT}/checkpoints/z")
+    retained = lab.run_file(f"{RUN_ROOT}/retained-z")
+    original = generations_module._preflight_restore_entry
+
+    def substitute(*args: Any, **options: Any) -> None:
+        original(*args, **options)
+        directory.rename(retained)
+        directory.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(generations_module, "_preflight_restore_entry", substitute)
+    with pytest.raises(RestoreRefusedError, match="symlink or not a directory"):
+        restore_run_files(lab.root, blob_store=vault.blob_store, entries=(entry,))
+    assert list(outside.iterdir()) == []
 
 
 def test_a_manifest_copy_that_is_not_the_one_the_record_names_blocks_the_restore(

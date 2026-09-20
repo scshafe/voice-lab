@@ -137,7 +137,6 @@ TAILNET_RANGE: Final = ipaddress.ip_network("100.64.0.0/10")
 _BEARER: Final = "Bearer "
 _JSON_CONTENT_TYPE: Final = "application/json; charset=utf-8"
 _BLOB_CONTENT_TYPE: Final = "application/octet-stream"
-_MAX_DETAIL_LENGTH: Final = 200
 # A body is written in pieces so the whole write, not each socket send, is under the deadline.
 _SEND_CHUNK_BYTES: Final = 256 * 1024
 # What ``VaultRequestRecord.status`` and the HTTP rules alike admit; ``http.client`` reads a
@@ -528,8 +527,8 @@ class _Route(Protocol):
 
 
 def _detail(error: BaseException) -> str:
-    """One transport failure as a message may carry it: its class and its own text."""
-    return f"{type(error).__name__}: {str(error)[:_MAX_DETAIL_LENGTH]}"
+    """The local exception class only: remote bytes may occur in its message."""
+    return type(error).__name__
 
 
 @dataclass(frozen=True, slots=True)
@@ -644,15 +643,6 @@ def _answer_code(answer: _Answer, method: str) -> StorageErrorCode:
     if method == "HEAD" and answer.status in _HEAD_STATUS_CODES:
         return _HEAD_STATUS_CODES[answer.status]
     return _STATUS_CODES.get(answer.status, "STORAGE.PROTOCOL")
-
-
-def _answer_message(answer: _Answer) -> str:
-    """The refusal's own sentence as it can be repeated, or an empty string."""
-    document = _document(answer.body)
-    message = None if document is None else document.get("message")
-    if not isinstance(message, str) or not message.isprintable() or not message:
-        return ""
-    return f": {message[:_MAX_DETAIL_LENGTH]}"
 
 
 # -- the connection and its two stores -------------------------------------------------------
@@ -862,7 +852,7 @@ class VaultConnection:
         raise storage_error(
             failure,
             f"the vault at {self._route.host} answered {answer.status} ({failure}) for "
-            f"{call.operation} {call.ref}{_answer_message(answer)}",
+            f"{call.operation} {call.ref}",
         )
 
     def _exchange(self, call: _Call, address: str, port: int) -> _Answer:
@@ -911,18 +901,18 @@ class VaultConnection:
                 declared = response.getheader("Content-Length")
                 limit = MAX_JSON_BODY_BYTES if status >= 400 else call.response_limit
                 body = _read_bounded(response, limit)
-        except TimeoutError as error:
+        except TimeoutError:
             raise storage_error(
                 "STORAGE.TIMEOUT",
                 f"the vault at {self._route.host} did not answer {call.operation} "
                 f"{call.ref} within {self._timeout} seconds",
-            ) from error
+            ) from None
         except (OSError, http.client.HTTPException) as error:
             raise storage_error(
                 "STORAGE.UNAVAILABLE",
                 f"the vault at {self._route.host} could not be reached for {call.operation} "
                 f"{call.ref}: {_detail(error)}",
-            ) from error
+            ) from None
         except ValueError as error:
             # The class alone, and no cause: a ValueError from the request writer quotes what
             # it refused, and the Authorization header is one of the things it may have been
@@ -944,7 +934,7 @@ class VaultConnection:
                 raise storage_error(
                     "STORAGE.PROTOCOL",
                     f"the vault at {self._route.host} answered {call.operation} {call.ref} "
-                    f"with Content-Length {declared!r:.40}, not {expected}",
+                    f"with a Content-Length that does not match the expected {expected} bytes",
                 )
             # A HEAD's answer never carries the body it frames. For anything else, framing the
             # right length and then sending less is a connection that ended, which may pass by
@@ -1051,7 +1041,7 @@ def _validated[Record: (BlobRef, RefValue)](
             "STORAGE.INTEGRITY",
             f"the vault at {endpoint} answered with something that is not a "
             f"{model.__name__}: {_detail(error)}",
-        ) from error
+        ) from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1090,8 +1080,8 @@ class HttpBlobStore:
         if stored != ref:
             raise storage_error(
                 "STORAGE.INTEGRITY",
-                f"the vault at {self.connection.endpoint} stored {stored.sha256} of "
-                f"{stored.size} bytes, not {ref.sha256} of {ref.size}",
+                f"the vault at {self.connection.endpoint} returned a different blob ref "
+                f"for {ref.sha256} of {ref.size} bytes",
             )
         return ref
 
@@ -1242,7 +1232,7 @@ class HttpRefStore:
             raise storage_error(
                 "STORAGE.INTEGRITY",
                 f"the vault at {self.connection.endpoint} answered for ref {name} with the "
-                f"value of {value.name}",
+                "value of another ref",
             )
         return value
 

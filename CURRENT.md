@@ -6,18 +6,23 @@ On 2026-09-17, Cole settled the open questions in
 [the library vault plan](.claude/plans/2026-09-17-library-vault-on-ubuntu-pc.md)
 and asked for it to be built: an encrypted, content-addressed copy of the prompt
 database, recordings, edits, datasets and finished fine-tune runs, held in a
-container reached over the Tailnet, with the key kept on the Mac. Steps 1 to 11
-are implemented and committed: the storage and catalog ports with their
+container reached over the Tailnet, with the key kept on the Mac. The storage
+implementation now includes: the storage and catalog ports with their
 conformance suites, the local and encrypted content-addressed stores, the
 manifest chain with verification and restore, the vault server and its
 identity-checked client, the destination approval, the binding and the
 `voice-lab vault` commands, background copying in the recording service, and
-`finetune archive`/`restore-run` for finished runs. Steps 12 to 15 are not done:
-the vault line the recording app will show and its native `vault` suite
-(Step 12), the container image and deployment files (Step 13), decision record
-D-020 with the AGENTS.md and SECURITY.md rule changes it records (Step 14), and
-the deployment itself (Step 15). Nothing is deployed, no binding exists, and no
-byte of the library has left the Mac. The first copy is Cole's to authorize.
+`finetune archive`/`restore-run` for finished runs. Steps 12 and 13 add the
+sidebar vault line, Speak's archived-run blocker, the synthetic native `vault`
+suite, and the offline-verified container/deployment templates. D-020 and the
+[Mac operator runbook](docs/RUNBOOK.md#9-library-vault) finish the policy and
+procedures in Step 14. This describes checkout capabilities, not an installed
+app or deployed vault. The combined corpus/fine-tune/Speak/vault build and
+install still needs Cole and the UMIK-1; the frozen runtime must be rebuilt with
+its encryption dependencies. Step 15 remains outstanding: no real binding
+exists, no vault is deployed, and no byte of Cole's library has left the Mac.
+Cole chooses the training opt-in and approves each deployment action and the
+first copy. See [the host runbook](deploy/vault/README.md).
 
 On 2026-09-11, Cole requested a complete implementation plan for a faster,
 Voice Memos-like native recording interface with a real-time waveform and stable

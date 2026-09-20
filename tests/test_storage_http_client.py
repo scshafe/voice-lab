@@ -17,18 +17,20 @@ import ast
 import hashlib
 import http.client
 import inspect
+import io
 import json
 import socket
 import ssl
 import subprocess
 import threading
 import time
+import traceback
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import pytest
 
@@ -1071,7 +1073,8 @@ def test_a_value_that_names_another_ref_is_refused() -> None:
 
         error = refused("STORAGE.INTEGRITY", lambda: refs.read(HEAD_REF), integrity=True)
 
-    assert "the value of libraries/other/head" in str(error)
+    assert "the value of another ref" in str(error)
+    assert "libraries/other/head" not in str(error)
 
 
 def test_a_put_the_vault_answers_with_another_ref_is_refused() -> None:
@@ -1081,7 +1084,8 @@ def test_a_put_the_vault_answers_with_another_ref_is_refused() -> None:
 
         error = refused("STORAGE.INTEGRITY", lambda: blobs.put(HELLO), integrity=True)
 
-    assert "b" * 64 in str(error)
+    assert HELLO_REF.sha256 in str(error)
+    assert "b" * 64 not in str(error)
 
 
 def test_a_swap_the_vault_answers_with_another_version_is_refused() -> None:
@@ -1239,7 +1243,7 @@ def test_an_answer_too_deep_to_parse_is_no_contract() -> None:
         refused("STORAGE.INTEGRITY", lambda: refs.read(HEAD_REF), integrity=True)
 
 
-def test_a_refusal_repeats_the_vaults_own_sentence_when_it_has_one() -> None:
+def test_a_refusal_omits_the_vaults_own_sentence_when_it_has_one() -> None:
     with ScriptedServer(
         [Reply(raw=refusal(409, "STORAGE.CONFLICT", "the ref is not at the expected version"))]
     ) as server:
@@ -1250,7 +1254,96 @@ def test_a_refusal_repeats_the_vaults_own_sentence_when_it_has_one() -> None:
             lambda: refs.swap(HEAD_REF, expected_version=1, target=HELLO_REF),
         )
 
-    assert "the ref is not at the expected version" in str(error)
+    assert "the ref is not at the expected version" not in str(error)
+    assert f"swap-ref {HEAD_REF}" in str(error)
+
+
+@pytest.mark.parametrize(
+    ("remote", "code", "operation"),
+    [
+        (refusal(401, "STORAGE.UNAUTHORIZED", SYNTHETIC_TOKEN), "STORAGE.UNAUTHORIZED", "read"),
+        (json_answer(200, {"name": SYNTHETIC_TOKEN}), "STORAGE.INTEGRITY", "read"),
+        (ref_answer(SYNTHETIC_TOKEN, 1, HELLO_REF), "STORAGE.INTEGRITY", "read"),
+        (
+            answer(200, HELLO, content_type="x").replace(
+                f"Content-Length: {len(HELLO)}".encode(),
+                f"Content-Length: {SYNTHETIC_TOKEN}".encode(),
+            ),
+            "STORAGE.PROTOCOL",
+            "get",
+        ),
+        (SYNTHETIC_TOKEN.encode() + b"\r\n", "STORAGE.UNAVAILABLE", "read"),
+        (OSError(SYNTHETIC_TOKEN), "STORAGE.UNAVAILABLE", "read"),
+        (TimeoutError(SYNTHETIC_TOKEN), "STORAGE.TIMEOUT", "read"),
+        (ValueError(SYNTHETIC_TOKEN), "STORAGE.PROTOCOL", "read"),
+    ],
+    ids=["refusal", "invalid-contract", "other-ref", "header", "status", "os", "timeout", "value"],
+)
+def test_remote_diagnostics_never_reach_errors_tracebacks_or_worker_replies(
+    remote: bytes | Exception,
+    code: str,
+    operation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In-memory responses only; the same public failure is serialized by the worker."""
+    from cole_voice_lab import storage_binding
+    from cole_voice_lab.library_replication_service import run_vault_pass, worker_reply_bytes
+    from cole_voice_lab.paths import AssetLayout
+
+    class MemorySocket:
+        def sendall(self, _data: bytes) -> None:
+            pass
+
+        def makefile(self, *_args: Any, **_options: Any) -> io.BytesIO:
+            assert isinstance(remote, bytes)
+            return io.BytesIO(remote)
+
+        def close(self) -> None:
+            pass
+
+    @contextmanager
+    def connected(*_args: Any, **_options: Any) -> Iterator[http.client.HTTPConnection]:
+        connection = http.client.HTTPConnection("127.0.0.1")
+        connection.sock = cast(socket.socket, MemorySocket())
+        if isinstance(remote, Exception):
+
+            def failed_response() -> NoReturn:
+                raise remote
+
+            monkeypatch.setattr(connection, "getresponse", failed_response)
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    monkeypatch.setattr(VaultConnection, "_connected", connected)
+    log = Recorder()
+    client = VaultConnection.loopback_for_tests(
+        1, NAMESPACE, lambda: SYNTHETIC_TOKEN, attempts=1, request_log=log
+    )
+    action = (
+        (lambda: client.blob_store().get(HELLO_REF))
+        if operation == "get"
+        else (lambda: client.ref_store().read(HEAD_REF))
+    )
+    error = refused(code, action, integrity=code in INTEGRITY_CODES)
+
+    def refused_open(_layout: AssetLayout) -> NoReturn:
+        raise error
+
+    monkeypatch.setattr(storage_binding, "open_library_vault", refused_open)
+    layout = AssetLayout.initialize(tmp_path.resolve() / "worker-library" / "assets")
+    reply = run_vault_pass(layout, binding_sha256="a" * 64)
+
+    assert reply.code == code
+    assert reply.retryable == error.retryable
+    assert reply.message == str(error)
+    public = str(error) + repr(error) + "".join(traceback.format_exception(error))
+    public += worker_reply_bytes(reply).decode() + log.text
+    assert SYNTHETIC_TOKEN not in public
+    assert client.endpoint in str(error)
+    assert log.records[-1].code == code or code == "STORAGE.INTEGRITY"
 
 
 @pytest.mark.parametrize(

@@ -207,11 +207,10 @@ the voice, so they are their own file class, `training`. Archiving needs a libra
 vault whose binding copies that class (`voice-lab vault bind --classes … training`) and, for
 a tailnet vault, a destination approval that covers it too. Anything else is
 `STORAGE.NOT_APPROVED`, naming the opt-in; an unbound library is `STORAGE.NOT_BOUND`. No
-vault is deployed yet: the container and the first copy are Steps 13 and 15 of the library
-vault plan (`.claude/plans/2026-09-17-library-vault-on-ubuntu-pc.md`), and the rule that lets
-an encrypted copy leave the Mac at all — the standing approval, the ledger entry before each
-upload, and the change to the transfer rule it rests on — is D-020 and the AGENTS.md and
-SECURITY.md changes of that plan's Step 14, which are not written yet.
+vault is deployed yet. D-020 authorizes the standing destination approval and ledger
+model for encrypted storage; deployment and Cole's training opt-in remain Step 15.
+The container templates are in [the host runbook](../deploy/vault/README.md), and
+[RUNBOOK.md](RUNBOOK.md#9-library-vault) covers Mac approval, binding and restoration.
 
 **What `archive` does**, in order. It refuses a run that is not `finished`, and refuses while
 the app's service holds a fine-tune job or a Speak request (`FINETUNE.JOB_ACTIVE`). It then
@@ -255,9 +254,10 @@ independent facts. A run counts as archived only while `local-removal.json` is b
 restore writes the checkpoints back beside the record it also carries, so a library restored
 from the vault reports its runs as `local`, and a crash between the record and the first
 unlink leaves a run that can still speak. A removal record that cannot be read at all counts
-as archived, so a damaged record never offers Speak a run whose checkpoints are gone. The app
-shows none of this yet; the Speak page's archived blocker and the Library's vault line are
-Step 12 of the plan above.
+as archived, so a damaged record never offers Speak a run whose checkpoints are gone.
+Speak marks Latest and named archived runs with ` · Archived` and disables generation
+with `Archived — restore with voice-lab finetune restore-run --run <id>`. The sidebar's
+last line reports vault copying status independently of that run's availability.
 
 **An archived run is refused.** `finetune dataset`, `finetune train`, `finetune run` and
 `finetune synthesize` refuse it with `FINETUNE.RUN_ARCHIVED` and one wording: run `<run-id>`

@@ -4,7 +4,7 @@ The vault is a second copy of the recording library — takes, records, the prom
 edits, datasets and finished fine-tune runs — encrypted on the Mac and stored somewhere the
 Mac can reach. It exists so that the library survives the Mac, and so that a finished
 fine-tune run can leave the disk and come back. Every byte is sealed before it leaves, with a
-key that never leaves the Mac.
+key never sent to the vault (kept in Keychain and an offline recovery sheet).
 
 Modules: `src/cole_voice_lab/storage_ports.py` (`@canonical storage_ports`),
 `storage_contracts.py`, `storage_local.py`, `storage_sealing.py`, `storage_http_client.py`,
@@ -14,9 +14,11 @@ root), `library_classification.py`, `library_replication.py`, `library_generatio
 `tests/storage_conformance.py`, `tests/test_storage_*.py`, `tests/test_replication_sources.py`,
 `tests/test_library_replication*.py`, `tests/test_vault_cli.py`, `tests/test_finetune_archive.py`.
 
-Nothing is deployed yet. There is no vault host, no binding and no copy of Cole's library
-anywhere but the Mac; see "Not built yet" at the end for what is still missing and which plan
-step builds it.
+The implementation, visible app status, container templates and D-020 policy are built.
+Nothing is deployed yet: there is no vault host, no real binding and no copy of Cole's
+library anywhere but the Mac. [RUNBOOK.md](RUNBOOK.md#9-library-vault) covers the Mac
+procedures, and [deploy/vault/README.md](../deploy/vault/README.md) covers the host.
+See "Deployment still outstanding" below for Step 15's operator gates.
 
 ## What the vault is, and what it is not
 
@@ -111,7 +113,7 @@ probably the same file; a host that already holds a candidate file of distinctiv
 file's size fixes its duration) can guess that it is stored; a file uploaded again repeats the
 sizes its chunks had. This is accepted, not padded — the host is Cole's own machine and the
 content stays confidential — and the format's version byte leaves room for padding later. The
-decision record is D-020 (planned, Step 14).
+decision record is D-020.
 
 `LibraryKey` holds exactly 32 bytes, redacts its `repr`, and refuses to be pickled or copied.
 It lives in the login Keychain under `private.cole.voice-lab.vault.<library_id>.key`, reached
@@ -294,7 +296,14 @@ bind file identities this Mac no longer has. Records that name a file's device a
 still in flight cannot be resumed against the restored files and must be run again. Speak clips
 are not in the vault at all. And `provenance/vault/**` is not restored: a new Mac runs
 `vault init --library-id <the library's id>`, imports the key from its recovery sheet and the
-read token, and binds again.
+read token, and restores through the explicit endpoint route. This does not recreate the
+old Mac's upload state or ledger. Simply binding the restored root to the populated
+namespace will refuse its existing head as a fork; `--reset-state` cannot adopt it.
+Resuming copies therefore needs a separately approved fresh namespace, distinct tokens,
+new approval and binding, retaining the old namespace and a private recovery credential.
+Trusted original Mac-only vault records, if separately available, require their own
+reviewed recovery procedure; there is no automatic state/ledger recovery helper.
+See [RUNBOOK.md](RUNBOOK.md#9-library-vault).
 
 ## The vault server
 
@@ -370,7 +379,15 @@ approval is never replaced, only superseded by a new one with another id. Author
 two-step ceremony — `vault approve --preview <fields>` prints the record and its digest and
 writes nothing; `vault approve --reviewed-approval-sha256 D --i-approve-this-destination
 <fields>` recomputes the record, requires the digest to match, and only then writes. It names
-no consent record: vault storage is not a hosted transfer (D-020, planned, Step 14, says why).
+no consent record: D-020 permits ciphertext storage on Cole's own host, which never
+runs a model or synthesizes. It does not authorize hosted GPU transfer or decide D-019's
+separate open question about consent for local listening.
+
+`--approved-at` remains optional in the preview: if omitted, that preview generates the
+timestamp. Confirmation must explicitly reuse that exact printed timestamp as well as
+all other fields and the digest. Omitting it again creates a different approval and is
+refused. Supplying the same timestamp to both invocations is also supported. See the
+complete commands in [RUNBOOK.md](RUNBOOK.md#9-library-vault).
 
 **The binding** (`provenance/vault/binding.json`) names the backend (`tailnet-vault` or
 `local-directory`), the endpoint, the namespace, the library id, the classes copied there, the
@@ -443,10 +460,18 @@ The status the app is shown, held in memory only:
 | `unreachable` | consecutive `STORAGE.UNAVAILABLE` / `STORAGE.TIMEOUT` failures, with `unreachable_since`; retried with backoff from 30 s to 30 min |
 | `failed` | a non-retryable storage refusal (identity, approval, integrity). Passes stop until the app is relaunched |
 
-The binding is read once, at start, so rebinding takes effect at the next launch — which is
-what `voice-lab vault bind` prints. Storage codes travel in the `vault-status` event's own
+The supervisor pins the binding at startup. Each worker reopens and checks it against that
+pin, so rebinding takes effect at the next launch, as `voice-lab vault bind` prints.
+Storage codes travel in the `vault-status` event's own
 field and never join `ErrorCode`; supervisor failures go on the retained `vault-supervisor`
 error lane, like the fine-tune supervisor's.
+
+The sidebar's last text (`library.vault-status`) displays off, checking, copying,
+up to date, waiting with a count when known, or `Vault unreachable since HH:mm` in
+local time. Failures use the service's message verbatim. It adds no layout region
+and does not block recording or Save. The native `vault` suite checks this actual
+hosted text across a stopped/restarted synthetic loopback server and independently
+verifies a newly saved take's downloaded bytes.
 
 ## Fine-tune runs in the vault
 
@@ -478,7 +503,10 @@ removed file, writes it 0600 and renames it into place, re-links the pinned base
 removal record exists *and* a file it names is missing, so a restored library reports its runs
 `local`) and `in_vault` (whether `archived.json` is there). `finetune train|run|dataset|
 synthesize` and Speak refuse an archived run with `FINETUNE.RUN_ARCHIVED`, naming
-`voice-lab finetune restore-run --run <id>`.
+`voice-lab finetune restore-run --run <id>`. Speak appends ` · Archived` to Latest
+and named archived model labels and disables generation with that restore instruction.
+Base remains available because its pinned untuned weights use local reference clips;
+removing checkpoints never removes the dataset.
 
 ## The command surface
 
@@ -508,15 +536,18 @@ voice-lab finetune restore-run --run R [--runtime-root P]
   it.
 - `key create` needs either `--sheet-out` or a real terminal; `token create` prints only the two
   SHA-256 values the server's configuration needs and the namespace, never a `cvlv_` token.
-- `status` prints the state and one line in the wording the app's own line will use once it is
-  built (Step 12); it runs no pass, so its `waiting_files` is always `null`. `push --dry-run`
-  is what counts the files that are waiting.
+- `status` prints the state using the sidebar's wording; it runs no pass, so its
+  `waiting_files` is always `null`, and it cannot know the supervisor's first-outage time.
+  `push --dry-run` is what counts the files that are waiting.
 - `push --dry-run` runs the head check and a pass and reports what it would send, including how
   many files are waiting, without reading a file again, uploading or writing a record.
   `push --full` re-uploads everything. A push exits 1 if it stopped on a changed source or any
   owner was refused, and prints the generation and manifest digest — **keep that line offline**,
-  because `restore --generation N --manifest-sha256 D` is the rollback-safe form on a new Mac,
-  while `--accept-latest` trusts the host's head.
+  because `restore --generation N --manifest-sha256 D` checks an independent anchor,
+  while `--accept-latest` trusts the host's head. On a new Mac the explicit endpoint
+  route can restore that pair only while it matches the current head. Historical
+  selection needs the bound-library route and the required local manifest chain;
+  a first-push pair alone cannot recover an older generation after the head advances.
 - `verify` exits 1 on any missing or mismatched entry, or an unknown requested path.
 - `restore` uses the binding on this Mac; on a Mac with no binding, add `--endpoint
   --namespace --node-stable-id --tailnet-suffix` (the library id comes from `library.json`, and
@@ -585,11 +616,19 @@ scratch library and the recovery sheet leaves nothing behind but the key's login
 (service `private.cole.voice-lab.vault.<library_id>.key`, account `library-key`), which
 Keychain Access removes.
 
-## Not built yet
+## Deployment still outstanding
 
-| What | Plan step |
-| --- | --- |
-| The app's visible vault line in the Library footer, the archived-run blocker on the Speak page, and the native `vault` suite. The wire command, the event and their Swift twins exist (Step 10); only the text on screen and the suite are missing. | Step 12 |
-| The container: `deploy/vault/Dockerfile`, `compose.yaml` (internal-only network, Tailscale sidecar, hardening, no host ports), `tailnet-policy.md`, the runbook, `requirements/vault-linux.txt` and `scripts/verify-vault-container`. | Step 13 |
-| Decision record **D-020**, and the changes to the transfer rule it settles: AGENTS.md's "no human audio leaves without a per-transfer approval" and SECURITY.md's network and hosted-transfer policy, both of which still carry the pre-vault rule, and, if D-020 decides it needs one, AGENTS.md's model-eviction rule — `finetune archive --remove-local-copy` is already the explicit flag that rule asks for. Also the vault procedures in `docs/RUNBOOK.md`. | Step 14 |
-| Deployment: the tailnet policy applied, the image built on the host, the data directory and hashed token configuration created, the compose project started, the endpoint reserved, and then — on the Mac, with Cole — `vault approve`, `vault bind`, `vault key create`, the first `vault push`, a full `vault verify` and a restore drill. Until that is done there is no vault host, no binding, and no copy of the library anywhere but the Mac. | Step 15 |
+Steps 12–14 provide the sidebar line and archived Speak blocker, the synthetic native
+`vault` suite, the hardened container and deployment templates, the offline container
+verifier, D-020 and the Mac operator procedures. Container verification uses a local
+loopback test namespace only; it starts no Tailscale sidecar and proves no real peer,
+Keychain or deployment behavior.
+
+Step 15 still requires Cole: decide the pending combined app build/install, select the
+host's large-disk path and training opt-in, review the tailnet tag/access policy, choose
+and pin the sidecar image, join with a single-use auth key, reserve the endpoint in Cole's
+inventory, and approve how this unpushed source or image reaches the host. Each remote
+or tailnet action requires approval. Cole creates the key and tokens privately and stores
+the recovery sheet before the first push, full verify and empty-root restore drill.
+Archiving or removing any real run is a separate per-run choice. No deployment is implied
+by the templates or the synthetic gates; see [the host runbook](../deploy/vault/README.md).

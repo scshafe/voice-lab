@@ -11,6 +11,7 @@ never does.
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,10 @@ from typing import Any
 from cole_voice_lab.canonical import sha256_file
 from cole_voice_lab.finetune import FineTunePinnedFile, FineTunePretrainedPins
 
-STUB_RUNTIME_PYTHON = '''#!{python}
+STUB_RUNTIME_PYTHON = '''#!/bin/sh
+""":"
+exec {python} -I -B "$0" "$@"
+":"""
 """Stand-in for the F5 runtime python: answers the probe, packs, trains and synthesizes.
 
 <root>/stub-mode.json, when present, slows or breaks it: probe_seconds (the probe sleeps),
@@ -41,6 +45,10 @@ ROOT = Path({root!r})
 PACKAGE = ROOT / "lib" / "python3.12" / "site-packages" / "f5_tts"
 MODE_PATH = ROOT / "stub-mode.json"
 MODE = json.loads(MODE_PATH.read_text()) if MODE_PATH.exists() else {{}}
+if MODE.get("host_probe"):
+    print(json.dumps({{"isolated": sys.flags.isolated, "no_bytecode": sys.dont_write_bytecode,
+                       "arguments": sys.argv[1:], "executable": sys.executable}}))
+    sys.exit(0)
 argv = [a for a in sys.argv[1:] if a != "-B"]
 if argv[:1] == ["-c"]:
     time.sleep(MODE.get("probe_seconds", 0))
@@ -149,7 +157,9 @@ def stub_finetune_runtime(
     if mode is not None:
         write_stub_mode(root, mode)
     python = root / "bin" / "python"
-    python.write_text(STUB_RUNTIME_PYTHON.format(python=sys.executable, root=str(root)))
+    python.write_text(
+        STUB_RUNTIME_PYTHON.format(python=shlex.quote(sys.executable), root=str(root))
+    )
     python.chmod(0o700)
     package = root / "lib" / "python3.12" / "site-packages" / "f5_tts"
     (package / "train" / "datasets").mkdir(parents=True)

@@ -175,7 +175,7 @@ def workspace_catalog() -> PromptSuite:
     )
 
 
-SERVICE_MODULE_ARGUMENTS = ("-m", "cole_voice_lab.recording_service")
+SERVICE_MODULE_ARGUMENTS = ("-I", "-B", "-m", "cole_voice_lab.recording_service")
 SYNTHETIC_DEVICE = CaptureDevice(
     backend="coreaudio",
     device_id="synthetic-coreaudio-uid",
@@ -255,7 +255,7 @@ def native_builds(package: Path, binary_directory: Path) -> NativeBuilds:
 
 def fixture_environment() -> dict[str, str]:
     """The environment both fixture peers run with: this process's PATH, HOME, TMPDIR and
-    PYTHONPATH (when set), unbuffered."""
+    PYTHONPATH (when set), unbuffered, with bytecode writes disabled."""
 
     environment = {
         key: os.environ[key]
@@ -263,7 +263,21 @@ def fixture_environment() -> dict[str, str]:
         if key in os.environ
     }
     environment["PYTHONUNBUFFERED"] = "1"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     return environment
+
+
+def copied_service_arguments(root: Path, module: str) -> list[str]:
+    """Launch a copied fixture module with its explicit import root under isolation."""
+    return [
+        "-I",
+        "-B",
+        "-c",
+        "import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); "
+        "runpy.run_module(sys.argv.pop(1), run_name='__main__', alter_sys=True)",
+        str(root / "python-runtime"),
+        f"cole_voice_lab.{module}",
+    ]
 
 
 def isolated_service_runtime(
@@ -271,9 +285,10 @@ def isolated_service_runtime(
 ) -> RecordingBuildIdentity:
     """Copy the service package plus one test-only wrapper into ``root/python-runtime``.
 
-    The wrapper becomes ``cole_voice_lab.<module>``; ``environment["PYTHONPATH"]`` is pointed
-    at the copy, and the service build identity is computed from the copy, exactly as the
-    service will compute its own.
+    The wrapper becomes ``cole_voice_lab.<module>``. Identity and service launches use the
+    same explicit import root under ``-I -B``; ``copied_service_arguments`` runs the wrapper.
+    ``PYTHONPATH`` still identifies the copy for existing fixture-only descendants, but is
+    ignored by these isolated host launches.
     Returns: that build identity.
     """
 
@@ -306,11 +321,15 @@ def isolated_service_runtime(
     identity_data = subprocess.check_output(
         [
             sys.executable,
+            "-I",
+            "-B",
             "-c",
             (
+                "import sys; sys.path.insert(0, sys.argv[1]); "
                 "from cole_voice_lab import recording_service; "
                 "print(recording_service.recording_service_build_identity().model_dump_json())"
             ),
+            str(runtime),
         ],
         env=environment,
     )
@@ -405,13 +424,15 @@ def run_with_live_capture_owner(root: Path, asset_root: Path, harness: Path, con
     holder = subprocess.Popen(
         [
             sys.executable,
+            "-I",
+            "-B",
             str(Path(__file__).resolve().parent / "native_recovery_holder.py"),
             "--asset-root",
             str(asset_root),
             "--held-marker",
             str(marker),
         ],
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"},
     )
     try:
         deadline = time.monotonic() + 30.0
@@ -494,8 +515,7 @@ def main() -> None:
         for barrier in ["seal", "save", "analysis"]:
             os.mkfifo(root / f"{barrier}-release.fifo", 0o600)
         service_arguments = [
-            "-m",
-            "cole_voice_lab._synthetic_workspace_fixture",
+            *copied_service_arguments(root, "_synthetic_workspace_fixture"),
             "--test-barriers",
             str(root),
             "--native-workspace",

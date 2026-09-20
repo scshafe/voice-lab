@@ -78,7 +78,7 @@ def main() -> int:
 
             monkeypatch.setattr(storage_binding, "vault_connection", connect)
             return library_replication_service.main(
-                ["--worker", "--asset-root", str(options.asset_root)]
+                ["--worker", "--asset-root", str(options.asset_root), *remaining]
             )
 
     shipped = library_replication_service.VaultSupervisor

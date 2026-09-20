@@ -365,3 +365,6 @@ The Swift native recording app is a different application
 sessions and prepares no lab packages; it fine-tunes from the library instead
 ([FINETUNE.md](FINETUNE.md), "From the app") and speaks typed text on its Speak page
 ([FINETUNE.md](FINETUNE.md), "Speak page").
+A new Swift build also shows vault copying status in its sidebar and marks archived
+fine-tuned models in Speak; an already-installed app is unchanged until a separate
+build/install. The vault is built but not deployed ([LIBRARY_VAULT.md](LIBRARY_VAULT.md)).

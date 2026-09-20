@@ -548,6 +548,8 @@ def test_real_process_handshake_snapshot_unprepared_registration_and_clean_shutd
     process = subprocess.Popen(
         [
             sys.executable,
+            "-I",
+            "-B",
             "-m",
             "cole_voice_lab.recording_service",
             "--asset-root",
@@ -815,7 +817,7 @@ def test_shared_capture_lock_survives_parent_descriptor_close_in_inherited_child
         ]
     )
     process = subprocess.Popen(
-        [sys.executable, "-c", program, str(layout.root), str(descriptor)],
+        [sys.executable, "-I", "-B", "-c", program, str(layout.root), str(descriptor)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         pass_fds=(descriptor,),

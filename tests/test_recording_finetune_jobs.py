@@ -551,8 +551,10 @@ def test_restart_recovery_kills_only_a_group_that_is_verifiably_this_jobs(
             leader = subprocess.Popen(
                 [
                     sys.executable,
+                    "-I",
+                    "-B",
                     "-c",
-                    "import subprocess, sys; subprocess.Popen([sys.executable, '-c', "
+                    "import subprocess, sys; subprocess.Popen([sys.executable, '-I', '-B', '-c', "
                     "'import time; time.sleep(60)', sys.argv[1]]); print(flush=True)",
                     job.run_id,
                 ],
@@ -568,7 +570,7 @@ def test_restart_recovery_kills_only_a_group_that_is_verifiably_this_jobs(
         else:
             tail = worker_tail if case != "stranger" else ["--operation-id", "someone-else"]
             process = subprocess.Popen(
-                [sys.executable, "-c", "import time; time.sleep(60)", *tail],
+                [sys.executable, "-I", "-B", "-c", "import time; time.sleep(60)", *tail],
                 start_new_session=True,
             )
             started.append(process)
@@ -621,7 +623,7 @@ def test_recovery_refuses_to_kill_a_group_that_will_not_stop(
 ) -> None:
     queue = queue_for(library)
     process = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+        [sys.executable, "-I", "-B", "-c", "import time; time.sleep(60)"], start_new_session=True
     )
     try:
         queue.submit(command())
@@ -645,7 +647,9 @@ def test_a_group_of_zombies_is_not_alive(library: Library) -> None:
     queue = queue_for(library)
     try:
         supervisor = FineTuneSupervisor(queue)
-        process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        process = subprocess.Popen(
+            [sys.executable, "-I", "-B", "-c", "pass"], start_new_session=True
+        )
 
         def zombie() -> bool:
             rows = [row for row in process_table() if row.pid == process.pid]
@@ -674,6 +678,8 @@ def test_the_worker_kills_its_whole_group_when_the_service_goes_away(library: Li
     worker = subprocess.Popen(
         [
             sys.executable,
+            "-I",
+            "-B",
             "-m",
             FINETUNE_WORKER_MODULE,
             "--worker",
@@ -719,7 +725,7 @@ def test_the_worker_kills_its_whole_group_when_the_service_goes_away(library: Li
 def test_the_worker_refuses_to_start_outside_its_own_group(tmp_path: Path) -> None:
     missing = tmp_path / "missing-private-root"
     arguments = ["--worker", "--asset-root", str(missing), "--operation-id", "tune-1"]
-    base = [sys.executable, "-m", FINETUNE_WORKER_MODULE, *arguments]
+    base = [sys.executable, "-I", "-B", "-m", FINETUNE_WORKER_MODULE, *arguments]
     shared = subprocess.run(base, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     assert shared.returncode == 2
     report = json.loads(shared.stderr)
@@ -793,7 +799,7 @@ def test_the_supervisor_fails_a_job_whose_worker_breaks_the_protocol(
     monkeypatch.setattr(
         FineTuneSupervisor,
         "_worker_command",
-        lambda self, job: [sys.executable, "-c", FAKE_WORKER, mode],
+        lambda self, job: [sys.executable, "-I", "-B", "-c", FAKE_WORKER, mode],
     )
     supervisor = supervise(library, queue, events, supervisors)
     supervisor.submit(command())
@@ -1555,7 +1561,7 @@ def test_a_worker_that_will_not_take_its_request_is_killed(
     monkeypatch.setattr(
         FineTuneSupervisor,
         "_worker_command",
-        lambda self, job: [sys.executable, "-c", "import time; time.sleep(60)"],
+        lambda self, job: [sys.executable, "-I", "-B", "-c", "import time; time.sleep(60)"],
     )
     supervisor = supervise(library, queue, events, supervisors)
     supervisor.submit(command())
@@ -1593,7 +1599,7 @@ def leave_running_job(library: Library, *, run_record_written: bool = True) -> F
         assert job.run_id is not None
         if run_record_written:
             _write_run(library.layout, job.run_id, status="running", finished_minute=None)
-        gone = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        gone = subprocess.Popen([sys.executable, "-I", "-B", "-c", "pass"], start_new_session=True)
         gone.wait()
         return queue.record_worker("tune-1", gone.pid)
     finally:
@@ -1745,7 +1751,7 @@ def test_a_worker_group_that_will_not_stop_stops_supervision(
     monkeypatch.setattr(
         FineTuneSupervisor,
         "_worker_command",
-        lambda self, job: [sys.executable, "-c", FAKE_WORKER, "exit"],
+        lambda self, job: [sys.executable, "-I", "-B", "-c", FAKE_WORKER, "exit"],
     )
     monkeypatch.setattr(jobs_module, "_GROUP_STOP_SECONDS", 0.2)
     monkeypatch.setattr(FineTuneSupervisor, "_group_alive", lambda self, pgid: True)
@@ -1772,7 +1778,7 @@ def test_a_cancelled_group_that_outlives_sigkill_stops_supervision(
     monkeypatch.setattr(
         FineTuneSupervisor,
         "_worker_command",
-        lambda self, job: [sys.executable, "-c", FAKE_WORKER, "quiet"],
+        lambda self, job: [sys.executable, "-I", "-B", "-c", FAKE_WORKER, "quiet"],
     )
     kill_wait = 1.0
     monkeypatch.setattr(jobs_module, "_KILL_WAIT_SECONDS", kill_wait)
@@ -2074,6 +2080,8 @@ def test_a_real_service_keeps_save_fast_during_a_job_and_cancel_leaves_no_proces
     process = subprocess.Popen(
         [
             sys.executable,
+            "-I",
+            "-B",
             "-m",
             "cole_voice_lab.recording_service",
             "--asset-root",
@@ -2213,6 +2221,8 @@ def test_a_real_service_reports_a_job_it_recovered_before_the_handshake(
     process = subprocess.Popen(
         [
             sys.executable,
+            "-I",
+            "-B",
             "-m",
             "cole_voice_lab.recording_service",
             "--asset-root",

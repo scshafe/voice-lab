@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -186,3 +188,120 @@ def test_capture_sanitizer_scratch_uses_the_validated_external_override(
             ("address", str(scratch / "native-recording-tests-address")),
             ("thread", str(scratch / "native-recording-tests-thread")),
         ]
+
+
+@pytest.mark.parametrize("suite", ["review", "transport", "finetune", "speak", "vault", "recovery"])
+def test_workspace_routes_use_isolated_python_without_running_native_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suite: str
+) -> None:
+    developer = tmp_path / "developer"
+    (developer / "Library/Developer/Frameworks/Testing.framework").mkdir(parents=True)
+    commands: list[list[str]] = []
+
+    class ReachedPython(Exception):
+        pass
+
+    def output(command: list[str], **kwargs: Any) -> str:
+        return str(developer if command == ["xcode-select", "-p"] else tmp_path / "binaries")
+
+    def run(command: list[str], **kwargs: Any) -> None:
+        if command[0] == str(REPOSITORY_ROOT / ".venv/bin/python"):
+            commands.append(command)
+            raise ReachedPython
+
+    monkeypatch.setattr(verifier, "output", output)
+    monkeypatch.setattr(verifier, "run", run)
+    with pytest.raises(ReachedPython):
+        verifier.main(["--suite", suite, "--output", str(tmp_path / "evidence")])
+    command = commands[0]
+    assert command[1:4] == ["-I", "-B", "-c"]
+    assert command[5:8] == [
+        str(REPOSITORY_ROOT / "scripts"),
+        str(REPOSITORY_ROOT / "tests"),
+        "verify_native_workspace",
+    ]
+    if suite == "transport":
+        assert "--suite" not in command
+    else:
+        assert command[command.index("--suite") + 1] == suite
+
+
+def test_isolated_module_imports_explicit_fixtures_and_ignores_ambient_path(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    fixtures = tmp_path / "tests"
+    fixtures.mkdir()
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    (ambient / "sitecustomize.py").write_text("raise RuntimeError('ambient path executed')\n")
+    (fixtures / "probe_fixture.py").write_text("VALUE = 'explicit fixture'\n")
+    (scripts / "probe_verifier.py").write_text(
+        "import json, sys\nfrom probe_fixture import VALUE\n"
+        "print(json.dumps([sys.flags.isolated, sys.dont_write_bytecode, VALUE, sys.argv[1:]]))\n"
+    )
+    command = verifier.isolated_script(tmp_path, "probe_verifier") + ["synthetic argument"]
+    command[0] = str(REPOSITORY_ROOT / ".venv/bin/python")
+    result = subprocess.run(
+        command,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(ambient)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(result.stdout) == [1, True, "explicit fixture", ["synthetic argument"]]
+    assert not list(tmp_path.rglob("__pycache__"))
+
+
+@pytest.mark.parametrize("rollback", ["unset", "present", "missing"])
+def test_packaged_dispatch_never_discovers_real_rollback_and_honors_explicit_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rollback: str
+) -> None:
+    developer = tmp_path / "developer"
+    (developer / "Library/Developer/Frameworks/Testing.framework").mkdir(parents=True)
+    binaries = tmp_path / "binaries"
+    binaries.mkdir()
+    for name in (
+        "ColeVoiceRecorderPreview",
+        "ColeVoiceRecorderHelper",
+        "RecordingHarness",
+        "RecordingBridgeHarness",
+    ):
+        (binaries / name).write_bytes(b"synthetic executable placeholder")
+    explicit = tmp_path / "explicit-release"
+    if rollback == "unset":
+        monkeypatch.delenv("COLE_VOICE_ROLLBACK_RELEASE", raising=False)
+    else:
+        monkeypatch.setenv("COLE_VOICE_ROLLBACK_RELEASE", str(explicit))
+        if rollback == "present":
+            explicit.mkdir()
+    original_stat = Path.stat
+
+    def guarded_stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        assert "Application Support" not in str(path), "default real-root probe"
+        return original_stat(path, *args, **kwargs)
+
+    captured: list[tuple[list[str], dict[str, str]]] = []
+
+    def output(command: list[str], **kwargs: Any) -> str:
+        if command == ["xcode-select", "-p"]:
+            return str(developer)
+        if "--show-bin-path" in command:
+            return str(binaries)
+        return "synthetic identity minos 13.0"
+
+    def run(command: list[str], **kwargs: Any) -> None:
+        if "pytest" in command:
+            captured.append((command, kwargs["env"]))
+
+    monkeypatch.setattr(Path, "stat", guarded_stat)
+    monkeypatch.setattr(verifier, "output", output)
+    monkeypatch.setattr(verifier, "run", run)
+    root = tmp_path / "evidence"
+    assert verifier.main(["--suite", "packaged-app", "--output", str(root)]) == 0
+    command, environment = captured[0]
+    assert command[:5] == [str(REPOSITORY_ROOT / ".venv/bin/python"), "-I", "-B", "-m", "pytest"]
+    assert environment.get("COLE_VOICE_ROLLBACK_RELEASE") == (
+        None if rollback == "unset" else str(explicit)
+    )
+    identity = json.loads((root / "verification.json").read_text())
+    assert identity["packaged_app_rollback_release_present"] is (rollback == "present")

@@ -188,6 +188,12 @@ Every piece of code that stores or reads the lab's data depends on storage and c
   - Before writing anything, it checks free space against the manifest's sizes plus a margin.
   - It writes 0700/0600 modes (0400/0500 under `raw/`) and never writes `provenance/vault/**`.
   - The recording index then rebuilds itself.
+  - A restored tree excludes `provenance/vault/**`. On a new Mac, initialization
+    and binding alone do not authorize continuing the populated remote history:
+    without the original local state/ledger, a push refuses it as a fork. The
+    operator runbook must distinguish data recovery from resumed copying and
+    describe a separately approved fresh namespace (retaining the old one),
+    rather than inventing or editing local verification history.
 - **Background copying.** A supervisor owned by the service copies after durable commits, with a quiet period and backoff. It never runs on the Save path, never holds a lock a writer takes, and reports through `vault-status`.
 
 **Fine-tune run archive.**
@@ -414,7 +420,7 @@ Every piece of code that stores or reads the lab's data depends on storage and c
     even if a Docker cleanup fails or is interrupted.
   - Verify: `scripts/verify-vault-container && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I -B -m pytest -q tests/test_operator_scripts.py`
 
-- [ ] **Step 14: Decision record, rules and docs**
+- [x] **Step 14: Decision record, rules and docs**
   - `DECISIONS.md` D-020 records:
     - the vault as the encrypted durable copy;
     - what stays on the Mac, and why;
@@ -428,9 +434,27 @@ Every piece of code that stores or reads the lab's data depends on storage and c
     - `docs/CORPUS_STORE.md`: ports, backup and restore, and the rule for future implementations;
     - `docs/FINETUNE.md`: archiving;
     - `docs/NATIVE_RECORDING_UX.md`: vault status;
-    - `docs/RUNBOOK.md`.
-  - Add `docs/LIBRARY_VAULT.md`.
+    - `docs/RUNBOOK.md`;
+    - `docs/NATIVE_RECORDING_APPLICATION.md`, `docs/REFERENCES_AND_DATASETS.md`,
+      `TESTING.md`, `README.md`, `CURRENT.md`, and the deployment documentation
+      links where Steps 12–13 change their status or instructions.
+  - ~~Add~~ Finish `docs/LIBRARY_VAULT.md`; f24136c already documented Steps 1–11.
+  - Preserve `ConsentRecord.hosted_transfer_allowed: Literal[False]`. The vault's
+    consent decision covers opaque encrypted storage, and does not resolve
+    D-019's separately open local-listening consent question.
+  - Keep the full verification gate within Cole's execution constraints: isolated
+    host Python entries (`-I -B`) and rollback release checks only through the
+    existing explicit opt-in; never auto-discover the installed release under
+    the real Application Support tree. Add focused dispatch regressions while
+    leaving the physical and 1,000-take acceptance tracks unchanged.
   - Specialist: `proofreader` for the whole change; `doddy` for a final review of the trust boundary
+  - Correct confirmed final-review defects before the gate: enforce the recorded
+    next-launch binding activation boundary in background workers, keep remote
+    response/transport text out of public diagnostics, reject existing symlink
+    components before run restoration writes, and correct the runbook's hostname
+    and historical-generation recovery examples. Exercise ordinary fixture
+    Python descendants in isolation while preserving intentional runtime/audit
+    behavior under test and the separate acceptance tracks.
   - Verify: `scripts/verify`
 
 - [ ] **Step 15: Deploy and make the first copy (with Cole)**
@@ -554,3 +578,26 @@ and the exact Verify command.
 The Step 13 review also requires an explicit local-daemon boundary (Docker's
 ambient context may be remote) and bounded, interruption-safe cleanup, plus
 independent ref scopes for cases sharing the disposable test namespace.
+
+**Amended 2026-09-19 (Step 14):** the document list includes the previously
+recorded X10/code-map additions, and the existing vault document is finished
+rather than recreated. D-020 preserves `hosted_transfer_allowed: Literal[False]`
+and the open D-019 synthesis-consent question. Preparing the required full gate
+also revealed pre-existing unisolated Python child launches and automatic
+rollback-release discovery in the excluded real app-data tree. The verification
+entry points will use `-I -B` and explicit rollback opt-in, with focused tests;
+the exact `scripts/verify` gate and the separate acceptance tracks are unchanged.
+Source checking also found that a new-Mac restore does not establish the local
+ledger/state required to append to an existing vault history. The runbook will
+state this limit and describe a separately approved fresh namespace for resumed
+copying; no automatic head-adoption or record-reconstruction feature is added.
+
+**Amended 2026-09-19 (Step 14 final reviews):** independent reviews and skeptics
+confirmed mismatches in previously delivered behavior at binding activation,
+remote-error diagnostics and run-restore path validation. Step 14 includes their
+bounded corrections and synthetic regressions before the full gate, alongside
+the operator-document fixes. This does not change the pending Base, archive
+verification-scope or approval-timestamp choices, and adds no deployment action.
+The final source review also corrects the documented restore-failure postcondition
+after publication. Recheck corrected mirrored binding wording in the status
+contract and its generated schema description without changing the wire fields.

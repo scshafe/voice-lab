@@ -56,6 +56,33 @@ def _run(
     )
 
 
+def test_full_verification_launches_host_python_isolated_without_real_tools(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    entry = scripts / "verify"
+    entry.write_bytes((REPOSITORY / "scripts/verify").read_bytes())
+    entry.chmod(0o700)
+    binaries = tmp_path / ".venv/bin"
+    binaries.mkdir(parents=True)
+    for command in (binaries / "ruff", binaries / "mypy", scripts / "verify-native-recording"):
+        command.write_text("#!/bin/sh\nexit 0\n")
+        command.chmod(0o700)
+    python = binaries / "python"
+    python.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$PYTHONDONTWRITEBYTECODE:$*" >> "$VERIFY_COMMAND_LOG"\n'
+    )
+    python.chmod(0o700)
+    log = tmp_path / "commands.txt"
+    result = _run(str(entry), env={**os.environ, "VERIFY_COMMAND_LOG": str(log)})
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        "1:-I -B -m pytest --cov=cole_voice_lab --cov-report=term-missing --cov-branch",
+        "1:-I -B -m build --no-isolation",
+        "1:-I -B -m cole_voice_lab.schema --check",
+        "1:-I -B scripts/guard-private-assets",
+    ]
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 

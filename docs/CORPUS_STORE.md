@@ -559,7 +559,9 @@ resolved. If a `corpus.sqlite3-wal` file is present, copy it with the
 database.
 
 The library vault copies the database another way and needs no quiet moment
-([LIBRARY_VAULT.md](LIBRARY_VAULT.md)). It opens the database read-only through a `mode=ro`
+([LIBRARY_VAULT.md](LIBRARY_VAULT.md), D-020). The Mac keeps the working database;
+[RUNBOOK.md](RUNBOOK.md#9-library-vault) covers restoring its encrypted copy onto a
+new Mac. The copier opens the database read-only through a `mode=ro`
 URI, takes SQLite's one-step online backup into a private scratch file under
 `tmp/.vault-<random>/` (0700 directory, 0600 file), sets the copy's journal mode to `DELETE`,
 checks it with `PRAGMA quick_check`, and copies those bytes under the database's own path

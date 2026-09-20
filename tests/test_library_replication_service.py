@@ -31,16 +31,20 @@ from test_recording_packages import package_rig as package_rig
 from test_recording_service import build_identity, handshake, read_response, request
 from vault_binding_fixtures import (
     COPIED_CLASSES,
+    ENDPOINT,
     LIBRARY_ID,
     NAMESPACE,
     add_library_records,
+    approval_record,
     initialized_library,
     install_vault_seams,
     store_library_key,
+    write_approval,
+    write_library_file,
 )
 
 import cole_voice_lab.library_replication_service as service_module
-from cole_voice_lab.canonical import write_canonical_json
+from cole_voice_lab.canonical import canonical_sha256, write_canonical_json
 from cole_voice_lab.errors import ContractError
 from cole_voice_lab.library_generations import OwnerOutcome, PushResult, VaultRecords
 from cole_voice_lab.library_replication_service import (
@@ -69,10 +73,17 @@ from cole_voice_lab.recording_contracts import (
 )
 from cole_voice_lab.recording_service import recording_service_build_identity
 from cole_voice_lab.recording_takes import RecordingMetadataBusyError
-from cole_voice_lab.storage_binding import bind_library, binding_path
+from cole_voice_lab.storage_binding import (
+    bind_library,
+    binding_path,
+    library_vault_binding,
+    open_library_vault,
+)
+from cole_voice_lab.storage_contracts import library_head_ref
 from cole_voice_lab.storage_ports import storage_error
 
 FIXTURE = Path(vault_service_fixture.__file__).resolve()
+UNUSED_BINDING_SHA256 = "0" * 64
 
 
 # -- helpers ----------------------------------------------------------------------------------
@@ -89,6 +100,11 @@ def wait_until(predicate: Callable[[], bool], timeout: float = 20.0) -> None:
 def settle(seconds: float = 0.1) -> None:
     """Give the supervisor thread several turns of its poll loop."""
     time.sleep(seconds)
+
+
+def binding_digest(layout: AssetLayout) -> str:
+    """The startup pin for a directly invoked synthetic worker pass."""
+    return canonical_sha256(library_vault_binding(layout))
 
 
 class FakeClock:
@@ -126,7 +142,7 @@ class FakeRunner:
         self.running = threading.Event()
         self.gate: threading.Event | None = None
 
-    def run(self, stop: threading.Event) -> VaultWorkerReply:
+    def run(self, stop: threading.Event, *, binding_sha256: str) -> VaultWorkerReply:
         self.runs += 1
         self.running.set()
         if self.gate is not None:
@@ -499,7 +515,7 @@ def test_a_supervisor_whose_thread_dies_reports_it_on_its_own_error_lane(
     recorder, clock, runner = Recorder(), FakeClock(), FakeRunner([])
     supervisor = supervised(runner, recorder, clock, quiet_period=1.0)
 
-    def explode(stop: threading.Event) -> VaultWorkerReply:
+    def explode(stop: threading.Event, *, binding_sha256: str) -> VaultWorkerReply:
         raise MemoryError("no room for a pass")
 
     monkeypatch.setattr(runner, "run", explode)
@@ -709,8 +725,220 @@ def bound(library: AssetLayout, elsewhere: Path, monkeypatch: pytest.MonkeyPatch
     return library
 
 
+@pytest.mark.parametrize("replacement", ["destination", "classes"])
+@pytest.mark.parametrize("replace_before_worker_open", [False, True])
+def test_rebinding_cannot_reach_the_replacement_until_the_supervisor_restarts(
+    bound: AssetLayout,
+    elsewhere: Path,
+    tmp_path: Path,
+    replacement: str,
+    replace_before_worker_open: bool,
+) -> None:
+    """Real subprocess passes observe destination heads, including a swap during dispatch."""
+    destination = elsewhere if replacement == "classes" else tmp_path.resolve() / "vault-b"
+    stall_directory = tmp_path / "unstalled"
+    replace_during_dispatch = False
+
+    def rebind() -> None:
+        bind_library(
+            bound,
+            backend="local-directory",
+            endpoint=str(destination),
+            namespace=NAMESPACE,
+            classes=["records"] if replacement == "classes" else COPIED_CLASSES,
+            replace=True,
+            reset_state=True,
+        )
+
+    def command(layout: AssetLayout) -> list[str]:
+        nonlocal replace_during_dispatch
+        if replace_during_dispatch:
+            replace_during_dispatch = False
+            rebind()
+        return vault_service_fixture.worker_command(layout.root, stall_directory)
+
+    def supervisor() -> VaultSupervisor:
+        return VaultSupervisor(
+            bound,
+            quiet_period=0.01,
+            rescan_interval=3600,
+            poll=0.005,
+            activity=lambda: None,
+            processes=WorkerPassRunner(bound, command=command),
+        )
+
+    original = supervisor()
+    original.start()
+    try:
+        wait_until(lambda: original.passes == 1)
+        assert original.status.state == "up-to-date"
+        first = open_library_vault(bound)
+        assert first is not None
+        first_head = first.ref_store.read(library_head_ref(LIBRARY_ID))
+        assert first_head is not None
+        write_library_file(
+            bound.root, "provenance/headphone-reviews/review-2.json", b'{"review":2}\n'
+        )
+        if replace_before_worker_open:
+            replace_during_dispatch = True
+        else:
+            rebind()
+        original.notify_commit()
+        wait_until(lambda: original.passes == 2)
+
+        assert (original.status.state, original.status.code) == ("failed", "STORAGE.NOT_BOUND")
+        assert "relaunch the app" in (original.status.message or "")
+        replacement_vault = open_library_vault(bound)
+        assert replacement_vault is not None
+        unchanged = first_head if replacement == "classes" else None
+        assert replacement_vault.ref_store.read(library_head_ref(LIBRARY_ID)) == unchanged
+        original.notify_commit()
+        settle()
+        assert original.passes == 2
+    finally:
+        original.close()
+
+    restarted = supervisor()
+    restarted.start()
+    try:
+        wait_until(lambda: restarted.passes == 1)
+        assert restarted.status.state == "up-to-date"
+        assert replacement_vault.ref_store.read(library_head_ref(LIBRARY_ID)) != unchanged
+    finally:
+        restarted.close()
+
+
+def test_worker_checks_the_opened_binding_even_when_the_file_changes_again(
+    bound: AssetLayout, elsewhere: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cole_voice_lab.storage_binding as bindings
+
+    pin = binding_digest(bound)
+    destination = tmp_path.resolve() / "vault-b"
+    opened: list[Any] = []
+
+    def replace_open_and_restore(layout: AssetLayout) -> Any:
+        bind_library(
+            layout,
+            backend="local-directory",
+            endpoint=str(destination),
+            namespace=NAMESPACE,
+            classes=COPIED_CLASSES,
+            replace=True,
+        )
+        vault = open_library_vault(layout)
+        opened.append(vault)
+        # Put the exact startup record back after opening B. Comparing a second disk read
+        # would approve A's pin while pushing through B's already-opened stores.
+        binding_path(layout).write_bytes(startup_record)
+        return vault
+
+    startup_record = binding_path(bound).read_bytes()
+    monkeypatch.setattr(bindings, "open_library_vault", replace_open_and_restore)
+
+    reply = run_vault_pass(bound, binding_sha256=pin)
+
+    assert (reply.outcome, reply.code, reply.retryable) == ("failed", "STORAGE.NOT_BOUND", False)
+    assert opened[0].ref_store.read(library_head_ref(LIBRARY_ID)) is None
+
+
+def test_same_destination_approval_replacement_needs_a_restarted_supervisor(
+    bound: AssetLayout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cole_voice_lab.storage_binding as bindings
+
+    local = open_library_vault(bound)
+    assert local is not None
+    # Keep real approval validation and real encrypted storage, with no tailnet connection.
+    monkeypatch.setattr(bindings, "_open_stores", lambda *_args, **_kwargs: local.stores)
+
+    def approve_and_bind(approval_id: str) -> None:
+        approval = approval_record(approval_id=approval_id)
+        _, digest = write_approval(bound, approval)
+        bind_library(
+            bound,
+            backend="tailnet-vault",
+            endpoint=ENDPOINT,
+            namespace=NAMESPACE,
+            classes=COPIED_CLASSES,
+            approval_id=approval_id,
+            approval_sha256=digest,
+            replace=True,
+        )
+
+    class InProcessRunner:
+        def run(self, stop: threading.Event, *, binding_sha256: str) -> VaultWorkerReply:
+            return run_vault_pass(bound, binding_sha256=binding_sha256)
+
+        def terminate(self) -> None:
+            pass
+
+    def supervisor(clock: FakeClock) -> VaultSupervisor:
+        return VaultSupervisor(
+            bound,
+            monotonic=clock.monotonic,
+            quiet_period=1,
+            poll=0.005,
+            activity=lambda: None,
+            processes=InProcessRunner(),
+        )
+
+    approve_and_bind("approval-a")
+    clock = FakeClock()
+    original = supervisor(clock)
+    original.start()
+    try:
+        approve_and_bind("approval-b")
+        clock.advance(2)
+        wait_until(lambda: original.passes == 1)
+        assert (original.status.state, original.status.code) == ("failed", "STORAGE.NOT_BOUND")
+        assert local.ref_store.read(library_head_ref(LIBRARY_ID)) is None
+    finally:
+        original.close()
+
+    restarted = supervisor(clock)
+    restarted.start()
+    try:
+        clock.advance(2)
+        wait_until(lambda: restarted.passes == 1)
+        assert restarted.status.state == "up-to-date"
+        assert local.ref_store.read(library_head_ref(LIBRARY_ID)) is not None
+    finally:
+        restarted.close()
+
+
+@pytest.mark.parametrize("problem", ["expired", "edited"])
+def test_a_pinned_worker_still_checks_approval_expiry_and_integrity_each_pass(
+    library: AssetLayout, monkeypatch: pytest.MonkeyPatch, problem: str
+) -> None:
+    import cole_voice_lab.storage_binding as bindings
+
+    approval = approval_record()
+    path, digest = write_approval(library, approval)
+    bind_library(
+        library,
+        backend="tailnet-vault",
+        endpoint=ENDPOINT,
+        namespace=NAMESPACE,
+        classes=COPIED_CLASSES,
+        approval_id=approval.approval_id,
+        approval_sha256=digest,
+    )
+    pin = binding_digest(library)
+    if problem == "expired":
+        monkeypatch.setattr(bindings, "utc_now", lambda: approval.expires_at + timedelta(seconds=1))
+    else:
+        path.chmod(0o600)
+        path.write_bytes(path.read_bytes().replace(b'"Cole"', b'"Someone else"'))
+
+    reply = run_vault_pass(library, binding_sha256=pin)
+
+    assert (reply.outcome, reply.code, reply.retryable) == ("failed", "STORAGE.NOT_APPROVED", False)
+    assert ("expired" if problem == "expired" else "approval changed") in (reply.message or "")
+
+
 def test_a_pass_answers_one_frame_naming_the_generation_it_pushed(bound: AssetLayout) -> None:
-    reply = run_vault_pass(bound)
+    reply = run_vault_pass(bound, binding_sha256=binding_digest(bound))
 
     assert (reply.outcome, reply.generation, reply.waiting_files) == ("pushed", 1, 0)
     assert (reply.code, reply.retryable, reply.message) == (None, False, None)
@@ -718,7 +946,7 @@ def test_a_pass_answers_one_frame_naming_the_generation_it_pushed(bound: AssetLa
     assert frame.endswith(b"\n") and frame.count(b"\n") == 1
     assert read_worker_reply(frame) == reply
 
-    again = run_vault_pass(bound)
+    again = run_vault_pass(bound, binding_sha256=binding_digest(bound))
 
     assert (again.outcome, again.generation) == ("up-to-date", 1)
 
@@ -736,7 +964,7 @@ def test_a_pass_the_vault_refuses_answers_with_its_storage_code(
         ),
     )
 
-    reply = run_vault_pass(bound)
+    reply = run_vault_pass(bound, binding_sha256=binding_digest(bound))
 
     assert (reply.outcome, reply.code, reply.retryable) == ("failed", "STORAGE.NOT_APPROVED", False)
     assert reply.message == "the destination approval expired"
@@ -755,7 +983,7 @@ def test_a_vault_that_did_not_answer_asks_for_another_pass(
         ),
     )
 
-    reply = run_vault_pass(bound)
+    reply = run_vault_pass(bound, binding_sha256=binding_digest(bound))
 
     assert (reply.outcome, reply.code, reply.retryable) == ("failed", "STORAGE.TIMEOUT", True)
 
@@ -783,7 +1011,7 @@ def test_a_source_that_moved_during_a_pass_asks_for_another_without_a_storage_co
     )
     monkeypatch.setattr(generations, "push_generation", lambda *_a, **_k: result)
 
-    reply = run_vault_pass(bound)
+    reply = run_vault_pass(bound, binding_sha256=binding_digest(bound))
 
     assert (reply.outcome, reply.code, reply.retryable) == ("failed", None, True)
     assert reply.message is not None and "raw/one.wav" in reply.message
@@ -814,14 +1042,14 @@ def test_an_owner_that_held_its_files_back_is_named_in_the_reply(
     )
     monkeypatch.setattr(generations, "push_generation", lambda *_a, **_k: result)
 
-    reply = run_vault_pass(bound)
+    reply = run_vault_pass(bound, binding_sha256=binding_digest(bound))
 
     assert (reply.outcome, reply.generation, reply.waiting_files) == ("pushed", 3, 1)
     assert reply.message == "waiting for fine-tune-runs: a job is active"
 
 
 def test_a_library_no_longer_bound_refuses_its_pass(library: AssetLayout) -> None:
-    reply = run_vault_pass(library)
+    reply = run_vault_pass(library, binding_sha256=binding_digest(library))
 
     assert (reply.outcome, reply.code, reply.retryable) == ("failed", "STORAGE.NOT_BOUND", False)
 
@@ -891,7 +1119,13 @@ def test_a_worker_that_does_not_lead_its_group_refuses_without_killing_its_calle
     monkeypatch.setattr(service_module.os, "getpgrp", lambda: os.getpid() + 1)
 
     status = service_module.main(
-        ["--worker", "--asset-root", "/private/tmp/unused-synthetic-vault-root"],
+        [
+            "--worker",
+            "--asset-root",
+            "/private/tmp/unused-synthetic-vault-root",
+            "--binding-sha256",
+            UNUSED_BINDING_SHA256,
+        ],
         kill_group=lambda: killed.append(True),
     )
 
@@ -913,7 +1147,7 @@ def test_a_worker_kills_its_own_group_when_the_service_closes_its_stdin(
         "time.sleep(30)\n"
     )
     process = subprocess.Popen(
-        [sys.executable, "-B", "-c", program],
+        [sys.executable, "-I", "-B", "-c", program],
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -967,6 +1201,8 @@ def test_a_real_service_keeps_save_fast_and_unrefused_while_an_upload_is_stalled
     process = subprocess.Popen(
         [
             sys.executable,
+            "-I",
+            "-B",
             str(FIXTURE),
             "--test-vault-service",
             "--test-stall-directory",
@@ -1133,13 +1369,20 @@ def test_a_worker_writes_one_frame_and_its_closed_stdin_afterwards_kills_nothing
 ) -> None:
     pipes = _Pipes()
     pipes.install(monkeypatch)
-    monkeypatch.setattr(service_module, "run_vault_pass", lambda _layout: pushed(7))
+    monkeypatch.setattr(service_module, "run_vault_pass", lambda _layout, **_kw: pushed(7))
     monkeypatch.setattr(os, "getpgrp", os.getpid)
     killed: list[bool] = []
 
     try:
         status = service_module.main(
-            ["--worker", "--asset-root", str(library.root)], kill_group=lambda: killed.append(True)
+            [
+                "--worker",
+                "--asset-root",
+                str(library.root),
+                "--binding-sha256",
+                UNUSED_BINDING_SHA256,
+            ],
+            kill_group=lambda: killed.append(True),
         )
 
         assert status == 0
@@ -1158,7 +1401,7 @@ def test_a_worker_whose_service_goes_away_mid_pass_kills_its_own_group(
     pipes.install(monkeypatch)
     gate = threading.Event()
     monkeypatch.setattr(
-        service_module, "run_vault_pass", lambda _layout: (gate.wait(20), pushed())[1]
+        service_module, "run_vault_pass", lambda _layout, **_kw: (gate.wait(20), pushed())[1]
     )
     killed: list[bool] = []
     done: list[int] = []
@@ -1166,7 +1409,11 @@ def test_a_worker_whose_service_goes_away_mid_pass_kills_its_own_group(
     try:
         thread = threading.Thread(
             target=lambda: done.append(
-                service_module._worker_main(library, kill_group=lambda: killed.append(True))
+                service_module._worker_main(
+                    library,
+                    binding_sha256=UNUSED_BINDING_SHA256,
+                    kill_group=lambda: killed.append(True),
+                )
             ),
             daemon=True,
         )
@@ -1201,7 +1448,14 @@ def test_a_worker_that_cannot_finish_names_its_code_on_stderr_and_kills_its_grou
 
     try:
         status = service_module.main(
-            ["--worker", "--asset-root", str(library.root)], kill_group=lambda: killed.append(True)
+            [
+                "--worker",
+                "--asset-root",
+                str(library.root),
+                "--binding-sha256",
+                UNUSED_BINDING_SHA256,
+            ],
+            kill_group=lambda: killed.append(True),
         )
     finally:
         pipes.close()
@@ -1221,7 +1475,7 @@ def test_a_pass_that_breaks_in_a_way_no_frame_expected_still_answers_one(
 ) -> None:
     """A crash inside the pass is still a frame; a supervisor that heard nothing would stop."""
 
-    def explode(_layout: AssetLayout) -> VaultWorkerReply:
+    def explode(_layout: AssetLayout, **_kw: Any) -> VaultWorkerReply:
         raise KeyError("recording-takes")
 
     pipes = _Pipes()
@@ -1232,7 +1486,14 @@ def test_a_pass_that_breaks_in_a_way_no_frame_expected_still_answers_one(
 
     try:
         status = service_module.main(
-            ["--worker", "--asset-root", str(library.root)], kill_group=lambda: killed.append(True)
+            [
+                "--worker",
+                "--asset-root",
+                str(library.root),
+                "--binding-sha256",
+                UNUSED_BINDING_SHA256,
+            ],
+            kill_group=lambda: killed.append(True),
         )
         reply = read_worker_reply(pipes.frame())
     finally:
@@ -1253,7 +1514,7 @@ def test_a_pass_that_breaks_in_a_way_no_code_names_asks_to_be_retried(
 
     monkeypatch.setattr(generations, "push_generation", explode)
 
-    reply = run_vault_pass(bound)
+    reply = run_vault_pass(bound, binding_sha256=binding_digest(bound))
 
     assert (reply.outcome, reply.code, reply.retryable) == ("failed", None, True)
     assert reply.message is not None and "the vault pass failed" in reply.message
@@ -1279,7 +1540,7 @@ def test_an_owner_that_gave_no_reason_is_still_named(
     )
     monkeypatch.setattr(generations, "push_generation", lambda *_a, **_k: result)
 
-    reply = run_vault_pass(bound)
+    reply = run_vault_pass(bound, binding_sha256=binding_digest(bound))
 
     assert (reply.outcome, reply.message) == ("up-to-date", "waiting for take-store")
 
@@ -1293,7 +1554,7 @@ def one_pass(library: AssetLayout, command: list[str]) -> VaultWorkerReply:
         command=lambda _layout: command,
         environment=lambda: {"PATH": "/usr/bin:/bin"},
     )
-    return runner.run(threading.Event())
+    return runner.run(threading.Event(), binding_sha256=UNUSED_BINDING_SHA256)
 
 
 def test_a_worker_that_cannot_start_asks_for_another_pass(library: AssetLayout) -> None:
@@ -1342,7 +1603,7 @@ def test_a_spawned_worker_inherits_nothing_but_the_environment_the_module_builds
         library, command=lambda _layout: [sys.executable, "-I", "-B", "-c", program]
     )
 
-    reply = runner.run(threading.Event())
+    reply = runner.run(threading.Event(), binding_sha256=UNUSED_BINDING_SHA256)
 
     assert reply.outcome == "failed"  # the stand-in writes no frame
     given = json.loads(written.read_text())
@@ -1399,7 +1660,7 @@ def test_a_supervisor_without_a_failure_lane_still_records_its_own_end(
     bind_local(library, elsewhere)
     clock, runner = FakeClock(), FakeRunner([])
 
-    def explode(stop: threading.Event) -> VaultWorkerReply:
+    def explode(stop: threading.Event, *, binding_sha256: str) -> VaultWorkerReply:
         raise MemoryError("no room for a pass")
 
     runner.run = explode  # type: ignore[method-assign]
@@ -1462,7 +1723,7 @@ def test_a_push_another_process_already_holds_asks_for_another_pass(
 
     monkeypatch.setattr(generations, "push_generation", busy)
 
-    reply = run_vault_pass(bound)
+    reply = run_vault_pass(bound, binding_sha256=binding_digest(bound))
 
     assert (reply.outcome, reply.code, reply.retryable) == ("failed", None, True)
     assert reply.message == "a push of this library is already running"

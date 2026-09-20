@@ -36,7 +36,7 @@ from typing import Final, Literal, Protocol
 
 from pydantic import Field, ValidationError, model_validator
 
-from .canonical import canonical_json_bytes
+from .canonical import canonical_json_bytes, canonical_sha256
 from .errors import ContractError, SecurityError, VoiceLabError
 from .models import ContractModel, utc_now
 from .paths import AssetLayout
@@ -220,12 +220,14 @@ def _failed_reply(
     )
 
 
-def run_vault_pass(layout: AssetLayout) -> VaultWorkerReply:
+def run_vault_pass(layout: AssetLayout, *, binding_sha256: str) -> VaultWorkerReply:
     """Copy this library's current files to its vault, and name what happened.
 
     It opens the vault through the composition root (which is the only place an adapter is
     built, so no argument of this process chooses a destination, a key or a token) and runs
-    one ``push_generation``. Every failure it can name becomes a reply rather than a
+    one ``push_generation``. ``binding_sha256`` pins the supervisor's startup binding;
+    replacement requires a relaunch. Approval coverage and expiry are checked on every open.
+    Every failure it can name becomes a reply rather than a
     traceback: the service reads the frame, not this process's exit status.
     Returns: the ``VaultWorkerReply``; ``failed`` with a retryable flag when the push stopped
     for something that may pass by itself (the vault was unreachable, a source moved, another
@@ -239,6 +241,14 @@ def run_vault_pass(layout: AssetLayout) -> VaultWorkerReply:
         if vault is None:
             return _failed_reply(
                 "this library is bound to no vault any more",
+                code="STORAGE.NOT_BOUND",
+                retryable=False,
+            )
+        # Compare the binding actually used to build these stores, not a separate preflight
+        # read: replacement between two reads must never select a new destination or class.
+        if canonical_sha256(vault.binding) != binding_sha256:
+            return _failed_reply(
+                "the library vault binding changed; relaunch the app before copying resumes",
                 code="STORAGE.NOT_BOUND",
                 retryable=False,
             )
@@ -302,7 +312,12 @@ def _watch_parent(input_fd: int, finished: threading.Event, kill_group: Callable
         return
 
 
-def _worker_main(layout: AssetLayout, *, kill_group: Callable[[], None] = _kill_own_group) -> int:
+def _worker_main(
+    layout: AssetLayout,
+    *,
+    binding_sha256: str,
+    kill_group: Callable[[], None] = _kill_own_group,
+) -> int:
     """Run one pass while watching stdin, then write exactly one reply frame on stdout.
 
     A pass that breaks in a way ``run_vault_pass`` does not name still answers: the frame says
@@ -319,7 +334,7 @@ def _worker_main(layout: AssetLayout, *, kill_group: Callable[[], None] = _kill_
         name="vault-worker-parent",
     ).start()
     try:
-        reply = run_vault_pass(layout)
+        reply = run_vault_pass(layout, binding_sha256=binding_sha256)
     except Exception as failure:
         reply = _failed_reply(
             f"the vault pass stopped with {type(failure).__name__}: {failure}",
@@ -337,7 +352,7 @@ def _worker_main(layout: AssetLayout, *, kill_group: Callable[[], None] = _kill_
 def main(
     argv: Sequence[str] | None = None, *, kill_group: Callable[[], None] = _kill_own_group
 ) -> int:
-    """The worker process: ``--worker --asset-root <root>``.
+    """The worker process: ``--worker --asset-root <root> --binding-sha256 <startup digest>``.
 
     It must lead its own process group (the supervisor starts it in a new session), because
     it kills that group when the service goes away (stdin ends), so nothing it started
@@ -349,13 +364,18 @@ def main(
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worker", action="store_true", required=True)
     parser.add_argument("--asset-root", type=Path, required=True)
+    parser.add_argument("--binding-sha256", required=True)
     options = parser.parse_args(argv)
     previous_umask = os.umask(0o077)
     leader = os.getpgrp() == os.getpid()
     try:
         if not leader:
             raise ContractError("a vault worker must lead its own process group")
-        return _worker_main(AssetLayout.validate(options.asset_root), kill_group=kill_group)
+        return _worker_main(
+            AssetLayout.validate(options.asset_root),
+            binding_sha256=options.binding_sha256,
+            kill_group=kill_group,
+        )
     except BaseException as failure:
         code = failure.code if isinstance(failure, StorageError) else "STORAGE.PROTOCOL"
         print(
@@ -378,8 +398,8 @@ def main(
 class VaultPassRunner(Protocol):
     """How one pass is run; the supervisor owns exactly one at a time."""
 
-    def run(self, stop: threading.Event) -> VaultWorkerReply:
-        """Run one pass, returning as soon as ``stop`` is set (the reply is then ``failed``)."""
+    def run(self, stop: threading.Event, *, binding_sha256: str) -> VaultWorkerReply:
+        """Run with the startup binding pin; return ``failed`` as soon as ``stop`` is set."""
         ...
 
     def terminate(self) -> None:
@@ -414,10 +434,10 @@ class WorkerPassRunner:
         with self._mutex:
             return None if self._process is None else self._process.pid
 
-    def run(self, stop: threading.Event) -> VaultWorkerReply:
+    def run(self, stop: threading.Event, *, binding_sha256: str) -> VaultWorkerReply:
         try:
             process = subprocess.Popen(
-                list(self._command(self.layout)),
+                [*self._command(self.layout), "--binding-sha256", binding_sha256],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -520,8 +540,8 @@ class VaultSupervisor:
     request is running, and never while a pass is already running. A retryable failure --
     including a worker that died without answering -- is retried after ``backoff``; a refusal
     the vault itself will keep making stops passes until the app is relaunched (the binding is
-    read once, in ``start``, so rebinding takes effect only at the next launch, which is what
-    ``voice-lab vault bind`` tells the user). Nothing happens at all, and nothing is published,
+    pinned in ``start`` and checked against every worker's opened vault, so rebinding takes
+    effect only at the next launch). Nothing happens at all, and nothing is published,
     while the library is bound to no vault.
     """
 
@@ -559,6 +579,7 @@ class VaultSupervisor:
         self.publish_interval = publish_interval
         self.poll = poll
         self.runner: VaultPassRunner = WorkerPassRunner(layout) if processes is None else processes
+        self._binding_sha256: str | None = None
         self._activity = activity
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -620,6 +641,7 @@ class VaultSupervisor:
             return
         if binding is None:
             return
+        self._binding_sha256 = canonical_sha256(binding)
         now = self.monotonic()
         with self._mutex:
             self._status = VaultStatus(state="waiting")
@@ -757,7 +779,8 @@ class VaultSupervisor:
             self._commit_at = None
             status = self._status
         self._set(replace(status, state="copying", message=None, code=None, unreachable_since=None))
-        reply = self.runner.run(self._stop)
+        assert self._binding_sha256 is not None
+        reply = self.runner.run(self._stop, binding_sha256=self._binding_sha256)
         now = self.monotonic()
         with self._mutex:
             self._last_pass_at = now

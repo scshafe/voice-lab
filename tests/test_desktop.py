@@ -328,7 +328,7 @@ def test_desktop_application_rejects_unsafe_or_unusable_targets(tmp_path):
 
 def test_desktop_bootstrap_requires_explicit_download_gate():
     result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts/bootstrap-desktop"), "--execute"],
+        [sys.executable, "-I", "-B", str(ROOT / "scripts/bootstrap-desktop"), "--execute"],
         text=True,
         capture_output=True,
         check=False,
@@ -339,7 +339,7 @@ def test_desktop_bootstrap_requires_explicit_download_gate():
 
 def test_desktop_bootstrap_is_a_hash_pinned_preview_by_default():
     result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts/bootstrap-desktop")],
+        [sys.executable, "-I", "-B", str(ROOT / "scripts/bootstrap-desktop")],
         text=True,
         capture_output=True,
         check=False,
@@ -352,7 +352,7 @@ def test_desktop_bootstrap_is_a_hash_pinned_preview_by_default():
 
 def test_desktop_bootstrap_adds_the_vault_lock_only_when_asked():
     result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts/bootstrap-desktop"), "--with-vault"],
+        [sys.executable, "-I", "-B", str(ROOT / "scripts/bootstrap-desktop"), "--with-vault"],
         text=True,
         capture_output=True,
         check=False,
@@ -366,7 +366,7 @@ def test_desktop_bootstrap_adds_the_vault_lock_only_when_asked():
 
 def test_native_desktop_module_exposes_cli_help_without_opening_window():
     result = subprocess.run(
-        [sys.executable, "-B", "-m", "cole_voice_lab.desktop", "--help"],
+        [sys.executable, "-I", "-B", "-m", "cole_voice_lab.desktop", "--help"],
         text=True,
         capture_output=True,
         check=False,

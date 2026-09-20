@@ -151,6 +151,8 @@ def main() -> None:
         "480",
     ]
     service_arguments = [
+        "-I",
+        "-B",
         "-m",
         "cole_voice_lab.recording_service",
         "--asset-root",

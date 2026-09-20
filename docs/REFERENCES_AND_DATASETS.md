@@ -243,6 +243,14 @@ transport encryption and remote retention, and record its own receipt.
 No hosted endpoint, SSH host, cloud account, or GPU provider is contacted by
 these modules or their tests.
 
+The encrypted library vault is a separate storage boundary (D-020), governed by
+`VaultDestinationApproval` under `provenance/vault/approvals/`, never by a
+`HostedTransferApproval`. It needs no synthesis consent because Cole's host
+receives only ciphertext and runs no model. `hosted_transfer_allowed` remains
+`Literal[False]`. The vault copies existing transfer-approval records as library
+history; that does not authorize a dataset transfer to a hosted model service.
+See [LIBRARY_VAULT.md](LIBRARY_VAULT.md).
+
 The CLI preserves the same boundary. Its default command publishes a prohibited
 plan and never transfers anything:
 

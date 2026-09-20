@@ -14,7 +14,7 @@ cd "$repo_dir"
 .venv/bin/ruff check .
 .venv/bin/mypy src/cole_voice_lab
 scripts/verify-native-recording --suite all
-.venv/bin/pytest --cov=cole_voice_lab --cov-report=term-missing --cov-branch
-.venv/bin/python -m build --no-isolation
-.venv/bin/python -m cole_voice_lab.schema --check
-.venv/bin/python scripts/guard-private-assets
+.venv/bin/python -I -B -m pytest --cov=cole_voice_lab --cov-report=term-missing --cov-branch
+.venv/bin/python -I -B -m build --no-isolation
+.venv/bin/python -I -B -m cole_voice_lab.schema --check
+.venv/bin/python -I -B scripts/guard-private-assets

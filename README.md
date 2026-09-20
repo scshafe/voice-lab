@@ -107,6 +107,15 @@ promotion manifest; those reviewed records remain explicit inputs at the
 promotion boundary. `promotion handoff` writes one new canonical private JSON
 file and never copies audio or mutates ChloeSpeech.
 
+`voice-lab vault` approves, binds, copies, verifies and restores an encrypted
+library copy under D-020. The Mac keeps its working database; Speak clips stay
+local and training assets are a separate opt-in. The Swift app shows copying
+status and blocks fine-tuned models whose checkpoints were explicitly archived.
+`finetune archive --remove-local-copy` reclaims checkpoints one run at a time
+only after verification. The implementation and container templates are built;
+no real vault is deployed. See [the library guide](docs/LIBRARY_VAULT.md) and
+[operator procedures](docs/RUNBOOK.md#9-library-vault).
+
 ## Status
 
 See [CURRENT.md](CURRENT.md) and [PROGRESS_CONTRACT.md](PROGRESS_CONTRACT.md).

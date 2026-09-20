@@ -25,6 +25,7 @@ from verify_native_workspace import (
     SERVICE_MODULE_ARGUMENTS,
     SUBJECT,
     application_configuration,
+    copied_service_arguments,
     fixture_environment,
     isolated_service_runtime,
     native_builds,
@@ -159,8 +160,7 @@ def prepare_finetune_fixture(
             root, SERVICE_WRAPPER, SERVICE_WRAPPER_MODULE, environment
         )
         service_arguments = [
-            "-m",
-            f"cole_voice_lab.{SERVICE_WRAPPER_MODULE}",
+            *copied_service_arguments(root, SERVICE_WRAPPER_MODULE),
             "--test-pretrained-pins",
             format_pins(pin),
         ]

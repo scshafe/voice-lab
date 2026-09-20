@@ -2069,8 +2069,9 @@ class VaultStatusEvent(ContractModel):
     be copied, or an owner held its files back), ``copying`` (a pass is running),
     ``unreachable`` (the vault has answered with a retryable failure since
     ``unreachable_since``) or ``failed`` (a refusal that stops copying until the app is
-    relaunched; the binding is read once, when the service starts, so rebinding takes effect
-    only at the next launch, which is what ``voice-lab vault bind`` tells the user).
+    relaunched; the supervisor pins the binding at startup and each worker checks its
+    opened binding against that pin, so rebinding takes effect only at the next launch,
+    which is what ``voice-lab vault bind`` tells the user).
     ``waiting_files`` counts files no generation holds yet. ``generation`` is the newest
     generation this service pushed (0 when it has pushed none) and ``last_pushed_at`` when it
     did. ``code`` is the storage refusal behind an unreachable or failed vault, and

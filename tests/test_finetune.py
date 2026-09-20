@@ -1369,7 +1369,7 @@ def test_cli_gpu_work_refuses_while_the_app_speaks(
         )
     assert marker.read_bytes() == canonical_json_bytes(live) + b"\n"  # read only
     # A marker whose service is gone refuses nothing.
-    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone = subprocess.Popen([sys.executable, "-I", "-B", "-c", "pass"])
     gone.wait()
     write_recording_evidence(marker, live.model_copy(update={"pid": gone.pid}))
     assert active_speech_request(layout) is None
