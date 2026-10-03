@@ -33,3 +33,9 @@ released = true
 dirty = false
 mode = "adopted"
 params = { kind = "native", name = "voice-journey-capture", date = "2026-10-03" }
+
+# IDENT-01: what this project's agent may do (scshafe/infra docs/platform/agent-identity.md).
+# References, never secrets. `dev identity plan` compares it with the host and GitHub.
+[identity]
+agent = "agent-voice-journey-capture"
+github = ["contents=write", "pull_requests=write", "issues=write", "workflows=write", "actions=write"]
