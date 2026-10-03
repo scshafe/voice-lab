@@ -1,0 +1,36 @@
+name: CI
+
+# BASE-04. Added by scshafe-dev (the native kind). It runs
+# dev.toml [verify] command (BASE-06): keep the two equal.
+#
+# No language, build system or platform is assumed. ubuntu-latest has common
+# toolchains preinstalled (a C/C++ compiler, cmake, Python, Node, Go, Rust);
+# add the setup your [verify] command needs before it (packages, an SDK, a
+# toolchain action pinned by SHA). To build on other platforms, use a matrix
+# of GitHub-hosted runners (macos-latest, windows-latest); dev check lists
+# them (NATIVE-01). A release or store upload is a workflow of its own.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify (dev.toml [verify] command)
+        run: |
+          uv run --frozen pytest -v && uv run --frozen voice-journey-capture --smoke
