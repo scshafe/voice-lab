@@ -138,3 +138,20 @@ def test_aborted_sessions_are_never_uploaded(client, backend, levels, pinned, se
 def test_prune_accepted(client, recorded, sessions, config):
     upload_pending(client, sessions, config.server_url)
     assert sessions.prune_accepted() == 1 and not recorded.session_dir.exists()
+
+
+def test_finalize_and_the_last_chunk_wait_for_the_servers_re_hash(client, recorded, sessions, config, monkeypatch):
+    from voice_journey_capture import upload
+
+    seen: list[tuple[str, float]] = []
+    real = client.http.request
+
+    def spy(method, url, **kwargs):
+        seen.append((url.rsplit("/", 1)[-1] if method == "POST" else method, kwargs["timeout"].read))
+        return real(method, url, **kwargs)
+
+    monkeypatch.setattr(client.http, "request", spy)
+    upload_pending(client, sessions, config.server_url)
+    assert ("finalize", upload.SLOW_TIMEOUT.read) in seen
+    put_timeouts = [t for what, t in seen if what == "PUT"]
+    assert set(put_timeouts) == {upload.TIMEOUT.read, upload.SLOW_TIMEOUT.read}

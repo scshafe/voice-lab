@@ -31,6 +31,9 @@ from .store import LocalSession, SessionStore
 
 CHUNK_BYTES = 8 * 1024 * 1024
 TIMEOUT = httpx.Timeout(60.0, connect=15.0)
+#: A PUT that completes a file, and finalize, wait while the server re-hashes (up to 4 GiB on a
+#: 2-core laptop); the door allows the upstream 300 s (infra stacks/voice-journey).
+SLOW_TIMEOUT = httpx.Timeout(300.0, connect=15.0)
 #: Rounds of (upload what is missing, finalize) before giving up for this launch.
 MAX_ROUNDS = 3
 
@@ -63,12 +66,13 @@ class IntakeClient:
         self.http = http
         self.chunk_bytes = chunk_bytes
 
-    def _send(self, method: str, url: str, *, content: bytes | None = None, headers: dict[str, str] | None = None) -> Answer:
+    def _send(self, method: str, url: str, *, content: bytes | None = None, headers: dict[str, str] | None = None,
+              timeout: httpx.Timeout = TIMEOUT) -> Answer:
         bearer = self.session.bearer()
         for attempt in (1, 2):
             sent = {"Authorization": f"Bearer {bearer}", "Accept": "application/json", **(headers or {})}
             try:
-                response = self.http.request(method, url, content=content, headers=sent)
+                response = self.http.request(method, url, content=content, headers=sent, timeout=timeout)
             except httpx.HTTPError as exc:
                 raise UploadError(f"the server did not answer ({type(exc).__name__})") from exc
             self.http.cookies.clear()
@@ -118,7 +122,7 @@ class IntakeClient:
                 answer = self._send("PUT", url, content=chunk, headers={
                     "Content-Type": "application/octet-stream",
                     "Content-Range": f"bytes {offset}-{end}/{size}",
-                })
+                }, timeout=SLOW_TIMEOUT if end + 1 == size else TIMEOUT)
                 state = answer.body.get("state")
                 if answer.status == 202 and state == "partial":
                     offset = int(answer.body.get("receivedBytes", end + 1))
@@ -142,7 +146,8 @@ class IntakeClient:
                     progress(path.name, offset, size)
 
     def finalize(self, session_id: str) -> Answer:
-        return self._send("POST", f"{self.base}/{quote(session_id)}/finalize", content=b"", headers={"Content-Type": "application/json"})
+        return self._send("POST", f"{self.base}/{quote(session_id)}/finalize", content=b"", headers={"Content-Type": "application/json"},
+                          timeout=SLOW_TIMEOUT)
 
 
 def upload_session(client: IntakeClient, local: LocalSession, progress: Progress | None = None) -> str:
