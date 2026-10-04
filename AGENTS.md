@@ -24,3 +24,24 @@ API. Read README.md and docs/DEVELOPING.md first; the design is voice-journey
 - The scshafe-qt wheel is vendored; upgrade it per docs/DEVELOPING.md.
 - Work on branches. Merge PRs as `Merge #N: <title>` merge commits, after local
   verification.
+
+<!-- scshafe-dev:begin landing -->
+## Verify and landing
+
+Managed by scshafe-dev: `dev adopt` and `dev update` refresh this section from `dev.toml`; change `dev.toml`, not these lines.
+
+Before finishing, both of these must pass:
+
+```sh
+uv run --frozen pytest -v && uv run --frozen voice-journey-capture --smoke
+dev check .
+```
+
+How a change lands:
+
+1. Work on a branch and open a PR.
+2. Run the two commands above. If the repository is private, GitHub Actions does not run for it: verify locally and say in the PR what you ran. If it is public, wait for CI to be green.
+3. Merge your own PR with a merge commit, one change at a time: `gh pr merge <N> --merge --subject "Merge #<N>: <title>"`. Never squash or rebase (both are off on the repository), and pass `--subject`: `gh pr merge` does not make the `Merge #N: <title>` subject by itself.
+
+The project's agent may merge its own PR and push `main`; there is no approval gate.
+<!-- scshafe-dev:end landing -->
