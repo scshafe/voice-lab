@@ -4,6 +4,12 @@ For a visual walkthrough of the native app, recording-to-voice workflow, and
 vault archive/restore process, see
 [Application architecture diagrams](docs/APPLICATION_ARCHITECTURE_DIAGRAMS.md).
 
+This document describes the lab as built. The proposed combined voice platform
+(voice-journey merged in, the backend and model workers on the PC, a `scshafe-qt`
+desktop app and a read-only web view) is in
+[docs/design/VOICE-PLATFORM.md](docs/design/VOICE-PLATFORM.md); until the owner
+accepts it, this document stays authoritative.
+
 ## Boundaries
 
 ```text
