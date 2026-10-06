@@ -130,14 +130,19 @@ Tailscale node identity: preserve it across ordinary upgrades and restarts.
 mounts use `create_host_path: false`. No Docker socket or node-state directory
 is visible inside the vault application.
 
-After the library identity exists, Cole runs on the Mac:
+After the library identity exists, Cole creates the destination's tokens on the
+copying host. On the PC (the laptop vault, phase 2, D-034), as `voice-lab` into a
+private credential staging directory, as RUNBOOK §9 "The PC (phase 2)" shows:
 
 ```sh
-voice-lab vault token create --asset-root '<Mac asset root>' --namespace '<namespace>'
+voice-lab vault token create --asset-root /data/voice-lab/lab --destination laptop \
+  --namespace '<namespace>'
 ```
 
-This stores distinct read/write tokens in the login Keychain and prints only
-their SHA-256 hashes. Copy only those hashes into an external server configuration:
+On a Mac with one vault, `voice-lab vault token create --asset-root '<Mac asset root>'
+--namespace '<namespace>'`. Either stores distinct read/write tokens for that destination
+(as systemd credential items on the PC, in the login Keychain on a Mac) and prints only
+their SHA-256 hashes. Each vault gets its own pair: never reuse another vault's hashes. Copy only those hashes into an external server configuration:
 
 ```json
 {

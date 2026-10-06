@@ -1,5 +1,9 @@
 {
   "$defs": {
+    "DestinationName": {
+      "pattern": "^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$",
+      "type": "string"
+    },
     "Endpoint": {
       "maxLength": 1024,
       "minLength": 1,
@@ -53,7 +57,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Which vault a library copies to, and what it copies (``provenance/vault/binding.json``).\n\n``tailnet-vault`` names a lowercase DNS ``endpoint`` and requires ``approval_id``,\n``approval_sha256`` (the digest of the approval file the operator reviewed at bind time,\nre-checked every time the vault is opened) and ``token_item``; ``local-directory`` names\nan absolute, normalized directory and has none of the three.\n``classes`` (sorted, unique) are the file classes copied to that destination on\nevery backend, so ``training`` goes only where the binding opts in; for ``tailnet-vault``\nthe approval must also cover each of them, which is checked where the approval is loaded.\n``key_item`` and ``token_item`` are always the names ``keychain_item_names`` derives from\n``library_id``. The binding holds no secret and no path to one.",
+  "description": "Which vault one destination of a library is, and what it copies.\n\nKept as ``provenance/vault/destinations/<destination>/binding.json``; ``destination`` repeats\nthe directory's name, so a binding copied under another destination is refused.\n\n``tailnet-vault`` names a lowercase DNS ``endpoint`` and requires ``approval_id``,\n``approval_sha256`` (the digest of the approval file the operator reviewed at bind time,\nre-checked every time the vault is opened) and ``token_item``; ``local-directory`` names\nan absolute, normalized directory and has none of the three.\n``classes`` (sorted, unique) are the file classes copied to that destination on\nevery backend, so ``training`` goes only where the binding opts in; for ``tailnet-vault``\nthe approval must also cover each of them, which is checked where the approval is loaded.\n``key_item`` and ``token_item`` are always the names ``keychain_item_names`` derives from\n``library_id`` and ``destination``. The binding holds no secret and no path to one.",
   "properties": {
     "approval_id": {
       "anyOf": [
@@ -84,6 +88,9 @@
     "created_at": {
       "$ref": "#/$defs/UtcTimestamp"
     },
+    "destination": {
+      "$ref": "#/$defs/DestinationName"
+    },
     "endpoint": {
       "$ref": "#/$defs/Endpoint"
     },
@@ -100,8 +107,8 @@
       "$ref": "#/$defs/Namespace"
     },
     "schema_version": {
-      "const": "cole-voice-lab.storage-binding/v1",
-      "default": "cole-voice-lab.storage-binding/v1",
+      "const": "cole-voice-lab.storage-binding/v2",
+      "default": "cole-voice-lab.storage-binding/v2",
       "title": "Schema Version",
       "type": "string"
     },
@@ -120,6 +127,7 @@
     }
   },
   "required": [
+    "destination",
     "backend",
     "endpoint",
     "namespace",

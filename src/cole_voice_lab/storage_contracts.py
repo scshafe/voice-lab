@@ -1,8 +1,9 @@
 """The library vault's records: blob and ref values, manifests, the binding, state and ledger.
 
 @canonical storage_contracts -- every value a storage port returns and every record the vault
-keeps (library manifests and the envelopes a head names), the Mac keeps under
-provenance/vault (the binding, replication state, ledger entries) or the vault server reads
+keeps (library manifests and the envelopes a head names), the copying host keeps under
+provenance/vault (the library identity, and per destination the binding, approvals,
+replication state and ledger entries) or the vault server reads
 and writes (its namespace configuration and its access-log lines) is one of these strict
 models; ref names and library ids are validated here, a manifest's digest is always
 manifest_digest (SHA-256 of its canonical JSON), the digest of what a generation carries (its
@@ -63,9 +64,23 @@ MAX_VAULT_ATTEMPTS: Final = 16
 MAX_MANIFEST_BYTES: Final = 256 * 1024 * 1024
 EMPTY_SHA256: Final = hashlib.sha256(b"").hexdigest()
 # Manifest paths never name this directory (or anything in it): the binding, approvals,
-# replication state, ledger and request log stay on the Mac and are never restored.
+# replication state, ledger and request log stay on the copying host and are never restored.
 VAULT_PROVENANCE_ROOT: Final = "provenance/vault"
+# Each destination's records live under ``provenance/vault/destinations/<destination>/``
+# (D-034): a level of their own, so no destination name can collide with ``library.json``.
+VAULT_DESTINATIONS_DIRECTORY: Final = "destinations"
+# A destination is a short stable id (``laptop``, ``air``): a lowercase letter, then up to 31
+# lowercase letters, digits or inner hyphens. It is a path segment, a systemd unit instance
+# name (``voice-lab-vault@<destination>``) and one dot-free segment of a token item's name.
+VAULT_DESTINATION_PATTERN: Final = r"^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$"
+# The destination of a host that copies to one vault (the Mac's recording service, its
+# fixtures and every command run without ``--destination``).
+DEFAULT_VAULT_DESTINATION: Final = "default"
+# The library key is one per library; the two vault tokens are one pair per destination, under
+# their own prefix, so a systemd unit can import one destination's tokens with a trailing glob
+# (``ImportCredential=`` accepts only a trailing ``*``) without the key's prefix matching them.
 KEYCHAIN_ITEM_PREFIX: Final = "private.cole.voice-lab.vault."
+VAULT_TOKEN_ITEM_PREFIX: Final = "private.cole.voice-lab.vault-destination."
 # Names the hashed plan format and keeps a payload digest apart from the digest of any other
 # canonical JSON, a manifest's included.
 MANIFEST_PAYLOAD_DOMAIN: Final = "cole-voice-lab.library-manifest-payload/v1"
@@ -98,6 +113,7 @@ PIN_SOURCE_PATTERN: Final = r"^[a-z][a-z0-9_-]{0,63}(?:\.[a-z][a-z0-9_-]{0,63}){
 
 _REF_NAME = re.compile(REF_NAME_PATTERN)
 _LIBRARY_ID = re.compile(LIBRARY_ID_PATTERN)
+_DESTINATION = re.compile(VAULT_DESTINATION_PATTERN)
 _DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 # Two or more lowercase labels, no trailing dot; the last label has a letter, so an IPv4
 # literal is not a name.
@@ -155,6 +171,33 @@ def validate_library_id(library_id: str) -> str:
     return library_id
 
 
+def validate_destination_name(destination: str) -> str:
+    """Return ``destination`` when it can name one vault destination of a library.
+
+    Params: ``destination``, for example ``laptop``.
+    Returns: ``destination`` unchanged.
+    Raises: ``StorageNameError`` unless it is 1-32 characters: a lowercase letter, then
+    lowercase letters, digits or hyphens, ending with a letter or digit.
+    """
+    if _DESTINATION.fullmatch(destination) is None:
+        raise StorageNameError(
+            "a vault destination is 1-32 characters of [a-z0-9-], starting with a letter and "
+            f"ending with a letter or digit: {destination!r:.80}"
+        )
+    return destination
+
+
+def destination_records_path(destination: str) -> str:
+    """Where one destination's records live, relative to the asset root.
+
+    Params: ``destination``.
+    Returns: ``provenance/vault/destinations/<destination>``.
+    Raises: ``StorageNameError`` for a name that is not a destination.
+    """
+    name = validate_destination_name(destination)
+    return f"{VAULT_PROVENANCE_ROOT}/{VAULT_DESTINATIONS_DIRECTORY}/{name}"
+
+
 def library_head_ref(library_id: str) -> str:
     """The name of the ref that points at a library's newest manifest.
 
@@ -182,27 +225,41 @@ def validate_tailnet_endpoint(endpoint: str) -> str:
 
 
 class KeychainItemNames(NamedTuple):
-    """The login-Keychain item names a library's vault secrets are kept under."""
+    """The item names one destination's vault secrets are kept under (Keychain or credential)."""
 
     key: str
     token: str
     read_token: str
 
 
-def keychain_item_names(library_id: str) -> KeychainItemNames:
-    """Derive the Keychain item names for a library; bindings name exactly these.
+def library_key_item(library_id: str) -> str:
+    """The item name of a library's key: one key per library, whatever the destination.
 
     Params: ``library_id``.
-    Returns: ``private.cole.voice-lab.vault.<library_id>.key`` (the library key, used for
-    every backend), ``….token`` (the vault's write token) and ``….read-token`` (its read
-    token); both tokens are used by ``tailnet-vault`` alone, and a binding names only the
-    write one, since the read token is for a restore onto another Mac.
+    Returns: ``private.cole.voice-lab.vault.<library_id>.key``.
     Raises: ``StorageNameError`` when ``library_id`` is not a valid library id.
     """
-    prefix = f"{KEYCHAIN_ITEM_PREFIX}{validate_library_id(library_id)}"
-    return KeychainItemNames(
-        key=f"{prefix}.key", token=f"{prefix}.token", read_token=f"{prefix}.read-token"
-    )
+    return f"{KEYCHAIN_ITEM_PREFIX}{validate_library_id(library_id)}.key"
+
+
+def keychain_item_names(library_id: str, destination: str) -> KeychainItemNames:
+    """Derive the item names for one destination of a library; bindings name exactly these.
+
+    On macOS they are login-Keychain services; on Linux they are systemd credential names
+    (``storage_sealing.SystemdCredentialKeychain``).
+    Params: ``library_id``; ``destination``.
+    Returns: the library key ``library_key_item(library_id)`` (shared by every destination and
+    backend), and the destination's own tokens
+    ``private.cole.voice-lab.vault-destination.<destination>.<library_id>.token`` (its write
+    token) and ``….read-token`` (its read token). Two vault servers never share a token. Both
+    tokens are used by ``tailnet-vault`` alone, and a binding names only the write one, since
+    the read token is for a restore onto another host.
+    Raises: ``StorageNameError`` when ``library_id`` is not a valid library id or
+    ``destination`` is not a destination name.
+    """
+    key = library_key_item(library_id)
+    prefix = f"{VAULT_TOKEN_ITEM_PREFIX}{validate_destination_name(destination)}.{library_id}"
+    return KeychainItemNames(key=key, token=f"{prefix}.token", read_token=f"{prefix}.read-token")
 
 
 def new_library_id(created_at: datetime) -> str:
@@ -384,6 +441,7 @@ type RefName = Annotated[
 ]
 type LibraryId = Annotated[str, StringConstraints(pattern=LIBRARY_ID_PATTERN, max_length=64)]
 type Namespace = Annotated[str, StringConstraints(pattern=NAMESPACE_PATTERN)]
+type DestinationName = Annotated[str, StringConstraints(pattern=VAULT_DESTINATION_PATTERN)]
 type Endpoint = Annotated[str, StringConstraints(min_length=1, max_length=MAX_ENDPOINT_LENGTH)]
 type TailnetName = Annotated[
     str,
@@ -610,7 +668,7 @@ class ManifestEnvelope(ContractModel):
 
 
 class LibraryIdentity(ContractModel):
-    """Which library this Mac holds (``provenance/vault/library.json``; never copied).
+    """Which library this host holds (``provenance/vault/library.json``; never copied).
 
     ``voice-lab vault init`` writes it once, either with a fresh ``lib-<yyyymmdd>-<12 hex>``
     id or with the id of an existing vault library (restoring onto another Mac). Every later
@@ -629,8 +687,11 @@ class VaultDestinationApproval(ContractModel):
     """Cole's standing authorization to copy a library to one tailnet vault.
 
     It is authored by ``voice-lab vault approve`` after the preview's digest is reviewed, kept
-    write-once at 0400 under ``provenance/vault/approvals/``, and named by a binding with its
-    digest. It binds the destination to a node, not to a name: the endpoint must be a name in
+    write-once at 0400 under ``provenance/vault/destinations/<destination>/approvals/``, and
+    named by that destination's binding with its digest. ``destination`` is the short name the
+    copying host gives this vault (``laptop``, ``air``); an approval kept or bound under
+    another destination's name is refused. It binds the destination to a node, not to a name:
+    the endpoint must be a name in
     ``tailnet_suffix``, the node answering must have ``node_stable_id`` and carry ``tag``, and
     the copy may hold only ``classes`` (``training`` — fine-tune runs and datasets — only when
     it is listed, which is the opt-in). It is effective from ``approved_at`` until
@@ -640,12 +701,13 @@ class VaultDestinationApproval(ContractModel):
     a hosted transfer (D-020 says why) and carries no secret.
     """
 
-    schema_version: Literal["cole-voice-lab.vault-destination-approval/v1"] = (
-        "cole-voice-lab.vault-destination-approval/v1"
+    schema_version: Literal["cole-voice-lab.vault-destination-approval/v2"] = (
+        "cole-voice-lab.vault-destination-approval/v2"
     )
     approval_id: StableId
     approved: Literal[True]
     library_id: LibraryId
+    destination: DestinationName
     backend: Literal["tailnet-vault"] = "tailnet-vault"
     endpoint: Endpoint
     tailnet_suffix: TailnetName
@@ -677,7 +739,10 @@ class VaultDestinationApproval(ContractModel):
 
 
 class StorageBinding(ContractModel):
-    """Which vault a library copies to, and what it copies (``provenance/vault/binding.json``).
+    """Which vault one destination of a library is, and what it copies.
+
+    Kept as ``provenance/vault/destinations/<destination>/binding.json``; ``destination`` repeats
+    the directory's name, so a binding copied under another destination is refused.
 
     ``tailnet-vault`` names a lowercase DNS ``endpoint`` and requires ``approval_id``,
     ``approval_sha256`` (the digest of the approval file the operator reviewed at bind time,
@@ -687,12 +752,13 @@ class StorageBinding(ContractModel):
     every backend, so ``training`` goes only where the binding opts in; for ``tailnet-vault``
     the approval must also cover each of them, which is checked where the approval is loaded.
     ``key_item`` and ``token_item`` are always the names ``keychain_item_names`` derives from
-    ``library_id``. The binding holds no secret and no path to one.
+    ``library_id`` and ``destination``. The binding holds no secret and no path to one.
     """
 
-    schema_version: Literal["cole-voice-lab.storage-binding/v1"] = (
-        "cole-voice-lab.storage-binding/v1"
+    schema_version: Literal["cole-voice-lab.storage-binding/v2"] = (
+        "cole-voice-lab.storage-binding/v2"
     )
+    destination: DestinationName
     backend: StorageBackend
     endpoint: Endpoint
     namespace: Namespace
@@ -718,7 +784,7 @@ class StorageBinding(ContractModel):
             raise ValueError(
                 "approval_sha256 is required for tailnet-vault and forbidden for local-directory"
             )
-        names = keychain_item_names(self.library_id)
+        names = keychain_item_names(self.library_id, self.destination)
         if self.key_item != names.key:
             raise ValueError(f"key_item must be {names.key}")
         if self.token_item != (names.token if tailnet else None):
@@ -729,7 +795,7 @@ class StorageBinding(ContractModel):
 
 
 class ReplicationState(ContractModel):
-    """The Mac's record of the newest generation it pushed (``provenance/vault/state.json``).
+    """The newest generation pushed to one destination (``…/destinations/<d>/state.json``).
 
     Generation 0 means nothing was pushed yet, and only then are ``manifest_sha256``, ``head``
     and ``ledger_tail_sha256`` null; ``head`` is always this library's head ref.
@@ -793,7 +859,7 @@ class LedgerDestination(ContractModel):
 
 
 class LedgerEntry(ContractModel):
-    """One append-only ledger record (``provenance/vault/ledger/<sequence:08d>.json``).
+    """One append-only ledger record (``…/destinations/<d>/ledger/<sequence:08d>.json``).
 
     The entries form a chain: ``previous_entry_sha256`` is null exactly for sequence 1.
     ``upload-started`` is written before the first new blob of a generation leaves the Mac, so

@@ -11,7 +11,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Which library this Mac holds (``provenance/vault/library.json``; never copied).\n\n``voice-lab vault init`` writes it once, either with a fresh ``lib-<yyyymmdd>-<12 hex>``\nid or with the id of an existing vault library (restoring onto another Mac). Every later\nvault command \u2014 approving a destination, binding one, creating the key or the tokens \u2014\ntakes the library id from here, so no command can be given the wrong one by hand.",
+  "description": "Which library this host holds (``provenance/vault/library.json``; never copied).\n\n``voice-lab vault init`` writes it once, either with a fresh ``lib-<yyyymmdd>-<12 hex>``\nid or with the id of an existing vault library (restoring onto another Mac). Every later\nvault command \u2014 approving a destination, binding one, creating the key or the tokens \u2014\ntakes the library id from here, so no command can be given the wrong one by hand.",
   "properties": {
     "created_at": {
       "$ref": "#/$defs/UtcTimestamp"

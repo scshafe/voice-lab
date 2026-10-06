@@ -805,3 +805,59 @@ phase.
   them (D-003), not the `0444`/`0555` the design's text names. Both are read-only; the
   stricter mode suffices because every reader (the API container and the host units) runs
   as the owning `voice-lab` user. The acceptance check is "read-only", verified as `0400`.
+
+## D-034 — Per-destination vault records and tokens; the Linux credential keychain
+
+Recorded 2026-10-06 while building the vault side of the design's phase 2 (§4.3), as the
+concrete shape of D-023's "each destination has its own binding, approval, state, manifest
+chain and ledger" and of the design's "library key as a root-owned encrypted systemd
+credential". The owner reviews it with the phase.
+
+- **Records per destination.** A destination is a short stable id (`laptop`, `air`;
+  `[a-z][a-z0-9-]`, at most 32 characters), also the vault unit's instance name. Everything
+  that describes one vault lives under `provenance/vault/destinations/<destination>/`: its
+  binding, approvals, `state.json`, manifest copies, ledger, request log and `.push.lock`.
+  The design wrote `provenance/vault/<destination>/`; the extra `destinations/` level keeps
+  every destination name apart from `library.json` and lists the destinations in one
+  directory. `library.json` (the library identity) and the library key stay one per
+  library. Each destination keeps D-020's rollback, fork and ledger checks unchanged, and a
+  push to one never takes another's lock, so an asleep Air never holds back the laptop.
+- **Records name their destination.** `StorageBinding` and `VaultDestinationApproval` gain a
+  `destination` field (schema `v2`): a binding or approval kept or used under another
+  destination's name is refused, and an approval covers only a binding of its own
+  destination.
+- **Tokens per destination.** Two vault servers never share a token. The key stays
+  `private.cole.voice-lab.vault.<library_id>.key`; a destination's tokens are
+  `private.cole.voice-lab.vault-destination.<destination>.<library_id>.token` and
+  `….read-token`. The destination comes before the library id, under a prefix of its own,
+  because systemd's `ImportCredential=` accepts only a trailing `*`: the unit imports
+  `private.cole.voice-lab.vault.*` (the key) and
+  `private.cole.voice-lab.vault-destination.%i.*` (its own tokens, and no other
+  destination's), with no library id written into the unit.
+- **The Linux keychain.** `keychain_client()` is the login Keychain on macOS and, elsewhere,
+  `SystemdCredentialKeychain` over `$CREDENTIALS_DIRECTORY`: an item is the file named by
+  its service, read with the Keychain's rules (one plain secret word, no secret in a
+  message). The operator creates the key (with D-020's recovery sheet) and each
+  destination's tokens once, as `voice-lab`, into a private staging directory named by
+  `CREDENTIALS_DIRECTORY`, encrypts each item with `systemd-creds encrypt --name=<item>`
+  into the root-owned `/etc/credstore.encrypted/`, and removes the staging directory. Under
+  systemd the directory is read-only, so no unit can add or replace an item; outside a unit
+  that imports them, a command that needs a secret refuses and says how to load them. No
+  new environment variable or flag was invented: `CREDENTIALS_DIRECTORY` is systemd's own.
+  This is `ImportCredential=` rather than the design's `LoadCredentialEncrypted=`, which
+  would need the library id written into the unit.
+- **The copier unit** is `deploy/host/voice-lab-vault@.service` (instance = destination;
+  `vault push`, then `vault verify`, as `voice-lab`, tailnet-only network) with a generic
+  nightly `voice-lab-vault@.timer`.
+- **The restore drill** is one command, `vault drill`: a restore through the bound
+  destination into an empty target, then every restored file read back from disk and
+  re-hashed against the authenticated manifest (size, SHA-256 and mode). `vault restore`
+  already proves each file as it reassembles it; the drill also proves what landed on disk.
+- **No migration.** D-020 was never deployed: no binding, approval, state, ledger or key
+  exists anywhere, so the old flat layout and the `v1` binding and approval are simply
+  refused, not migrated. A host that copies to one vault (the Mac's recording service, its
+  native fixtures, every command run without `--destination`) uses the destination
+  `default`.
+- **Not changed here.** The approval's tag is still `tag:voice-lab-vault`; the Air's
+  `tag:voice-lab-vault-air` and its resume journal are phase 3. `finetune archive` and
+  `restore-run` still use the `default` destination; moving them to the PC is phase 5.

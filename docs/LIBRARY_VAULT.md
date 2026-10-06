@@ -16,9 +16,20 @@ root), `library_classification.py`, `library_replication.py`, `library_generatio
 
 The implementation, visible app status, container templates and D-020 policy are built.
 Nothing is deployed yet: there is no vault host, no real binding and no copy of Cole's
-library anywhere but the Mac. [RUNBOOK.md](RUNBOOK.md#9-library-vault) covers the Mac
-procedures, and [deploy/vault/README.md](../deploy/vault/README.md) covers the host.
-See "Deployment still outstanding" below for Step 15's operator gates.
+library anywhere but where it is recorded. [RUNBOOK.md](RUNBOOK.md#9-library-vault) covers
+the operator procedures, and [deploy/vault/README.md](../deploy/vault/README.md) covers the
+vault host. See "Deployment still outstanding" below for the operator gates.
+
+**Direction (D-023, D-034).** D-020 described the Mac copying to one vault. From the design's
+phase 2 the PC holds the plaintext working library and copies it to several vaults, all on
+Cole's hardware: the laptop nightly now, the MacBook Air (the offsite copy) from phase 3.
+Every vault command therefore names a **destination** (`--destination laptop`); each
+destination has its own binding, approvals, state, manifest chain, ledger, push lock,
+request log and vault tokens, and the library key is one per library. On the PC the key and
+tokens are encrypted systemd credentials ("The PC: destinations, systemd credentials and the
+copier unit" below). A host that copies to a single vault, as the Mac's recording service
+does, uses the destination `default`; the text below says "the Mac" where D-020 did, and
+everything it says holds for each destination of the PC.
 
 ## What the vault is, and what it is not
 
@@ -38,7 +49,8 @@ It is **not**:
   change them, and is deliberately out of scope;
 - a way to free disk. Only `voice-lab finetune archive --remove-local-copy` removes anything
   from the Mac, one run at a time, after the copy has been verified by download;
-- a second off-site copy. It is one copy on one disk.
+- an off-site copy by itself. Each destination is one copy on one disk; the laptop shares the
+  PC's site, and only the Air (phase 3) travels (D-023 states the residual risk).
 
 ## The ports, and the one place that picks an implementation
 
@@ -116,9 +128,10 @@ content stays confidential — and the format's version byte leaves room for pad
 decision record is D-020.
 
 `LibraryKey` holds exactly 32 bytes, redacts its `repr`, and refuses to be pickled or copied.
-It lives in the login Keychain under `private.cole.voice-lab.vault.<library_id>.key`, reached
-only through `/usr/bin/security` with an absolute path, a sanitized environment and a timeout,
-with the secret on stdin and never in an argument list. `voice-lab vault key create` also
+On macOS it lives in the login Keychain under `private.cole.voice-lab.vault.<library_id>.key`,
+reached only through `/usr/bin/security` with an absolute path, a sanitized environment and a
+timeout, with the secret on stdin and never in an argument list. On Linux the item of the
+same name is a systemd credential (see "The PC" below). `voice-lab vault key create` also
 renders a **recovery sheet**: a plain-text page naming the format, the library id, the key
 fingerprint, the key as 16 groups of 4 lowercase hex and a checksum. It goes to a new 0600 file
 outside the library and the repository (`--sheet-out`), or to a real terminal
@@ -202,7 +215,8 @@ and that the copy passes `PRAGMA integrity_check`.
 
 A generation is one complete, consistent view of the library at a moment. `push_generation`
 in `library_generations.py` is its only writer, and runs one at a time under
-`provenance/vault/.push.lock` (`LOCK_NB`; a second push is told one is already running).
+the destination's `.push.lock` (`LOCK_NB`; a second push to the same destination is told one
+is already running; pushes to two destinations never wait for each other).
 
 1. **The head must be the one this Mac left.** `state.json` names the head's version and
    target; its manifest must have the recorded digest and generation and chain from the
@@ -232,7 +246,7 @@ in `library_generations.py` is its only writer, and runs one at a time under
    is a fork and stops the push — and then the local manifest copy, `state.json` and the
    `upload-completed` entry (the manifest digest and the new head version) are written.
 
-**The ledger** is `provenance/vault/ledger/<sequence:08d>.json`, write-once canonical JSON,
+**The ledger** is the destination's `ledger/<sequence:08d>.json`, write-once canonical JSON,
 each entry naming the previous entry's digest. Appending re-reads and verifies the whole chain
 — sequence contiguity, digests, started/completed pairing — and refuses to append to a broken
 one. The chain's own last entry is covered by nothing, so `state.json` also records
@@ -316,7 +330,7 @@ breaks real capture-kit installs — so it runs as
 namespace directory fails closed. The same module carries the two subcommands that write that
 configuration on the host: `new-token` prints one fresh `cvlv_` token on standard output, and
 `hash-token` reads one token from standard input and prints its SHA-256, which is what the
-configuration holds. Tokens made on the Mac with `vault token create` need neither.
+configuration holds. Tokens made with `vault token create` need neither.
 
 - **Namespaces.** `<data-root>/namespaces/<ns>/` is the root of both stores; every directory is
   0700 and owned by the server's user. The data root is absolute and symlink-free and is not an
@@ -367,14 +381,15 @@ digest and size, JSON against its contract, a `RefValue` against the ref that wa
 Retries are made only for retryable codes, with exponential backoff and jitter; a `swap` is
 retried too, and a `CONFLICT` after a retry is reconciled by reading the ref, because the lost
 answer may have been the winning one. One `VaultRequestRecord` per attempt is appended to
-`provenance/vault/requests/<UTC date>.jsonl`.
+the destination's `requests/<UTC date>.jsonl`.
 
 **The approval** (`VaultDestinationApproval`) is Cole's standing authorization for one
 destination: the endpoint FQDN, the tailnet suffix, the node's stable Tailscale ID, the tag
 `tag:voice-lab-vault`, the namespace, the library id, the classes it covers, `approved_at`, a
 mandatory `expires_at` at most 366 days later, `approved_by` and a statement. It binds the
 destination to a *node*, not to a name, because names and addresses can be taken over. It is
-written **write-once at 0400** under `provenance/vault/approvals/<approval_id>.json`: an
+written **write-once at 0400** under the destination's `approvals/<approval_id>.json`, and it
+names that destination (a copy kept under another destination's name is refused): an
 approval is never replaced, only superseded by a new one with another id. Authoring it is a
 two-step ceremony — `vault approve --preview <fields>` prints the record and its digest and
 writes nothing; `vault approve --reviewed-approval-sha256 D --i-approve-this-destination
@@ -389,12 +404,13 @@ all other fields and the digest. Omitting it again creates a different approval 
 refused. Supplying the same timestamp to both invocations is also supported. See the
 complete commands in [RUNBOOK.md](RUNBOOK.md#9-library-vault).
 
-**The binding** (`provenance/vault/binding.json`) names the backend (`tailnet-vault` or
-`local-directory`), the endpoint, the namespace, the library id, the classes copied there, the
-Keychain item names derived from the library id, and — for a tailnet vault — the approval's id
-**and the digest of its file**, so an approval edited after the bind is refused when the vault
-opens. It holds no secret and no path to one. Switching destinations is `voice-lab vault bind`
-plus a relaunch; there is no rebuild and no setting in the app.
+**The binding** (the destination's `binding.json`) names its destination, the backend
+(`tailnet-vault` or `local-directory`), the endpoint, the namespace, the library id, the
+classes copied there, the item names derived from the library id and the destination, and —
+for a tailnet vault — the approval's id **and the digest of its file**, so an approval edited
+after the bind is refused when the vault opens. It holds no secret and no path to one.
+Switching the Mac's vault is `voice-lab vault bind` plus a relaunch; there is no rebuild and
+no setting in the app. On the PC a rebind takes effect at the copier's next run.
 
 **Every refusal `open_library_vault` makes**, in the order it makes them — so a binding with
 two faults is reported by the first row that matches, not the worst one:
@@ -404,15 +420,17 @@ two faults is reported by the first row that matches, not the worst one:
 | `provenance/vault` is not a private directory of this user | `STORAGE.INTEGRITY` |
 | `state.json` records copies but the binding is gone | `STORAGE.NOT_BOUND` |
 | the binding is unreadable, invalid, or of an unknown backend | `STORAGE.NOT_BOUND` |
+| the binding's destination is not the one asked for (it was copied there) | `STORAGE.NOT_BOUND` |
 | no library record, or it names another library than the binding | `STORAGE.NOT_BOUND` |
 | the approval file is missing, unreadable, or records another id | `STORAGE.NOT_APPROVED` |
 | the approval's digest is not the one the binding reviewed | `STORAGE.NOT_APPROVED` |
 | the approval is not yet effective, or has expired | `STORAGE.NOT_APPROVED` |
-| the approval names another library, endpoint, namespace or node | `STORAGE.NOT_APPROVED` |
+| the approval names another library, destination, endpoint, namespace or node | `STORAGE.NOT_APPROVED` |
 | the binding copies a class the approval does not cover | `STORAGE.NOT_APPROVED` |
-| the login Keychain has no library key | `STORAGE.NOT_BOUND` |
+| the keychain has no library key (login Keychain; on Linux, the unit's credentials) | `STORAGE.NOT_BOUND` |
+| on Linux, no `$CREDENTIALS_DIRECTORY` (not run under the unit or `systemd-run`) | `STORAGE.PROTOCOL` |
 | a local endpoint this Mac refuses (see below) | `STORAGE.NOT_BOUND` |
-| the login Keychain has no vault token for the scope | `STORAGE.NOT_BOUND` |
+| the keychain has no vault token of this destination for the scope | `STORAGE.NOT_BOUND` |
 | the node answering is not the approved one (at connect time) | `STORAGE.IDENTITY_MISMATCH` |
 | no binding at all (looked for first of all) | not an error: `None`, "Vault · off" |
 
@@ -491,7 +509,7 @@ leaves a record and some files, which both a re-run and `restore-run` handle. `r
 `dataset/**`, `samples/**` and the summary records are never removed. Later generations keep
 naming the removed files: the fine-tune source carries their entries forward from the
 generation the removal record names, through the manifest copies under
-`provenance/vault/manifests/`. (`vault bind --reset-state` moves those copies aside, after
+the destination's `manifests/`. (`vault bind --reset-state` moves those copies aside, after
 which the removed files appear in `vault push`'s waiting list.)
 
 `voice-lab finetune restore-run --run R` checks free space, re-downloads and re-checks each
@@ -510,12 +528,15 @@ removing checkpoints never removes the dataset.
 
 ## The command surface
 
+Every command but `init` and `key` takes `--destination NAME` (default `default`, the one
+destination of a single-vault host; on the PC always name it, as `laptop` or `air`).
+
 ```sh
-voice-lab vault init [--library-id ID]          # record which library this Mac holds (once)
+voice-lab vault init [--library-id ID]          # record which library this host holds (once)
 voice-lab vault key create --sheet-out PATH     # make the library key; write the recovery sheet
 voice-lab vault key import --sheet PATH         # restore the key from its sheet ("-" = stdin)
 voice-lab vault key show                        # the key's fingerprint, never the key
-voice-lab vault token create [--namespace N]    # make both vault tokens; print only their hashes
+voice-lab vault token create [--namespace N]    # make the destination's two tokens; print hashes
 voice-lab vault token import --scope write|read # keep one token read from standard input
 voice-lab vault approve --preview …             # print the approval and its digest; write nothing
 voice-lab vault approve --reviewed-approval-sha256 D --i-approve-this-destination …
@@ -526,6 +547,7 @@ voice-lab vault push [--dry-run] [--full]       # copy the current files as the 
 voice-lab vault verify [--generation N] [--path P …] [--class C …]
 voice-lab vault restore --target DIR (--accept-latest | --generation N --manifest-sha256 D)
                                      [--runtime-root P]
+voice-lab vault drill --target DIR (--accept-latest | --generation N --manifest-sha256 D)
 voice-lab vault audit --access-log FILE [--namespace N]
 voice-lab finetune archive --run R [--remove-local-copy]
 voice-lab finetune restore-run --run R [--runtime-root P]
@@ -549,6 +571,11 @@ voice-lab finetune restore-run --run R [--runtime-root P]
   selection needs the bound-library route and the required local manifest chain;
   a first-push pair alone cannot recover an older generation after the head advances.
 - `verify` exits 1 on any missing or mismatched entry, or an unknown requested path.
+- `drill` is the restore drill (design §4.3) in one command: a `restore` through the bound
+  destination into an empty target, then every restored file read back from disk and
+  re-hashed against the authenticated manifest (size, SHA-256 and mode). It prints the
+  restore's counts, `rehashed_files`, `rehashed_bytes` and each problem, and exits 1 if any
+  file is missing or differs. It never removes the target.
 - `restore` uses the binding on this Mac; on a Mac with no binding, add `--endpoint
   --namespace --node-stable-id --tailnet-suffix` (the library id comes from `library.json`, and
   the key and read token from the Keychain), and `--backend local-directory` for a local vault,
@@ -563,20 +590,68 @@ voice-lab finetune restore-run --run R [--runtime-root P]
 
 ## Under `provenance/vault/`
 
-Mac-only, never copied and never restored:
+Kept by the copying host, never copied and never restored. `library.json` is the library's;
+everything else is one destination's, under `destinations/<destination>/` (D-034):
 
 | Path | Mode | What it is |
 | --- | --- | --- |
-| `library.json` | 0600 | `LibraryIdentity`: which library this Mac holds; written once |
-| `binding.json` | 0600 | `StorageBinding`: where this library copies to and what it copies; replaced atomically |
-| `approvals/<approval_id>.json` | 0400 | `VaultDestinationApproval`; write-once, never replaced |
-| `state.json` | 0600 | `ReplicationState`: the newest generation pushed, its head, destination digest and ledger tail |
-| `state-superseded-<n>.json` | 0600 | a state `bind --reset-state` moved aside |
-| `ledger/<sequence:08d>.json` | 0600 | `LedgerEntry`; write-once, chained |
-| `manifests/<generation:08d>.json` | 0600 | the plaintext manifest of each pushed generation; write-once |
-| `manifests-superseded-<n>/` | 0700 | manifest copies `bind --reset-state` moved aside |
-| `requests/<UTC date>.jsonl` | 0600 | one `VaultRequestRecord` per request attempt; no token |
-| `.push.lock` | 0600 | held by one push at a time; no lab writer takes it |
+| `library.json` | 0600 | `LibraryIdentity`: which library this host holds; written once |
+| `destinations/<d>/` | 0700 | one destination's records; `<d>` is `[a-z][a-z0-9-]`, at most 32 characters |
+| `destinations/<d>/binding.json` | 0600 | `StorageBinding` (v2, names `<d>`): where the destination is and what it copies; replaced atomically |
+| `destinations/<d>/approvals/<approval_id>.json` | 0400 | `VaultDestinationApproval` (v2, names `<d>`); write-once, never replaced |
+| `destinations/<d>/state.json` | 0600 | `ReplicationState`: the newest generation pushed there, its head, vault digest and ledger tail |
+| `destinations/<d>/state-superseded-<n>.json` | 0600 | a state `bind --reset-state` moved aside |
+| `destinations/<d>/ledger/<sequence:08d>.json` | 0600 | `LedgerEntry`; write-once, chained |
+| `destinations/<d>/manifests/<generation:08d>.json` | 0600 | the plaintext manifest of each generation pushed there; write-once |
+| `destinations/<d>/manifests-superseded-<n>/` | 0700 | manifest copies `bind --reset-state` moved aside |
+| `destinations/<d>/requests/<UTC date>.jsonl` | 0600 | one `VaultRequestRecord` per request attempt; no token |
+| `destinations/<d>/.push.lock` | 0600 | held by one push to `<d>` at a time; no lab writer takes it |
+
+Each destination's chain is D-020's, unchanged: its own generation numbers, head, rollback
+and fork checks. Generation 5 of the laptop and generation 5 of the Air are unrelated.
+
+## The PC: destinations, systemd credentials and the copier unit
+
+**Item names.** One library key and, per destination, two tokens (D-034):
+
+| Item | Name |
+| --- | --- |
+| library key | `private.cole.voice-lab.vault.<library_id>.key` |
+| a destination's write token | `private.cole.voice-lab.vault-destination.<destination>.<library_id>.token` |
+| a destination's read token | `private.cole.voice-lab.vault-destination.<destination>.<library_id>.read-token` |
+
+Two vaults never share a token. The destination precedes the library id under a prefix of
+its own because systemd's `ImportCredential=` takes only a trailing `*`.
+
+**The credential keychain.** On Linux, `keychain_client()` is `SystemdCredentialKeychain`
+over `$CREDENTIALS_DIRECTORY`. An item is the file named by its service; it must be a regular
+file with one link, owned by the user or root, unreadable by others and not group-writable,
+and hold one plain secret word (a trailing newline is allowed). No message ever repeats a
+secret. Without `$CREDENTIALS_DIRECTORY`, a command that needs a secret refuses with
+`STORAGE.PROTOCOL` and says how to load the credentials. Adding an item writes a new 0600
+file, never replacing one, and only into a private (0700) directory of the user: that is how
+the operator creates the items once. Under systemd the directory is read-only, so nothing a
+unit runs can add or replace one.
+
+**Creating them, once, on the PC** (the exact commands are in
+[RUNBOOK.md](RUNBOOK.md#the-pc-phase-2-the-laptop-destination)): as `voice-lab`, with
+`CREDENTIALS_DIRECTORY` naming a fresh 0700 staging directory on a tmpfs, `vault init`,
+`vault key create --sheet-out` (the recovery sheet, kept offline with one copy away from the
+house, D-023), and `vault token create --destination laptop --namespace <ns>` (prints only
+the two hashes the laptop vault's configuration needs). Then, as root, each item is encrypted
+with `systemd-creds encrypt --name=<item> <file> /etc/credstore.encrypted/<item>` (bound to
+the PC's host key, and its TPM2 where there is one), and the staging directory is removed.
+The decrypted items exist only in memory, in the staging directory while it lives and in the
+unit's credential directory while it runs.
+
+**The copier unit.** `deploy/host/voice-lab-vault@.service`, instance = destination, runs
+`vault push --destination %i`, then `vault verify --destination %i`, as `voice-lab`. It
+imports `private.cole.voice-lab.vault.*` (the key) and
+`private.cole.voice-lab.vault-destination.%i.*` (its own tokens only). Its network is the
+tailnet: `IPAddressAllow=100.64.0.0/10`, the tailscaled socket for the identity check, and
+nothing else. `voice-lab-vault@.timer` is nightly and generic; `voice-lab-vault@laptop.timer`
+enables the laptop's copy. By hand, the same credentials load with `systemd-run -p
+ImportCredential=…` (RUNBOOK §9).
 
 A scratch directory lives under `tmp/.vault-<hex>/` — a pass makes one for the prompt
 database's backup, a push for its spooled copy — and is removed once consumed. Making one
@@ -585,7 +660,9 @@ first sweeps the scratch directories a crash left behind, which are the ones who
 
 ## How to try it locally
 
-No tailnet, no container and no Keychain ceremony beyond one key: a `local-directory` binding
+No tailnet, no container and no Keychain ceremony beyond one key (on Linux, export
+`CREDENTIALS_DIRECTORY` as a scratch 0700 directory first, so the key has somewhere to go): a
+`local-directory` binding
 on a scratch asset root behaves exactly like a real vault, sealed and ledgered, with the
 approval step skipped because a local directory needs none. Use a throwaway library and a
 directory on another disk — never the real library or anything inside the repository, both of
@@ -624,10 +701,12 @@ verifier, D-020 and the Mac operator procedures. Container verification uses a l
 loopback test namespace only; it starts no Tailscale sidecar and proves no real peer,
 Keychain or deployment behavior.
 
-Step 15 still requires Cole: decide the pending combined app build/install, select the
-host's large-disk path and training opt-in, review the tailnet tag/access policy, choose
-and pin the sidecar image, join with a single-use auth key, reserve the endpoint in Cole's
-inventory, and approve how this unpushed source or image reaches the host. Each remote
+Phase 2 (D-023, D-034) still requires Cole: the laptop vault stack (the `deploy/vault/`
+templates on the laptop), the library key with its recovery sheet and the laptop's tokens
+created on the PC and encrypted as credentials, the laptop destination approved and bound,
+the copier timer enabled, and the first push and restore drill. D-020's Step 15 gates for
+the Mac (the pending combined app build/install, the sidecar image pin, the single-use join
+key, the endpoint in Cole's inventory) apply to the laptop vault in the same way. Each remote
 or tailnet action requires approval. Cole creates the key and tokens privately and stores
 the recovery sheet before the first push, full verify and empty-root restore drill.
 Archiving or removing any real run is a separate per-run choice. No deployment is implied

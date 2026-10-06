@@ -281,7 +281,7 @@ no vault is opened at all and only the record is kept as history.
 
 **The removed files stay in the vault.** The removal record names the generation whose
 manifest holds them, and this Mac keeps a copy of every manifest under
-`provenance/vault/manifests/`. Each later generation carries those entries forward from that
+`provenance/vault/destinations/default/manifests/`. Each later generation carries those entries forward from that
 copy, so the vault's newest generation still names a removed run's checkpoints and a
 whole-library restore brings them back. While the copy is missing (`voice-lab vault bind
 --reset-state` moves the copies aside), `vault push` reports the removed files as waiting

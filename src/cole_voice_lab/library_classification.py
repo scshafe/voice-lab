@@ -268,9 +268,10 @@ _RULES: Final = (
         "provenance/vault{/**}",
         MAC_ONLY,
         owner="storage_binding and library_replication",
-        reason="the binding, approvals, replication state, ledger, manifest copies and request "
-        "log describe this Mac's link to the vault; they are never copied or restored",
-        example="provenance/vault/ledger/00000001.json",
+        reason="the library identity and, per destination, the binding, approvals, replication "
+        "state, ledger, manifest copies and request log describe this host's link to its "
+        "vaults; they are never copied or restored",
+        example="provenance/vault/destinations/laptop/ledger/00000001.json",
     ),
     _rule(
         "replication-scratch",

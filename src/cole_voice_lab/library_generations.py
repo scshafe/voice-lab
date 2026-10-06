@@ -1,7 +1,8 @@
 """Library generations: sealed manifests chained under a head ref, the ledger, verify, restore.
 
 @canonical library_generations -- push_generation is the only writer of a library's vault
-generations: one push at a time (provenance/vault/.push.lock), it refuses a head this Mac did
+generations: one push at a time per destination (provenance/vault/destinations/<destination>/
+.push.lock), it refuses a head this Mac did
 not leave (rollback, fork, undecryptable, digest mismatch, broken chain), turns a replication
 pass into a ManifestPlan, names that plan in an upload-started ledger entry before its first
 new blob, uploads only content the previous generation does not hold, stores the manifest
@@ -68,7 +69,7 @@ import shutil
 import stat
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Final, Literal, NamedTuple, get_args
@@ -103,7 +104,9 @@ from .library_replication import (
 from .models import utc_now
 from .paths import ASSET_DIRECTORIES, AssetLayout, validate_absolute_path, validate_relative_path
 from .storage_contracts import (
+    DEFAULT_VAULT_DESTINATION,
     MAX_MANIFEST_BYTES,
+    VAULT_DESTINATIONS_DIRECTORY,
     VAULT_PROVENANCE_ROOT,
     FileClass,
     LedgerDestination,
@@ -117,11 +120,13 @@ from .storage_contracts import (
     ReplicationState,
     StorageBackend,
     destination_digest,
+    destination_records_path,
     ledger_entry_digest,
     manifest_digest,
     manifest_path_key,
     manifest_payload_digest,
     manifest_plan,
+    validate_destination_name,
 )
 from .storage_ports import (
     BlobRef,
@@ -149,16 +154,22 @@ __all__ = [
     "PushResult",
     "PushRunningError",
     "ReplicationLedger",
+    "RehashReport",
+    "RehashedEntry",
     "RestoreRefusedError",
     "RestoreResult",
     "RestoredFile",
     "RestoredFiles",
     "StoredManifest",
     "VaultRecords",
+    "library_records_directory",
+    "make_library_records_directory",
     "VerifiedEntry",
     "VerifyReport",
     "push_generation",
     "read_stored_manifest",
+    "rehash_restored_library",
+    "recorded_destinations",
     "restore_library",
     "restore_run_files",
     "store_manifest",
@@ -283,10 +294,13 @@ class DestinationContext:
     ``backend``, ``endpoint`` and ``namespace`` come from the binding; a ``tailnet-vault``
     destination also names the approved node (``node_stable_id``, ``tag``) and the digest of
     the approval the upload relies on (``approval_sha256``); a ``local-directory`` destination
-    names none of the three.
+    names none of the three. ``name`` is the destination's short name, which chooses the
+    records a push keeps (``VaultRecords``); it is not part of a ledger entry or of the
+    destination digest, which name the vault itself.
     Raises (on construction): ``pydantic.ValidationError`` when the fields break a
-    ``LedgerDestination`` rule; ``ValueError`` when ``approval_sha256`` is missing for a
-    tailnet destination, present for a local one, or not 64 lowercase hex characters.
+    ``LedgerDestination`` rule; ``StorageNameError`` for a bad ``name``; ``ValueError`` when
+    ``approval_sha256`` is missing for a tailnet destination, present for a local one, or not
+    64 lowercase hex characters.
     """
 
     backend: StorageBackend
@@ -295,8 +309,10 @@ class DestinationContext:
     node_stable_id: str | None = None
     tag: str | None = None
     approval_sha256: str | None = None
+    name: str = DEFAULT_VAULT_DESTINATION
 
     def __post_init__(self) -> None:
+        validate_destination_name(self.name)
         tailnet = self.ledger_destination.backend == "tailnet-vault"
         if (self.approval_sha256 is not None) != tailnet:
             raise ValueError(
@@ -375,42 +391,103 @@ def _parse_record[ModelT: BaseModel](model: type[ModelT], data: bytes, label: st
     return value
 
 
-class VaultRecords:
-    """This Mac's records of its vault copies, under ``provenance/vault`` (never copied).
+def _walk_records(layout: AssetLayout, relative: str, *, create: bool) -> Path:
+    """The directory ``relative`` below the asset root, each step a private directory.
 
-    ``state.json`` (the newest generation this Mac pushed; replaced atomically, 0600),
+    Raises: ``FileNotFoundError`` when a step is missing and ``create`` is false;
+    ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) for a step that is a link, not a
+    directory or not private to this user; ``OSError`` when a step cannot be made.
+    """
+    path = layout.root
+    for part in PurePosixPath(relative).parts:
+        path = path / part
+        try:
+            metadata = os.lstat(path)
+        except FileNotFoundError:
+            if not create:
+                raise
+            os.mkdir(path, 0o700)
+            os.chmod(path, 0o700)
+            fsync_directory(path.parent)
+            metadata = os.lstat(path)
+        try:
+            require_private_metadata(metadata, str(path), directory=True)
+        except SecurityError as error:
+            raise _integrity(f"{path} is not a private directory of this user") from error
+    return path
+
+
+def library_records_directory(layout: AssetLayout) -> Path | None:
+    """``provenance/vault`` itself, where ``library.json`` lives (``None`` when missing).
+
+    Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) when it, or a directory above it
+    below the asset root, is a link, not a directory or not private to this user.
+    """
+    try:
+        return _walk_records(layout, VAULT_RECORDS_ROOT, create=False)
+    except FileNotFoundError:
+        return None
+
+
+def make_library_records_directory(layout: AssetLayout) -> Path:
+    """``provenance/vault`` itself, made at 0700 where missing.
+
+    Raises: as ``library_records_directory``; ``OSError`` when it cannot be made.
+    """
+    return _walk_records(layout, VAULT_RECORDS_ROOT, create=True)
+
+
+def recorded_destinations(layout: AssetLayout) -> tuple[str, ...]:
+    """The destinations this host keeps records for, sorted by name.
+
+    Only directories whose names are destination names count; nothing else is listed.
+    Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) for an unsafe
+    ``provenance/vault/destinations``.
+    """
+    try:
+        directory = _walk_records(
+            layout, f"{VAULT_RECORDS_ROOT}/{VAULT_DESTINATIONS_DIRECTORY}", create=False
+        )
+    except FileNotFoundError:
+        return ()
+    names = []
+    for name in sorted(os.listdir(directory)):
+        try:
+            validate_destination_name(name)
+        except ValueError:
+            continue
+        if stat.S_ISDIR(os.lstat(directory / name).st_mode):
+            names.append(name)
+    return tuple(names)
+
+
+class VaultRecords:
+    """This host's records of its copies to one destination (never copied).
+
+    They live under ``provenance/vault/destinations/<destination>/`` (D-034): ``state.json``
+    (the newest generation this host pushed there; replaced atomically, 0600),
     ``manifests/<generation:08d>.json`` (the plaintext manifest of each pushed generation;
     write-once, 0600), ``ledger/`` (``ReplicationLedger``) and ``.push.lock`` (held by one push
-    at a time; no lab writer takes it). Every directory and file must be a private,
-    non-linked entry of this user: an unsafe one is refused, never repaired.
+    to that destination at a time; no lab writer takes it), beside the destination's binding,
+    approvals and request log (``storage_binding``). Each destination has its own chain, so a
+    destination that is asleep never holds another back. Every directory and file must be a
+    private, non-linked entry of this user: an unsafe one is refused, never repaired.
+    ``destination`` defaults to ``DEFAULT_VAULT_DESTINATION``, the one destination of a host
+    that copies to a single vault (the Mac).
     """
 
-    def __init__(self, layout: AssetLayout) -> None:
+    def __init__(self, layout: AssetLayout, destination: str = DEFAULT_VAULT_DESTINATION) -> None:
         self.layout = layout
-        self.root = layout.root / VAULT_RECORDS_ROOT
+        self.destination = destination
+        self.relative = destination_records_path(destination)
+        self.root = layout.root / self.relative
 
     def _walk(self, name: str | None, *, create: bool) -> Path:
-        relative = VAULT_RECORDS_ROOT if name is None else f"{VAULT_RECORDS_ROOT}/{name}"
-        path = self.layout.root
-        for part in PurePosixPath(relative).parts:
-            path = path / part
-            try:
-                metadata = os.lstat(path)
-            except FileNotFoundError:
-                if not create:
-                    raise
-                os.mkdir(path, 0o700)
-                os.chmod(path, 0o700)
-                fsync_directory(path.parent)
-                metadata = os.lstat(path)
-            try:
-                require_private_metadata(metadata, str(path), directory=True)
-            except SecurityError as error:
-                raise _integrity(f"{path} is not a private directory of this user") from error
-        return path
+        relative = self.relative if name is None else f"{self.relative}/{name}"
+        return _walk_records(self.layout, relative, create=create)
 
     def directory(self, name: str | None = None) -> Path | None:
-        """``provenance/vault`` (or its child ``name``), or ``None`` when it is missing.
+        """The destination's directory (or its child ``name``), or ``None`` when missing.
 
         Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) when it, or a directory above
         it below the asset root, is a link, not a directory or not private to this user.
@@ -421,7 +498,7 @@ class VaultRecords:
             return None
 
     def make_directory(self, name: str | None = None) -> Path:
-        """``provenance/vault`` (or its child ``name``), made at 0700 where missing.
+        """The destination's directory (or its child ``name``), made at 0700 where missing.
 
         Raises: as ``directory``; ``OSError`` when a directory cannot be made.
         """
@@ -480,7 +557,7 @@ class VaultRecords:
 
         An identical copy already kept is left as it is.
         Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) when a different copy of that
-        generation is kept (move ``provenance/vault/manifests`` aside only after resetting
+        generation is kept (move the destination's ``manifests`` aside only after resetting
         the replication state), or as ``directory``; ``OSError`` from the write.
         """
         data = canonical_json_bytes(manifest) + b"\n"
@@ -496,7 +573,7 @@ class VaultRecords:
 
     @contextmanager
     def push_lock(self) -> Iterator[None]:
-        """Hold ``provenance/vault/.push.lock`` without waiting.
+        """Hold the destination's ``.push.lock`` without waiting.
 
         Raises: ``PushRunningError`` when another push (in any process, or another holder
         in this one) holds it; ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) for an unsafe
@@ -516,8 +593,8 @@ class VaultRecords:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise PushRunningError(
-                    f"a push of this library is already running ({path} is held); try again "
-                    "once it ends"
+                    f"a push of this library to {self.destination} is already running ({path} "
+                    "is held); try again once it ends"
                 ) from error
             yield
         finally:
@@ -539,7 +616,7 @@ def _pairing(entry: LedgerEntry) -> tuple[object, ...]:
 
 
 class ReplicationLedger:
-    """The append-only record of every upload, under ``provenance/vault/ledger``.
+    """The append-only record of every upload to one destination, under its ``ledger/``.
 
     Entries are ``<sequence:08d>.json`` files (canonical JSON plus a newline, write-once,
     0600). Reading checks the whole chain: contiguous sequences from 1, each entry chained to
@@ -553,8 +630,8 @@ class ReplicationLedger:
     ``canonical.write_new_private_file`` temporaries may sit beside the entries.
     """
 
-    def __init__(self, layout: AssetLayout) -> None:
-        self.records = VaultRecords(layout)
+    def __init__(self, layout: AssetLayout, destination: str = DEFAULT_VAULT_DESTINATION) -> None:
+        self.records = VaultRecords(layout, destination)
 
     def entries(self) -> tuple[LedgerEntry, ...]:
         """Every entry, in order, once the chain is proven.
@@ -1604,7 +1681,9 @@ def push_generation(
     the head check and the pass, plans the generation and reports what it would send without
     reading a file again, uploading anything or writing any record (an interrupted push is
     then reported as a fork rather than finished, because finishing it would write);
-    ``ledger`` (default: the layout's); ``sources`` (default: ``library_sources()``).
+    ``ledger`` (default: the ledger of ``destination.name`` in the layout); ``sources``
+    (default: ``library_sources()``). Every record read or written is ``destination.name``'s
+    (``VaultRecords``), so pushes to two destinations never share a lock, a state or a chain.
     Returns: the ``PushResult``.
     Raises: ``ValueError`` for no or an unknown class or a bad chunk size, and
     ``StorageNameError`` for a bad library id (before any I/O); ``PushRunningError``;
@@ -1618,10 +1697,10 @@ def push_generation(
     wanted = _require_push_arguments(classes, chunk_bytes)
     validate_library_id(library_id)
     layout = AssetLayout.validate(layout.root)
-    records = VaultRecords(layout)
+    records = VaultRecords(layout, destination.name)
     vault = _Vault(
         records,
-        ReplicationLedger(layout) if ledger is None else ledger,
+        ReplicationLedger(layout, destination.name) if ledger is None else ledger,
         blob_store,
         ref_store,
         library_id,
@@ -1866,6 +1945,7 @@ def verify_generation(
     generation: int | None = None,
     paths: Collection[str] | None = None,
     classes: Collection[FileClass] | None = None,
+    destination: str = DEFAULT_VAULT_DESTINATION,
 ) -> VerifyReport:
     """Download and check every chunk of a generation; the vault's word counts for nothing.
 
@@ -1877,7 +1957,8 @@ def verify_generation(
     Params: ``layout``; ``blob_store``, the library's sealed store; ``ref_store``;
     ``library_id``; ``generation``; ``paths``, manifest paths or directories whose entries to
     check (default: all); ``classes``, the classes to check (default: all). An entry is
-    checked when it matches both filters.
+    checked when it matches both filters. ``destination`` names whose records anchor the
+    head (the vault the stores reach must be that destination's).
     Returns: the ``VerifyReport``.
     Raises: ``StorageNameError`` for a bad library id; ``PushRunningError``;
     ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) when the head check fails;
@@ -1887,8 +1968,10 @@ def verify_generation(
     """
     validate_library_id(library_id)
     layout = AssetLayout.validate(layout.root)
-    records = VaultRecords(layout)
-    vault = _Vault(records, ReplicationLedger(layout), blob_store, ref_store, library_id)
+    records = VaultRecords(layout, destination)
+    vault = _Vault(
+        records, ReplicationLedger(layout, destination), blob_store, ref_store, library_id
+    )
     with records.push_lock():
         resolved = _resolve_head(vault, None)
     if resolved.stored is None:
@@ -1948,8 +2031,9 @@ class RestoreResult:
     ``generation``, ``manifest_sha256`` and ``created_at`` name the restored generation;
     ``class_counts`` counts its entries per class (every class it covers, pins included);
     ``restored_files`` and ``restored_bytes`` count the files written from the vault;
-    ``pins`` says how each pin entry was restored. The recording index is not restored: it
-    rebuilds itself when the library is next opened.
+    ``pins`` says how each pin entry was restored; ``manifest`` is the authenticated manifest
+    the restore wrote from (``rehash_restored_library`` holds the restored files against it).
+    The recording index is not restored: it rebuilds itself when the library is next opened.
     """
 
     target: Path
@@ -1961,6 +2045,7 @@ class RestoreResult:
     restored_files: int
     restored_bytes: int
     pins: tuple[PinOutcome, ...]
+    manifest: LibraryManifest = field(repr=False, compare=False)
 
     @property
     def pin_missing(self) -> tuple[PinOutcome, ...]:
@@ -2440,6 +2525,125 @@ def restore_library(
         restored_files=len(files),
         restored_bytes=sum(entry.size for entry in files),
         pins=outcomes,
+        manifest=manifest,
+    )
+
+
+# -- the restore drill -------------------------------------------------------------------------
+
+
+type RehashState = Literal["match", "mismatch", "missing"]
+
+
+@dataclass(frozen=True, slots=True)
+class RehashedEntry:
+    """One file entry of a restored generation, as ``rehash_restored_library`` found it.
+
+    ``match``: the file at the entry's path is a regular file with the entry's size, SHA-256
+    and mode. ``mismatch``: it is there but one of those differs (``detail`` says which).
+    ``missing``: no regular file is there.
+    """
+
+    path: str
+    file_class: FileClass
+    size: int
+    state: RehashState
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RehashReport:
+    """Every file entry of a restored generation, read back from disk and hashed again."""
+
+    target: Path
+    generation: int
+    manifest_sha256: str
+    entries: tuple[RehashedEntry, ...]
+
+    @property
+    def checked_bytes(self) -> int:
+        """The bytes read back."""
+        return sum(entry.size for entry in self.entries if entry.state != "missing")
+
+    @property
+    def problems(self) -> tuple[RehashedEntry, ...]:
+        """The entries that did not match."""
+        return tuple(entry for entry in self.entries if entry.state != "match")
+
+    @property
+    def ok(self) -> bool:
+        """Every file entry was read back with its size, digest and mode."""
+        return not self.problems
+
+    @property
+    def exit_status(self) -> int:
+        return 0 if self.ok else 1
+
+
+def _rehash_entry(root_directory: int, entry: ManifestEntry) -> RehashedEntry:
+    parts = PurePosixPath(entry.path).parts
+    found: RehashState = "missing"
+    detail: str | None = "no regular file is at this path"
+    with _restore_directory(root_directory, parts[:-1], create=False) as directory:
+        if directory is not None:
+            try:
+                descriptor = os.open(parts[-1], _READ_FLAGS, dir_fd=directory)
+            except OSError:
+                descriptor = -1
+            if descriptor >= 0:
+                with os.fdopen(descriptor, "rb") as stream:
+                    metadata = os.fstat(stream.fileno())
+                    if stat.S_ISREG(metadata.st_mode):
+                        os.set_blocking(stream.fileno(), True)
+                        digest = hashlib.sha256()
+                        size = 0
+                        while piece := stream.read(_READ_BYTES):
+                            digest.update(piece)
+                            size += len(piece)
+                        found, detail = _rehash_outcome(
+                            entry, size, digest.hexdigest(), stat.S_IMODE(metadata.st_mode)
+                        )
+    return RehashedEntry(entry.path, entry.file_class, entry.size, found, detail)
+
+
+def _rehash_outcome(
+    entry: ManifestEntry, size: int, sha256: str, mode: int
+) -> tuple[RehashState, str | None]:
+    if size != entry.size:
+        return "mismatch", f"{size} bytes, not {entry.size}"
+    if sha256 != entry.sha256:
+        return "mismatch", f"SHA-256 {sha256}, not {entry.sha256}"
+    if mode != entry.mode:
+        return "mismatch", f"mode {mode:04o}, not {entry.mode:04o}"
+    return "match", None
+
+
+def rehash_restored_library(target: Path, manifest: LibraryManifest) -> RehashReport:
+    """Read every restored file back from disk and hold it against the manifest.
+
+    This is the restore drill's last step (design §4.3: fetch a generation, decrypt, re-hash
+    every file against the manifest). ``restore_library`` already proves each file's plaintext
+    as it reassembles it from the vault; this reads what landed on disk, after publication,
+    without trusting the restore: each ``file`` entry's path is opened without following a
+    link at any component, and its size, SHA-256 and mode compared. Pin entries are not
+    files the vault holds and are not checked here (``RestoreResult.pins`` reports them).
+    Params: ``target``, the restored asset root; ``manifest``, the generation restored
+    (``RestoreResult.manifest``).
+    Returns: the ``RehashReport``; it reads, and never writes or removes anything.
+    Raises: ``RestoreRefusedError`` (``unsafe-target``) when the target or a directory on an
+    entry's path is a symlink or not a directory; ``OSError`` from a read.
+    """
+    with _restore_root(target) as root_directory:
+        entries = tuple(
+            _rehash_entry(root_directory, entry)
+            for entry in manifest.entries
+            if entry.kind == "file"
+        )
+    return RehashReport(
+        target=target,
+        generation=manifest.generation,
+        manifest_sha256=manifest_digest(manifest),
+        entries=entries,
     )
 
 

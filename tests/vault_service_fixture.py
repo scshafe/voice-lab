@@ -119,10 +119,10 @@ class _MemoryKeychain:
 
 def _run_worker(asset_root: Path, stall_directory: Path, remaining: list[str]) -> int:
     from cole_voice_lab import storage_binding, storage_local
-    from cole_voice_lab.storage_contracts import keychain_item_names
+    from cole_voice_lab.storage_contracts import library_key_item
 
     identity = storage_binding.require_library_identity(AssetLayout.validate(asset_root))
-    item = keychain_item_names(identity.library_id).key
+    item = library_key_item(identity.library_id)
     keychain = _MemoryKeychain({(item, "library-key"): SYNTHETIC_KEY_HEX})
     local = storage_local.LocalBlobStore
 

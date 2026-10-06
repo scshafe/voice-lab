@@ -47,9 +47,13 @@ import cole_voice_lab.cli as cli_module
 from cole_voice_lab.cli import build_parser, main
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.storage_binding import VAULT_TOKEN_ACCOUNTS, binding_path
-from cole_voice_lab.storage_contracts import VAULT_NODE_TAG, keychain_item_names
+from cole_voice_lab.storage_contracts import (
+    DEFAULT_VAULT_DESTINATION,
+    VAULT_NODE_TAG,
+    keychain_item_names,
+)
 
-NAMES = keychain_item_names(LIBRARY_ID)
+NAMES = keychain_item_names(LIBRARY_ID, DEFAULT_VAULT_DESTINATION)
 
 
 @pytest.fixture(autouse=True)
@@ -253,7 +257,7 @@ def test_the_preview_writes_nothing_and_the_approval_needs_its_exact_digest(
     assert preview["approved"] is False
     assert preview["approval"]["tag"] == VAULT_NODE_TAG
     assert preview["approval"]["library_id"] == LIBRARY_ID
-    assert not (root / "provenance/vault/approvals").exists()
+    assert not (root / "provenance/vault/destinations/default/approvals").exists()
 
     assert "--i-approve-this-destination" in cli.refused(
         *fields,
@@ -271,7 +275,7 @@ def test_the_preview_writes_nothing_and_the_approval_needs_its_exact_digest(
     assert "--preview writes nothing" in cli.refused(
         *fields, "--preview", "--i-approve-this-destination", code="VAULT_CLI.USAGE_INVALID"
     )
-    assert not (root / "provenance/vault/approvals").exists()
+    assert not (root / "provenance/vault/destinations/default/approvals").exists()
 
     written = cli.json(
         *fields,
@@ -307,7 +311,7 @@ def test_an_approval_that_stands_too_long_is_refused_before_anything_is_written(
     error = cli.refused("vault", "approve", "--asset-root", str(root), *fields, "--preview")
 
     assert "at most 366 days" in error
-    assert not (root / "provenance/vault/approvals").exists()
+    assert not (root / "provenance/vault/destinations/default/approvals").exists()
 
 
 def test_the_approval_parser_refuses_a_digest_that_is_not_one() -> None:
@@ -328,7 +332,7 @@ def test_binding_a_local_directory_creates_its_store_and_names_the_relaunch(
 
     bound = bind_local(cli, root, elsewhere)
 
-    assert bound["takes_effect"] == "at the next launch of the recording app"
+    assert bound["takes_effect"].startswith("at the next push: the next launch of the recording")
     assert bound["replaced"] is False
     assert bound["binding"]["backend"] == "local-directory"
     assert bound["binding"]["key_item"] == NAMES.key
@@ -513,7 +517,7 @@ def test_rebinding_needs_replace_and_moving_a_copied_library_needs_a_reset(
     assert moved["superseded_state"].endswith("state-superseded-1.json")
     assert moved["superseded_manifests"].endswith("manifests-superseded-1")
     assert Path(moved["superseded_manifests"], "00000001.json").exists()
-    assert not (root / "provenance/vault/manifests").exists()
+    assert not (root / "provenance/vault/destinations/default/manifests").exists()
     assert seams.connections == []
 
 
@@ -542,7 +546,7 @@ def test_a_library_is_copied_verified_restored_and_audited_through_the_commands(
     planned = cli.json("vault", "push", "--asset-root", str(root), "--dry-run")
     assert planned["outcome"] == "dry-run" and planned["generation"] == 0
     assert planned["uploaded_files"] == len(copied)
-    assert not (root / "provenance/vault/ledger").exists()
+    assert not (root / "provenance/vault/destinations/default/ledger").exists()
 
     pushed = cli.json("vault", "push", "--asset-root", str(root))
     assert (pushed["outcome"], pushed["generation"], pushed["head_version"]) == ("pushed", 1, 1)
@@ -656,7 +660,9 @@ def test_a_full_push_re_uploads_everything_after_a_blob_goes_missing(
     bind_local(cli, root, elsewhere)
     cli.json("vault", "push", "--asset-root", str(root))
     # One chunk of one copied file, not the manifest's own blobs: the head still resolves.
-    manifest = json.loads((root / "provenance/vault/manifests/00000001.json").read_bytes())
+    manifest = json.loads(
+        (root / "provenance/vault/destinations/default/manifests/00000001.json").read_bytes()
+    )
     chunk = manifest["entries"][0]["chunks"][0]["sha256"]
     (elsewhere / "blobs" / chunk[:2] / chunk).unlink()
 
@@ -741,7 +747,7 @@ def test_a_vault_that_cannot_be_reached_reads_as_unreachable_not_broken(
     seams.keychain.items.pop((NAMES.key, "library-key"))
     failed = cli.json("vault", "status", "--asset-root", str(root), "--json")
     assert failed["state"] == "failed" and failed["code"] == "STORAGE.NOT_BOUND"
-    assert failed["line"].startswith("Vault · the login Keychain has no library key item")
+    assert failed["line"].startswith("Vault · there is no library key item")
 
 
 # -- the tailnet flow ------------------------------------------------------------------------------
@@ -829,7 +835,9 @@ def test_an_audit_fails_on_a_read_the_mac_never_asked_for(
 
         # Someone else, holding the read token, fetches a blob the Mac never asked for.
         connection = HTTPConnection("127.0.0.1", server.port, timeout=5.0)
-        head = json.loads((root / "provenance/vault/state.json").read_bytes())["head"]["target"]
+        head = json.loads((root / "provenance/vault/destinations/default/state.json").read_bytes())[
+            "head"
+        ]["target"]
         connection.request(
             "GET",
             f"/v1/{NAMESPACE}/blobs/{head['sha256']}?size={head['size']}",
@@ -853,6 +861,8 @@ def test_a_show_before_anything_is_bound_says_so_in_both_shapes(cli: Cli, root: 
 
     assert document == {
         "library_id": None,
+        "destination": DEFAULT_VAULT_DESTINATION,
+        "destinations": [],
         "binding": None,
         "approval": None,
         "secrets": {"key_fingerprint": None, "write_token": False, "read_token": False},
@@ -861,6 +871,7 @@ def test_a_show_before_anything_is_bound_says_so_in_both_shapes(cli: Cli, root: 
     _, text, _ = cli("vault", "show", "--asset-root", str(root))
     assert text.splitlines() == [
         "library: not initialized",
+        "destination: default",
         "binding: none (Vault · off)",
         "approval: none",
         'secrets: {"key_fingerprint": null, "read_token": false, "write_token": false}',
@@ -894,7 +905,7 @@ def test_a_show_reports_the_problems_it_finds_instead_of_refusing(
         "--approval-sha256",
         digest,
     )
-    approval = root / "provenance/vault/approvals" / f"{APPROVAL_ID}.json"
+    approval = root / "provenance/vault/destinations/default/approvals" / f"{APPROVAL_ID}.json"
     approval.chmod(0o600)
     approval.unlink()
 
@@ -911,7 +922,9 @@ def test_a_show_reports_the_problems_it_finds_instead_of_refusing(
         "problem": "the Keychain tool failed",
     }
     _, text, _ = cli("vault", "show", "--asset-root", str(root))
-    assert text.startswith(f"library: {LIBRARY_ID}\nbinding: tailnet-vault {ENDPOINT}\n")
+    assert text.startswith(
+        f"library: {LIBRARY_ID}\ndestination: default\nbinding: tailnet-vault {ENDPOINT}\n"
+    )
 
 
 def test_a_secret_that_is_not_text_is_refused_before_it_is_used(

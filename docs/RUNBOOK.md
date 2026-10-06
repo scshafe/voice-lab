@@ -605,8 +605,9 @@ destination- and payload-specific transfer record.
 
 ## 9. Library vault
 
-D-020 permits an encrypted library copy on Cole's own approved tailnet host.
-The Mac keeps the working database and files. This is separate from hosted GPU
+D-020 permits an encrypted library copy on Cole's own approved tailnet host;
+D-023 reverses it, so the PC holds the working library and copies it to vaults on
+Cole's other machines, one destination each (D-034). This is separate from hosted GPU
 transfer and does not authorize synthesis on the vault. The implementation and
 templates are built; **nothing is deployed and no real library is bound yet**.
 See [LIBRARY_VAULT.md](LIBRARY_VAULT.md) for the data model and
@@ -621,6 +622,129 @@ image transfer, container starts and the first upload. The host data path,
 training opt-in, sidecar image pin, direct versus relayed connectivity, and any
 real run archive/removal remain deployment choices. No command below has been
 run against Cole's real library as part of the synthetic verification.
+
+### The PC (phase 2): the laptop destination
+
+From phase 2 the PC holds the working library and copies it, sealed, to the laptop's vault
+(D-023); the Air follows in phase 3 with the same steps and `--destination air`. Every
+destination has its own binding, approval, state, ledger and token pair (D-034); the
+library key is one per library. On the PC the key and tokens are encrypted systemd
+credentials, not Keychain items ([LIBRARY_VAULT.md](LIBRARY_VAULT.md#the-pc-destinations-systemd-credentials-and-the-copier-unit)).
+The subsections after this one are D-020's procedure for a Mac with one vault (destination
+`default`); their review points (the approval ceremony, the offline anchor, what a restore
+does not bring back) hold here too.
+
+Cole runs these in a private terminal on the PC that no agent or log is capturing: the
+recovery sheet holds the key. Nothing below prints a token. Prerequisites: the release at
+`/opt/voice-lab/current`, the lab at `/data/voice-lab/lab` (`voice-lab assets init`
+done), the laptop vault stack joined as its own tailnet node (`deploy/vault/README.md`), and
+its endpoint, StableID and namespace reviewed with Cole.
+
+```bash
+VL=/opt/voice-lab/current/bin/voice-lab
+LAB=/data/voice-lab/lab
+STAGE=/run/voice-lab-credstage    # a tmpfs: decrypted items never reach a disk
+VAULT_NAMESPACE='<reviewed namespace on the laptop vault>'
+# voice-lab as voice-lab (cd / so its cwd is one it can enter):
+vl() { (cd / && sudo -u voice-lab "$VL" "$@"); }
+# ... with the staging directory as its keychain, to create items once:
+vl_stage() { (cd / && sudo -u voice-lab env CREDENTIALS_DIRECTORY="$STAGE" "$VL" "$@"); }
+# ... with the encrypted credentials loaded, exactly as the copier unit gets them:
+vl_creds() {
+  sudo systemd-run --pipe --wait --collect --quiet \
+    -p User=voice-lab -p Group=voice-lab -p UMask=0077 \
+    -p 'ImportCredential=private.cole.voice-lab.vault.*' \
+    -p 'ImportCredential=private.cole.voice-lab.vault-destination.laptop.*' \
+    "$VL" "$@"
+}
+```
+
+**(a) The library identity, the key with its recovery sheet, and the laptop's tokens**, as
+`voice-lab`, into a private staging directory:
+
+```bash
+sudo install -d -o voice-lab -g voice-lab -m 0700 "$STAGE"
+vl vault init --asset-root "$LAB"            # once; keep the printed library_id with the sheet
+vl_stage vault key create --asset-root "$LAB" --sheet-out "$STAGE/recovery-sheet.txt"
+vl_stage vault key show --asset-root "$LAB"  # the fingerprint, to compare with the sheet
+vl_stage vault token create --asset-root "$LAB" --destination laptop \
+  --namespace "$VAULT_NAMESPACE"             # prints the two SHA-256 hashes and item names
+sudo cat "$STAGE/recovery-sheet.txt"         # into the offline store; one copy away from home
+```
+
+Put the two printed hashes (never a token) into the laptop vault's server configuration
+(`deploy/vault/README.md`). Pause until Cole confirms the recovery sheet is stored offline,
+with one copy kept away from the house (D-023): it is the only way back to the key.
+
+**(b) Encrypt each item as a root-owned credential, then remove the staging directory:**
+
+```bash
+sudo install -d -m 0700 /etc/credstore.encrypted
+for item in $(sudo ls "$STAGE" | grep '^private\.cole\.voice-lab\.vault'); do
+  sudo systemd-creds encrypt --name="$item" "$STAGE/$item" "/etc/credstore.encrypted/$item"
+done
+sudo ls -l /etc/credstore.encrypted          # three items: the key and the laptop's two tokens
+sudo sh -c 'shred -u "$1"/* && rmdir "$1"' sh "$STAGE"
+```
+
+`systemd-creds encrypt` binds each item to the PC's host key (and its TPM2 when there is
+one), so the files are useless anywhere else. If the PC is rebuilt, the key comes back from
+the recovery sheet (`vault key import` into a fresh staging directory, then the same
+encryption) and the tokens are created again with new hashes on the vault.
+
+**(c) Approve and bind the laptop destination** (no credential is read). Fill the reviewed
+values as in "Preview, approve and bind the destination" below:
+
+```bash
+VAULT_ENDPOINT='<laptop vault node>.<tailnet-suffix>'
+VAULT_NODE_ID='<reviewed StableID>'
+VAULT_SUFFIX='<reviewed MagicDNS suffix>'
+VAULT_APPROVAL_ID='laptop-<date>'
+VAULT_EXPIRES_AT='<timezone-aware expiry, at most 366 days on>'
+VAULT_STATEMENT='I approve encrypted storage of this library and the listed classes on the laptop vault.'
+VAULT_CLASSES=(records prompt-database recordings derived-edits)
+approval=(--destination laptop --approval-id "$VAULT_APPROVAL_ID" --endpoint "$VAULT_ENDPOINT"
+  --node-stable-id "$VAULT_NODE_ID" --tailnet-suffix "$VAULT_SUFFIX"
+  --namespace "$VAULT_NAMESPACE" --classes "${VAULT_CLASSES[@]}"
+  --expires-at "$VAULT_EXPIRES_AT" --approved-by Cole --statement "$VAULT_STATEMENT")
+
+vl vault approve --asset-root "$LAB" --preview "${approval[@]}"
+VAULT_APPROVED_AT='<exact approval.approved_at from the preview>'
+VAULT_APPROVAL_SHA256='<exact approval_sha256 from the preview>'
+vl vault approve --asset-root "$LAB" "${approval[@]}" --approved-at "$VAULT_APPROVED_AT" \
+  --reviewed-approval-sha256 "$VAULT_APPROVAL_SHA256" --i-approve-this-destination
+vl vault bind --asset-root "$LAB" --destination laptop --backend tailnet-vault \
+  --endpoint "$VAULT_ENDPOINT" --namespace "$VAULT_NAMESPACE" --classes "${VAULT_CLASSES[@]}" \
+  --approval-id "$VAULT_APPROVAL_ID" --approval-sha256 "$VAULT_APPROVAL_SHA256"
+```
+
+**(d) The first copy, verify and the restore drill, by hand** (Cole approves the first
+upload). Keep the push's `generation` and `manifest_sha256` offline with the sheet:
+
+```bash
+vl_creds vault show --asset-root "$LAB" --destination laptop --json   # key and tokens present
+vl_creds vault push --asset-root "$LAB" --destination laptop --dry-run
+vl_creds vault push --asset-root "$LAB" --destination laptop
+vl_creds vault verify --asset-root "$LAB" --destination laptop
+sudo install -d -o voice-lab -g voice-lab -m 0700 /data/voice-lab/drill
+vl_creds vault drill --asset-root "$LAB" --destination laptop \
+  --target "/data/voice-lab/drill/$(date +%F)" \
+  --generation '<generation from the push>' --manifest-sha256 '<manifest_sha256 from the push>'
+```
+
+The drill restores the generation into the empty target, then reads every file back and
+re-hashes it against the manifest; `"ok": true` with `rehashed_files` equal to
+`restored_files` is a passed drill (phase 2's acceptance: it covers every file of the pilot
+session). The target is a plaintext copy of the library: once the result is recorded, remove
+it (`sudo rm -rf /data/voice-lab/drill/<date>`).
+
+**Then the timer.** Once the runner lane has installed `deploy/host/`
+(`voice-lab-vault@.service` and `.timer`), `sudo systemctl enable --now
+voice-lab-vault@laptop.timer` copies nightly (02:30 plus up to 30 minutes, caught up after a
+night the PC was off); `sudo systemctl start voice-lab-vault@laptop.service` runs one copy
+now, and `journalctl -u voice-lab-vault@laptop.service` shows the push's and the verify's
+JSON. A failed push or verify fails the unit. Stopping the copies is `systemctl disable --now
+voice-lab-vault@laptop.timer`; nothing on the PC or the vault is removed by it.
 
 ### Prepare the Mac and protect the recovery material
 

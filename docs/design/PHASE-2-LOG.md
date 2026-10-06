@@ -19,7 +19,7 @@ stop at the owner's manifest-hash approval.
 | 2 | `/api/v1` (`meta`, `intake`), upload staging under `incoming/`, intake publisher, token checks | voice-lab | done, #6 |
 | 3 | The standing home-host approval (D-021), its ledger, and the HTTPS upload client | voice-lab | done, #6 |
 | 4 | `deploy/stack/`, `deploy/host/`, `dev.toml` `kind = "service"` with `[deploy]` | voice-lab | in review |
-| 5 | Vault on Linux: credential key store, Linux tailscale binary, per-destination bindings | voice-lab | todo |
+| 5 | Vault on Linux: credential key store, Linux tailscale binary, per-destination bindings | voice-lab | in review |
 | 6 | `pc` as an alias of `arch` | scshafe-dev | done: #36, `v0.10.4`, installed for agents |
 | 7 | Tailnet tags and grants, `stacks/voice-lab/host.conf` | infra (unsigned) | done: `ff9144a`, policy applied |
 | 8 | Runner on the PC, entrypoint host-unit install, `voice-lab` user, `/data/voice-lab` subvolumes | infra `host/` (signed) | todo, stops at the hash |
@@ -130,3 +130,32 @@ stop at the owner's manifest-hash approval.
     was accepted (`25163811…6f1584` = the client's); ledger: 5 entries, chained;
   - refused at the client: tampered, undeclared and symlinked takes, as on Linux.
   - A second read-only snapshot of the acceptance lab holds all five accepted sessions.
+- Step 5, the vault side of phase 2 (D-034), built on the step-4 branch and verified with
+  synthetic data only; nothing deployed, no key or token created:
+  - **Per-destination records.** `provenance/vault/destinations/<destination>/` holds each
+    destination's binding, approvals, state, manifest copies, ledger, request log and
+    `.push.lock`; `library.json` stays per library. `StorageBinding` and
+    `VaultDestinationApproval` are `v2` and name their destination. Every vault command
+    but `init` and `key` takes `--destination` (default `default`, which the Mac's
+    recording service, its native fixtures and the existing tests use unchanged).
+  - **Tokens per destination**, named
+    `private.cole.voice-lab.vault-destination.<destination>.<library_id>.(token|read-token)`;
+    the key stays `private.cole.voice-lab.vault.<library_id>.key`. The destination comes
+    first because `ImportCredential=` takes only a trailing `*` (checked on the PC's
+    systemd 262 with a throwaway user unit: `%i` expands in the glob, only that instance's
+    items arrive, and the directory is read-only).
+  - **The Linux keychain**, `SystemdCredentialKeychain` over `$CREDENTIALS_DIRECTORY`,
+    chosen by `keychain_client()` off macOS; it was also run under a real transient user
+    unit (reads the imported item; an add is refused, "Permission denied").
+  - **`deploy/host/voice-lab-vault@.service` and `.timer`**: push then verify as
+    `voice-lab`, tailnet-only network, the intake publisher's hardening;
+    `systemd-analyze verify` clean, `systemd-analyze security` 2.9 ("OK").
+  - **`vault drill`**: restore into an empty target, then re-hash every restored file
+    from disk against the manifest. `tests/test_vault_destinations.py` runs the whole
+    Linux flow (credentials created in a staging directory, made read-only, two
+    destinations on a loopback vault, push, verify, drill, restore by endpoint with the
+    read token).
+  - The owner's steps (RUNBOOK §9 "The PC (phase 2)"): create the library identity, key
+    with recovery sheet and the laptop's tokens; encrypt them; approve and bind `laptop`;
+    the first push, verify and drill by hand; enable `voice-lab-vault@laptop.timer` once
+    the runner lane installs `deploy/host/`.

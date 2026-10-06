@@ -5,10 +5,12 @@ open_catalog_reader or open_catalog_editor, and every vault through open_library
 other module (besides the adapters and the two native fixture seeders) imports an adapter.
 The catalog openers are local-only and read no binding file: the catalog is the SQLite corpus
 store under provenance/corpus. open_library_vault reads provenance/vault (the library
-identity, the binding and, for a tailnet vault, the destination approval), takes the library
-key and the vault token out of the login Keychain, and returns the sealed BlobStore, the
-RefStore, the DestinationContext and the request logger a library copy needs -- or None when
-the library is not bound ("Vault . off"). It refuses, in this order: a replication state with
+identity, and the named destination's binding and, for a tailnet vault, its approval, all
+under provenance/vault/destinations/<destination>/, D-034), takes the library key and that
+destination's vault token out of the keychain (keychain_client: the login Keychain on macOS,
+the unit's systemd credentials on Linux), and returns the sealed BlobStore, the RefStore, the
+DestinationContext and the request logger a library copy needs -- or None when the
+destination is not bound ("Vault . off"). It refuses, in this order: a replication state with
 no binding, an unreadable binding or one of an unknown backend, a local endpoint this Mac will
 not write to and a missing key or token item (STORAGE.NOT_BOUND); a tailnet binding whose
 approval is missing, changed, not yet effective, expired, for another library, endpoint or
@@ -23,8 +25,11 @@ Every adapter is imported inside a function, never at module level: recording_se
 fine-tune job worker import this module to open a catalog, and must not pay for cryptography,
 the vault client or the local store to do it (a test proves the closure). The Keychain, the
 tailnet resolver and the vault connection are module-level seams so a test can replace them;
-open_library_vault itself takes only a layout, so nothing a command or an environment variable
-can say reaches the client's loopback mode.
+open_library_vault itself takes only a layout and a destination name, so nothing a command or
+an environment variable can say reaches the client's loopback mode. Every function that reads
+or writes a destination's records takes ``destination`` (default ``DEFAULT_VAULT_DESTINATION``,
+the one destination of a host that copies to a single vault, as the Mac's recording service
+does); the library identity and the library key are per library.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -60,6 +66,7 @@ from .errors import ContractError, SecurityError
 from .models import utc_now
 from .paths import AssetLayout, validate_absolute_path
 from .storage_contracts import (
+    DEFAULT_VAULT_DESTINATION,
     VAULT_TOKEN_PATTERN,
     FileClass,
     LibraryIdentity,
@@ -68,8 +75,10 @@ from .storage_contracts import (
     VaultAccessRecord,
     VaultDestinationApproval,
     VaultRequestRecord,
+    destination_records_path,
     keychain_item_names,
     new_library_id,
+    validate_destination_name,
     validate_library_id,
 )
 from .storage_ports import BlobStore, RefStore, StorageError, storage_error
@@ -108,6 +117,7 @@ __all__ = [
     "import_vault_token",
     "initialize_library",
     "keychain_client",
+    "vault_destinations",
     "library_identity_path",
     "library_key_fingerprint",
     "library_vault_binding",
@@ -208,20 +218,44 @@ def catalog_store_build_resources() -> tuple[tuple[str, str, int], ...]:
 # -- the Mac's vault records -------------------------------------------------------------------
 
 
-def _records(layout: AssetLayout) -> VaultRecords:
+def _records(layout: AssetLayout, destination: str) -> VaultRecords:
     from .library_generations import VaultRecords
 
-    return VaultRecords(layout)
+    return VaultRecords(layout, destination)
 
 
-def _vault_directory(layout: AssetLayout, name: str | None = None) -> Path | None:
-    """``provenance/vault`` (or a child), or ``None`` when it is missing."""
-    return _records(layout).directory(name)
+def _library_directory(layout: AssetLayout) -> Path | None:
+    """``provenance/vault`` itself (``library.json``), or ``None`` when it is missing."""
+    from .library_generations import library_records_directory
+
+    return library_records_directory(layout)
 
 
-def _make_vault_directory(layout: AssetLayout, name: str | None = None) -> Path:
-    """``provenance/vault`` (or a child), made at 0700 where missing."""
-    return _records(layout).make_directory(name)
+def _make_library_directory(layout: AssetLayout) -> Path:
+    """``provenance/vault`` itself, made at 0700 where missing."""
+    from .library_generations import make_library_records_directory
+
+    return make_library_records_directory(layout)
+
+
+def _vault_directory(layout: AssetLayout, destination: str, name: str | None = None) -> Path | None:
+    """The destination's directory (or a child), or ``None`` when it is missing."""
+    return _records(layout, destination).directory(name)
+
+
+def _make_vault_directory(layout: AssetLayout, destination: str, name: str | None = None) -> Path:
+    """The destination's directory (or a child), made at 0700 where missing."""
+    return _records(layout, destination).make_directory(name)
+
+
+def vault_destinations(layout: AssetLayout) -> tuple[str, ...]:
+    """The destinations this host keeps records for (bound, approved or copied to), by name.
+
+    Raises: ``StorageIntegrityError`` for an unsafe ``provenance/vault`` directory.
+    """
+    from .library_generations import recorded_destinations
+
+    return recorded_destinations(layout)
 
 
 def _not_bound(message: str) -> StorageError:
@@ -259,7 +293,7 @@ def read_library_identity(layout: AssetLayout) -> LibraryIdentity | None:
     Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) for an unsafe or invalid record;
     ``StorageIntegrityError`` for an unsafe ``provenance/vault`` directory.
     """
-    directory = _vault_directory(layout)
+    directory = _library_directory(layout)
     if directory is None:
         return None
     return _read_vault_record(directory / LIBRARY_IDENTITY_NAME, LibraryIdentity, "library record")
@@ -300,44 +334,61 @@ def initialize_library(
             f"this library is already {existing.library_id}; a library identity is never replaced",
         )
     identity = LibraryIdentity(library_id=chosen, created_at=created_at)
-    path = _make_vault_directory(layout) / LIBRARY_IDENTITY_NAME
+    path = _make_library_directory(layout) / LIBRARY_IDENTITY_NAME
     write_new_private_file(path, canonical_json_bytes(identity) + b"\n", mode=0o600)
     return path, identity
 
 
-def binding_path(layout: AssetLayout) -> Path:
-    """Where the vault binding is kept."""
-    return layout.root / "provenance/vault" / BINDING_NAME
+def binding_path(layout: AssetLayout, destination: str = DEFAULT_VAULT_DESTINATION) -> Path:
+    """Where one destination's binding is kept."""
+    return layout.root / destination_records_path(destination) / BINDING_NAME
 
 
-def read_storage_binding(layout: AssetLayout) -> StorageBinding | None:
-    """The library's vault binding, or ``None`` when it is not bound.
+def read_storage_binding(
+    layout: AssetLayout, destination: str = DEFAULT_VAULT_DESTINATION
+) -> StorageBinding | None:
+    """One destination's binding, or ``None`` when that destination is not bound.
 
     Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) for an unsafe, invalid or
-    unknown-backend binding; ``StorageIntegrityError`` for an unsafe directory.
+    unknown-backend binding, or one that names another destination; ``StorageIntegrityError``
+    for an unsafe directory; ``StorageNameError`` for a bad destination name.
     """
-    directory = _vault_directory(layout)
+    directory = _vault_directory(layout, destination)
     if directory is None:
         return None
-    return _read_vault_record(directory / BINDING_NAME, StorageBinding, "vault binding")
+    binding = _read_vault_record(directory / BINDING_NAME, StorageBinding, "vault binding")
+    if binding is not None and binding.destination != destination:
+        raise _not_bound(
+            f"{directory / BINDING_NAME} binds destination {binding.destination}, not "
+            f"{destination}; a binding is never moved between destinations"
+        )
+    return binding
 
 
-def approval_path(layout: AssetLayout, approval_id: str) -> Path:
+def approval_path(
+    layout: AssetLayout, approval_id: str, destination: str = DEFAULT_VAULT_DESTINATION
+) -> Path:
     """Where one destination approval is kept."""
-    return layout.root / "provenance/vault" / APPROVALS_DIRECTORY / f"{approval_id}.json"
+    return (
+        layout.root
+        / destination_records_path(destination)
+        / APPROVALS_DIRECTORY
+        / f"{approval_id}.json"
+    )
 
 
 def read_destination_approval(
-    layout: AssetLayout, approval_id: str
+    layout: AssetLayout, approval_id: str, destination: str = DEFAULT_VAULT_DESTINATION
 ) -> tuple[VaultDestinationApproval, str]:
     """One destination approval and the digest of its file.
 
-    Params: ``layout``; ``approval_id``, which must also be the id inside the record.
+    Params: ``layout``; ``approval_id``, which must also be the id inside the record;
+    ``destination``, whose approvals to read, which the record must also name.
     Returns: the approval and the SHA-256 of its bytes.
     Raises: ``StorageError`` (``STORAGE.NOT_APPROVED``) when there is no such approval, it
-    cannot be read, or it names another approval id.
+    cannot be read, or it names another approval id or destination.
     """
-    path = approval_path(layout, approval_id)
+    path = approval_path(layout, approval_id, destination)
     try:
         approval = read_canonical_model(
             path, VaultDestinationApproval, max_bytes=MAX_BINDING_RECORD_BYTES
@@ -351,20 +402,24 @@ def read_destination_approval(
         raise _not_approved(f"{path} is not a usable destination approval: {error}") from error
     if approval.approval_id != approval_id:
         raise _not_approved(f"{path} records approval {approval.approval_id}, not {approval_id}")
+    if approval.destination != destination:
+        raise _not_approved(
+            f"{path} approves destination {approval.destination}, not {destination}"
+        )
     return approval, digest
 
 
 def write_destination_approval(
     layout: AssetLayout, approval: VaultDestinationApproval
 ) -> tuple[Path, str]:
-    """Write one reviewed approval, read-only and once (0400).
+    """Write one reviewed approval, read-only and once (0400), under its own destination.
 
-    Params: ``layout``; ``approval``.
+    Params: ``layout``; ``approval``, which names the destination it is kept under.
     Returns: the path and the digest of the bytes written.
-    Raises: ``StorageError`` (``STORAGE.CONFLICT``) when an approval of that id exists;
-    ``OSError`` from the write.
+    Raises: ``StorageError`` (``STORAGE.CONFLICT``) when an approval of that id exists for
+    that destination; ``OSError`` from the write.
     """
-    directory = _make_vault_directory(layout, APPROVALS_DIRECTORY)
+    directory = _make_vault_directory(layout, approval.destination, APPROVALS_DIRECTORY)
     path = directory / f"{approval.approval_id}.json"
     data = canonical_json_bytes(approval) + b"\n"
     try:
@@ -383,7 +438,7 @@ def write_destination_approval(
 
 @dataclass(frozen=True, slots=True)
 class VaultRequestLog:
-    """Appends one JSON line per vault request to ``provenance/vault/requests/<date>.jsonl``.
+    """Appends one JSON line per vault request to the destination's ``requests/<date>.jsonl``.
 
     The file is opened append-only without following a link, at 0600, and refused when it is
     not a private regular file of this user. It holds no token: a ``VaultRequestRecord``
@@ -391,12 +446,13 @@ class VaultRequestLog:
     """
 
     layout: AssetLayout
+    destination: str = DEFAULT_VAULT_DESTINATION
 
     def path(self, at: datetime) -> Path:
         """The file a record made at ``at`` is appended to."""
         return (
             self.layout.root
-            / "provenance/vault"
+            / destination_records_path(self.destination)
             / REQUESTS_DIRECTORY
             / f"{at.astimezone(UTC).date().isoformat()}.jsonl"
         )
@@ -407,7 +463,7 @@ class VaultRequestLog:
         Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) when the day's file is not
         a private regular file of this user; ``OSError`` from the write.
         """
-        _make_vault_directory(self.layout, REQUESTS_DIRECTORY)
+        _make_vault_directory(self.layout, self.destination, REQUESTS_DIRECTORY)
         path = self.path(record.time)
         flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
         descriptor = os.open(path, flags, 0o600)
@@ -424,13 +480,15 @@ class VaultRequestLog:
             os.close(descriptor)
 
 
-def read_request_records(layout: AssetLayout) -> tuple[VaultRequestRecord, ...]:
-    """Every request this Mac recorded, oldest day first.
+def read_request_records(
+    layout: AssetLayout, destination: str = DEFAULT_VAULT_DESTINATION
+) -> tuple[VaultRequestRecord, ...]:
+    """Every request this host recorded for one destination, oldest day first.
 
     Raises: ``StorageError`` (``STORAGE.INTEGRITY``) when a line is not a request record;
     ``OSError`` from the read.
     """
-    directory = _vault_directory(layout, REQUESTS_DIRECTORY)
+    directory = _vault_directory(layout, destination, REQUESTS_DIRECTORY)
     if directory is None:
         return ()
     records: list[VaultRequestRecord] = []
@@ -450,14 +508,22 @@ def read_request_records(layout: AssetLayout) -> tuple[VaultRequestRecord, ...]:
 
 
 def keychain_client() -> KeychainClient:
-    """The login Keychain this Mac keeps the library key and the vault tokens in.
+    """Where this host keeps the library key and the vault tokens.
 
-    Returns: a ``SecurityCliKeychain`` over ``/usr/bin/security``.
-    Raises: ``ValueError`` when the tool or keychain path is not usable.
+    Returns: on macOS a ``SecurityCliKeychain`` over ``/usr/bin/security`` and the login
+    Keychain; elsewhere (the PC, D-034) a ``SystemdCredentialKeychain`` over the
+    ``$CREDENTIALS_DIRECTORY`` systemd gives the vault unit (or, once, the operator's private
+    staging directory, to create the items before encrypting them).
+    Raises: ``ValueError`` when the tool or keychain path is not usable; ``StorageError``
+    (``STORAGE.PROTOCOL``) on Linux when no ``$CREDENTIALS_DIRECTORY`` is set.
     """
-    from .storage_sealing import SecurityCliKeychain
+    if sys.platform == "darwin":
+        from .storage_sealing import SecurityCliKeychain
 
-    return SecurityCliKeychain()
+        return SecurityCliKeychain()
+    from .storage_sealing import SystemdCredentialKeychain
+
+    return SystemdCredentialKeychain.from_environment()
 
 
 def tailnet_resolver(tailnet_suffix: str) -> TailnetResolver:
@@ -520,23 +586,24 @@ class LibraryKeyCreation:
 
 @dataclass(frozen=True, slots=True)
 class VaultTokens:
-    """The hashes of two freshly created vault tokens; the tokens stay in the Keychain."""
+    """The hashes of one destination's two fresh vault tokens; the tokens stay in the keychain."""
 
     library_id: str
+    destination: str
     namespace: str
     write_token_sha256: str
     read_token_sha256: str
 
 
-def _token_item(library_id: str, scope: VaultTokenScope) -> tuple[str, str]:
-    names = keychain_item_names(library_id)
+def _token_item(library_id: str, destination: str, scope: VaultTokenScope) -> tuple[str, str]:
+    names = keychain_item_names(library_id, destination)
     return (names.token if scope == "write" else names.read_token, VAULT_TOKEN_ACCOUNTS[scope])
 
 
 def create_library_vault_key(
     layout: AssetLayout, *, clock: Callable[[], datetime] = utc_now
 ) -> LibraryKeyCreation:
-    """Create this library's key in the login Keychain and render its recovery sheet.
+    """Create this library's key in the keychain and render its recovery sheet.
 
     Params: ``layout``; ``clock``, the time the sheet records.
     Returns: the ``LibraryKeyCreation``; write or print its sheet, which is the only copy of
@@ -636,12 +703,16 @@ def _require_token(text: str) -> tuple[str, str]:
     return token, hash_token(token)
 
 
-def create_vault_tokens(layout: AssetLayout, namespace: str) -> VaultTokens:
-    """Create this library's write and read vault tokens in the login Keychain.
+def create_vault_tokens(
+    layout: AssetLayout, namespace: str, *, destination: str = DEFAULT_VAULT_DESTINATION
+) -> VaultTokens:
+    """Create one destination's write and read vault tokens in the keychain.
 
     Neither token is returned, printed or logged: only the SHA-256 the vault server's
-    configuration stores.
-    Params: ``layout``; ``namespace``, the vault namespace the tokens are for.
+    configuration stores. Each destination has its own pair, so two vault servers never
+    hold the hash of one token.
+    Params: ``layout``; ``namespace``, the vault namespace the tokens are for;
+    ``destination``, whose items they become.
     Returns: the ``VaultTokens`` hashes.
     Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) without a library record,
     (``STORAGE.CONFLICT``) when either item exists (neither is created then), or
@@ -653,13 +724,12 @@ def create_vault_tokens(layout: AssetLayout, namespace: str) -> VaultTokens:
     identity = require_library_identity(layout)
     keychain = keychain_client()
     scopes: tuple[VaultTokenScope, ...] = ("write", "read")
-    items = {scope: _token_item(identity.library_id, scope) for scope in scopes}
+    items = {scope: _token_item(identity.library_id, destination, scope) for scope in scopes}
     for scope, (service, account) in items.items():
         if keychain.has_generic_password(service=service, account=account):
             raise storage_error(
                 "STORAGE.CONFLICT",
-                f"the login Keychain already holds the {scope} token item {service}; a vault "
-                "token is never replaced",
+                f"the {scope} token item {service} already exists; a vault token is never replaced",
             )
     # Both tokens are generated and hashed before either is stored: a Keychain that fails on
     # the second add would otherwise strand the first with its hash never returned, and no
@@ -682,23 +752,31 @@ def create_vault_tokens(layout: AssetLayout, namespace: str) -> VaultTokens:
                 error.code,
                 f"{error}; the {kept} token item {items[kept][0]} was stored first and is still "
                 f"there, and its SHA-256 is {hashes[kept]}: either configure the vault with that "
-                f"hash, or delete the item (`security delete-generic-password -s "
-                f"{items[kept][0]}`) and run `voice-lab vault token create` again",
+                f"hash, or delete the item (on macOS `security delete-generic-password -s "
+                f"{items[kept][0]}`, on Linux its file in the credential staging directory) and "
+                "run `voice-lab vault token create` again",
             ) from error
         stored.append(scope)
     return VaultTokens(
         library_id=identity.library_id,
+        destination=destination,
         namespace=namespace,
         write_token_sha256=hashes["write"],
         read_token_sha256=hashes["read"],
     )
 
 
-def import_vault_token(layout: AssetLayout, scope: VaultTokenScope, text: str) -> str:
-    """Keep one vault token this Mac was given in the login Keychain.
+def import_vault_token(
+    layout: AssetLayout,
+    scope: VaultTokenScope,
+    text: str,
+    *,
+    destination: str = DEFAULT_VAULT_DESTINATION,
+) -> str:
+    """Keep one vault token this host was given in the keychain, as a destination's item.
 
     Params: ``layout``; ``scope``, ``write`` or ``read``; ``text``, the token as it arrived
-    on standard input.
+    on standard input; ``destination``, whose token it is.
     Returns: the token's SHA-256, which is what the server's configuration holds.
     Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) without a library record,
     (``STORAGE.PROTOCOL``) when ``text`` is not one vault token, or (``STORAGE.CONFLICT``)
@@ -706,34 +784,36 @@ def import_vault_token(layout: AssetLayout, scope: VaultTokenScope, text: str) -
     """
     identity = require_library_identity(layout)
     token, digest = _require_token(text)
-    service, account = _token_item(identity.library_id, scope)
+    service, account = _token_item(identity.library_id, destination, scope)
     keychain_client().add_generic_password(
         service=service, account=account, label=service, secret=token
     )
     return digest
 
 
-def vault_token_present(layout: AssetLayout, scope: VaultTokenScope) -> bool:
-    """Whether the login Keychain holds this library's token of ``scope``.
+def vault_token_present(
+    layout: AssetLayout, scope: VaultTokenScope, *, destination: str = DEFAULT_VAULT_DESTINATION
+) -> bool:
+    """Whether the keychain holds one destination's token of ``scope``.
 
     Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) without a library record, or
-    (``STORAGE.PROTOCOL``) when the Keychain could not be asked.
+    (``STORAGE.PROTOCOL``) when the keychain could not be asked.
     """
     identity = require_library_identity(layout)
-    service, account = _token_item(identity.library_id, scope)
+    service, account = _token_item(identity.library_id, destination, scope)
     return keychain_client().has_generic_password(service=service, account=account)
 
 
-def _vault_token(library_id: str, scope: VaultTokenScope) -> Callable[[], str]:
-    """A callable that reads the token out of the Keychain for one request, then drops it."""
-    service, account = _token_item(library_id, scope)
+def _vault_token(library_id: str, destination: str, scope: VaultTokenScope) -> Callable[[], str]:
+    """A callable that reads the token out of the keychain for one request, then drops it."""
+    service, account = _token_item(library_id, destination, scope)
 
     def token() -> str:
         secret = keychain_client().find_generic_password(service=service, account=account).strip()
         if _TOKEN.fullmatch(secret) is None:
             raise storage_error(
                 "STORAGE.INTEGRITY",
-                f"the Keychain item {service} does not hold a vault token",
+                f"the item {service} does not hold a vault token",
             )
         return secret
 
@@ -817,11 +897,11 @@ def _superseded(path: Path) -> Path:
     )
 
 
-def _reset_state(layout: AssetLayout) -> tuple[Path | None, Path | None]:
-    """Move ``state.json`` and the kept manifests aside; nothing is ever removed."""
+def _reset_state(layout: AssetLayout, destination: str) -> tuple[Path | None, Path | None]:
+    """Move a destination's ``state.json`` and kept manifests aside; nothing is removed."""
     from .library_generations import MANIFEST_COPIES_DIRECTORY, STATE_NAME
 
-    directory = _make_vault_directory(layout)
+    directory = _make_vault_directory(layout, destination)
     moved: list[Path | None] = []
     for name in (STATE_NAME, MANIFEST_COPIES_DIRECTORY):
         source = directory / name
@@ -845,9 +925,13 @@ def bind_library(
     approval_sha256: str | None = None,
     replace: bool = False,
     reset_state: bool = False,
+    destination: str = DEFAULT_VAULT_DESTINATION,
     clock: Callable[[], datetime] = utc_now,
 ) -> BindResult:
-    """Write ``provenance/vault/binding.json``: where this library copies to, and what.
+    """Write one destination's ``binding.json``: where that destination is, and what it copies.
+
+    The binding is ``provenance/vault/destinations/<destination>/binding.json``; every other
+    destination's binding, state and chain are left alone.
 
     A ``tailnet-vault`` binding needs an existing, effective approval of ``approval_id``
     whose file has ``approval_sha256`` and whose library, endpoint, namespace and classes
@@ -856,8 +940,9 @@ def bind_library(
     only with ``replace``; when a replication state exists and the new binding names another
     destination, ``reset_state`` must also move ``state.json`` and the kept manifests aside.
     Params: ``layout``; ``backend``; ``endpoint``; ``namespace``; ``classes``, the file
-    classes copied there; ``approval_id`` and ``approval_sha256`` (tailnet only);
-    ``replace``; ``reset_state``; ``clock``.
+    classes copied there; ``approval_id`` and ``approval_sha256`` (tailnet only; an approval
+    kept for this ``destination``); ``replace``; ``reset_state``; ``destination``;
+    ``clock``.
     Returns: the ``BindResult``.
     Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) without a library record or for a local
     endpoint this Mac refuses, (``STORAGE.NOT_APPROVED``) for a missing, changed or
@@ -868,15 +953,17 @@ def bind_library(
     """
     from .library_generations import DestinationContext
 
+    validate_destination_name(destination)
     identity = require_library_identity(layout)
-    names = keychain_item_names(identity.library_id)
+    names = keychain_item_names(identity.library_id, destination)
     tailnet = backend == "tailnet-vault"
-    existing = read_storage_binding(layout)
+    existing = read_storage_binding(layout, destination)
     if existing is not None and not replace:
         raise storage_error(
             "STORAGE.CONFLICT",
-            f"{binding_path(layout)} already binds this library to {existing.backend} "
-            f"{existing.endpoint} (namespace {existing.namespace}); pass --replace to change it",
+            f"{binding_path(layout, destination)} already binds destination {destination} to "
+            f"{existing.backend} {existing.endpoint} (namespace {existing.namespace}); pass "
+            "--replace to change it",
         )
     approval: VaultDestinationApproval | None = None
     if tailnet:
@@ -885,8 +972,11 @@ def bind_library(
                 "a tailnet-vault binding needs --approval-id and --approval-sha256 of a "
                 "reviewed destination approval"
             )
-        approval = _approval_for(layout, identity.library_id, approval_id, approval_sha256, clock())
+        approval = _approval_for(
+            layout, identity.library_id, approval_id, approval_sha256, clock(), destination
+        )
     binding = StorageBinding(
+        destination=destination,
         backend=backend,
         endpoint=endpoint,
         namespace=namespace,
@@ -902,31 +992,35 @@ def bind_library(
         prepare_local_destination(layout, endpoint)
     else:
         _require_approval_covers(approval, binding)
-    destination = DestinationContext(
+    context = DestinationContext(
         backend=binding.backend,
         endpoint=binding.endpoint,
         namespace=binding.namespace,
         node_stable_id=None if approval is None else approval.node_stable_id,
         tag=None if approval is None else approval.tag,
         approval_sha256=None if approval is None else binding.approval_sha256,
+        name=destination,
     )
     moved: tuple[Path | None, Path | None] = (None, None)
     # ``state.json`` and the kept manifests are a push's records: reading them, moving them
     # aside and writing the binding beside them happens under the same lock a push holds, so
     # a rebind during a push is a named refusal rather than a reset the push quietly undoes.
-    with _records(layout).push_lock():
-        recorded = _state_destination(layout, identity.library_id)
-        if recorded is not None and recorded != destination.digest:
+    with _records(layout, destination).push_lock():
+        recorded = _state_destination(layout, destination, identity.library_id)
+        if recorded is not None and recorded != context.digest:
             if not reset_state:
                 raise storage_error(
                     "STORAGE.CONFLICT",
-                    "this library has already been copied to another destination; pass "
-                    "--reset-state as well to set that record aside and start at generation 1",
+                    f"destination {destination} of this library has already been copied to "
+                    "another vault; pass --reset-state as well to set that record aside and "
+                    "start at generation 1",
                 )
-            moved = _reset_state(layout)
-        write_canonical_json(_make_vault_directory(layout) / BINDING_NAME, binding, mode=0o600)
+            moved = _reset_state(layout, destination)
+        write_canonical_json(
+            _make_vault_directory(layout, destination) / BINDING_NAME, binding, mode=0o600
+        )
     return BindResult(
-        path=binding_path(layout),
+        path=binding_path(layout, destination),
         binding=binding,
         replaced=existing is not None,
         superseded_state=moved[0],
@@ -934,21 +1028,26 @@ def bind_library(
     )
 
 
-def _state_destination(layout: AssetLayout, library_id: str) -> str | None:
-    """The destination digest ``state.json`` records, or ``None`` when there is no state."""
-    state = _records(layout).read_state(library_id)
+def _state_destination(layout: AssetLayout, destination: str, library_id: str) -> str | None:
+    """The vault digest a destination's ``state.json`` records, or ``None`` without one."""
+    state = _records(layout, destination).read_state(library_id)
     return None if state is None else str(state.destination_sha256)
 
 
 def _approval_for(
-    layout: AssetLayout, library_id: str, approval_id: str, approval_sha256: str, now: datetime
+    layout: AssetLayout,
+    library_id: str,
+    approval_id: str,
+    approval_sha256: str,
+    now: datetime,
+    destination: str,
 ) -> VaultDestinationApproval:
-    """The approval named by id and digest, effective now.
+    """The approval named by id and digest among ``destination``'s, effective now.
 
     Raises: ``StorageError`` (``STORAGE.NOT_APPROVED``) naming what refused it.
     """
-    approval, digest = read_destination_approval(layout, approval_id)
-    path = approval_path(layout, approval_id)
+    approval, digest = read_destination_approval(layout, approval_id, destination)
+    path = approval_path(layout, approval_id, destination)
     if digest != approval_sha256:
         raise _not_approved(
             f"{path} is {digest}, not the reviewed {approval_sha256}; the approval changed"
@@ -965,10 +1064,15 @@ def _approval_for(
 
 
 def _require_approval_covers(approval: VaultDestinationApproval, binding: StorageBinding) -> None:
-    """The approval must cover the binding's endpoint, namespace and every class it copies.
+    """The approval must cover the binding's destination, endpoint, namespace and classes.
 
     Raises: ``StorageError`` (``STORAGE.NOT_APPROVED``) naming the first difference.
     """
+    if approval.destination != binding.destination:
+        raise _not_approved(
+            f"approval {approval.approval_id} approves destination {approval.destination}, not "
+            f"{binding.destination}"
+        )
     if approval.endpoint != binding.endpoint:
         raise _not_approved(
             f"approval {approval.approval_id} approves {approval.endpoint}, not {binding.endpoint}"
@@ -1040,33 +1144,39 @@ class LibraryVault:
         return self.stores.request_log
 
 
-def library_vault_binding(layout: AssetLayout) -> StorageBinding | None:
-    """Where this library copies to, or ``None`` when it is bound to no vault ("Vault · off").
+def library_vault_binding(
+    layout: AssetLayout, destination: str = DEFAULT_VAULT_DESTINATION
+) -> StorageBinding | None:
+    """Where one destination is, or ``None`` when it is bound to no vault ("Vault · off").
 
     These are ``open_library_vault``'s first two checks on their own, and they build no
     adapter, read no Keychain item and reach no vault: the recording service's supervisor
     asks this much to learn whether to copy at all, and its worker process opens the vault.
-    Params: ``layout``, the validated asset root.
+    Params: ``layout``, the validated asset root; ``destination``.
     Returns: the binding, or ``None`` when there is none and nothing was ever copied.
     Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) when a replication state records copies
     of this library without a binding, or the binding is unreadable, invalid or of an unknown
     backend; ``StorageIntegrityError`` for an unsafe ``provenance/vault`` directory.
     """
-    binding = read_storage_binding(layout)
-    if binding is None and _state_present(layout):
+    binding = read_storage_binding(layout, destination)
+    if binding is None and _state_present(layout, destination):
         raise _not_bound(
-            f"{layout.root}/provenance/vault/state.json records copies of this library, but "
-            f"{binding_path(layout)} is gone; bind the vault again with `voice-lab vault "
-            "bind` before the library is copied anywhere"
+            f"{layout.root}/{destination_records_path(destination)}/state.json records copies "
+            f"of this library, but {binding_path(layout, destination)} is gone; bind the vault "
+            "again with `voice-lab vault bind` before the library is copied anywhere"
         )
     return binding
 
 
-def open_library_vault(layout: AssetLayout) -> LibraryVault | None:
-    """Open the library's vault, or report that the library is not bound to one.
+def open_library_vault(
+    layout: AssetLayout, destination: str = DEFAULT_VAULT_DESTINATION
+) -> LibraryVault | None:
+    """Open one destination's vault, or report that it is not bound to one.
 
-    Params: ``layout``, the validated asset root. It takes nothing else: no argument, flag or
-    environment variable chooses a backend, a token or a way of connecting.
+    Params: ``layout``, the validated asset root; ``destination``, whose binding, approval,
+    token and records to use (the Mac's recording service uses the default). Nothing else is
+    taken: no argument, flag or environment variable chooses a backend, a token or a way of
+    connecting.
     Returns: the ``LibraryVault``, or ``None`` when there is no binding ("Vault . off").
     Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) when a replication state exists without
     a binding, the binding is unreadable or of an unknown backend, there is no library
@@ -1080,20 +1190,25 @@ def open_library_vault(layout: AssetLayout) -> LibraryVault | None:
     from .library_generations import DestinationContext
     from .storage_http_client import ExpectedIdentity
 
-    binding = library_vault_binding(layout)
+    binding = library_vault_binding(layout, destination)
     if binding is None:
         return None
     identity = require_library_identity(layout)
     if binding.library_id != identity.library_id:
         raise _not_bound(
-            f"{binding_path(layout)} binds library {binding.library_id}, but this Mac holds "
-            f"{identity.library_id}"
+            f"{binding_path(layout, destination)} binds library {binding.library_id}, but this "
+            f"host holds {identity.library_id}"
         )
     approval: VaultDestinationApproval | None = None
     # A binding has both an approval id and its digest exactly when it is a tailnet vault.
     if binding.approval_id is not None and binding.approval_sha256 is not None:
         approval = _approval_for(
-            layout, binding.library_id, binding.approval_id, binding.approval_sha256, utc_now()
+            layout,
+            binding.library_id,
+            binding.approval_id,
+            binding.approval_sha256,
+            utc_now(),
+            destination,
         )
         _require_approval_covers(approval, binding)
     expected = (
@@ -1112,6 +1227,7 @@ def open_library_vault(layout: AssetLayout) -> LibraryVault | None:
         library_id=binding.library_id,
         identity=expected,
         scope="write",
+        destination=destination,
     )
     return LibraryVault(
         binding=binding,
@@ -1123,15 +1239,16 @@ def open_library_vault(layout: AssetLayout) -> LibraryVault | None:
             node_stable_id=None if approval is None else approval.node_stable_id,
             tag=None if approval is None else approval.tag,
             approval_sha256=None if approval is None else binding.approval_sha256,
+            name=destination,
         ),
         stores=stores,
     )
 
 
-def _state_present(layout: AssetLayout) -> bool:
+def _state_present(layout: AssetLayout, destination: str) -> bool:
     from .library_generations import STATE_NAME
 
-    directory = _vault_directory(layout)
+    directory = _vault_directory(layout, destination)
     return directory is not None and os.path.lexists(directory / STATE_NAME)
 
 
@@ -1155,6 +1272,7 @@ def _open_stores(
     library_id: str,
     identity: ExpectedIdentity | None,
     scope: VaultTokenScope,
+    destination: str,
 ) -> VaultStores:
     """Build the sealed blob store and the ref store of one vault, whatever it runs on.
 
@@ -1162,8 +1280,9 @@ def _open_stores(
     ``local-directory``, whose endpoint must then be a directory this Mac will write to (a DNS
     name is not one, so a tailnet destination with no identity is refused rather than opened
     locally).
-    Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) for a local endpoint this Mac refuses or
-    a missing library key or vault token item; whatever the local store raises.
+    Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) for a local endpoint this host refuses
+    or a missing library key or vault token item (the token is ``destination``'s);
+    whatever the local store raises.
     """
     from .storage_sealing import MAX_SEALED_PLAINTEXT_BYTES, SealedBlobStore, load_library_key
 
@@ -1176,18 +1295,19 @@ def _open_stores(
         inner: BlobStore = LocalBlobStore(path)
         refs: RefStore = LocalRefStore(path)
     else:
-        service, account = _token_item(library_id, scope)
+        service, account = _token_item(library_id, destination, scope)
         if not keychain_client().has_generic_password(service=service, account=account):
             raise _not_bound(
-                f"the login Keychain has no {scope} vault token item {service} for library "
-                f"{library_id}; create the tokens with `voice-lab vault token create`, or "
-                "import the one the vault already knows with `voice-lab vault token import`"
+                f"there is no {scope} vault token item {service} for destination {destination} "
+                f"of library {library_id}; create the tokens with `voice-lab vault token "
+                "create`, or import the one the vault already knows with `voice-lab vault "
+                "token import`"
             )
-        request_log = VaultRequestLog(layout)
+        request_log = VaultRequestLog(layout, destination)
         connection = vault_connection(
             endpoint=endpoint,
             namespace=namespace,
-            token=_vault_token(library_id, scope),
+            token=_vault_token(library_id, destination, scope),
             resolver=tailnet_resolver(identity.tailnet_suffix),
             identity=identity,
             request_log=request_log,
@@ -1212,8 +1332,9 @@ def open_vault_for_restore(
     namespace: str | None = None,
     node_stable_id: str | None = None,
     tailnet_suffix: str | None = None,
+    destination: str = DEFAULT_VAULT_DESTINATION,
 ) -> VaultStores:
-    """Open a vault by hand, to restore a library onto a Mac that has no binding yet.
+    """Open a vault by hand, to restore a library onto a host that has no binding yet.
 
     There is no approval here: this Mac has just been told the library id (``vault init
     --library-id``), the key (``vault key import``) and the read token (``vault token import
@@ -1222,7 +1343,8 @@ def open_vault_for_restore(
     Params: ``layout``; ``backend``; ``endpoint``; ``namespace``, required for
     ``tailnet-vault`` (a ``local-directory`` endpoint is its own namespace and ignores it);
     ``node_stable_id`` and ``tailnet_suffix``, required for ``tailnet-vault`` and refused for
-    ``local-directory``.
+    ``local-directory``; ``destination``, whose read token item to use (and whose request
+    log records the requests).
     Returns: the ``VaultStores``, whose token is the read one.
     Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) without a library record, for a local
     endpoint this Mac refuses, or for a missing key or read-token item;
@@ -1262,6 +1384,7 @@ def open_vault_for_restore(
         library_id=library_id,
         identity=identity,
         scope="read",
+        destination=destination,
     )
 
 

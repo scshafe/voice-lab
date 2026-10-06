@@ -244,7 +244,7 @@ No hosted endpoint, SSH host, cloud account, or GPU provider is contacted by
 these modules or their tests.
 
 The encrypted library vault is a separate storage boundary (D-020), governed by
-`VaultDestinationApproval` under `provenance/vault/approvals/`, never by a
+`VaultDestinationApproval` under `provenance/vault/destinations/<d>/approvals/`, never by a
 `HostedTransferApproval`. It needs no synthesis consent because Cole's host
 receives only ciphertext and runs no model. `hosted_transfer_allowed` remains
 `Literal[False]`. The vault copies existing transfer-approval records as library

@@ -33,6 +33,7 @@ from cole_voice_lab.errors import ContractError, SecurityError, VoiceLabError
 from cole_voice_lab.models import ContractModel, StableId
 from cole_voice_lab.schema import SCHEMA_MODELS, schema_bytes
 from cole_voice_lab.storage_contracts import (
+    DEFAULT_VAULT_DESTINATION,
     EMPTY_SHA256,
     LIBRARY_ID_PATTERN,
     MANIFEST_PAYLOAD_DOMAIN,
@@ -55,13 +56,16 @@ from cole_voice_lab.storage_contracts import (
     VaultNamespaceConfig,
     VaultRequestRecord,
     destination_digest,
+    destination_records_path,
     keychain_item_names,
     ledger_entry_digest,
+    library_key_item,
     manifest_digest,
     manifest_path_key,
     manifest_payload_digest,
     manifest_plan,
     new_library_id,
+    validate_destination_name,
 )
 from cole_voice_lab.storage_ports import (
     MAX_BLOB_BYTES,
@@ -87,7 +91,7 @@ LIBRARY = "cole-self"
 TIME = "2026-09-17T12:00:00Z"
 FIXED = datetime(2026, 9, 17, 12, tzinfo=UTC)
 HELLO_SHA256 = hashlib.sha256(b"hello").hexdigest()
-NAMES = keychain_item_names(LIBRARY)
+NAMES = keychain_item_names(LIBRARY, DEFAULT_VAULT_DESTINATION)
 TAILNET_ENDPOINT = "voice-lab-vault.example-tailnet.ts.net"
 TAILNET_SUFFIX = "example-tailnet.ts.net"
 LOCAL_ENDPOINT = "/Volumes/Library Copy/voice-lab-vault"
@@ -313,7 +317,9 @@ def test_a_library_id_that_cannot_be_one_ref_segment_is_refused(library_id: str)
     with pytest.raises(StorageNameError, match="a library id is a stable id"):
         library_head_ref(library_id)
     with pytest.raises(StorageNameError, match="a library id is a stable id"):
-        keychain_item_names(library_id)
+        keychain_item_names(library_id, DEFAULT_VAULT_DESTINATION)
+    with pytest.raises(StorageNameError, match="a library id is a stable id"):
+        library_key_item(library_id)
 
 
 @pytest.mark.parametrize("library_id", ["cole-self", "0", "a.b_c-d", "a" * 64])
@@ -328,17 +334,55 @@ def test_the_library_id_rule_is_the_stable_id_rule_cut_to_one_ref_segment() -> N
     assert LIBRARY_ID_PATTERN == stable.pattern.replace("{0,126}", "{0,62}")
 
 
-def test_keychain_item_names_are_fixed_by_the_library_id() -> None:
-    names = keychain_item_names(LIBRARY)
+def test_keychain_item_names_are_fixed_by_the_library_id_and_the_destination() -> None:
+    names = keychain_item_names(LIBRARY, "laptop")
 
     assert names == (
         "private.cole.voice-lab.vault.cole-self.key",
-        "private.cole.voice-lab.vault.cole-self.token",
-        "private.cole.voice-lab.vault.cole-self.read-token",
+        "private.cole.voice-lab.vault-destination.laptop.cole-self.token",
+        "private.cole.voice-lab.vault-destination.laptop.cole-self.read-token",
     )
     assert (names.key, names.token, names.read_token) == names
+    assert names.key == library_key_item(LIBRARY)
     assert len(set(names)) == len(names)
-    assert keychain_item_names("cole-other") != names
+    assert keychain_item_names("cole-other", "laptop") != names
+    # Two destinations share the library key and never a token.
+    air = keychain_item_names(LIBRARY, "air")
+    assert air.key == names.key
+    assert {air.token, air.read_token}.isdisjoint({names.token, names.read_token})
+
+
+def test_one_destinations_tokens_are_a_trailing_glob_that_matches_nothing_else() -> None:
+    # systemd's ImportCredential= takes only a trailing "*": the vault unit imports the key
+    # with one glob and its own destination's tokens with another, and neither glob may reach
+    # an item the other destination owns.
+    laptop = keychain_item_names(LIBRARY, "laptop")
+    lap = keychain_item_names(LIBRARY, "lap")
+    key_glob = "private.cole.voice-lab.vault."
+    laptop_glob = "private.cole.voice-lab.vault-destination.laptop."
+    assert laptop.key.startswith(key_glob)
+    assert not any(token.startswith(key_glob) for token in (laptop.token, laptop.read_token))
+    assert all(token.startswith(laptop_glob) for token in (laptop.token, laptop.read_token))
+    assert not any(token.startswith(laptop_glob) for token in (lap.token, lap.read_token))
+
+
+@pytest.mark.parametrize("destination", ["laptop", "air", "a", "usb-1", "a" * 32])
+def test_a_destination_is_a_short_stable_id(destination: str) -> None:
+    assert validate_destination_name(destination) == destination
+    assert destination_records_path(destination) == (f"provenance/vault/destinations/{destination}")
+
+
+@pytest.mark.parametrize(
+    "destination",
+    ["", "Laptop", "1laptop", "lap.top", "lap_top", "laptop-", "lap/top", "a" * 33, ".."],
+)
+def test_a_destination_that_is_not_a_short_stable_id_is_refused(destination: str) -> None:
+    with pytest.raises(StorageNameError, match="a vault destination is"):
+        validate_destination_name(destination)
+    with pytest.raises(StorageNameError, match="a vault destination is"):
+        keychain_item_names(LIBRARY, destination)
+    with pytest.raises(StorageNameError, match="a vault destination is"):
+        destination_records_path(destination)
 
 
 # -- the ports ----------------------------------------------------------------------------
@@ -644,10 +688,11 @@ def library_identity() -> Payload:
 
 def destination_approval() -> Payload:
     return {
-        "schema_version": "cole-voice-lab.vault-destination-approval/v1",
+        "schema_version": "cole-voice-lab.vault-destination-approval/v2",
         "approval_id": "vault-2026-09-17",
         "approved": True,
         "library_id": LIBRARY,
+        "destination": DEFAULT_VAULT_DESTINATION,
         "backend": "tailnet-vault",
         "endpoint": TAILNET_ENDPOINT,
         "tailnet_suffix": TAILNET_SUFFIX,
@@ -664,7 +709,8 @@ def destination_approval() -> Payload:
 
 def tailnet_binding() -> Payload:
     return {
-        "schema_version": "cole-voice-lab.storage-binding/v1",
+        "schema_version": "cole-voice-lab.storage-binding/v2",
+        "destination": DEFAULT_VAULT_DESTINATION,
         "backend": "tailnet-vault",
         "endpoint": TAILNET_ENDPOINT,
         "namespace": "cole",
@@ -881,6 +927,10 @@ def test_the_synthetic_set_covers_every_storage_contract() -> None:
     assert sorted(stamped, key=repr) == sorted(TIMESTAMP_FIELDS, key=repr)
 
 
+# The records D-034 changed (each names its destination); every other storage record is v1.
+SCHEMA_VERSIONS: dict[str, int] = {"storage-binding": 2, "vault-destination-approval": 2}
+
+
 @pytest.mark.parametrize("name", sorted(STORAGE_SCHEMA_MODELS))
 def test_every_storage_contract_round_trips_and_is_registered_once(name: str) -> None:
     model = STORAGE_SCHEMA_MODELS[name]
@@ -895,7 +945,8 @@ def test_every_storage_contract_round_trips_and_is_registered_once(name: str) ->
     assert isinstance(schema["required"], list)
     assert (REPOSITORY / "schemas" / f"{name}.schema.json").read_bytes() == schema_bytes(model)
     version = model.model_fields.get("schema_version")
-    assert version is None or version.default == f"cole-voice-lab.{name}/v1"
+    expected = f"cole-voice-lab.{name}/v{SCHEMA_VERSIONS.get(name, 1)}"
+    assert version is None or version.default == expected
 
 
 def test_storage_contracts_are_neither_swift_wire_nor_corpus_contracts() -> None:
@@ -943,8 +994,17 @@ def test_a_record_of_another_schema_version_is_refused(name: str) -> None:
         model, {key: value for key, value in SYNTHETIC[name]().items() if key != "schema_version"}
     )
     assert canonical_json_bytes(record) == canonical_json_bytes(validate(model, SYNTHETIC[name]()))
-    with pytest.raises(ValidationError, match=f"Input should be 'cole-voice-lab.{name}/v1'"):
-        validate(model, SYNTHETIC[name]() | {"schema_version": f"cole-voice-lab.{name}/v2"})
+    current = SCHEMA_VERSIONS.get(name, 1)
+    with pytest.raises(
+        ValidationError, match=f"Input should be 'cole-voice-lab.{name}/v{current}'"
+    ):
+        validate(
+            model, SYNTHETIC[name]() | {"schema_version": f"cole-voice-lab.{name}/v{current + 1}"}
+        )
+    if current > 1:
+        # D-020's v1 records were never deployed (D-034): one is refused, not migrated.
+        with pytest.raises(ValidationError, match=f"Input should be 'cole-voice-lab.{name}/v"):
+            validate(model, SYNTHETIC[name]() | {"schema_version": f"cole-voice-lab.{name}/v1"})
 
 
 @pytest.mark.parametrize(
@@ -1092,7 +1152,11 @@ ENTRY_CASES: list[tuple[Build, Payload, str]] = [
     (file_entry, {"path": "provenance/x\u2028json"}, "hidden, control or separator"),
     (file_entry, {"path": "provenance/" + "x" * 1014}, "at most 1024 characters"),
     (file_entry, {"path": "provenance/vault"}, "cannot name provenance/vault"),
-    (file_entry, {"path": "provenance/vault/binding.json"}, "cannot name provenance/vault"),
+    (
+        file_entry,
+        {"path": "provenance/vault/destinations/default/binding.json"},
+        "cannot name provenance/vault",
+    ),
     (file_entry, {"path": "Provenance/VAULT/state.json"}, "cannot name provenance/vault"),
     (file_entry, {"file_class": "speech"}, "Input should be 'records', 'prompt-database'"),
     (file_entry, {"kind": "directory"}, "Input should be 'file' or 'pin'"),
@@ -1257,7 +1321,7 @@ MANIFEST_CASES: list[tuple[Build, Payload, str]] = [
     ),
     (
         manifest,
-        {"entries": [entry("provenance/vault/state.json")]},
+        {"entries": [entry("provenance/vault/destinations/default/state.json")]},
         "cannot name provenance/vault",
     ),
     (manifest, {"entries": [file_entry() | {"size": -1}]}, "greater than or equal to 0"),
@@ -1520,6 +1584,7 @@ def test_every_field_but_the_chunks_changes_the_payload_digest(
 def test_a_binding_holds_names_but_no_secret() -> None:
     assert list(StorageBinding.model_fields) == [
         "schema_version",
+        "destination",
         "backend",
         "endpoint",
         "namespace",
@@ -1560,9 +1625,16 @@ def test_a_binding_holds_names_but_no_secret() -> None:
         lambda: (
             tailnet_binding()
             | {
+                "destination": "laptop",
+                "token_item": keychain_item_names(LIBRARY, "laptop").token,
+            }
+        ),
+        lambda: (
+            tailnet_binding()
+            | {
                 "library_id": "a" * 64,
-                "key_item": keychain_item_names("a" * 64).key,
-                "token_item": keychain_item_names("a" * 64).token,
+                "key_item": library_key_item("a" * 64),
+                "token_item": keychain_item_names("a" * 64, DEFAULT_VAULT_DESTINATION).token,
             }
         ),
     ],
@@ -1645,7 +1717,7 @@ def test_a_valid_binding_is_accepted(build: Build) -> None:
         (tailnet_binding, {"approval_sha256": "A" * 64}, PATTERN),
         (
             tailnet_binding,
-            {"key_item": keychain_item_names("cole-other").key},
+            {"key_item": library_key_item("cole-other")},
             "key_item must be private.cole.voice-lab.vault.cole-self.key",
         ),
         (tailnet_binding, {"key_item": NAMES.token}, "key_item must be"),
@@ -1654,6 +1726,19 @@ def test_a_valid_binding_is_accepted(build: Build) -> None:
         (local_binding, {"token_item": NAMES.token}, "null for local-directory"),
         (tailnet_binding, {"token_item": NAMES.key}, "token_item must be"),
         (tailnet_binding, {"token_item": ""}, "at least 1 character"),
+        (tailnet_binding, {"destination": "Laptop"}, PATTERN),
+        (tailnet_binding, {"destination": ""}, PATTERN),
+        # Another destination's token is never this binding's: two vaults never share one.
+        (
+            tailnet_binding,
+            {"destination": "laptop"},
+            "token_item must be .*vault-destination.laptop.cole-self.token",
+        ),
+        (
+            tailnet_binding,
+            {"token_item": keychain_item_names(LIBRARY, "air").token},
+            "token_item must be",
+        ),
     ),
 )
 def test_an_invalid_binding_is_refused(
