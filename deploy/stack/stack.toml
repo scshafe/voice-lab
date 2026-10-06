@@ -1,0 +1,30 @@
+# The stack's data (stack.toml, schema 1). The host's tools/stack reads it as
+# data, never as shell, and rejects an unknown key; `dev check` (DEPLOY-03)
+# checks the same schema. Secrets are named here and never valued: the owner's
+# provisioning places them on the host. Infra's stacks/voice-lab/host.conf
+# grants what this file cannot (the /data/voice-lab binds).
+schema = 1
+
+[deploy]
+image = "voice-lab"                  # the image built from this repository's Dockerfile
+pin = "VOICE_LAB_IMAGE"              # the .env variable stack deploy writes (name:tag)
+pin_style = "ref"
+dockerfile = "Dockerfile"
+containers = ["voice-lab"]           # all must be ready on the candidate
+health = "/healthz"                  # probed through the door at the tailnet name
+ready_attempts = 20
+rollback_services = ["api"]          # never the sidecar (the node identity) or the door
+
+[check]
+required_health_services = ["api"]
+
+[backup]
+tailscale = true                     # the node identity (always, with a sidecar)
+paths = [".env"]                     # the door's client and cookie secrets
+# The recordings and the lab's evidence are not in the stack backup: they are
+# copied, sealed, to the vaults (design §4.3, D-023).
+
+[env]
+required = ["TS_AUTHKEY", "OIDC_ISSUER", "OIDC_HOST", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "ID_TAILNET_IP", "VOICE_LAB_FQDN", "VOICE_LAB_UID", "VOICE_LAB_GID", "VOICE_LAB_SUBJECT"]
+generated = ["OAUTH2_PROXY_COOKIE_SECRET"]
+owner = []

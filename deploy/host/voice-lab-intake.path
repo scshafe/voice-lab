@@ -1,0 +1,11 @@
+# Runs the publisher whenever an entry appears in incoming/: the API's finalize
+# renames a package to incoming/<session>, which this sees.
+[Unit]
+Description=voice-lab intake: watch incoming/ for finalized packages
+
+[Path]
+PathChanged=/data/voice-lab/lab/incoming
+Unit=voice-lab-intake.service
+
+[Install]
+WantedBy=paths.target

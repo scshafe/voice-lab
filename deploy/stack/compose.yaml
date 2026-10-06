@@ -1,0 +1,203 @@
+# voice-lab on the tailnet as its own machine, `voice-lab`, served at
+# https://voice-lab.<tailnet>/ (tailnet only; never Funnel): the /api/v1 intake
+# of the voice platform design, phase 2 (docs/design/VOICE-PLATFORM.md §3, §8).
+# An app-owned stack on the PC (scshafe infra docs/platform/agent-deploy.md): a
+# merge to main deploys it through the runner lane once the PC's runner and the
+# entrypoint's host-unit install are approved (D-032); nobody runs
+# `docker compose` on it by hand after that.
+#
+# Auth: oauth2-proxy -> Pocket ID (https://id.<tailnet>). Browsers sign in with
+# the confidential `voice-lab` client (PKCE); the capture CLI and the desktop
+# app send their own Pocket ID ID token (public client `voice-lab-desktop`) as a
+# bearer, which the proxy verifies (skip-jwt-bearer-tokens + an extra JWT
+# issuer whose audience is that client) and the API verifies AGAIN itself
+# against the provider's keys, issuer, audience, lifetime and a one-subject
+# allow-list (src/cole_voice_lab/api/auth.py). /api/ answers 401, never a login
+# redirect.
+#
+# Topology (exact addresses are authority; the door layout):
+#   door      internal /29   ts-voice-lab .2 -> oauth2-proxy .3:4180 (serve.json)
+#   upstream  internal /29   oauth2-proxy .10 -> api .11:8080
+#   egress    bridge         ts-voice-lab (control, DERP, ACME),
+#                            oauth2-proxy (Pocket ID)
+# The API has no egress at all: it is on `upstream` only, and it needs none
+# (the JWKS file is refreshed by a host unit into state/auth/).
+#
+# Data root /data/voice-lab on the PC (host.conf HOST_BINDS; layout in
+# docs/HOME_HOST_INTAKE.md and infra's host provisioning):
+#   /data/voice-lab/lab  ro   the asset root (raw/, provenance/ for receipts)
+#   …/lab/incoming       rw   upload staging and finalized packages: the only
+#                             place the API writes. It cannot write raw/; the
+#                             network-less intake publisher (a host unit) does.
+#   /data/voice-lab/state rw   API state; state/auth/jwks.json (read)
+# The API runs as the data root's owner, the `voice-lab` system user.
+name: voice-lab
+
+networks:
+  door:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.253.91.0/29
+  upstream:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.253.91.8/29
+  egress:
+    driver: bridge
+
+services:
+  # --- the door ------------------------------------------------------------------
+  ts-voice-lab:
+    # tailscale/tailscale:v1.102.2, multi-arch index digest (the fleet's pin)
+    image: tailscale/tailscale:v1.102.2@sha256:321ce041508c19079b57a28b6666c8d81ab0b08accc0a2585b3ab663d557ac24
+    container_name: ts-voice-lab
+    init: true
+    restart: unless-stopped
+    environment:
+      TS_HOSTNAME: voice-lab
+      TS_USERSPACE: "true"
+      TS_AUTH_ONCE: "true"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      # Consumed on the first join only; state/tailscale is the identity. The
+      # one-off key is minted with tag:voice-lab (and tag:container): D-021's
+      # standing home-host approval binds that tag and this node's stable id.
+      # (The tag comes from the key: infra's V-06 refuses TS_EXTRA_ARGS.)
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+    dns: [1.1.1.1, 1.0.0.1]
+    volumes:
+      - ./state/tailscale:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+    networks:
+      door:
+        ipv4_address: 10.253.91.2
+      egress: {}
+    cap_drop:
+      - AUDIT_WRITE
+      - CHOWN
+      - FOWNER
+      - FSETID
+      - KILL
+      - MKNOD
+      - NET_BIND_SERVICE
+      - NET_RAW
+      - SETFCAP
+      - SETGID
+      - SETPCAP
+      - SETUID
+      - SYS_CHROOT
+    security_opt: [no-new-privileges:true]
+
+  oauth2-proxy:
+    # quay.io/oauth2-proxy/oauth2-proxy:v7.15.3, multi-arch index digest
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:10a1165743a192e1940b4708fb9647027185ce11a681a1c5519b442ff7f1f561
+    container_name: voice-lab-oauth2-proxy
+    restart: unless-stopped
+    user: "65532:65532"
+    depends_on: [ts-voice-lab]
+    command: ["--trusted-proxy-ip=10.253.91.2/32"]
+    environment:
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_PROVIDER_DISPLAY_NAME: "Pocket ID"
+      OAUTH2_PROXY_OIDC_ISSUER_URL: ${OIDC_ISSUER:?set OIDC_ISSUER (https://id.<tailnet>) in .env}
+      OAUTH2_PROXY_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OAUTH2_PROXY_REDIRECT_URL: https://${VOICE_LAB_FQDN:?set VOICE_LAB_FQDN (voice-lab.<tailnet>) in .env}/oauth2/callback
+      OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"   # who may sign in = the clients' allowed groups in Pocket ID
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET}
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_EXPIRE: 12h
+      OAUTH2_PROXY_HTTP_ADDRESS: 10.253.91.3:4180
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_UPSTREAMS: http://10.253.91.11:8080
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      # The capture CLI and the desktop app: a Pocket ID ID token (RS256 JWT,
+      # aud = voice-lab-desktop) as `Authorization: Bearer`.
+      OAUTH2_PROXY_SKIP_JWT_BEARER_TOKENS: "true"
+      OAUTH2_PROXY_EXTRA_JWT_ISSUERS: ${OIDC_ISSUER}=voice-lab-desktop
+      OAUTH2_PROXY_API_ROUTES: "^/api/"
+      # finalize re-hashes a whole package before it answers.
+      OAUTH2_PROXY_UPSTREAM_TIMEOUT: 600s
+      OAUTH2_PROXY_SKIP_AUTH_ROUTES: "GET=^/healthz$$"
+      OAUTH2_PROXY_PASS_USER_HEADERS: "true"
+      # The API reads the bearer itself: pass it through upstream.
+      OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER: "false"
+      OAUTH2_PROXY_PASS_BASIC_AUTH: "false"
+      OAUTH2_PROXY_SKIP_AUTH_STRIP_HEADERS: "true"
+      OAUTH2_PROXY_WHITELIST_DOMAINS: ${OIDC_HOST:?set OIDC_HOST (id.<tailnet>) in .env}
+    dns: [1.1.1.1, 1.0.0.1]
+    extra_hosts:
+      - "${OIDC_HOST}:${ID_TAILNET_IP:?set ID_TAILNET_IP (the id node's tailscale IP) in .env}"
+    networks:
+      door:
+        ipv4_address: 10.253.91.3
+      upstream:
+        ipv4_address: 10.253.91.10
+      egress: {}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  # --- the API (the pinned image) --------------------------------------------------
+  api:
+    image: ${VOICE_LAB_IMAGE}
+    container_name: voice-lab
+    restart: unless-stopped
+    depends_on: [oauth2-proxy]
+    user: "${VOICE_LAB_UID:?set VOICE_LAB_UID (id -u voice-lab) in .env}:${VOICE_LAB_GID:?set VOICE_LAB_GID (id -g voice-lab) in .env}"
+    command:
+      - serve
+      - --asset-root
+      - /data/voice-lab/lab
+      - --jwks
+      - /data/voice-lab/state/auth/jwks.json
+      - --issuer
+      - ${OIDC_ISSUER}
+      - --audience
+      - voice-lab-desktop
+      - --allowed-subject
+      - ${VOICE_LAB_SUBJECT:?set VOICE_LAB_SUBJECT (Cole's Pocket ID user id) in .env}
+      - --server-build
+      - ${VOICE_LAB_IMAGE}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    volumes:
+      - type: bind
+        source: /data/voice-lab/lab
+        target: /data/voice-lab/lab
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /data/voice-lab/lab/incoming
+        target: /data/voice-lab/lab/incoming
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /data/voice-lab/state
+        target: /data/voice-lab/state
+        bind:
+          create_host_path: false
+    networks:
+      upstream:
+        ipv4_address: 10.253.91.11
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 1g
+    stop_grace_period: 30s
+    healthcheck:
+      test: [CMD, python, -I, -B, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

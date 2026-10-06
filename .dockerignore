@@ -1,0 +1,14 @@
+# Only what the API image's build copies: never assets, environments or caches.
+*
+!Dockerfile
+!pyproject.toml
+!setup.py
+!MANIFEST.in
+!README.md
+!LICENSE
+!migrations/
+!requirements/development-build.txt
+!requirements/vault-linux.txt
+!src/
+src/**/__pycache__
+src/*.egg-info

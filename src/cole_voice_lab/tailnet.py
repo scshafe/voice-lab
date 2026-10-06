@@ -156,8 +156,18 @@ def _run_tailscale(argv: Sequence[str], **options: Any) -> subprocess.CompletedP
 
 
 def _tailscale_environment() -> dict[str, str]:
-    """A fixed environment with the passwd database's home, since the service has none."""
-    return {"PATH": TAILSCALE_ENVIRONMENT_PATH, "HOME": pwd.getpwuid(os.getuid()).pw_dir}
+    """A fixed environment with the passwd database's home, since the service has none.
+
+    ``SHLVL`` is set because the macOS app's binary answers as the CLI only when it sees
+    one: without it, it tries to start the GUI and prints "The Tailscale GUI failed to
+    start" instead of JSON (found in phase 2 on Tailscale 1.102.3, from a terminal, an SSH
+    session and a launchd job alike). The Linux client ignores it.
+    """
+    return {
+        "PATH": TAILSCALE_ENVIRONMENT_PATH,
+        "HOME": pwd.getpwuid(os.getuid()).pw_dir,
+        "SHLVL": "1",
+    }
 
 
 @dataclass(frozen=True)

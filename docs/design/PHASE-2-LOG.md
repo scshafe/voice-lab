@@ -16,12 +16,12 @@ stop at the owner's manifest-hash approval.
 | Step | What | Where | State |
 | --- | --- | --- | --- |
 | 1 | Mini constants out of `sync.py` (rsync lane bound to the SSH alias) | voice-lab | done, #5 |
-| 2 | `/api/v1` (`meta`, `intake`), upload staging under `incoming/`, intake publisher, token checks | voice-lab | in review |
-| 3 | The standing home-host approval (D-021), its ledger, and the HTTPS upload client | voice-lab | in review (with 2) |
-| 4 | `deploy/stack/`, `deploy/host/`, `dev.toml` `kind = "service"` with `[deploy]` | voice-lab | todo |
+| 2 | `/api/v1` (`meta`, `intake`), upload staging under `incoming/`, intake publisher, token checks | voice-lab | done, #6 |
+| 3 | The standing home-host approval (D-021), its ledger, and the HTTPS upload client | voice-lab | done, #6 |
+| 4 | `deploy/stack/`, `deploy/host/`, `dev.toml` `kind = "service"` with `[deploy]` | voice-lab | in review |
 | 5 | Vault on Linux: credential key store, Linux tailscale binary, per-destination bindings | voice-lab | todo |
-| 6 | `pc` as an alias of `arch` | scshafe-dev | todo |
-| 7 | Tailnet tags and grants, `stacks/voice-lab*/host.conf`, docs | infra (unsigned) | todo |
+| 6 | `pc` as an alias of `arch` | scshafe-dev | done: #36, `v0.10.4`, installed for agents |
+| 7 | Tailnet tags and grants, `stacks/voice-lab/host.conf` | infra (unsigned) | done: `ff9144a`, policy applied |
 | 8 | Runner on the PC, entrypoint host-unit install, `voice-lab` user, `/data/voice-lab` subvolumes | infra `host/` (signed) | todo, stops at the hash |
 | 9 | Live: Pocket ID clients, PC layout, laptop vault stack, synthetic sessions, restore drill | hosts | todo |
 | 10 | One real session from the Air | owner | open |
@@ -57,3 +57,76 @@ stop at the owner's manifest-hash approval.
   - JSON Schemas are `schemas/api-v1-*.schema.json` (flat, because
     `cole_voice_lab.schema --check` treats a subdirectory as drift), not
     `schemas/api/v1/`.
+- Step 4: `Dockerfile` (the API image: wheel + hash-locked pydantic closure),
+  `deploy/stack/` (sidecar `voice-lab`, the Pocket ID door, the API on `10.253.91.0/29`
+  and `.8/29`), `deploy/host/` (intake path/service/timer, snapshot, JWKS refresh),
+  `dev.toml` `kind = "service"` with the runner-lane `[deploy]` (`host = "pc"`,
+  `verify_on = "pc"`), and `dev adopt --add-missing`'s `deploy.yml` with a uv toolchain
+  block. Found: infra's validator (V-06) refuses `TS_EXTRA_ARGS`, so the node's
+  `tag:voice-lab` comes from its auth key, not `--advertise-tags`.
+- **Deviations, recorded as D-033:** the lab (whole asset root) is the btrfs subvolume
+  that is snapshotted, because the validator's atomic publish needs `incoming/`, `tmp/`
+  and `raw/` on one `st_dev`; raw files stay `0400`/`0500` (read-only, owner-only), not
+  `0444`.
+- Steps 2 and 3 landed: voice-lab #6 (`64d8b72`). scshafe-dev #36 (`d1d6544`, tag
+  `v0.10.4`): `host = "pc"` is the registry key `arch`; installed for the project agents
+  with `scshafe-agent-setup dev v0.10.4`.
+- infra `ff9144a` (main): `tag:voice-lab` and `tag:voice-lab-vault` (owner
+  `autogroup:admin`), grants `autogroup:member → tag:voice-lab:443` and
+  `fleet-watch-arch → tag:voice-lab-vault:443`, with policy tests; applied to the live
+  policy as only these additions (the pending `fleet-watch-laptop` rename, which lands at
+  the laptop's reinstall, was left unapplied). The allow-all grant still applies until the
+  fleet narrows it. `stacks/voice-lab/host.conf` validated in deploy mode.
+- Pocket ID: public client `voice-lab-desktop` (PKCE, `http://127.0.0.1:*/callback`,
+  group `cole_default`, tokens 60 min / refresh 30 days), as `voice-journey-capture`.
+  The confidential door client `voice-lab` is made when the production stack starts (its
+  secret is streamed straight into the stack's `.env`).
+- **Development deployment on the PC (not the final one).** Until infra's host tree is
+  approved (D-032), by hand and recorded here:
+  - `scshafe-voice-lab-provision` (draft, to be signed in infra) made the `voice-lab`
+    user (uid 951, gid 950), the subvolumes `/data/voice-lab` and `/data/voice-lab/lab`,
+    and an **acceptance** copy `/data/voice-lab-acceptance` that only synthetic sessions
+    ever enter (so the real raw store holds no test audio);
+  - a dev release venv `/opt/voice-lab/releases/<wheel-sha256>` (uv-managed Python 3.12
+    in `/opt/voice-lab/python`), `current` → it;
+  - the stack in `/srv/voice-lab-dev` (cole, 0700): `deploy/stack/` plus
+    `compose.acceptance.yaml`, which serves the acceptance root, trusts only an
+    acceptance test issuer (a throwaway key in the session scratchpad; subject
+    `synthetic-acceptance`) and bypasses the door (the door admits only Pocket ID
+    tokens). Node `voice-lab`, StableID `nMDiVAZnG111CNTRL`, tags `tag:voice-lab`,
+    `tag:container`, from a one-off 1 h key (id `kdBtpxm4Vd11CNTRL`), blanked after the
+    join. **The runner lane's takeover must keep this node identity** (copy
+    `state/tailscale` into `/srv/stacks/voice-lab/state/tailscale` after stopping the dev
+    stack), or every approval that binds the StableID must be renewed;
+  - the acceptance publisher as a transient path unit
+    (`systemd-run --unit voice-lab-acceptance-intake --path-property=PathChanged=…`,
+    `User=voice-lab`, `PrivateNetwork=yes`, `ProtectSystem=strict`).
+- **Acceptance, Linux (the PC as the capturing host, over the tailnet, through the
+  node's TLS name and the identity check):**
+  - `linux-synthetic-001` (4 takes) accepted; receipt manifest
+    `d6f985f5…f12b7b8` = the client's; raw files `-r--------` in `dr-x------` dirs owned
+    by `voice-lab`; a read-only snapshot of the acceptance lab taken after it
+    (`touch` in it: "Read-only file system");
+  - resume: `linux-synthetic-003` (20 files, 220 MB) killed (`SIGKILL`) with 38.9 MB
+    held; the rerun resumed and was accepted (`1e5e2b0c…ede0ecb` = the client's);
+  - refused at the client before any byte: a tampered take ("recording hash or byte
+    count was tampered"), an undeclared file ("undeclared=['audio/extra.wav']"), a
+    symlinked take ("package member is not a regular file"); nothing in the ledger;
+  - refused by the server: bytes that do not hash to their declaration (422
+    `checksum_mismatch`, discarded), an undeclared path (404 `file_not_declared`),
+    finalize while incomplete (409), a forged token (401);
+  - refused by the publisher, moved to `incoming/.refused/` with a record: a package with
+    an extra file, a tampered take, and a symlink in place of the package directory.
+- **Acceptance, macOS (the Air as the capturing host, a scratch client root and runtime in
+  `~/.local/share/voice-lab-phase2/` on the Air, never its asset folder):**
+  - found and fixed: the macOS Tailscale app binary answers as the CLI only when `SHLVL`
+    is set; the resolver's fixed environment (`PATH`, `HOME`) made it try to start the GUI
+    ("The Tailscale GUI failed to start") from a terminal, SSH or launchd alike. D-020's
+    vault client had the same latent fault (never deployed). `tailnet._tailscale_environment`
+    now sets `SHLVL=1`;
+  - `macos-synthetic-001` accepted (receipt `2b8fb879…a66c43` = the client's); raw files
+    `-r--------` owned by `voice-lab`;
+  - resume: `macos-synthetic-002` (12 takes × 60 s) killed with 8.4 MB held; the rerun
+    was accepted (`25163811…6f1584` = the client's); ledger: 5 entries, chained;
+  - refused at the client: tampered, undeclared and symlinked takes, as on Linux.
+  - A second read-only snapshot of the acceptance lab holds all five accepted sessions.

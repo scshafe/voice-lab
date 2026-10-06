@@ -1,0 +1,29 @@
+# Refreshes the identity provider's signing keys into the API's state directory:
+# the API container has no route to Pocket ID (design §3.5). The issuer comes
+# from /etc/voice-lab/host.env (VOICE_LAB_OIDC_ISSUER=https://id.<tailnet>).
+[Unit]
+Description=voice-lab: refresh the identity provider's signing keys
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=voice-lab
+Group=voice-lab
+UMask=0022
+EnvironmentFile=/etc/voice-lab/host.env
+ExecStart=/opt/voice-lab/current/bin/voice-lab home-host fetch-jwks --issuer ${VOICE_LAB_OIDC_ISSUER} --output /data/voice-lab/state/auth/jwks.json
+ProtectSystem=strict
+ReadWritePaths=/data/voice-lab/state/auth
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native

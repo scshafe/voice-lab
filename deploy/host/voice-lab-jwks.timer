@@ -1,0 +1,10 @@
+[Unit]
+Description=voice-lab: refresh the identity provider's signing keys hourly
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

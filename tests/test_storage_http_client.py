@@ -1601,6 +1601,7 @@ def test_the_resolver_reads_the_node_out_of_two_recorded_answers() -> None:
         assert options["env"] == {
             "PATH": "/usr/bin:/bin",
             "HOME": tailnet._tailscale_environment()["HOME"],
+            "SHLVL": "1",
         }
         assert options["timeout"] == 10.0
         assert options["check"] is False
@@ -1775,7 +1776,8 @@ def test_the_tailscale_binary_is_the_platform_client() -> None:
 def test_the_tailscale_environment_carries_a_home_and_a_fixed_path() -> None:
     environment = tailnet._tailscale_environment()
 
-    assert set(environment) == {"PATH", "HOME"}
+    assert set(environment) == {"PATH", "HOME", "SHLVL"}
+    assert environment["SHLVL"] == "1"
     assert environment["PATH"] == "/usr/bin:/bin"
     assert Path(environment["HOME"]).is_absolute()
 
