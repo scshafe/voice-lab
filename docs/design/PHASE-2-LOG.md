@@ -18,12 +18,12 @@ stop at the owner's manifest-hash approval.
 | 1 | Mini constants out of `sync.py` (rsync lane bound to the SSH alias) | voice-lab | done, #5 |
 | 2 | `/api/v1` (`meta`, `intake`), upload staging under `incoming/`, intake publisher, token checks | voice-lab | done, #6 |
 | 3 | The standing home-host approval (D-021), its ledger, and the HTTPS upload client | voice-lab | done, #6 |
-| 4 | `deploy/stack/`, `deploy/host/`, `dev.toml` `kind = "service"` with `[deploy]` | voice-lab | in review |
-| 5 | Vault on Linux: credential key store, Linux tailscale binary, per-destination bindings | voice-lab | in review |
+| 4 | `deploy/stack/`, `deploy/host/`, `dev.toml` `kind = "service"` with `[deploy]` | voice-lab | done, #7 (#8: bearer token) |
+| 5 | Vault on Linux: credential key store, Linux tailscale binary, per-destination bindings | voice-lab | done, #9 (#10: PC lock, classification) |
 | 6 | `pc` as an alias of `arch` | scshafe-dev | done: #36, `v0.10.4`, installed for agents |
 | 7 | Tailnet tags and grants, `stacks/voice-lab/host.conf` | infra (unsigned) | done: `ff9144a`, policy applied |
-| 8 | Runner on the PC, entrypoint host-unit install, `voice-lab` user, `/data/voice-lab` subvolumes | infra `host/` (signed) | todo, stops at the hash |
-| 9 | Live: Pocket ID clients, PC layout, laptop vault stack, synthetic sessions, restore drill | hosts | todo |
+| 8 | Runner on the PC, entrypoint host-unit install, `voice-lab` user, `/data/voice-lab` subvolumes | infra `host/` (signed) | branch `voice-lab-pc-host`, **awaiting the owner's approval of `M0.sha256` `a9fd456d…d614`** |
+| 9 | Live: Pocket ID clients, PC layout, laptop vault stack, synthetic sessions, restore drill | hosts | done as a development deployment (below) |
 | 10 | One real session from the Air | owner | open |
 
 ## Entries
@@ -165,3 +165,125 @@ stop at the owner's manifest-hash approval.
     with recovery sheet and the laptop's tokens; encrypt them; approve and bind `laptop`;
     the first push, verify and drill by hand; enable `voice-lab-vault-laptop.timer` once
     the runner lane installs `deploy/host/`.
+- Step 5 landed: voice-lab #9 (`ae9c82f`, D-034). Found while deploying it: the PC's
+  release needs the vault extra's encryption closure, which had only a macOS lock
+  (`ModuleNotFoundError: cryptography`); #10 adds `requirements/home-host-linux.txt`
+  (pydantic + cryptography closures, CPython 3.12, Linux x86_64; every digest matched
+  PyPI) for the home host's release, and classification rules for `provenance/intake/**`
+  and `provenance/home-host/**` (both stay local, like `provenance/vault`), without which a
+  push refuses the PC's lab ("no classification rule covers provenance/intake/…").
+  infra's branch `voice-lab-pc-host` now names the new lock in `stacks/voice-lab/host.conf`
+  (`b5a512c`; the signed manifest is unchanged).
+- **infra host tree (step 8)**: branch `voice-lab-pc-host`, head `d2a4d01`, re-signed;
+  `platform/M0.sha256` = `a9fd456da44ae5ccfc4aaecdf3acb8029e92117de218dd3d731c4e82d961d614`
+  (previous `9c5ba124…afe2a`). It adds `scshafe-host-release` (sealed wheel releases and
+  validated app units: user `voice-lab`, no root-escalating exec prefixes, binaries only
+  under `/opt/voice-lab/current/`, no templates yet), `scshafe-deploy` reading
+  `HOST_UNITS` from host.conf, `scshafe-runner-install --platform arch` (prod runner
+  `pc-voice-lab-prod`, verify runner `ci-voice-lab` with uv), the Arch runner egress table
+  and sudoers line, `scshafe-voice-lab-provision` and `scshafe-voice-lab-snapshot` with its
+  `.path` (on `lab/raw`) and nightly `.timer`. **Not installed; it waits for the owner's
+  approval of that hash.** Install steps: infra `docs/platform/agent-deploy.md`, "The PC as
+  a second production host".
+- **The laptop vault (development deployment, by hand per `deploy/vault/README.md`):**
+  `/srv/voice-lab-vault/` on the laptop's `/srv` (xfs, 76 GB free): the vault image built
+  on the PC from `ae9c82f`'s wheel (`sha256:e794a439…e01e`, loaded with `docker save |
+  docker load`), the hashed server config (namespaces `pc-lab` 50 GiB, `acceptance`
+  2 GiB), node `voice-lab-vault`, StableID `nyFbE4WXss11CNTRL`, `tag:voice-lab-vault`
+  only, from a single-use 1 h key (id `kFEa7bzXv821CNTRL`); the key file was shredded and
+  the sidecar recreated without the join override. Nothing else on the laptop changed.
+- **The PC's library (production, `/data/voice-lab/lab`):** library
+  `lib-20261006-df017dd15db9`, key fingerprint `a4970dc9408adf64`; the key and the
+  laptop's tokens created into a `/run` staging directory as `voice-lab`, encrypted with
+  `systemd-creds` into `/etc/credstore.encrypted/`, the staging directory shredded. The
+  **recovery sheet** is at `/root/voice-lab-library-recovery-sheet-lib-20261006-df017dd15db9.txt`
+  (root, 0400): the owner stores it offline (one copy away from the house) and then
+  shreds that file. `systemd-creds` warned that the host's credential secret is not on
+  encrypted media (the PC's root disk is not encrypted): the credentials are as safe as
+  root on the PC. Destination `laptop` approved (until 2027-10-06) and bound (classes
+  records, prompt-database, recordings, derived-edits; not training). Generation 1
+  pushed and verified (empty library: 0 files). `voice-lab-vault-laptop.service` and
+  `.timer` installed by hand (development) and run once successfully with
+  `ImportCredential=`; nightly at 02:30.
+- **Restore drill (synthetic, the acceptance library `lib-20261006-df005eb8831d`,
+  namespace `acceptance`):** generation 1 (68 files, 373 MB, all five synthetic sessions)
+  pushed in 15 s, verified (72 present, 0 missing, 0 mismatch), then `vault drill` restored
+  it into an empty target and re-hashed every file from disk: 72/72, 375,031,930 bytes,
+  `ok: true`; each restored `raw/<manifest>/` also re-validated as an accepted package
+  (receipt and intake QC). The drill copy was removed and the acceptance credentials
+  (plaintext, `/run`) shredded. The drill of the **real** session waits for that session.
+
+## Open items and the owner's steps
+
+1. **Approve the infra host tree** (hash above), then install it with the steps in infra's
+   `docs/platform/agent-deploy.md`. The branch's `stacks/voice-lab/host.conf` names
+   `requirements/home-host-linux.txt` (`b5a512c`, outside the signed tree). The
+   takeover must keep the node identity: copy `/srv/voice-lab-dev/state/tailscale` into
+   `/srv/stacks/voice-lab/state/tailscale` (the Air's approval binds StableID
+   `nMDiVAZnG111CNTRL`). Then the deploy and health jobs can be green (acceptance item).
+   After that, remove the development pieces: `/srv/voice-lab-dev`, the hand-installed
+   units in `/etc/systemd/system/voice-lab-*` (the entrypoint installs its own), the
+   transient `voice-lab-acceptance-intake.path`, `/usr/local/sbin/scshafe-voice-lab-provision-dev`,
+   and the hand-made releases in `/opt/voice-lab/releases/`.
+2. **Store the recovery sheet** offline, one copy away from the house; then
+   `sudo shred -u /root/voice-lab-library-recovery-sheet-lib-20261006-df017dd15db9.txt`.
+
+### Owner: the one real pilot session from the Air (acceptance item, open)
+
+Prepared: a phase-2 client runtime on the Air at `~/.local/share/voice-lab-phase2/runtime`
+(voice-lab from `main`, pydantic from PyPI; nothing else on the Air changed; its scratch
+`acceptance-client/` and `macos-synthetic-*` hold synthetic data only and may be deleted).
+The PC serves `https://voice-lab.colobus-stargazer.ts.net` (node StableID
+`nMDiVAZnG111CNTRL`) in production mode: Pocket ID door, the real asset root
+`/data/voice-lab/lab`, the intake publisher unit.
+
+In a Terminal on the Air (not over SSH), with `ASSET_ROOT` the private asset root that holds
+the session (the one the recording app or `capture console` writes to):
+
+1. Record a short pilot session as usual and finalize it, so that a package with `READY`
+   exists, e.g. `$ASSET_ROOT/tmp/capture-<session-id>` (the app's package step, or
+   `capture console` → Finalize). Check it: `VL=~/.local/share/voice-lab-phase2/runtime/bin/voice-lab;
+   $VL intake validate "$ASSET_ROOT/tmp/capture-<session-id>"`.
+2. Approve the home host once (D-021). Run with `--preview`, read the record (endpoint,
+   StableID, tag, classes, expiry), then run the same command without `--preview` plus
+   `--reviewed-approval-sha256 <printed approval_sha256> --i-approve-this-destination`.
+   Confirm the StableID yourself first: `tailscale status --json | grep -A3 '"voice-lab.colobus'`
+   or in the admin console (machine `voice-lab`, tags `tag:voice-lab`, `tag:container`).
+
+   ```sh
+   $VL home-host approve --asset-root "$ASSET_ROOT" --approval-id pc-home-host-2026 \
+     --endpoint voice-lab.colobus-stargazer.ts.net --tailnet-suffix colobus-stargazer.ts.net \
+     --node-stable-id nMDiVAZnG111CNTRL --classes capture \
+     --approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --expires-at 2027-10-05T00:00:00Z \
+     --approved-by Cole --statement "My own captures, to my own PC (D-021)." --preview
+   ```
+   (Use the same `--approved-at` value in both runs: copy it from the preview.)
+3. Sign in once: `$VL home-host sign-in --asset-root "$ASSET_ROOT" --issuer https://id.colobus-stargazer.ts.net`
+   (a browser opens Pocket ID; use your passkey; the refresh token goes to the login Keychain).
+4. Upload: `$VL intake upload "$ASSET_ROOT/tmp/capture-<session-id>" --asset-root "$ASSET_ROOT"`.
+   It prints the `accepted` status; its `receipt.manifest_sha256` equals the local
+   `intake validate` digest. If interrupted, run it again; it resumes. The take stays on
+   the Air.
+5. Tell the next session the session id and the receipt's `manifest_sha256`, so it can run
+   the first sealed vault generation and the restore drill of that session (the last
+   acceptance item).
+
+6. **After the session (any later session can do it):** push and drill the session from the
+   laptop vault, as `voice-lab` with the credentials loaded:
+
+   ```sh
+   vl_creds() { sudo systemd-run --pipe --wait --collect --quiet -p User=voice-lab -p Group=voice-lab \
+     -p UMask=0077 -p WorkingDirectory=/ -p 'ImportCredential=private.cole.voice-lab.vault.*' \
+     -p 'ImportCredential=private.cole.voice-lab.vault-destination.laptop.*' /opt/voice-lab/current/bin/voice-lab "$@"; }
+   vl_creds vault push --asset-root /data/voice-lab/lab --destination laptop     # note generation + manifest_sha256
+   vl_creds vault verify --asset-root /data/voice-lab/lab --destination laptop
+   sudo install -d -o voice-lab -g voice-lab -m 0700 /data/voice-lab/drill
+   vl_creds vault drill --asset-root /data/voice-lab/lab --destination laptop \
+     --target /data/voice-lab/drill/$(date +%F) --generation <N> --manifest-sha256 <D>
+   # ok: true and rehashed_files == restored_files, and raw/<the session's manifest>/ among them;
+   sudo rm -rf /data/voice-lab/drill/$(date +%F)
+   ```
+
+The Mini's intake is untouched (no LaunchAgent was loaded there before this phase either);
+the rsync lane to it stays usable through the `cole-voice-lab-mini` SSH alias with
+`--remote-user`/`--remote-root`. Retire it only after every item above passes.
