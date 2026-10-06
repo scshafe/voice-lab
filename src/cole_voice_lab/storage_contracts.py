@@ -71,7 +71,7 @@ VAULT_PROVENANCE_ROOT: Final = "provenance/vault"
 VAULT_DESTINATIONS_DIRECTORY: Final = "destinations"
 # A destination is a short stable id (``laptop``, ``air``): a lowercase letter, then up to 31
 # lowercase letters, digits or inner hyphens. It is a path segment, a systemd unit instance
-# name (``voice-lab-vault@<destination>``) and one dot-free segment of a token item's name.
+# name (``voice-lab-vault-<destination>``) and one dot-free segment of a token item's name.
 VAULT_DESTINATION_PATTERN: Final = r"^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$"
 # The destination of a host that copies to one vault (the Mac's recording service, its
 # fixtures and every command run without ``--destination``).

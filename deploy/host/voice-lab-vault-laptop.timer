@@ -1,0 +1,13 @@
+# Nightly copy to the laptop's vault (starts voice-lab-vault-laptop.service).
+# Persistent= catches up a night the PC was off. The Air's pair (phase 3) has its
+# own timer with its own cadence (an hourly probe).
+[Unit]
+Description=voice-lab vault copy to the laptop, nightly
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

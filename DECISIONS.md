@@ -832,7 +832,7 @@ credential". The owner reviews it with the phase.
   `….read-token`. The destination comes before the library id, under a prefix of its own,
   because systemd's `ImportCredential=` accepts only a trailing `*`: the unit imports
   `private.cole.voice-lab.vault.*` (the key) and
-  `private.cole.voice-lab.vault-destination.%i.*` (its own tokens, and no other
+  `private.cole.voice-lab.vault-destination.<destination>.*` (its own tokens, and no other
   destination's), with no library id written into the unit.
 - **The Linux keychain.** `keychain_client()` is the login Keychain on macOS and, elsewhere,
   `SystemdCredentialKeychain` over `$CREDENTIALS_DIRECTORY`: an item is the file named by
@@ -846,9 +846,11 @@ credential". The owner reviews it with the phase.
   new environment variable or flag was invented: `CREDENTIALS_DIRECTORY` is systemd's own.
   This is `ImportCredential=` rather than the design's `LoadCredentialEncrypted=`, which
   would need the library id written into the unit.
-- **The copier unit** is `deploy/host/voice-lab-vault@.service` (instance = destination;
-  `vault push`, then `vault verify`, as `voice-lab`, tailnet-only network) with a generic
-  nightly `voice-lab-vault@.timer`.
+- **The copier units** are one fixed-name pair per destination, not a template (infra's
+  host-unit validator refuses templates for now): `deploy/host/voice-lab-vault-laptop.service`
+  (`vault push --destination laptop`, then `vault verify`, as `voice-lab`, tailnet-only
+  network) and its nightly `voice-lab-vault-laptop.timer`; the Air adds its own pair in
+  phase 3.
 - **The restore drill** is one command, `vault drill`: a restore through the bound
   destination into an empty target, then every restored file read back from disk and
   re-hashed against the authenticated manifest (size, SHA-256 and mode). `vault restore`

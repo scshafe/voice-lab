@@ -1,9 +1,11 @@
-"""The vault copier's host units (``deploy/host/voice-lab-vault@.{service,timer}``, D-034).
+"""The vault copier's host units (``deploy/host/voice-lab-vault-laptop.{service,timer}``).
 
 Static checks of the unit text: what it runs, as whom, which credentials it imports and what
 network it may reach. They hold the units to the item names ``storage_contracts`` derives and
 to the hardening the intake publisher has, so a change to one is a failing test until the
-other follows. Nothing here starts a unit or reads a credential.
+other follows; and to infra's host-unit validator, which refuses template units for now
+(each destination has a fixed-name pair: the laptop's now, the Air's in phase 3). Nothing
+here starts a unit or reads a credential.
 """
 
 from __future__ import annotations
@@ -19,8 +21,8 @@ from cole_voice_lab.storage_contracts import (
 from cole_voice_lab.tailnet import TAILNET_RANGE
 
 HOST = Path(__file__).resolve().parents[1] / "deploy" / "host"
-SERVICE = HOST / "voice-lab-vault@.service"
-TIMER = HOST / "voice-lab-vault@.timer"
+SERVICE = HOST / "voice-lab-vault-laptop.service"
+TIMER = HOST / "voice-lab-vault-laptop.timer"
 INTAKE = HOST / "voice-lab-intake.service"
 BINARY = "/opt/voice-lab/current/bin/voice-lab"
 LAB = "/data/voice-lab/lab"
@@ -46,13 +48,28 @@ def values(path: Path, section: str, key: str) -> list[str]:
     return [value for where, name, value in settings(path) if (where, name) == (section, key)]
 
 
-def test_the_copier_pushes_then_verifies_the_instances_destination_as_voice_lab() -> None:
+def test_every_host_unit_passes_infras_validator_rules() -> None:
+    """Names start with voice-lab-, no template, User/Group voice-lab, no privileged Exec."""
+    units = sorted(HOST.glob("*.service")) + sorted(HOST.glob("*.timer"))
+    assert SERVICE in units and TIMER in units
+    for unit in units:
+        assert unit.name.startswith("voice-lab-") and "@" not in unit.name, unit.name
+        if unit.suffix == ".service":
+            assert values(unit, "Service", "User") == ["voice-lab"], unit.name
+            assert values(unit, "Service", "Group") == ["voice-lab"], unit.name
+            assert not values(unit, "Service", "PermissionsStartOnly"), unit.name
+        for _, key, value in settings(unit):
+            if key.startswith("Exec"):
+                assert value.startswith("/opt/voice-lab/current/"), (unit.name, value)
+
+
+def test_the_copier_pushes_then_verifies_the_laptop_as_voice_lab() -> None:
     assert values(SERVICE, "Service", "Type") == ["oneshot"]
     assert values(SERVICE, "Service", "User") == ["voice-lab"]
     assert values(SERVICE, "Service", "Group") == ["voice-lab"]
     assert values(SERVICE, "Service", "ExecStart") == [
-        f"{BINARY} vault push --asset-root {LAB} --destination %i",
-        f"{BINARY} vault verify --asset-root {LAB} --destination %i",
+        f"{BINARY} vault push --asset-root {LAB} --destination laptop",
+        f"{BINARY} vault verify --asset-root {LAB} --destination laptop",
     ]
     for _, key, value in settings(SERVICE):
         if key.startswith("Exec"):
@@ -61,20 +78,19 @@ def test_the_copier_pushes_then_verifies_the_instances_destination_as_voice_lab(
     assert values(SERVICE, "Service", "ReadWritePaths") == [LAB]
 
 
-def test_the_copier_imports_the_key_and_only_its_own_destinations_tokens() -> None:
+def test_the_copier_imports_the_key_and_only_the_laptops_tokens() -> None:
     imports = values(SERVICE, "Service", "ImportCredential")
-    assert imports == [f"{KEYCHAIN_ITEM_PREFIX}*", f"{VAULT_TOKEN_ITEM_PREFIX}%i.*"]
+    assert imports == [f"{KEYCHAIN_ITEM_PREFIX}*", f"{VAULT_TOKEN_ITEM_PREFIX}laptop.*"]
     assert not values(SERVICE, "Service", "LoadCredential")
     assert not values(SERVICE, "Service", "SetCredential")
 
-    def imported(instance: str, item: str) -> bool:
-        return any(item.startswith(glob.replace("%i", instance)[:-1]) for glob in imports)
+    def imported(item: str) -> bool:
+        return any(item.startswith(glob[:-1]) for glob in imports)
 
     laptop = keychain_item_names("lib-20261006-0123456789ab", "laptop")
     air = keychain_item_names("lib-20261006-0123456789ab", "air")
-    assert all(imported("laptop", item) for item in laptop)
-    assert not any(imported("laptop", item) for item in (air.token, air.read_token))
-    assert all(imported("air", item) for item in air)
+    assert all(imported(item) for item in laptop)
+    assert not any(imported(item) for item in (air.token, air.read_token))
 
 
 def test_the_copier_reaches_the_tailnet_and_nothing_else() -> None:
@@ -101,7 +117,7 @@ def test_the_copier_is_hardened_like_the_intake_publisher_except_for_the_network
     assert ("Service", "UMask", "0077") in copier
 
 
-def test_the_timer_is_nightly_generic_and_catches_up() -> None:
+def test_the_timer_is_nightly_and_catches_up() -> None:
     assert values(TIMER, "Timer", "OnCalendar") == ["*-*-* 02:30:00"]
     assert values(TIMER, "Timer", "Persistent") == ["true"]
     assert not values(TIMER, "Timer", "Unit")

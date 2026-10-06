@@ -366,7 +366,7 @@ def test_a_missing_credential_directory_is_a_protocol_failure(tmp_path: Path) ->
 
 
 def test_the_directory_is_the_one_systemd_names(tmp_path: Path) -> None:
-    unit = tmp_path.resolve() / "voice-lab-vault@laptop.service"
+    unit = tmp_path.resolve() / "voice-lab-vault-laptop.service"
     keychain = SystemdCredentialKeychain.from_environment(
         {CREDENTIALS_DIRECTORY_VARIABLE: str(unit)}
     )

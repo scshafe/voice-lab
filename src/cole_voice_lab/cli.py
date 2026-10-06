@@ -3352,7 +3352,7 @@ def _vault_bind(options: argparse.Namespace) -> int:
             "superseded_state": _optional_path(result.superseded_state),
             "superseded_manifests": _optional_path(result.superseded_manifests),
             "takes_effect": "at the next push: the next launch of the recording app (the Mac), "
-            "the next run of voice-lab-vault@<destination> (the PC)",
+            "the next run of voice-lab-vault-<destination> (the PC)",
         }
     )
     return 0

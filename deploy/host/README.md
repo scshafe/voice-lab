@@ -10,7 +10,7 @@ private network namespace, the btrfs snapshot tool). Design §3.2, §8.1; D-021,
 | `voice-lab-intake.path` → `voice-lab-intake.service` | `voice-lab intake publish`: validates each finalized package in `incoming/` and publishes it into `raw/` | none (`PrivateNetwork=yes`) |
 | `voice-lab-intake.timer` | the same pass every 15 minutes, as a backstop | none |
 | `voice-lab-jwks.timer` → `.service` | `voice-lab home-host fetch-jwks`: the identity provider's signing keys into `state/auth/jwks.json` for the API | the identity provider |
-| `voice-lab-vault@<destination>.timer` → `voice-lab-vault@<destination>.service` | `voice-lab vault push --destination <destination>`, then `vault verify`: a sealed copy of the lab to that destination's vault, then every file of the new head downloaded, decrypted and re-hashed (design §4.3, D-034); nightly at 02:30 | the tailnet only (`IPAddressAllow=100.64.0.0/10`; the tailscaled socket for the node's identity check) |
+| `voice-lab-vault-laptop.timer` → `voice-lab-vault-laptop.service` | `voice-lab vault push --destination laptop`, then `vault verify`: a sealed copy of the lab to the laptop's vault, then every file of the new head downloaded, decrypted and re-hashed (design §4.3, D-034); nightly at 02:30 | the tailnet only (`IPAddressAllow=100.64.0.0/10`; the tailscaled socket for the node's identity check) |
 
 Every unit here runs as `voice-lab`; nothing from this repository runs as root. The
 root-run parts are infra's, in its signed host tree: the asset layout's provisioning
@@ -30,20 +30,21 @@ tree, pending the owner's approval of its manifest hash):
   0700`, initialised with `voice-lab assets init`), `/data/voice-lab/state/auth`
   (`voice-lab 0700`, the key file), `/data/voice-lab/.snapshots/lab` (root 0700).
 
-The vault copier is a template: installing it enables nothing. A destination is copied to
-only once Cole has created the library key and its tokens, encrypted them as systemd
-credentials, approved and bound the destination, and enabled its timer
-(`systemctl enable --now voice-lab-vault@laptop.timer`); RUNBOOK §9 "The PC (phase 2)" has
-the commands. The unit reads the encrypted credentials from `/etc/credstore.encrypted/`
+The vault copier has one fixed-name pair per destination: infra's host-unit validator
+refuses template units for now, so there is no `voice-lab-vault@.service`. The laptop's pair
+is here; the Air destination (phase 3) adds its own, `voice-lab-vault-air.service` and
+`.timer` (an hourly probe rather than a nightly copy). Installing a pair enables nothing. A
+destination is copied to only once Cole has created the library key and its tokens,
+encrypted them as systemd credentials, approved and bound the destination, and enabled its
+timer (`systemctl enable --now voice-lab-vault-laptop.timer`); RUNBOOK §9 "The PC (phase 2)"
+has the commands. The unit reads the encrypted credentials from `/etc/credstore.encrypted/`
 (root-owned, made once with `systemd-creds encrypt`) through two `ImportCredential=` globs:
 `private.cole.voice-lab.vault.*` (the library key) and
-`private.cole.voice-lab.vault-destination.%i.*` (this destination's tokens, never another's).
-The service manager decrypts them into the unit's private, read-only
-`$CREDENTIALS_DIRECTORY`; nothing in the unit runs as root or can write a credential. The
-timer is generic; a destination that needs another cadence (the Air's hourly probe, phase 3)
-gets a drop-in for its instance.
+`private.cole.voice-lab.vault-destination.laptop.*` (the laptop's tokens, never another
+destination's). The service manager decrypts them into the unit's private, read-only
+`$CREDENTIALS_DIRECTORY`; nothing in the unit runs as root or can write a credential.
 
 Rollback: `systemctl disable --now voice-lab-intake.path voice-lab-intake.timer` stops
 publication; nothing here deletes or rewrites `raw/`. `systemctl disable --now
-voice-lab-vault@<destination>.timer` stops a destination's copies; the vault keeps its
+voice-lab-vault-laptop.timer` stops the laptop's copies; the vault keeps its
 generations and the PC its records.

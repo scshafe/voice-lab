@@ -142,12 +142,13 @@ stop at the owner's manifest-hash approval.
     `private.cole.voice-lab.vault-destination.<destination>.<library_id>.(token|read-token)`;
     the key stays `private.cole.voice-lab.vault.<library_id>.key`. The destination comes
     first because `ImportCredential=` takes only a trailing `*` (checked on the PC's
-    systemd 262 with a throwaway user unit: `%i` expands in the glob, only that instance's
-    items arrive, and the directory is read-only).
+    systemd 262 with a throwaway user unit: only the globbed items arrive, `%i` expands in a
+    glob, and the directory is read-only).
   - **The Linux keychain**, `SystemdCredentialKeychain` over `$CREDENTIALS_DIRECTORY`,
     chosen by `keychain_client()` off macOS; it was also run under a real transient user
     unit (reads the imported item; an add is refused, "Permission denied").
-  - **`deploy/host/voice-lab-vault@.service` and `.timer`**: push then verify as
+  - **`deploy/host/voice-lab-vault-laptop.service` and `.timer`** (fixed names: infra's
+    host-unit validator refuses templates for now; the Air gets its own pair): push then verify as
     `voice-lab`, tailnet-only network, the intake publisher's hardening;
     `systemd-analyze verify` clean, `systemd-analyze security` 2.9 ("OK").
   - **`vault drill`**: restore into an empty target, then re-hash every restored file
@@ -157,5 +158,5 @@ stop at the owner's manifest-hash approval.
     read token).
   - The owner's steps (RUNBOOK §9 "The PC (phase 2)"): create the library identity, key
     with recovery sheet and the laptop's tokens; encrypt them; approve and bind `laptop`;
-    the first push, verify and drill by hand; enable `voice-lab-vault@laptop.timer` once
+    the first push, verify and drill by hand; enable `voice-lab-vault-laptop.timer` once
     the runner lane installs `deploy/host/`.

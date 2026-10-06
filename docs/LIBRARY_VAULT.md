@@ -644,13 +644,14 @@ the PC's host key, and its TPM2 where there is one), and the staging directory i
 The decrypted items exist only in memory, in the staging directory while it lives and in the
 unit's credential directory while it runs.
 
-**The copier unit.** `deploy/host/voice-lab-vault@.service`, instance = destination, runs
-`vault push --destination %i`, then `vault verify --destination %i`, as `voice-lab`. It
+**The copier unit.** `deploy/host/voice-lab-vault-laptop.service` runs
+`vault push --destination laptop`, then `vault verify --destination laptop`, as `voice-lab`.
+Each destination has a fixed-name pair (infra's host-unit validator refuses template units
+for now); the Air's, `voice-lab-vault-air.*`, comes with phase 3. It
 imports `private.cole.voice-lab.vault.*` (the key) and
-`private.cole.voice-lab.vault-destination.%i.*` (its own tokens only). Its network is the
+`private.cole.voice-lab.vault-destination.laptop.*` (its own tokens only). Its network is the
 tailnet: `IPAddressAllow=100.64.0.0/10`, the tailscaled socket for the identity check, and
-nothing else. `voice-lab-vault@.timer` is nightly and generic; `voice-lab-vault@laptop.timer`
-enables the laptop's copy. By hand, the same credentials load with `systemd-run -p
+nothing else. `voice-lab-vault-laptop.timer`, once enabled, copies nightly. By hand, the same credentials load with `systemd-run -p
 ImportCredential=…` (RUNBOOK §9).
 
 A scratch directory lives under `tmp/.vault-<hex>/` — a pass makes one for the prompt

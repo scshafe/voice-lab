@@ -225,9 +225,11 @@ def run_vault_pass(layout: AssetLayout, *, binding_sha256: str) -> VaultWorkerRe
 
     It opens the vault through the composition root (which is the only place an adapter is
     built, so no argument of this process chooses a destination, a key or a token) and runs
-    one ``push_generation``. ``binding_sha256`` pins the supervisor's startup binding;
-    replacement requires a relaunch. Approval coverage and expiry are checked on every open.
-    Every failure it can name becomes a reply rather than a
+    one ``push_generation``. The Mac copies to one vault, so this is always the destination
+    ``DEFAULT_VAULT_DESTINATION`` (D-034); the PC's destinations are copied by the
+    ``voice-lab-vault-<destination>`` units instead. ``binding_sha256`` pins the supervisor's
+    startup binding; replacement requires a relaunch. Approval coverage and expiry are checked
+    on every open. Every failure it can name becomes a reply rather than a
     traceback: the service reads the frame, not this process's exit status.
     Returns: the ``VaultWorkerReply``; ``failed`` with a retryable flag when the push stopped
     for something that may pass by itself (the vault was unreachable, a source moved, another

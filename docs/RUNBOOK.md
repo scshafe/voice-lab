@@ -739,12 +739,12 @@ session). The target is a plaintext copy of the library: once the result is reco
 it (`sudo rm -rf /data/voice-lab/drill/<date>`).
 
 **Then the timer.** Once the runner lane has installed `deploy/host/`
-(`voice-lab-vault@.service` and `.timer`), `sudo systemctl enable --now
-voice-lab-vault@laptop.timer` copies nightly (02:30 plus up to 30 minutes, caught up after a
-night the PC was off); `sudo systemctl start voice-lab-vault@laptop.service` runs one copy
-now, and `journalctl -u voice-lab-vault@laptop.service` shows the push's and the verify's
+(`voice-lab-vault-laptop.service` and `.timer`), `sudo systemctl enable --now
+voice-lab-vault-laptop.timer` copies nightly (02:30 plus up to 30 minutes, caught up after a
+night the PC was off); `sudo systemctl start voice-lab-vault-laptop.service` runs one copy
+now, and `journalctl -u voice-lab-vault-laptop.service` shows the push's and the verify's
 JSON. A failed push or verify fails the unit. Stopping the copies is `systemctl disable --now
-voice-lab-vault@laptop.timer`; nothing on the PC or the vault is removed by it.
+voice-lab-vault-laptop.timer`; nothing on the PC or the vault is removed by it.
 
 ### Prepare the Mac and protect the recovery material
 

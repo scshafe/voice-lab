@@ -596,7 +596,7 @@ class SystemdCredentialKeychain:
             "STORAGE.PROTOCOL",
             f"${CREDENTIALS_DIRECTORY_VARIABLE} does not name a credential directory, so the "
             "library key and vault tokens cannot be read: on Linux they are systemd "
-            "credentials, loaded only for the vault unit (voice-lab-vault@<destination>) or a "
+            "credentials, loaded only for a vault unit (voice-lab-vault-<destination>) or a "
             "`systemd-run -p ImportCredential=…` command; to create them once, point "
             f"{CREDENTIALS_DIRECTORY_VARIABLE} at a private staging directory "
             "(docs/LIBRARY_VAULT.md)",
