@@ -2048,5 +2048,5 @@ printf '%s\n' 'Then use the installed absolute commands documented in CAPTURE_KI
 printf '  %s capture devices --ffmpeg %s\n' "$voice_lab_bin" "$ffmpeg_bin"
 printf '  %s capture run --asset-root %s --session-id SESSION_ID --suite pilot\n' \
   "$voice_lab_bin" "$asset_root"
-printf '  %s sync plan %s/tmp/capture-SESSION_ID --live-plan --json\n' \
+printf '  %s sync plan %s/tmp/capture-SESSION_ID --remote-user MINI_USER --remote-root /Users/MINI_USER/.local/share/cole-voice-lab/incoming --live-plan --json\n' \
   "$voice_lab_bin" "$asset_root"

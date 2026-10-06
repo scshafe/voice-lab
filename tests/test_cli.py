@@ -1123,7 +1123,7 @@ def test_sync_plan_previews_and_executes_only_through_explicit_handler(
     plan = SimpleNamespace(
         session_id="session-a",
         source_directory=tmp_path / "session-a",
-        target="100.123.230.91",
+        target="cole-voice-lab-mini",
         remote_directory="incoming/session-a",
         dry_run=False,
         package_snapshot=SimpleNamespace(
@@ -1154,6 +1154,10 @@ def test_sync_plan_previews_and_executes_only_through_explicit_handler(
         "sync",
         "plan",
         str(tmp_path / "session-a"),
+        "--remote-user",
+        "operator",
+        "--remote-root",
+        "/Users/operator/.local/share/cole-voice-lab/incoming",
         "--identity-file",
         str(identity),
         "--known-hosts-file",
@@ -1181,6 +1185,8 @@ def test_sync_plan_previews_and_executes_only_through_explicit_handler(
     assert output["passes"][0]["argv"] == ["rsync", "--dry-run"]
     assert built[-1]["identity_file"] == identity
     assert built[-1]["known_hosts_file"] == known_hosts
+    assert built[-1]["target"] == "cole-voice-lab-mini"
+    assert built[-1]["remote_user"] == "operator"
     assert executed == [(plan, True, approved_digest)]
 
     assert main(base) == 0

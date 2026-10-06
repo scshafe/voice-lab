@@ -99,6 +99,10 @@ def capture_state_payload(state: CaptureState) -> dict[str, object]:
                 "sync",
                 "plan",
                 str(state.session_directory.resolve(strict=True)),
+                "--remote-user",
+                "MINI_USER",
+                "--remote-root",
+                "/Users/MINI_USER/.local/share/cole-voice-lab/incoming",
                 "--live-plan",
                 "--json",
             )

@@ -115,8 +115,7 @@ from .runtime import (
 )
 from .storage_ports import StorageError, storage_error
 from .sync import (
-    DEFAULT_REMOTE_ROOT,
-    PRIMARY_MINI_TARGET,
+    PRIMARY_MINI_ALIAS,
     build_sync_plan,
     execute_sync_plan,
 )
@@ -4326,9 +4325,17 @@ def build_parser() -> argparse.ArgumentParser:
     sync_commands = sync.add_subparsers(dest="sync_command", required=True)
     sync_plan_parser = sync_commands.add_parser("plan")
     sync_plan_parser.add_argument("session")
-    sync_plan_parser.add_argument("--target", default=PRIMARY_MINI_TARGET)
-    sync_plan_parser.add_argument("--remote-user", default="cole")
-    sync_plan_parser.add_argument("--remote-root", default=DEFAULT_REMOTE_ROOT)
+    sync_plan_parser.add_argument(
+        "--target",
+        default=PRIMARY_MINI_ALIAS,
+        help="the SSH alias of the Mac mini intake; its address lives in ~/.ssh/config",
+    )
+    sync_plan_parser.add_argument("--remote-user", required=True)
+    sync_plan_parser.add_argument(
+        "--remote-root",
+        required=True,
+        help="the remote account's intake root, <home>/.local/share/cole-voice-lab/incoming",
+    )
     sync_plan_parser.add_argument("--identity-file")
     sync_plan_parser.add_argument("--known-hosts-file")
     sync_plan_parser.add_argument("--live-plan", action="store_true")

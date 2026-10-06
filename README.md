@@ -77,7 +77,8 @@ voice-lab doctor
 voice-lab assets init --asset-root ~/.local/share/voice-lab
 voice-lab capture devices
 voice-lab desktop --asset-root <macbook-private-root> --device UMIK-1
-voice-lab sync plan <session-directory>
+voice-lab sync plan <session-directory> --remote-user <user> \
+  --remote-root /Users/<user>/.local/share/cole-voice-lab/incoming
 voice-lab intake validate <mini-private-root>/incoming/cole-pilot-001
 voice-lab intake accept --asset-root <mini-private-root> \
   --session-id cole-pilot-001

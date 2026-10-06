@@ -34,15 +34,13 @@ tree; history is as screened.
   "Chloe" is no longer named as a holder. voice-journey's code, which has no
   licence file and is the owner's, becomes MIT when it is imported (design phase
   3). No blocking item remains.
-- **Still open, recommended before publishing:** the tailnet IPs in code
-  (`PRIMARY_MINI_TARGET`, `OPENCLAW_GATEWAY_TARGET` in
-  `src/cole_voice_lab/sync.py`, mirrored in `tests/test_sync.py` and
-  `tests/test_cli.py`). The sync default `DEFAULT_REMOTE_ROOT` also names the
-  Mini's `/Users/cole` intake path, and so do `config/site.example.toml`,
-  `deploy/ssh/authorized_keys.example`, `deploy/README.md`,
-  `docs/CAPTURE_AND_SYNC.md` and the README. All of these name the live Mac
-  mini intake, so changing them is a behaviour change: do it when the backend
-  moves off the Mini.
+- **Closed in phase 2 (2026-10-06):** the tailnet IPs in code. `sync.py` no
+  longer names the Mini's or the OpenClaw node's address: the rsync lane is bound
+  to the SSH alias `cole-voice-lab-mini`, whose address lives only in the
+  operator's `~/.ssh/config`, and the remote account and intake root are required
+  arguments (`/Users/<user>/…` or `/home/<user>/…`), so `DEFAULT_REMOTE_ROOT` is
+  gone too. The tests use a synthetic account. `/Users/cole` remains only in
+  documentation examples (`deploy/README.md`, the Mini install steps), cosmetic.
 - **Still open, optional:**
   - the `coles-macbook-pro` and `coles-macbook-air` hostnames in tests and one
     example;

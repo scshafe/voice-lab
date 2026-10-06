@@ -162,13 +162,18 @@ the complete member path, byte count, SHA-256, and filesystem identity set; and
 the directory identity set. The JSON preview exposes both that evidence and its
 own snapshot digest.
 
-The default target is the Mac mini's primary Tailnet node, `PRIMARY_MINI_TARGET`
-in `src/cole_voice_lab/sync.py`.
+The only target is the SSH alias `cole-voice-lab-mini` (`PRIMARY_MINI_ALIAS`); its
+address lives in the operator's private `~/.ssh/config`
+([deploy/ssh/capture-host-config.example](../deploy/ssh/capture-host-config.example)),
+never in code. Every other address or hostname, including the OpenClaw gateway node, is
+rejected. The remote account (`--remote-user`) and its landing root (`--remote-root`)
+are required arguments, and the root must be that account's
+`/Users/<user>/.local/share/cole-voice-lab/incoming` or
+`/home/<user>/.local/share/cole-voice-lab/incoming`; the plan digest binds both.
 
-The single configured alias `cole-voice-lab-mini` is also allowed. Every other
-IP address or hostname—including public hosts, other private/Tailnet peers, and
-the dedicated OpenClaw gateway node (`OPENCLAW_GATEWAY_TARGET`)—is rejected. The remote
-account and landing root are likewise fixed to Cole's private mini intake lane.
+This rsync lane is the rollback path to the Mac mini intake. The PC's HTTPS intake
+(D-021, D-024; [docs/design/VOICE-PLATFORM.md](design/VOICE-PLATFORM.md) phase 2) replaces
+it once phase 2 is accepted.
 
 Pass one transfers an explicit allowlist of approved payload paths while
 excluding `/READY`; its final exclude rule prevents a newly added source file
@@ -210,10 +215,13 @@ destination, member filters, pass order, and nondestructive option policy. The
 CLI flow is:
 
 ```bash
-voice-lab sync plan /absolute/session --live-plan --json
+voice-lab sync plan /absolute/session \
+  --remote-user <user> --remote-root /Users/<user>/.local/share/cole-voice-lab/incoming \
+  --live-plan --json
 
 # After reviewing the JSON, rerun the same arguments with the printed digest.
 voice-lab sync plan /absolute/session \
+  --remote-user <user> --remote-root /Users/<user>/.local/share/cole-voice-lab/incoming \
   --live-plan --execute --allow-network \
   --approved-plan-sha256 '<reviewed-plan-sha256>'
 ```
