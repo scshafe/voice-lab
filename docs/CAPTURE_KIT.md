@@ -273,6 +273,8 @@ path and explicit restricted-SSH evidence:
 ```sh
 "$VOICE_LAB" sync plan \
   "$ASSET_ROOT/tmp/capture-$SESSION_ID" \
+  --remote-user MINI_USER \
+  --remote-root /Users/MINI_USER/.local/share/cole-voice-lab/incoming \
   --identity-file $HOME/.ssh/ABSOLUTE_RESTRICTED_INTAKE_KEY \
   --known-hosts-file $HOME/.ssh/ABSOLUTE_REVIEWED_KNOWN_HOSTS \
   --live-plan --json

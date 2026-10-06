@@ -12,15 +12,24 @@ from cole_voice_lab.capture import expected_recording_paths, finalize_capture_se
 from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.models import CaptureDevice, Prompt, PromptSuite
 from cole_voice_lab.sync import (
-    OPENCLAW_GATEWAY_TARGET,
     PRIMARY_MINI_ALIAS,
-    PRIMARY_MINI_TARGET,
+    REMOTE_INTAKE_SUFFIX,
     RsyncPass,
+    SyncPlan,
     build_sync_plan,
     execute_sync_plan,
 )
 
 NOW = datetime(2026, 8, 17, 19, 0, tzinfo=UTC)
+REMOTE_USER = "operator"
+REMOTE_ROOT = f"/Users/{REMOTE_USER}/{REMOTE_INTAKE_SUFFIX}"
+
+
+def _plan(session: Path, **options: object) -> SyncPlan:
+    """A plan to the test account's macOS intake root unless a test overrides it."""
+    options.setdefault("remote_user", REMOTE_USER)
+    options.setdefault("remote_root", REMOTE_ROOT)
+    return build_sync_plan(session, **options)  # type: ignore[arg-type]
 
 
 def _suite() -> PromptSuite:
@@ -74,15 +83,15 @@ def _package(tmp_path: Path) -> Path:
     return session
 
 
-def test_default_plan_is_two_pass_dry_run_to_primary_mini(tmp_path: Path) -> None:
-    plan = build_sync_plan(
+def test_default_plan_is_two_pass_dry_run_to_the_mini_alias(tmp_path: Path) -> None:
+    plan = _plan(
         _package(tmp_path),
         identity_file=tmp_path / "intake-key",
         known_hosts_file=tmp_path / "known-hosts",
     )
 
     assert plan.dry_run
-    assert plan.target == PRIMARY_MINI_TARGET
+    assert plan.target == PRIMARY_MINI_ALIAS
     assert len(plan.approval_sha256()) == 64
     assert plan.approval_sha256() == plan.approval_sha256()
     approval = plan.approval_payload()
@@ -126,22 +135,40 @@ def test_default_plan_is_two_pass_dry_run_to_primary_mini(tmp_path: Path) -> Non
         assert "StrictHostKeyChecking=yes" in ssh
         assert "PasswordAuthentication=no" in ssh
         assert "ClearAllForwardings=yes" in ssh
-    assert "100.123.230.91" in plan.passes[0].argv[-1]
-    assert "100.91.94.21" not in plan.shell_display()
+    assert plan.passes[0].argv[-1] == (
+        f"{REMOTE_USER}@{PRIMARY_MINI_ALIAS}:{REMOTE_ROOT}/pilot-sync/"
+    )
 
 
-@pytest.mark.parametrize("target", [OPENCLAW_GATEWAY_TARGET, "openclaw", "openclaw.example.ts.net"])
+@pytest.mark.parametrize("target", ["openclaw", "OpenClaw.example.ts.net"])
 def test_openclaw_gateway_target_is_rejected(tmp_path: Path, target: str) -> None:
     with pytest.raises(SecurityError, match="OpenClaw gateway"):
-        build_sync_plan(_package(tmp_path), target=target)
+        _plan(_package(tmp_path), target=target)
 
 
-def test_only_the_approved_private_alias_is_configurable(tmp_path: Path) -> None:
+def test_only_the_configured_private_alias_is_a_target(tmp_path: Path) -> None:
     assert PRIMARY_MINI_ALIAS == "cole-voice-lab-mini"
-    plan = build_sync_plan(_package(tmp_path), target=PRIMARY_MINI_ALIAS)
+    plan = _plan(_package(tmp_path), target=PRIMARY_MINI_ALIAS.upper())
 
     assert plan.target == PRIMARY_MINI_ALIAS
     assert PRIMARY_MINI_ALIAS in plan.passes[0].argv[-1]
+
+
+def test_a_linux_home_intake_root_is_accepted(tmp_path: Path) -> None:
+    root = f"/home/{REMOTE_USER}/{REMOTE_INTAKE_SUFFIX}"
+    plan = _plan(_package(tmp_path), remote_root=root, dry_run=False)
+
+    assert plan.remote_directory == f"{root}/pilot-sync"
+    calls: list[tuple[str, ...]] = []
+
+    def runner(command: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    execute_sync_plan(
+        plan, allow_network=True, approved_plan_sha256=plan.approval_sha256(), runner=runner
+    )
+    assert calls[0][-1] == f"{REMOTE_USER}@{PRIMARY_MINI_ALIAS}:{root}/pilot-sync/"
 
 
 @pytest.mark.parametrize(
@@ -153,42 +180,42 @@ def test_only_the_approved_private_alias_is_configurable(tmp_path: Path) -> None
         "example.com",
         "8.8.8.8",
         "192.168.1.25",
-        "100.88.228.111",
+        "100.64.0.7",
     ],
 )
 def test_unapproved_or_public_target_is_rejected(tmp_path: Path, target: str) -> None:
-    with pytest.raises(SecurityError, match="bound to the primary mini Tailnet target"):
-        build_sync_plan(_package(tmp_path), target=target)
+    with pytest.raises(SecurityError, match="bound to the configured mini SSH alias"):
+        _plan(_package(tmp_path), target=target)
 
 
 @pytest.mark.parametrize("remote_root", ["relative/incoming", "/", "/tmp/../incoming", "bad\\path"])
 def test_unsafe_remote_root_is_rejected(tmp_path: Path, remote_root: str) -> None:
     with pytest.raises(Exception, match="remote landing root"):
-        build_sync_plan(_package(tmp_path), remote_root=remote_root)
+        _plan(_package(tmp_path), remote_root=remote_root)
 
 
 def test_well_formed_but_unapproved_remote_root_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(SecurityError, match="private mini intake root"):
-        build_sync_plan(
+    with pytest.raises(SecurityError, match="remote account's private intake root"):
+        _plan(
             _package(tmp_path),
-            remote_root="/Users/cole/.local/share/another-private-project/incoming",
+            remote_root=f"/Users/{REMOTE_USER}/.local/share/another-private-project/incoming",
         )
 
 
 def test_invalid_remote_user_and_symlink_source_are_rejected(tmp_path: Path) -> None:
     package = _package(tmp_path)
     with pytest.raises(Exception, match="remote user"):
-        build_sync_plan(package, remote_user="Cole Admin")
-    with pytest.raises(SecurityError, match="private mini intake account"):
-        build_sync_plan(package, remote_user="someone_else")
+        _plan(package, remote_user="Cole Admin")
+    with pytest.raises(SecurityError, match="remote account's private intake root"):
+        _plan(package, remote_user="someone_else")
     link = tmp_path / "package-link"
     link.symlink_to(package, target_is_directory=True)
     with pytest.raises(SecurityError, match="real capture directory"):
-        build_sync_plan(link)
+        _plan(link)
 
 
 def test_execution_requires_live_plan_and_separate_network_approval(tmp_path: Path) -> None:
-    dry_plan = build_sync_plan(_package(tmp_path))
+    dry_plan = _plan(_package(tmp_path))
     calls: list[tuple[str, ...]] = []
 
     def runner(command: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -199,7 +226,7 @@ def test_execution_requires_live_plan_and_separate_network_approval(tmp_path: Pa
         execute_sync_plan(dry_plan, allow_network=True, runner=runner)
     assert not calls
 
-    live_plan = build_sync_plan(_package(tmp_path / "second"), dry_run=False)
+    live_plan = _plan(_package(tmp_path / "second"), dry_run=False)
     assert live_plan.shell_display().startswith("LIVE PLAN")
     assert live_plan.approval_sha256() in live_plan.shell_display()
     with pytest.raises(SecurityError, match="allow_network"):
@@ -232,7 +259,7 @@ def test_approval_is_invalidated_by_added_changed_or_replaced_package_member(
 ) -> None:
     package = _package(tmp_path)
 
-    added_plan = build_sync_plan(package, dry_run=False)
+    added_plan = _plan(package, dry_run=False)
     (package / "undeclared.txt").write_text("not approved", encoding="utf-8")
     with pytest.raises(SecurityError, match="payload pass revalidation"):
         execute_sync_plan(
@@ -242,7 +269,7 @@ def test_approval_is_invalidated_by_added_changed_or_replaced_package_member(
         )
     (package / "undeclared.txt").unlink()
 
-    changed_plan = build_sync_plan(package, dry_run=False)
+    changed_plan = _plan(package, dry_run=False)
     manifest = package / "manifest.json"
     manifest.write_bytes(manifest.read_bytes() + b" ")
     with pytest.raises(SecurityError, match="payload pass revalidation"):
@@ -253,7 +280,7 @@ def test_approval_is_invalidated_by_added_changed_or_replaced_package_member(
         )
 
     package = _package(tmp_path / "replacement")
-    replaced_plan = build_sync_plan(package, dry_run=False)
+    replaced_plan = _plan(package, dry_run=False)
     ready = package / "READY"
     replacement = package / ".READY.replacement"
     replacement.write_bytes(ready.read_bytes())
@@ -270,7 +297,7 @@ def test_execution_revalidates_after_payload_before_ready_and_after_ready(
     tmp_path: Path,
 ) -> None:
     package = _package(tmp_path)
-    plan = build_sync_plan(package, dry_run=False)
+    plan = _plan(package, dry_run=False)
     calls: list[tuple[str, ...]] = []
 
     def mutate_after_payload(
@@ -290,7 +317,7 @@ def test_execution_revalidates_after_payload_before_ready_and_after_ready(
     assert calls == [plan.passes[0].argv]
     (package / "late-extra.txt").unlink()
 
-    plan = build_sync_plan(package, dry_run=False)
+    plan = _plan(package, dry_run=False)
     calls.clear()
 
     def mutate_during_ready(
@@ -313,7 +340,7 @@ def test_execution_revalidates_after_payload_before_ready_and_after_ready(
 
 
 def test_live_execution_rejects_reordered_or_broadened_passes(tmp_path: Path) -> None:
-    plan = build_sync_plan(_package(tmp_path), dry_run=False)
+    plan = _plan(_package(tmp_path), dry_run=False)
     reordered = replace(plan, passes=(plan.passes[1], plan.passes[0]))
     with pytest.raises(SecurityError, match="payload-then-READY pass order"):
         execute_sync_plan(
@@ -342,7 +369,7 @@ def test_live_execution_rejects_injected_rsync_prefix_options(
     tmp_path: Path,
     injected_option: str,
 ) -> None:
-    plan = build_sync_plan(_package(tmp_path), dry_run=False)
+    plan = _plan(_package(tmp_path), dry_run=False)
     injected_payload = replace(
         plan.passes[0],
         argv=(plan.passes[0].argv[0], injected_option, *plan.passes[0].argv[1:]),
@@ -367,23 +394,29 @@ def test_live_execution_rejects_injected_rsync_prefix_options(
 def test_live_execution_revalidates_destination_and_nondestructive_commands(
     tmp_path: Path,
 ) -> None:
-    plan = build_sync_plan(_package(tmp_path), dry_run=False)
+    plan = _plan(_package(tmp_path), dry_run=False)
 
     wrong_target = replace(plan, target="example.com")
-    with pytest.raises(SecurityError, match="primary mini Tailnet"):
+    with pytest.raises(SecurityError, match="configured mini SSH alias"):
         execute_sync_plan(
             wrong_target,
             allow_network=True,
             approved_plan_sha256=wrong_target.approval_sha256(),
         )
 
-    wrong_root = replace(plan, remote_directory="/tmp/private/pilot-sync")
-    with pytest.raises(SecurityError, match="private mini intake root"):
-        execute_sync_plan(
-            wrong_root,
-            allow_network=True,
-            approved_plan_sha256=wrong_root.approval_sha256(),
-        )
+    for directory in (
+        "/tmp/private/pilot-sync",
+        "/",
+        f"{REMOTE_ROOT}/another-session",
+        f"/Users/Not A User/{REMOTE_INTAKE_SUFFIX}/pilot-sync",
+    ):
+        wrong_root = replace(plan, remote_directory=directory)
+        with pytest.raises(SecurityError, match="private mini intake root"):
+            execute_sync_plan(
+                wrong_root,
+                allow_network=True,
+                approved_plan_sha256=wrong_root.approval_sha256(),
+            )
 
     destructive = replace(
         plan,

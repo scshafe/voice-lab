@@ -14,10 +14,10 @@ channels = 1
 encoding = "pcm_s24le"
 
 [sync]
-host = "<mini-tailnet-ip>"  # PRIMARY_MINI_TARGET in src/cole_voice_lab/sync.py
-user = "cole"
+host = "<mini-tailnet-ip>"  # only in ~/.ssh/config, behind the alias
+user = "<user>"
 alias = "cole-voice-lab-mini"
-remote_incoming = "/Users/cole/.local/share/cole-voice-lab/incoming"
+remote_incoming = "/Users/<user>/.local/share/cole-voice-lab/incoming"
 execute_by_default = false
 strict_host_key_checking = true
 

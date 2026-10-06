@@ -910,7 +910,8 @@ def test_real_engine_finalizes_ready_then_allows_shutdown(tmp_path: Path) -> Non
     assert finalized_json["manifest_sha256"] == engine.finalize().manifest_sha256
     assert finalized_json["qc_report_sha256"] == engine.finalize().qc_report_sha256
     assert finalized_json["sync_command"] == (
-        f"voice-lab sync plan {engine.session_directory} --live-plan --json"
+        f"voice-lab sync plan {engine.session_directory} --remote-user MINI_USER "
+        "--remote-root /Users/MINI_USER/.local/share/cole-voice-lab/incoming --live-plan --json"
     )
     assert shutdown.status == 200
     assert not server_thread.is_alive()

@@ -16,13 +16,15 @@ from .capture import READY_NAME
 from .errors import ContractError, SecurityError
 from .intake import DirectorySnapshot, FileSnapshot, ValidatedPackage, validate_capture_package
 
-PRIMARY_MINI_TARGET = "100.123.230.91"
+# The rsync lane reaches the Mac mini intake only through this SSH alias. Its address lives
+# in the operator's private ``~/.ssh/config`` (deploy/ssh/capture-host-config.example), never
+# in code. The lane is the rollback path until the PC intake (D-021, D-024) is accepted.
 PRIMARY_MINI_ALIAS = "cole-voice-lab-mini"
-OPENCLAW_GATEWAY_TARGET = "100.91.94.21"
-DEFAULT_REMOTE_ROOT = "/Users/cole/.local/share/cole-voice-lab/incoming"
+# The intake root below the remote account's home, on macOS or Linux.
+REMOTE_INTAKE_SUFFIX = ".local/share/cole-voice-lab/incoming"
 DEFAULT_IDENTITY_NAME = "cole_voice_lab_intake_ed25519"
 
-_APPROVED_TARGETS = frozenset({PRIMARY_MINI_TARGET, PRIMARY_MINI_ALIAS})
+_APPROVED_TARGETS = frozenset({PRIMARY_MINI_ALIAS})
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _FORBIDDEN_RSYNC_OPTIONS = frozenset({"--delete", "--remove-source-files", "--inplace"})
@@ -230,20 +232,22 @@ class SyncPlan:
 
 def _validate_target(target: str) -> str:
     lowered = target.casefold()
-    if (
-        lowered == OPENCLAW_GATEWAY_TARGET
-        or lowered == "openclaw"
-        or lowered.startswith("openclaw.")
-    ):
+    if lowered == "openclaw" or lowered.startswith("openclaw."):
         raise SecurityError("the OpenClaw gateway node is not a voice-lab transfer target")
     if lowered not in _APPROVED_TARGETS:
-        raise SecurityError(
-            "voice-lab sync is bound to the primary mini Tailnet target or its approved alias"
-        )
+        raise SecurityError("voice-lab sync is bound to the configured mini SSH alias")
     return lowered
 
 
-def _validate_remote_root(value: str) -> str:
+def remote_intake_roots(remote_user: str) -> tuple[str, str]:
+    """The only landing roots for ``remote_user``: its macOS or Linux home's intake root."""
+    return (
+        f"/Users/{remote_user}/{REMOTE_INTAKE_SUFFIX}",
+        f"/home/{remote_user}/{REMOTE_INTAKE_SUFFIX}",
+    )
+
+
+def _validate_remote_root(value: str, remote_user: str) -> str:
     if not value or "\\" in value or "\x00" in value:
         raise ContractError("remote landing root must be one absolute POSIX path")
     path = PurePosixPath(value)
@@ -252,8 +256,8 @@ def _validate_remote_root(value: str) -> str:
     if path.as_posix() != value.rstrip("/") or len(path.parts) < 6:
         raise ContractError("remote landing root is too broad or not canonical")
     canonical = path.as_posix()
-    if canonical != DEFAULT_REMOTE_ROOT:
-        raise SecurityError("voice-lab sync is bound to the private mini intake root")
+    if canonical not in remote_intake_roots(remote_user):
+        raise SecurityError("voice-lab sync is bound to the remote account's private intake root")
     return canonical
 
 
@@ -347,7 +351,8 @@ def _assert_live_pass_shape(plan: SyncPlan) -> None:
     ):
         raise SecurityError("live sync requires the fixed payload-then-READY pass order")
     source_argument = f"{plan.source_directory}/"
-    destination = f"cole@{plan.target}:{plan.remote_directory}/"
+    remote_user = PurePosixPath(plan.remote_directory).parts[2]
+    destination = f"{remote_user}@{plan.target}:{plan.remote_directory}/"
     ssh_command = _ssh_command(
         identity_file=plan.identity_file,
         known_hosts_file=plan.known_hosts_file,
@@ -383,9 +388,9 @@ def _revalidate_plan_source(plan: SyncPlan, *, phase: str) -> None:
 def build_sync_plan(
     session_directory: Path,
     *,
-    target: str = PRIMARY_MINI_TARGET,
-    remote_user: str = "cole",
-    remote_root: str = DEFAULT_REMOTE_ROOT,
+    remote_user: str,
+    remote_root: str,
+    target: str = PRIMARY_MINI_ALIAS,
     identity_file: Path | None = None,
     known_hosts_file: Path | None = None,
     dry_run: bool = True,
@@ -401,9 +406,7 @@ def build_sync_plan(
     host = _validate_target(target)
     if not _USER.fullmatch(remote_user):
         raise ContractError(f"remote user is invalid: {remote_user!r}")
-    if remote_user != "cole":
-        raise SecurityError("voice-lab sync is bound to the private mini intake account")
-    landing_root = _validate_remote_root(remote_root)
+    landing_root = _validate_remote_root(remote_root, remote_user)
     identity = (identity_file or Path.home() / ".ssh" / DEFAULT_IDENTITY_NAME).expanduser()
     known_hosts = (known_hosts_file or Path.home() / ".ssh" / "known_hosts").expanduser()
     ssh_command = _ssh_command(identity_file=identity, known_hosts_file=known_hosts)
@@ -461,8 +464,13 @@ def execute_sync_plan(
     if approved_plan_sha256 != actual_plan_sha256:
         raise SecurityError("approved plan SHA-256 does not match the exact live sync plan")
     _validate_target(plan.target)
-    expected_remote_directory = f"{DEFAULT_REMOTE_ROOT}/{plan.session_id}"
-    if plan.remote_directory != expected_remote_directory:
+    landing = PurePosixPath(plan.remote_directory)
+    remote_user = landing.parts[2] if len(landing.parts) > 2 else ""
+    if (
+        landing.name != plan.session_id
+        or not _USER.fullmatch(remote_user)
+        or landing.parent.as_posix() not in remote_intake_roots(remote_user)
+    ):
         raise SecurityError("live sync plan is not bound to the private mini intake root")
     if plan.package_snapshot.session_id != plan.session_id:
         raise SecurityError("live sync package snapshot disagrees with the session ID")
