@@ -18,11 +18,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 is the oldest Python the standard supports (tomllib); 3.14 is
-        # the Arch host's.
-        python: ["3.11", "3.14"]
+        # voice-lab pins Python 3.12 (pyproject, .python-version); the macOS
+        # half of scripts/verify (the native app) runs on the Air, not here.
+        python: ["3.12"]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The suite takes about 20 minutes on the Arch PC.
+    timeout-minutes: 60
     steps:
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -32,6 +33,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python }}
+      # scripts/verify uses the checkout's .venv (README, Linux setup).
+      - name: Development environment
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -e '.[dev]' -r requirements/development-build.txt
       - name: Verify (dev.toml [verify] command)
         run: |
           scripts/verify
