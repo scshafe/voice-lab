@@ -13,6 +13,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import macos_only
 import pytest
 from pydantic import ValidationError
 from test_recording_takes import Rig
@@ -413,6 +414,7 @@ def test_worker_contract_rejects_malformed_bounded_messages(payload: bytes) -> N
         decode_analysis_message(payload)
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_persistent_process_inspects_multiple_real_synthetic_files(
     rig: Rig, analysis_queue: RecordingAnalysisQueue
 ) -> None:
@@ -435,6 +437,7 @@ def test_persistent_process_inspects_multiple_real_synthetic_files(
         worker.close()
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_blocked_worker_does_not_block_real_reserve_seal_save_and_restarts(
     rig: Rig, analysis_queue: RecordingAnalysisQueue
 ) -> None:
@@ -470,6 +473,7 @@ def test_blocked_worker_does_not_block_real_reserve_seal_save_and_restarts(
         os.close(writer)
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_worker_eof_while_inspection_blocked_exits_without_removing_source(
     rig: Rig, analysis_queue: RecordingAnalysisQueue
 ) -> None:
@@ -490,6 +494,7 @@ def test_worker_eof_while_inspection_blocked_exits_without_removing_source(
         os.close(writer)
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_actual_service_and_analysis_processes_keep_save_reachable(
     rig: Rig,
     tmp_path: Path,
@@ -733,6 +738,7 @@ def test_transient_inspector_io_failure_is_independently_retryable(
     assert analysis_queue.retry(running.ticket.job_sha256).status == "pending"
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_worker_runtime_mismatch_and_timeout_retain_original(
     rig: Rig,
     analysis_queue: RecordingAnalysisQueue,
@@ -1003,6 +1009,7 @@ def test_new_analysis_sql_bytes_are_part_of_runtime_build_identity(
     assert len(module.recording_index_migration_resources()) == 4
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_startup_reconciles_seal_commit_without_job_and_can_be_cancelled(
     rig: Rig,
     analysis_queue: RecordingAnalysisQueue,

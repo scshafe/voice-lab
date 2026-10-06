@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import macos_only
 import pytest
 from test_recording_contracts import synthetic_contracts
 
@@ -535,6 +536,7 @@ def read_response(
             evidence.wire("received", bytes(received))
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_real_process_handshake_snapshot_unprepared_registration_and_clean_shutdown(
     tmp_path: Path,
 ) -> None:
@@ -1151,7 +1153,10 @@ def test_a_corpus_sized_catalog_reply_fits_one_control_frame(tmp_path: Path) -> 
     try:
         prepared(service)
         assert service.submit(request(CatalogCommand(operation_id="op-catalog"))) is None
-        (response,) = await_responses(service)
+        # The deadline only bounds a hang; the subject is the frame size. Building a
+        # corpus-sized reply under branch-coverage tracing takes ~2 s on the Air and
+        # ~9 s on the Arch PC, so this one wait is longer than the 2 s default.
+        (response,) = await_responses(service, timeout=60)
         assert isinstance(response.data, CatalogEvent) and response.error is None
         assert response.data.reference == reference and response.meta.take_id is None
         assert len(response.data.catalog.prompts) == CORPUS_SHAPED_PROMPT_COUNT
@@ -1333,6 +1338,7 @@ def test_a_workspace_service_takes_only_a_normalized_absolute_finetune_runtime_r
     assert not (layout.root / "provenance/corpus").exists()
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_real_workspace_service_delivers_its_catalog_before_a_referenced_context(
     tmp_path: Path,
 ) -> None:

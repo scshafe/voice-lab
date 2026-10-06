@@ -22,12 +22,33 @@ an explicit private asset root and are rejected by the repository guard.
 
 ## Development bootstrap
 
+`scripts/verify` is the one verification command (`dev.toml [verify]`). It uses the
+checkout's `.venv` (Python 3.12) and runs on both hosts below.
+
+**macOS** (the capture and recording host; Homebrew Python):
+
 ```bash
 /opt/homebrew/bin/python3.12 -m venv .venv
 .venv/bin/python -m pip install -U pip
 .venv/bin/python -m pip install -e '.[dev]'
 scripts/verify
 ```
+
+**Linux** (the Arch PC; Python 3.12 from [uv](https://docs.astral.sh/uv/)):
+
+```bash
+uv venv --seed --python 3.12 .venv
+uv pip install --python .venv/bin/python -e '.[dev]' -r requirements/development-build.txt
+scripts/verify
+```
+
+`--seed` installs pip, which worker evidence records. Off macOS, `scripts/verify`
+skips the native recording app's Swift build and tests, type-checks as macOS
+(`[tool.mypy] platform`), and the tests that need macOS itself (the real
+recording service, Core Audio, the Homebrew capture bootstrap, launchd, the macOS
+artifact locks) skip with the reason named; `tests/macos_only.py` lists them and
+`pytest -ra` prints them. Everything else, coverage threshold included, is the
+same on both hosts.
 
 The optional `vault` extra adds the library vault's single encryption
 dependency. The `dev` extra pins the same version, and both `scripts/verify`'s

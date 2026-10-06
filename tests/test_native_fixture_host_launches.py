@@ -17,6 +17,7 @@ from vault_binding_fixtures import restore_permissions
 
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
 
+import macos_only
 import native_finetune_fixture as finetune_fixture  # noqa: E402
 import verify_native_bridge as bridge  # noqa: E402
 import verify_native_workspace as workspace  # noqa: E402
@@ -32,6 +33,7 @@ def private_fixture_permissions(tmp_path: Path) -> Iterator[None]:
         os.umask(original)
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_copied_runtime_identity_and_wrapper_share_explicit_imports_without_bytecode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -111,7 +113,12 @@ def builds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> workspace.NativeB
 
 @pytest.mark.parametrize(
     ("suite", "delayed"),
-    [("review", False), ("transport", False), ("recovery", False), ("transport", True)],
+    [
+        ("review", False),
+        ("transport", False),
+        ("recovery", False),
+        pytest.param("transport", True, marks=macos_only.REAL_RECORDING_SERVICE),
+    ],
 )
 def test_workspace_configuration_preserves_service_flags_and_delayed_arguments(
     tmp_path: Path,
@@ -165,7 +172,9 @@ def test_workspace_configuration_preserves_service_flags_and_delayed_arguments(
     assert not list(root.rglob("__pycache__"))
 
 
-@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize(
+    "configured", [False, pytest.param(True, marks=macos_only.REAL_RECORDING_SERVICE)]
+)
 def test_finetune_configuration_uses_isolated_service_and_preserves_fixture_options(
     tmp_path: Path, builds: workspace.NativeBuilds, configured: bool
 ) -> None:

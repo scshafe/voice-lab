@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import macos_only
 import pytest
 from recording_fixtures import REPOSITORY_ROOT
 from recording_native_audit import (
@@ -66,6 +67,7 @@ def test_normal_module_service_startup_is_service_and_opens_control(audit_root: 
     assert Path(control["path"]).stat().st_size == 0
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_exact_fixture_identity_preflight_is_foreground_service(audit_root: Path) -> None:
     result, log = _run(audit_root, ["-c", SERVICE_IDENTITY_PREFLIGHT_COMMAND])
     identity = json.loads(result.stdout)
@@ -93,6 +95,7 @@ def test_near_match_identity_commands_remain_unknown(argv: list[str], original: 
     assert _startup_role(argv, original) == ("unknown", None)
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_actual_near_match_identity_preflight_fails_closed(audit_root: Path) -> None:
     _result, log = _run(audit_root, ["-c", SERVICE_IDENTITY_PREFLIGHT_COMMAND + "; pass"])
     with pytest.raises(ValueError, match="BENCHMARK_AUDIT_UNKNOWN_ROLE"):

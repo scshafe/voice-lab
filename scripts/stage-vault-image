@@ -2,5 +2,5 @@
 set -eu
 # Offline, private staging. See --help; leaves a context for explicit operator transfer.
 export PYTHONDONTWRITEBYTECODE=1
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 exec "$repo_dir/.venv/bin/python" -I -B "$repo_dir/scripts/vault_container.py" stage "$@"

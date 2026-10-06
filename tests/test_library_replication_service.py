@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import macos_only
 import pytest
 import vault_service_fixture
 from test_recording_packages import analyzer_build as analyzer_build
@@ -1170,6 +1171,7 @@ def test_a_worker_kills_its_own_group_when_the_service_closes_its_stdin(
 # -- the real service ------------------------------------------------------------------------------
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_a_real_service_keeps_save_fast_and_unrefused_while_an_upload_is_stalled(
     package_rig: Any, tmp_path: Path
 ) -> None:

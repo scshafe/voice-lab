@@ -1494,6 +1494,13 @@ def fixture_library(request: pytest.FixtureRequest, kind: str) -> AssetLayout:
     return libraries.legacy if kind == "legacy" else libraries.accepted
 
 
+def _descriptor_path(descriptor: int) -> bytes:
+    """The path an open descriptor names: F_GETPATH on macOS, /proc/self/fd on Linux."""
+    if hasattr(fcntl, "F_GETPATH"):
+        return fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024)).rstrip(b"\0")
+    return os.fsencode(os.readlink(f"/proc/self/fd/{descriptor}"))
+
+
 @pytest.mark.parametrize("kind", sorted(REACHED_OWNERS))
 def test_no_source_opens_a_store_or_a_lock_file(
     request: pytest.FixtureRequest, kind: str, monkeypatch: pytest.MonkeyPatch
@@ -1519,7 +1526,7 @@ def test_no_source_opens_a_store_or_a_lock_file(
         return real_open(path, flags, *args, **kwargs)
 
     def flock(descriptor: int, operation: int) -> None:
-        path = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024)).rstrip(b"\0")
+        path = _descriptor_path(descriptor)
         locked.append(os.path.basename(os.fsdecode(path)))
         real_flock(descriptor, operation)
 

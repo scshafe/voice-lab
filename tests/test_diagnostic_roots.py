@@ -17,6 +17,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import macos_only
 import pytest
 from recording_fixtures import synthetic_catalog
 from test_recording_packages import saved_take
@@ -438,6 +439,7 @@ def _release(
     return release_path
 
 
+@macos_only.APPLICATION_PACKAGING
 def test_native_builder_and_verify_bind_the_declared_purpose_to_the_root_and_subject(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

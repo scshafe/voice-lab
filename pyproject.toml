@@ -61,6 +61,8 @@ skip_covered = true
 
 [tool.mypy]
 python_version = "3.12"
+# The app targets macOS: check its macOS branches on every host, Linux included.
+platform = "darwin"
 strict = true
 packages = ["cole_voice_lab"]
 

@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import macos_only
 import pytest
 
 from cole_voice_lab import desktop, desktop_application
@@ -337,6 +338,7 @@ def test_desktop_bootstrap_requires_explicit_download_gate():
     assert "--execute --allow-downloads" in result.stderr
 
 
+@macos_only.DESKTOP_MACOS_LOCK
 def test_desktop_bootstrap_is_a_hash_pinned_preview_by_default():
     result = subprocess.run(
         [sys.executable, "-I", "-B", str(ROOT / "scripts/bootstrap-desktop")],
@@ -350,6 +352,7 @@ def test_desktop_bootstrap_is_a_hash_pinned_preview_by_default():
     assert "vault-macos.txt" not in result.stdout
 
 
+@macos_only.DESKTOP_MACOS_LOCK
 def test_desktop_bootstrap_adds_the_vault_lock_only_when_asked():
     result = subprocess.run(
         [sys.executable, "-I", "-B", str(ROOT / "scripts/bootstrap-desktop"), "--with-vault"],

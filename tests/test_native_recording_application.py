@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import macos_only
 import pytest
 
 from cole_voice_lab.canonical import canonical_sha256
@@ -147,6 +148,7 @@ def test_malformed_macho_fails_closed(tmp_path: Path, payload: bytes) -> None:
         inspect_macho_load_commands(path)
 
 
+@macos_only.MACHO_IMAGES
 def test_real_installed_python_deployment_floor_is_measured() -> None:
     result = inspect_macho_load_commands(Path(sys.executable).resolve())
     assert result.minimum_macos is not None and result.architectures
@@ -429,7 +431,7 @@ def test_a_dependency_that_markers_exclude_here_is_not_part_of_the_closure(
 
 @pytest.mark.parametrize(
     "requirement",
-    ["requests>=2", "requests ; sys_platform == 'darwin'", "@nonsense", " ; extra != 'x'"],
+    ["requests>=2", f"requests ; sys_platform == '{sys.platform}'", "@nonsense", " ; extra != 'x'"],
 )
 def test_a_dependency_selected_here_outside_the_closure_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requirement: str
@@ -494,6 +496,7 @@ def test_a_dependency_without_bounded_file_evidence_is_refused(
         _python_distribution_identity("typing-extensions")
 
 
+@macos_only.DARWIN_WHEELS
 def test_the_installed_cffi_is_fingerprinted_without_its_launcher() -> None:
     distribution = importlib.metadata.distribution("cffi")
     root = Path(str(distribution.locate_file(""))).resolve()
@@ -657,6 +660,7 @@ def test_frozen_wheel_rejects_path_escape_and_duplicate_members(tmp_path: Path) 
         _install_frozen_wheel(wheel, environment)
 
 
+@macos_only.APPLICATION_PACKAGING
 def test_preview_preflight_preserves_existing_output_and_requires_native_device(
     tmp_path: Path,
 ) -> None:
@@ -1091,6 +1095,7 @@ def native_release_catalog(tmp_path_factory: pytest.TempPathFactory) -> Any:
 
 @pytest.fixture(scope="module")
 def signed_native_release(native_release_catalog: Any) -> Any:
+    macos_only.skip_off_macos(macos_only.APPLICATION_PACKAGING)
     from cole_voice_lab.models import CaptureDevice
 
     assets = native_release_catalog.layout
