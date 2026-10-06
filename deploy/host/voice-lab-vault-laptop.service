@@ -1,0 +1,59 @@
+# The vault copier for the laptop destination (design §4.3, D-020, D-023, D-034): one
+# sealed push of the lab to the laptop's vault, then a verify that downloads, decrypts
+# and re-hashes every file of the new head. Only ciphertext leaves; the library key
+# never does. Started by voice-lab-vault-laptop.timer. A fixed-name unit, not a
+# template: infra's host-unit validator refuses templates for now, so each destination
+# has its own pair (the Air's, voice-lab-vault-air.*, in phase 3).
+#
+# The library key and this destination's two vault tokens are encrypted systemd
+# credentials in /etc/credstore.encrypted/ (root-owned, made once with
+# `systemd-creds encrypt`; docs/LIBRARY_VAULT.md). The service manager decrypts the
+# ones these globs match into this unit's private, read-only $CREDENTIALS_DIRECTORY,
+# which only voice-lab (and root) can read: the key (one per library) and the laptop's
+# tokens, never another destination's. ImportCredential= takes a trailing
+# "*" only, which is why token items are named
+# private.cole.voice-lab.vault-destination.<destination>.<library_id>.(token|read-token).
+#
+# Network: the tailnet only. The client checks the vault node's identity with
+# /usr/bin/tailscale (the local tailscaled socket) and connects to the checked
+# 100.64.0.0/10 address; nothing else is reachable.
+[Unit]
+Description=voice-lab vault copy to the laptop (sealed push, then verify)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=voice-lab
+Group=voice-lab
+UMask=0077
+ImportCredential=private.cole.voice-lab.vault.*
+ImportCredential=private.cole.voice-lab.vault-destination.laptop.*
+ExecStart=/opt/voice-lab/current/bin/voice-lab vault push --asset-root /data/voice-lab/lab --destination laptop
+ExecStart=/opt/voice-lab/current/bin/voice-lab vault verify --asset-root /data/voice-lab/lab --destination laptop
+TimeoutStartSec=12h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=100.64.0.0/10
+ProtectSystem=strict
+ReadWritePaths=/data/voice-lab/lab
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

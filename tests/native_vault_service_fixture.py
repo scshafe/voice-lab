@@ -49,13 +49,13 @@ def main() -> int:
             store_vault_token,
         )
 
-        from cole_voice_lab.storage_contracts import keychain_item_names
+        from cole_voice_lab.storage_contracts import library_key_item
 
         credentials = json.loads(options.test_vault_credentials.read_text())
         keychain = MemoryKeychain()
-        keychain.items[(keychain_item_names(credentials["library_id"]).key, "library-key")] = (
-            credentials["key"]
-        )
+        keychain.items[(library_key_item(credentials["library_id"]), "library-key")] = credentials[
+            "key"
+        ]
         store_vault_token(
             keychain, token=credentials["token"], library_id=credentials["library_id"]
         )

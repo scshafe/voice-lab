@@ -160,7 +160,7 @@ def add_mac_only_files(layout: AssetLayout) -> None:
     """Files that never leave the Mac, beside the copied ones."""
     root = layout.root
     for relative in (
-        "provenance/vault/approvals/approval-1.json",
+        "provenance/vault/destinations/default/approvals/approval-1.json",
         f"tmp/.vault-{HEX16}/database-backup.sqlite3",
         "derived/speech/speak-1/speech.json",
         f"derived/recording-waveforms/{'0' * 64}-v2.cvlwave",

@@ -452,11 +452,14 @@ Laptop stack backups ──pull──► PC /data/backups (unchanged; the fleet'
   locks; `tmp/`; Speak clips.
 - **One binding per destination.** D-020 has one binding and one manifest chain. The
   copier gains one binding, approval, state, manifest chain and ledger per
-  destination (`provenance/vault/<destination>/`), so a sleeping Air never holds back
+  destination (`provenance/vault/<destination>/`; as built,
+  `provenance/vault/destinations/<destination>/`, with a token pair per destination,
+  D-034), so a sleeping Air never holds back
   the laptop's nightly copy, and each destination's rollback and fork checks stay
   exactly D-020's.
 - **The key.** The library key is created on the PC as a root-owned credential
-  readable only by the vault units (systemd `LoadCredentialEncrypted=`), with D-020's
+  readable only by the vault units (systemd `LoadCredentialEncrypted=`; as built,
+  `ImportCredential=` globs over `/etc/credstore.encrypted/`, D-034), with D-020's
   offline recovery sheet. No vault host, neither the laptop nor the Air, ever holds
   it. No key exists yet: D-020's vault was never deployed and no library key was
   ever created.

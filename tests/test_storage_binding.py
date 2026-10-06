@@ -90,6 +90,7 @@ from cole_voice_lab.storage_binding import (
     write_library_recovery_sheet,
 )
 from cole_voice_lab.storage_contracts import (
+    DEFAULT_VAULT_DESTINATION,
     VAULT_NODE_TAG,
     LibraryIdentity,
     StorageBinding,
@@ -109,9 +110,10 @@ from cole_voice_lab.storage_ports import (
     library_head_ref,
     storage_error,
 )
+from cole_voice_lab.storage_sealing import SecurityCliKeychain, SystemdCredentialKeychain
 from cole_voice_lab.tailnet import platform_tailscale_binary
 
-NAMES = keychain_item_names(LIBRARY_ID)
+NAMES = keychain_item_names(LIBRARY_ID, DEFAULT_VAULT_DESTINATION)
 FIXED = datetime(2026, 9, 17, 12, tzinfo=UTC)
 
 
@@ -433,11 +435,17 @@ def test_moving_a_copied_library_sets_its_records_aside_and_never_removes_them(
         reset_state=True,
     )
 
-    assert result.superseded_state == library.root / "provenance/vault/state-superseded-1.json"
-    assert result.superseded_manifests == library.root / "provenance/vault/manifests-superseded-1"
+    assert (
+        result.superseded_state
+        == library.root / "provenance/vault/destinations/default/state-superseded-1.json"
+    )
+    assert (
+        result.superseded_manifests
+        == library.root / "provenance/vault/destinations/default/manifests-superseded-1"
+    )
     assert records.read_state(LIBRARY_ID) is None
     assert (result.superseded_manifests / "00000001.json").read_bytes() == kept
-    assert not (library.root / "provenance/vault/manifests").exists()
+    assert not (library.root / "provenance/vault/destinations/default/manifests").exists()
 
     # The second vault starts this library's chain again, and a third move keeps both records.
     push_into(library, opened(library))
@@ -452,9 +460,14 @@ def test_moving_a_copied_library_sets_its_records_aside_and_never_removes_them(
         replace=True,
         reset_state=True,
     )
-    assert moved.superseded_state == library.root / "provenance/vault/state-superseded-2.json"
-    assert (library.root / "provenance/vault/state-superseded-1.json").exists()
-    assert (library.root / "provenance/vault/manifests-superseded-2/00000001.json").exists()
+    assert (
+        moved.superseded_state
+        == library.root / "provenance/vault/destinations/default/state-superseded-2.json"
+    )
+    assert (library.root / "provenance/vault/destinations/default/state-superseded-1.json").exists()
+    assert (
+        library.root / "provenance/vault/destinations/default/manifests-superseded-2/00000001.json"
+    ).exists()
 
 
 def test_a_reset_moves_only_the_records_that_are_still_there(
@@ -465,8 +478,8 @@ def test_a_reset_moves_only_the_records_that_are_still_there(
     store_library_key(seams.keychain)
     bind_local(library, elsewhere)
     push_into(library, opened(library))
-    manifests = library.root / "provenance/vault/manifests"
-    manifests.rename(library.root / "provenance/vault/manifests-elsewhere")
+    manifests = library.root / "provenance/vault/destinations/default/manifests"
+    manifests.rename(library.root / "provenance/vault/destinations/default/manifests-elsewhere")
     second = tmp_path.resolve() / "second-vault"
     second.mkdir(mode=0o700)
 
@@ -480,7 +493,10 @@ def test_a_reset_moves_only_the_records_that_are_still_there(
         reset_state=True,
     )
 
-    assert result.superseded_state == library.root / "provenance/vault/state-superseded-1.json"
+    assert (
+        result.superseded_state
+        == library.root / "provenance/vault/destinations/default/state-superseded-1.json"
+    )
     assert result.superseded_manifests is None
     assert VaultRecords(library).read_state(LIBRARY_ID) is None
 
@@ -529,7 +545,9 @@ def test_a_rebind_refuses_while_a_push_is_running_instead_of_undoing_it(
     assert VaultRecords(library).read_state(LIBRARY_ID) == state
     bound = read_storage_binding(library)
     assert bound is not None and bound.endpoint == str(elsewhere)
-    assert not (library.root / "provenance/vault/state-superseded-1.json").exists()
+    assert not (
+        library.root / "provenance/vault/destinations/default/state-superseded-1.json"
+    ).exists()
     moved = bind_library(
         library,
         backend="local-directory",
@@ -609,7 +627,7 @@ def test_a_binding_of_an_unknown_backend_or_another_library_is_refused(
     assert unknown.value.code == "STORAGE.NOT_BOUND"
 
     other = "lib-20260918-ffffffffffff"
-    names = keychain_item_names(other)
+    names = keychain_item_names(other, DEFAULT_VAULT_DESTINATION)
     foreign_document = document | {"library_id": other, "key_item": names.key}
     write_canonical_json(
         path, StorageBinding.model_validate_json(json.dumps(foreign_document)), mode=0o600
@@ -624,7 +642,7 @@ def test_a_local_vault_is_sealed_with_the_library_key_and_needs_no_token(
 ) -> None:
     seams = install_vault_seams(monkeypatch)
     bind_local(library, elsewhere)
-    with pytest.raises(StorageError, match="has no library key item") as missing:
+    with pytest.raises(StorageError, match="there is no library key item") as missing:
         open_library_vault(library)
     assert missing.value.code == "STORAGE.NOT_BOUND"
     store_library_key(seams.keychain)
@@ -656,7 +674,7 @@ def test_a_tailnet_vault_is_reached_with_the_approved_identity_and_the_write_tok
         approval = approval_record()
         _, digest = write_approval(library, approval)
         bind_tailnet(library, digest)
-        with pytest.raises(StorageError, match="has no write vault token item") as missing:
+        with pytest.raises(StorageError, match="there is no write vault token item") as missing:
             open_library_vault(library)
         assert missing.value.code == "STORAGE.NOT_BOUND"
         store_vault_token(seams.keychain, "write", token=server.write_token)
@@ -907,7 +925,7 @@ def test_another_mac_reaches_a_tailnet_vault_with_its_read_token(
     with running_vault(tmp_path) as server:
         seams = install_vault_seams(monkeypatch, port=server.port)
         store_library_key(seams.keychain)
-        with pytest.raises(StorageError, match="has no read vault token item"):
+        with pytest.raises(StorageError, match="there is no read vault token item"):
             open_vault_for_restore(
                 fresh,
                 backend="tailnet-vault",
@@ -1025,7 +1043,7 @@ def test_a_token_is_never_replaced_and_neither_is_created_when_one_exists(
     seams = install_vault_seams(monkeypatch)
     existing = store_vault_token(seams.keychain, held)
 
-    with pytest.raises(StorageError, match=f"already holds the {held} token item") as conflict:
+    with pytest.raises(StorageError, match=f"the {held} token item .* already exists") as conflict:
         create_vault_tokens(library, NAMESPACE)
     assert conflict.value.code == "STORAGE.CONFLICT"
     assert len(seams.keychain.items) == 1
@@ -1307,10 +1325,24 @@ def test_the_catalog_openers_still_name_the_local_store(library: AssetLayout) ->
         assert catalog.list_catalogs() == ()
 
 
-def test_the_production_seams_build_the_checked_client_and_the_real_keychain() -> None:
-    """Nothing is run: a resolver and a connection are built, not used."""
+def test_the_production_seams_build_the_checked_client_and_the_real_keychain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Nothing is run: a keychain, a resolver and a connection are built, not used."""
+    monkeypatch.setattr(sys, "platform", "darwin")
     keychain = keychain_client()
+    assert isinstance(keychain, SecurityCliKeychain)
     assert keychain.security == Path("/usr/bin/security")
+    # Anywhere else (the PC), the key and tokens are the vault unit's systemd credentials.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(tmp_path))
+    credentials = keychain_client()
+    assert isinstance(credentials, SystemdCredentialKeychain)
+    assert credentials.directory == tmp_path
+    monkeypatch.delenv("CREDENTIALS_DIRECTORY")
+    with pytest.raises(StorageError, match=r"\$CREDENTIALS_DIRECTORY does not name") as outside:
+        keychain_client()
+    assert outside.value.code == "STORAGE.PROTOCOL"
     resolver = tailnet_resolver(TAILNET_SUFFIX)
     assert isinstance(resolver, TailscaleCliResolver)
     assert resolver.tailnet_suffix == TAILNET_SUFFIX
@@ -1330,13 +1362,18 @@ def test_the_production_seams_build_the_checked_client_and_the_real_keychain() -
     assert ENDPOINT in repr(connection) and "cvlv_" not in repr(connection)
 
 
-def test_open_library_vault_takes_a_layout_and_nothing_else() -> None:
-    """No flag, argument or environment variable can choose a backend or a way to connect."""
+def test_open_library_vault_takes_a_layout_and_a_destination_name_and_nothing_else() -> None:
+    """No flag, argument or environment variable can choose a backend or a way to connect.
+
+    The destination only names whose records to read (D-034); the binding there still decides
+    the backend, the approval the node, and the keychain the secrets.
+    """
     import inspect
 
     parameters = inspect.signature(open_library_vault).parameters
-    assert list(parameters) == ["layout"]
+    assert list(parameters) == ["layout", "destination"]
     assert parameters["layout"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert parameters["destination"].default == DEFAULT_VAULT_DESTINATION
 
 
 def test_importing_the_binding_loads_neither_the_cipher_nor_the_vault_client() -> None:

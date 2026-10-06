@@ -472,14 +472,14 @@ def add_lab_records(layout: AssetLayout) -> None:
     """Every other kind of file the lab or this plan writes, at its real path."""
     root = layout.root
     for relative in (
-        "provenance/vault/binding.json",
-        "provenance/vault/state.json",
+        "provenance/vault/destinations/default/binding.json",
+        "provenance/vault/destinations/default/state.json",
         "provenance/vault/library.json",
-        "provenance/vault/ledger/00000001.json",
-        "provenance/vault/manifests/00000001.json",
-        "provenance/vault/approvals/approval-1.json",
-        "provenance/vault/requests/2026-09-17.jsonl",
-        "provenance/vault/.push.lock",
+        "provenance/vault/destinations/default/ledger/00000001.json",
+        "provenance/vault/destinations/default/manifests/00000001.json",
+        "provenance/vault/destinations/default/approvals/approval-1.json",
+        "provenance/vault/destinations/default/requests/2026-09-17.jsonl",
+        "provenance/vault/destinations/default/.push.lock",
         f"tmp/.vault-{HEX16}/database-backup.sqlite3",
         "tmp/tmpab12cd34",
         f"tmp/.intake-pilot-001-{os.getpid()}/manifest.json",
@@ -619,7 +619,7 @@ def test_mac_only_subtrees_are_skipped_only_where_nothing_below_is_copied() -> N
         if decided.subtree:
             assert not any(earlier.copied for earlier in CLASSIFICATION_RULES[:index])
     assert subtree_stays_on_mac("provenance/vault")
-    assert subtree_stays_on_mac("provenance/vault/ledger")
+    assert subtree_stays_on_mac("provenance/vault/destinations/default/ledger")
     assert subtree_stays_on_mac(f"tmp/.vault-{HEX16}")
     assert subtree_stays_on_mac("derived/finetune/run-1/samples/base/synthesis-tmp")
     assert not subtree_stays_on_mac("derived/finetune/run-1/samples/base")
@@ -734,9 +734,9 @@ PLAN_DISPOSITIONS: Mapping[str, tuple[str, int | None, str | None]] = {
     "derived/finetune/run-1/samples/base/synthesis-tmp/reference.wav": ("mac-only", None, None),
     "derived/speech/speak-1/speech.json": ("mac-only", None, None),
     "derived/speech/speak-1/speech.wav": ("mac-only", None, None),
-    "provenance/vault/binding.json": ("mac-only", None, None),
-    "provenance/vault/state.json": ("mac-only", None, None),
-    "provenance/vault/ledger/00000001.json": ("mac-only", None, None),
+    "provenance/vault/destinations/default/binding.json": ("mac-only", None, None),
+    "provenance/vault/destinations/default/state.json": ("mac-only", None, None),
+    "provenance/vault/destinations/default/ledger/00000001.json": ("mac-only", None, None),
     f"tmp/.vault-{HEX16}/database-backup.sqlite3": ("mac-only", None, None),
     "provenance/recording-packages/work/prepare-1/copy-take-ab12.partial": ("mac-only", None, None),
     "tmp/.native-package-stage-native-1/READY": ("mac-only", None, None),

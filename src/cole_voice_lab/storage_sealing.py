@@ -3,11 +3,13 @@
 @canonical storage_sealing -- SealedBlobStore seals every blob with AES-256-GCM under the
 library key (sealed format v1, the library id as associated data) before an inner BlobStore
 sees it, and authenticates and opens it after; LibraryKey is the only holder of key bytes; the
-key is kept in the login Keychain through KeychainClient (SecurityCliKeychain runs
-/usr/bin/security only, never with a secret in argv) and leaves the Mac only as the recovery
-sheet; this is the only module that imports cryptography.
+key is kept through KeychainClient -- in the login Keychain on macOS (SecurityCliKeychain runs
+/usr/bin/security only, never with a secret in argv), as systemd credentials on Linux
+(SystemdCredentialKeychain reads $CREDENTIALS_DIRECTORY, D-034) -- and leaves the host only as
+the recovery sheet; this is the only module that imports cryptography.
 Related: storage_ports.py (BlobStore, the STORAGE.* errors), storage_contracts.py
-(keychain_item_names, validate_library_id), storage_local.py (the store it wraps first),
+(library_key_item, keychain_item_names, validate_library_id), storage_local.py (the store it
+wraps first),
 storage_binding.py (the composition root, which always wraps the vault in SealedBlobStore),
 tests/test_storage_sealing.py, tests/storage_conformance.py (the sealed-local spec).
 
@@ -39,13 +41,15 @@ version, a wrong key or library id, a changed nonce, ciphertext or tag) is
 ref. No message, repr or log of this module contains key material or plaintext, and no
 secret is ever placed in a subprocess argument list or environment.
 
-Library key custody. Each library has one 256-bit key in the login Keychain as a generic
-password (service ``keychain_item_names(library_id).key``, account ``LIBRARY_KEY_ACCOUNT``)
-holding 64 lowercase hex characters. It is created once (an existing item is never
-replaced) and restored only from its recovery sheet, a plain-text page holding the library id,
-a fingerprint, the key in 16 groups of four hex digits and a checksum. Apart from
-``cryptography``, this module imports only the standard library and the package's
-``storage_contracts`` and ``storage_ports`` modules.
+Library key custody. Each library has one 256-bit key, an item named
+``library_key_item(library_id)`` holding 64 lowercase hex characters: on macOS a generic
+password in the login Keychain (account ``LIBRARY_KEY_ACCOUNT``), on Linux a systemd
+credential of that name, encrypted at rest by ``systemd-creds`` and decrypted by the service
+manager into the vault unit's private, read-only credential directory. It is created once
+(an existing item is never replaced) and restored only from its recovery sheet, a plain-text
+page holding the library id, a fingerprint, the key in 16 groups of four hex digits and a
+checksum. Apart from ``cryptography``, this module imports only the standard library and the
+package's ``storage_contracts`` and ``storage_ports`` modules.
 """
 
 from __future__ import annotations
@@ -57,8 +61,9 @@ import os
 import pwd
 import re
 import secrets
+import stat
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, NoReturn, Protocol
@@ -66,7 +71,7 @@ from typing import Final, NoReturn, Protocol
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from .storage_contracts import keychain_item_names, validate_library_id
+from .storage_contracts import library_key_item, validate_library_id
 from .storage_ports import (
     MAX_BLOB_BYTES,
     BlobRef,
@@ -89,11 +94,13 @@ __all__ = [
     "SEALING_NONCE_BYTES",
     "SEALING_OVERHEAD",
     "SEALING_TAG_BYTES",
+    "CREDENTIALS_DIRECTORY_VARIABLE",
     "SECURITY_TOOL",
     "KeychainClient",
     "LibraryKey",
     "SealedBlobStore",
     "SecurityCliKeychain",
+    "SystemdCredentialKeychain",
     "create_library_key",
     "import_library_key",
     "library_key_checksum",
@@ -138,6 +145,14 @@ _SECRET_WORD: Final = re.compile(r"[A-Za-z0-9._:-]{1,1024}")
 _PLAIN_PATH: Final = re.compile(r"/[A-Za-z0-9._:/-]{1,1023}")
 _SECRET_OUTPUT: Final = re.compile(rb"[\x21-\x7e]{1,1024}\n")
 _NO_SPACE_ERRNOS: Final = frozenset({errno.ENOSPC, errno.EDQUOT})
+# What systemd sets for a unit with LoadCredential(Encrypted)=/ImportCredential=: the absolute
+# path of the unit's private, read-only credential directory.
+CREDENTIALS_DIRECTORY_VARIABLE: Final = "CREDENTIALS_DIRECTORY"
+# One credential: one secret word and an optional newline.
+_MAX_CREDENTIAL_BYTES: Final = 1025
+_CREDENTIAL: Final = re.compile(rb"[\x21-\x7e]{1,1024}\n?")
+_CREDENTIAL_READ_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+_CREDENTIAL_DIRECTORY_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 class LibraryKey:
@@ -312,7 +327,7 @@ class SealedBlobStore:
 
 
 class KeychainClient(Protocol):
-    """Generic passwords in the login Keychain; the only way this lab keeps a secret.
+    """Named secrets: the only way this lab keeps one (login Keychain, systemd credentials).
 
     Service, account and label are plain words (``[A-Za-z0-9._:-]``). An implementation never
     places a secret in a subprocess argument list, an environment or an error message.
@@ -521,8 +536,227 @@ class SecurityCliKeychain:
         raise self._failure(action, problem)
 
 
+class SystemdCredentialKeychain:
+    """``KeychainClient`` over one systemd credential directory (Linux; D-034).
+
+    An item is the file named by its service in the directory: the vault unit's
+    ``$CREDENTIALS_DIRECTORY``, which the service manager fills from the encrypted credentials
+    under ``/etc/credstore.encrypted/`` (``ImportCredential=``) and keeps private and
+    read-only, so nothing a unit runs can add or replace an item. Each item name belongs to one
+    account in this lab, so ``account`` is checked as a plain word and not stored. Reading
+    follows ``SecurityCliKeychain``'s rules: an item holds one plain secret word (an ending
+    newline is allowed), and no message ever repeats it. An item must be a regular file with
+    one link, owned by this user or root, that no other user may open and no group may write.
+
+    ``add_generic_password`` is how the operator creates the key and the tokens once, before
+    any unit runs: ``CREDENTIALS_DIRECTORY`` names a private staging directory of this user
+    (0700, best on a tmpfs), each item becomes a new 0600 file there (never replacing one), and
+    the operator then encrypts each with ``systemd-creds encrypt --name=<item>`` and removes
+    the staging directory. Under systemd the directory is read-only, so an add is refused.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        """Choose the credential directory.
+
+        Params: ``directory``, an absolute, normalized path (it may hold ``@``, as systemd's
+        ``/run/credentials/<unit>`` does, but no control character).
+        Raises: ``ValueError`` for anything else.
+        """
+        text = os.fspath(directory)
+        if (
+            not os.path.isabs(text)
+            or os.path.normpath(text) != text
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in text)
+        ):
+            raise ValueError(
+                f"a credential directory is an absolute, normalized path: {text!r:.200}"
+            )
+        self.directory = Path(text)
+
+    @classmethod
+    def from_environment(
+        cls, environment: Mapping[str, str] | None = None
+    ) -> SystemdCredentialKeychain:
+        """The credential directory systemd named for this process.
+
+        Params: ``environment`` (default ``os.environ``).
+        Returns: the keychain over ``$CREDENTIALS_DIRECTORY``.
+        Raises: ``StorageError`` (``STORAGE.PROTOCOL``) when the variable is unset, empty or
+        not an absolute, normalized path: outside a unit that loads the vault credentials
+        there is nothing to read.
+        """
+        values = os.environ if environment is None else environment
+        named = values.get(CREDENTIALS_DIRECTORY_VARIABLE, "")
+        if named:
+            try:
+                return cls(Path(named))
+            except ValueError:
+                pass
+        raise storage_error(
+            "STORAGE.PROTOCOL",
+            f"${CREDENTIALS_DIRECTORY_VARIABLE} does not name a credential directory, so the "
+            "library key and vault tokens cannot be read: on Linux they are systemd "
+            "credentials, loaded only for a vault unit (voice-lab-vault-<destination>) or a "
+            "`systemd-run -p ImportCredential=…` command; to create them once, point "
+            f"{CREDENTIALS_DIRECTORY_VARIABLE} at a private staging directory "
+            "(docs/LIBRARY_VAULT.md)",
+        )
+
+    def __repr__(self) -> str:
+        return f"SystemdCredentialKeychain({os.fspath(self.directory)!r})"
+
+    def _failure(self, problem: str) -> StorageError:
+        return storage_error(
+            "STORAGE.PROTOCOL", f"the credential directory {self.directory} {problem}"
+        )
+
+    def _open_directory(self) -> int:
+        try:
+            return os.open(self.directory, _CREDENTIAL_DIRECTORY_FLAGS)
+        except OSError as error:
+            problem = error.strerror or type(error).__name__
+        raise self._failure(f"cannot be opened as a directory ({problem})")
+
+    def _metadata(self, directory: int, service: str) -> os.stat_result | None:
+        """The item's metadata without following a link; ``None`` when there is none."""
+        try:
+            return os.stat(service, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            problem = error.strerror or type(error).__name__
+        raise self._failure(f"could not be asked for item {service} ({problem})")
+
+    def _require_private(self, metadata: os.stat_result, service: str) -> None:
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_uid not in (os.getuid(), 0)
+            or metadata.st_mode & 0o027
+        ):
+            raise self._failure(
+                f"holds item {service}, but not as a private regular file with one link "
+                "(owned by this user or root, no access for others, no group write)"
+            )
+
+    def has_generic_password(self, *, service: str, account: str) -> bool:
+        """Whether the item exists; see ``KeychainClient.has_generic_password``.
+
+        Raises: ``ValueError`` for a service or account that is not a plain word;
+        ``StorageError`` (``STORAGE.PROTOCOL``) when the directory cannot be read or holds
+        the item as something other than a private regular file.
+        """
+        _plain("service", service)
+        _plain("account", account)
+        directory = self._open_directory()
+        try:
+            metadata = self._metadata(directory, service)
+        finally:
+            os.close(directory)
+        if metadata is None:
+            return False
+        self._require_private(metadata, service)
+        return True
+
+    def find_generic_password(self, *, service: str, account: str) -> str:
+        """The item's secret; see ``KeychainClient.find_generic_password``.
+
+        Raises: ``ValueError`` for a service or account that is not a plain word;
+        ``StorageError`` with ``STORAGE.NOT_BOUND`` (no such item) or ``STORAGE.PROTOCOL``
+        (an unreadable directory or item, or one that is not one plain secret word).
+        """
+        _plain("service", service)
+        _plain("account", account)
+        directory = self._open_directory()
+        try:
+            data = self._read(directory, service)
+        finally:
+            os.close(directory)
+        if data is None:
+            raise storage_error(
+                "STORAGE.NOT_BOUND",
+                f"the credential directory {self.directory} has no item {service}; a library key "
+                "comes back only from its recovery sheet, a vault token by creating or importing "
+                "it again, and both reach a unit only as encrypted credentials it imports",
+            )
+        if _CREDENTIAL.fullmatch(data) is None:
+            raise self._failure(f"holds item {service}, but not as one plain secret")
+        return data.rstrip(b"\n").decode("ascii")
+
+    def _read(self, directory: int, service: str) -> bytes | None:
+        try:
+            descriptor = os.open(service, _CREDENTIAL_READ_FLAGS, dir_fd=directory)
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            problem = error.strerror or type(error).__name__
+            raise self._failure(f"could not open item {service} ({problem})") from None
+        try:
+            metadata = os.fstat(descriptor)
+            self._require_private(metadata, service)
+            if metadata.st_size > _MAX_CREDENTIAL_BYTES:
+                raise self._failure(f"holds item {service}, but it is too large to be a secret")
+            os.set_blocking(descriptor, True)
+            return os.read(descriptor, _MAX_CREDENTIAL_BYTES + 1)
+        except OSError as error:
+            problem = error.strerror or type(error).__name__
+            raise self._failure(f"could not read item {service} ({problem})") from None
+        finally:
+            os.close(descriptor)
+
+    def add_generic_password(self, *, service: str, account: str, label: str, secret: str) -> None:
+        """Write a new item, then read it back; see ``KeychainClient.add_generic_password``.
+
+        The directory must be a private (0700, no group or other access) directory of this
+        user; the item is created with ``O_CREAT|O_EXCL|O_NOFOLLOW`` at 0600, written as the
+        secret and a newline, fsynced, and the directory fsynced. An item that could not be
+        written completely is removed.
+        Raises: ``ValueError`` for a service, account or label that is not a plain word, or a
+        secret that is not 1-1024 characters of ``[A-Za-z0-9._:-]`` (the message never shows
+        it); ``StorageError`` with ``STORAGE.CONFLICT`` (the item exists) or
+        ``STORAGE.PROTOCOL`` (the directory is not a private writable directory of this user
+        -- as under systemd, where it is read-only -- the write failed, or the item does not
+        hold ``secret`` afterwards).
+        """
+        _plain("service", service)
+        _plain("account", account)
+        _plain("label", label)
+        if type(secret) is not str or _SECRET_WORD.fullmatch(secret) is None:
+            raise ValueError("a credential secret is 1-1024 characters of [A-Za-z0-9._:-]")
+        directory = self._open_directory()
+        try:
+            metadata = os.fstat(directory)
+            if metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+                raise self._failure(
+                    "is not a private directory of this user (0700), so no credential is "
+                    "written there; under systemd it is read-only by design"
+                )
+            try:
+                _write_new_file(directory, service, f"{secret}\n".encode("ascii"), label=service)
+            except FileExistsError:
+                raise storage_error(
+                    "STORAGE.CONFLICT",
+                    f"the credential directory {self.directory} already holds item {service}; "
+                    "an existing credential is never replaced",
+                ) from None
+            except (OSError, _LeftoverFileError) as failed:
+                error = failed.error if isinstance(failed, _LeftoverFileError) else failed
+                problem = error.strerror or type(error).__name__
+                left = (
+                    f"; the incomplete item {service} could not be removed, delete it by hand"
+                    if isinstance(failed, _LeftoverFileError)
+                    else ""
+                )
+                raise self._failure(f"refused item {service} ({problem}){left}") from None
+        finally:
+            os.close(directory)
+        stored = self.find_generic_password(service=service, account=account)
+        if not hmac.compare_digest(stored.encode("ascii"), secret.encode("ascii")):
+            raise self._failure(f"kept an item {service} that holds a different secret")
+
+
 def _library_key_item(library_id: str) -> str:
-    return keychain_item_names(library_id).key
+    return library_key_item(library_id)
 
 
 def load_library_key(keychain: KeychainClient, library_id: str) -> LibraryKey:
@@ -547,8 +781,9 @@ def load_library_key(keychain: KeychainClient, library_id: str) -> LibraryKey:
     if missing:
         raise storage_error(
             "STORAGE.NOT_BOUND",
-            f"the login Keychain has no library key item {service} for library {library_id}; "
-            "restore it from the library's recovery sheet",
+            f"there is no library key item {service} for library {library_id} (the login "
+            "Keychain on macOS, the unit's systemd credentials on Linux); restore it from the "
+            "library's recovery sheet",
         )
     if _KEY_HEX.fullmatch(secret) is None:
         raise storage_error(
@@ -564,8 +799,7 @@ def _store_new_key(keychain: KeychainClient, library_id: str, key: LibraryKey) -
     if keychain.has_generic_password(service=service, account=LIBRARY_KEY_ACCOUNT):
         raise storage_error(
             "STORAGE.CONFLICT",
-            f"the login Keychain already holds the library key item {service}; a library key "
-            "is never replaced",
+            f"the library key item {service} already exists; a library key is never replaced",
         )
     keychain.add_generic_password(
         service=service, account=LIBRARY_KEY_ACCOUNT, label=service, secret=key._secret.hex()

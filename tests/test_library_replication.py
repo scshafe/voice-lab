@@ -217,16 +217,16 @@ def kinds(layout: AssetLayout) -> list[str]:
 
 
 def state_path(layout: AssetLayout) -> Path:
-    return layout.root / "provenance/vault/state.json"
+    return layout.root / "provenance/vault/destinations/default/state.json"
 
 
 def ledger_path(layout: AssetLayout, sequence: int) -> Path:
-    return layout.root / f"provenance/vault/ledger/{sequence:08d}.json"
+    return layout.root / f"provenance/vault/destinations/default/ledger/{sequence:08d}.json"
 
 
 def manifest_copies(layout: AssetLayout) -> list[Path]:
     """The manifest copies this Mac keeps, in name order; empty before the first push."""
-    directory = layout.root / "provenance/vault/manifests"
+    directory = layout.root / "provenance/vault/destinations/default/manifests"
     return sorted(directory.iterdir()) if directory.is_dir() else []
 
 
@@ -521,7 +521,7 @@ def test_one_push_runs_at_a_time(library: AssetLayout, vault: Vault) -> None:
             push(library, vault)
         with pytest.raises(PushRunningError):
             verify(library, vault)
-    lock = library.root / "provenance/vault/.push.lock"
+    lock = library.root / "provenance/vault/destinations/default/.push.lock"
     assert stat.S_IMODE(lock.stat().st_mode) == 0o600
     holder = subprocess.Popen(
         [sys.executable, "-I", "-B", "-c", LOCK_HOLDER, str(lock)],
@@ -1087,7 +1087,7 @@ def test_a_stored_manifest_is_proven_before_it_is_read(
         | {
             "entries": (
                 ManifestEntry.model_construct(
-                    path="provenance/vault/state.json",
+                    path="provenance/vault/destinations/default/state.json",
                     file_class="records",
                     kind="file",
                     sha256=hashlib.sha256(b"").hexdigest(),
@@ -1181,7 +1181,7 @@ def test_a_push_interrupted_after_its_head_swap_is_finished_by_the_next_push(
     with pytest.raises(StorageIntegrityError, match=r"\(fork\).*did not start"):
         push(library, vault)
     assert VaultRecords(library).read_state(LIBRARY_ID) is None
-    assert not (library.root / "provenance/vault/manifests").exists()
+    assert not (library.root / "provenance/vault/destinations/default/manifests").exists()
     assert kinds(library) == ["upload-started"]
     rewrite_entry(library, 1, payload_sha256=started_payload)
 
@@ -1578,8 +1578,14 @@ def test_unsafe_or_foreign_vault_records_are_refused_never_repaired(
     with pytest.raises(StorageIntegrityError, match="vault is not a private directory"):
         push(library, vault)
     vault_directory.chmod(0o700)
+    # A destination's own directory is held to the same rule (D-034).
+    destination_directory = records.root
+    destination_directory.chmod(0o750)
+    with pytest.raises(StorageIntegrityError, match="default is not a private directory"):
+        push(library, vault)
+    destination_directory.chmod(0o700)
 
-    manifests = vault_directory / "manifests"
+    manifests = records.root / "manifests"
     manifests.rename(vault_directory.parent / "manifests-elsewhere")
     manifests.symlink_to(vault_directory.parent / "manifests-elsewhere")
     with pytest.raises(StorageIntegrityError, match="manifests is not a private directory"):
@@ -1603,12 +1609,12 @@ def test_unsafe_or_foreign_vault_records_are_refused_never_repaired(
             manifest.model_copy(update={"created_at": manifest.created_at + timedelta(1)})
         )
 
-    lock = vault_directory / ".push.lock"
+    lock = records.root / ".push.lock"
     lock.chmod(0o644)
     with pytest.raises(StorageIntegrityError, match=".push.lock is not a private regular file"):
         push(library, vault)
     lock.unlink()
-    lock.symlink_to(vault_directory / "state.json")
+    lock.symlink_to(records.root / "state.json")
     with pytest.raises(StorageIntegrityError, match=".push.lock cannot be opened safely"):
         push(library, vault)
     lock.unlink()
@@ -1973,7 +1979,7 @@ def test_a_restore_holds_the_head_against_the_records_this_mac_keeps(
 @pytest.mark.parametrize(
     ("path", "model_refuses"),
     [
-        ("provenance/vault/state.json", True),
+        ("provenance/vault/destinations/default/state.json", True),
         ("PROVENANCE/Vault/ledger/00000001.json", True),
         ("raw//double.wav", True),
         ("raw/../escape.wav", True),

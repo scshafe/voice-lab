@@ -75,9 +75,14 @@ reached over the tailnet. The implementation, container templates and D-020
 policy are built; deployment remains outstanding. No real library is bound to
 a vault and none of Cole's library has been uploaded. The Mac keeps its working
 database and files; this is storage, never a remote catalog or model service.
+From phase 2 (D-023, D-034) the PC holds the working library and copies it to
+several vaults on Cole's hardware (the laptop, then the Air), each destination
+with its own binding, approval, records and tokens; what follows holds for each.
 
 - Everything is sealed on the Mac before it leaves. Each blob is encrypted with
-  AES-256-GCM under a 256-bit library key kept in the login Keychain, whose
+  AES-256-GCM under a 256-bit library key kept in the login Keychain (on the
+  PC, as a root-owned encrypted systemd credential that only the vault unit
+  receives, decrypted into its private read-only credential directory), whose
   only other copy is a recovery sheet Cole keeps offline. The key is never sent
   to the vault, and no binding can turn encryption off.
 - The vault holds ciphertext blobs addressed by the digest of their ciphertext,
@@ -106,7 +111,10 @@ database and files; this is storage, never a remote catalog or model service.
   bytes have been fetched from the vault and decrypted again, and only the
   run's checkpoints are removed.
 - The server keeps only the SHA-256 of each namespace's read and write tokens;
-  the raw tokens stay in the Mac's login Keychain.
+  the raw tokens stay in the copying host's keychain (the Mac's login Keychain,
+  the PC's encrypted credentials). Each destination has its own pair, so two
+  vaults never share a token, and the PC's unit for one destination imports
+  only that destination's tokens.
 - The server runs as UID/GID 10001 with a read-only root, dropped capabilities,
   no privilege gain and an internal-only network. A dedicated Tailscale sidecar
   supplies HTTPS; no host port is published and Funnel is absent. The deployment
@@ -133,8 +141,8 @@ Two limits are accepted rather than hidden:
   can link blobs of equal size, and can guess that a file of a distinctive size
   is stored. The format's version byte leaves room for padding later.
 - The host can withhold or delete ciphertext. Encryption protects confidentiality
-  and checks integrity, not availability; there is no second vault destination
-  or automatic backup in this plan. The host's privileged account is therefore
+  and checks integrity, not availability. D-023 adds destinations (the laptop,
+  then the Air offsite), but each is one copy that its host can lose. The host's privileged account is therefore
   outside the plaintext trust boundary, not a guarantee of durable storage.
 
 Mac procedures are in [docs/RUNBOOK.md](docs/RUNBOOK.md#9-library-vault); host
@@ -150,7 +158,7 @@ hardening and deployment gates are in [deploy/vault/README.md](deploy/vault/READ
   capture console or synthesis endpoint.
 - Long-running synthesis endpoints.
 - Secrets, OAuth tokens, host credentials, or private host keys in configuration.
-  Vault bindings name Keychain items; server configuration contains token hashes,
+  Vault bindings name keychain or credential items; server configuration contains token hashes,
   never raw tokens or encryption keys.
 
 ## Revocation

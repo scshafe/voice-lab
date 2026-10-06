@@ -35,7 +35,7 @@ import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from cole_voice_lab import storage_sealing
-from cole_voice_lab.storage_contracts import keychain_item_names
+from cole_voice_lab.storage_contracts import library_key_item
 from cole_voice_lab.storage_local import LocalBlobStore
 from cole_voice_lab.storage_ports import (
     MAX_BLOB_BYTES,
@@ -76,7 +76,7 @@ PAYLOAD = b"synthetic sealed payload"
 KEY_BYTES = bytes(range(32))
 OTHER_KEY_BYTES = bytes(range(100, 132))
 CREATED = datetime(2026, 9, 17, 12, 30, 45, tzinfo=UTC)
-SERVICE = keychain_item_names(LIBRARY).key
+SERVICE = library_key_item(LIBRARY)
 HOME = pwd.getpwuid(os.getuid()).pw_dir
 # Python itself adds these to a child's environment on macOS (locale coercion, CoreFoundation).
 INTERPRETER_ENVIRONMENT = frozenset({"__CF_USER_TEXT_ENCODING", "LC_CTYPE"})
@@ -1099,7 +1099,7 @@ def test_a_second_key_for_a_library_is_refused_and_changes_nothing(fake: FakeSec
     error = failure(
         "STORAGE.CONFLICT",
         lambda: create_library_key(client, LIBRARY),
-        match="already holds the library key item .* never replaced",
+        match="the library key item .* already exists; a library key is never replaced",
     )
     assert fake.items() == before and len(fake.calls()) == calls + 1
     assert_secret_absent(before[f"{SERVICE}|{LIBRARY_KEY_ACCOUNT}"]["secret"], *texts_of(error))

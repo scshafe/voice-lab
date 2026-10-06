@@ -28,6 +28,7 @@ import cole_voice_lab.storage_binding as binding_module
 from cole_voice_lab.canonical import canonical_json_bytes
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.storage_contracts import (
+    DEFAULT_VAULT_DESTINATION,
     VAULT_NODE_TAG,
     VaultAccessRecord,
     VaultDestinationApproval,
@@ -193,9 +194,9 @@ def install_vault_seams(
 
 def store_library_key(keychain: MemoryKeychain, library_id: str = LIBRARY_ID) -> str:
     """Put the synthetic library key in the fake Keychain, as ``vault key create`` would."""
-    from cole_voice_lab.storage_contracts import keychain_item_names
+    from cole_voice_lab.storage_contracts import library_key_item
 
-    keychain.items[(keychain_item_names(library_id).key, "library-key")] = SYNTHETIC_KEY_HEX
+    keychain.items[(library_key_item(library_id), "library-key")] = SYNTHETIC_KEY_HEX
     return SYNTHETIC_KEY_HEX
 
 
@@ -205,12 +206,13 @@ def store_vault_token(
     *,
     token: str | None = None,
     library_id: str = LIBRARY_ID,
+    destination: str = DEFAULT_VAULT_DESTINATION,
 ) -> str:
-    """Put one vault token in the fake Keychain, as ``vault token create`` would."""
+    """Put one destination's vault token in the fake Keychain, as ``vault token create`` would."""
     from cole_voice_lab.storage_binding import VAULT_TOKEN_ACCOUNTS
     from cole_voice_lab.storage_contracts import keychain_item_names
 
-    names = keychain_item_names(library_id)
+    names = keychain_item_names(library_id, destination)
     secret = new_token() if token is None else token
     service = names.token if scope == "write" else names.read_token
     keychain.items[(service, VAULT_TOKEN_ACCOUNTS[scope])] = secret
@@ -229,6 +231,7 @@ def approval_record(
         "approval_id": APPROVAL_ID,
         "approved": True,
         "library_id": library_id,
+        "destination": DEFAULT_VAULT_DESTINATION,
         "endpoint": ENDPOINT,
         "tailnet_suffix": TAILNET_SUFFIX,
         "node_stable_id": NODE_STABLE_ID,
@@ -245,6 +248,8 @@ def approval_record(
 def approval_arguments(approval: VaultDestinationApproval) -> list[str]:
     """The ``vault approve`` flags that build exactly ``approval``."""
     return [
+        "--destination",
+        approval.destination,
         "--approval-id",
         approval.approval_id,
         "--endpoint",

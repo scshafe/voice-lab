@@ -239,9 +239,9 @@ def run_vault_suite(root: Path, *, package: Path, binary_directory: Path) -> Non
         _require_saved_original(store, fixture.layout, report["take_id"])
         path = f"tmp/recording-takes/{report['take_id']}/original.wav"
         keychain = MemoryKeychain()
-        from cole_voice_lab.storage_contracts import keychain_item_names
+        from cole_voice_lab.storage_contracts import library_key_item
 
-        keychain.items[(keychain_item_names(LIBRARY_ID).key, "library-key")] = key
+        keychain.items[(library_key_item(LIBRARY_ID), "library-key")] = key
         store_vault_token(keychain, token=token)
         with pytest.MonkeyPatch.context() as monkeypatch:
             install_vault_seams(monkeypatch, keychain=keychain, port=port)
