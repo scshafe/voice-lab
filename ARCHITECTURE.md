@@ -1,5 +1,9 @@
 # Architecture
 
+For a visual walkthrough of the native app, recording-to-voice workflow, and
+vault archive/restore process, see
+[Application architecture diagrams](docs/APPLICATION_ARCHITECTURE_DIAGRAMS.md).
+
 ## Boundaries
 
 ```text

@@ -75,3 +75,6 @@ models/
 provenance/private/
 raw/
 references/
+
+# Editor settings stay local.
+.vscode/
