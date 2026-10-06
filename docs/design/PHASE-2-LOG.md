@@ -172,7 +172,8 @@ stop at the owner's manifest-hash approval.
   PyPI) for the home host's release, and classification rules for `provenance/intake/**`
   and `provenance/home-host/**` (both stay local, like `provenance/vault`), without which a
   push refuses the PC's lab ("no classification rule covers provenance/intake/…").
-  infra's `stacks/voice-lab/host.conf` must name the new lock (`HOST_REQUIREMENTS`).
+  infra's branch `voice-lab-pc-host` now names the new lock in `stacks/voice-lab/host.conf`
+  (`b5a512c`; the signed manifest is unchanged).
 - **infra host tree (step 8)**: branch `voice-lab-pc-host`, head `d2a4d01`, re-signed;
   `platform/M0.sha256` = `a9fd456da44ae5ccfc4aaecdf3acb8029e92117de218dd3d731c4e82d961d614`
   (previous `9c5ba124…afe2a`). It adds `scshafe-host-release` (sealed wheel releases and
@@ -215,8 +216,8 @@ stop at the owner's manifest-hash approval.
 ## Open items and the owner's steps
 
 1. **Approve the infra host tree** (hash above), then install it with the steps in infra's
-   `docs/platform/agent-deploy.md`. First amend `stacks/voice-lab/host.conf`
-   `HOST_REQUIREMENTS=requirements/home-host-linux.txt` (unsigned; voice-lab #10). The
+   `docs/platform/agent-deploy.md`. The branch's `stacks/voice-lab/host.conf` names
+   `requirements/home-host-linux.txt` (`b5a512c`, outside the signed tree). The
    takeover must keep the node identity: copy `/srv/voice-lab-dev/state/tailscale` into
    `/srv/stacks/voice-lab/state/tailscale` (the Air's approval binds StableID
    `nMDiVAZnG111CNTRL`). Then the deploy and health jobs can be green (acceptance item).
