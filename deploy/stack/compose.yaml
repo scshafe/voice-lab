@@ -8,7 +8,7 @@
 #
 # Auth: oauth2-proxy -> Pocket ID (https://id.<tailnet>). Browsers sign in with
 # the confidential `voice-lab` client (PKCE); the capture CLI and the desktop
-# app send their own Pocket ID ID token (public client `voice-lab-desktop`) as a
+# app send their own Pocket ID token (public client `voice-lab-desktop`) as a
 # bearer, which the proxy verifies (skip-jwt-bearer-tokens + an extra JWT
 # issuer whose audience is that client) and the API verifies AGAIN itself
 # against the provider's keys, issuer, audience, lifetime and a one-subject
@@ -116,7 +116,7 @@ services:
       OAUTH2_PROXY_REVERSE_PROXY: "true"
       OAUTH2_PROXY_UPSTREAMS: http://10.253.91.11:8080
       OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
-      # The capture CLI and the desktop app: a Pocket ID ID token (RS256 JWT,
+      # The capture CLI and the desktop app: a Pocket ID token (RS256 JWT,
       # aud = voice-lab-desktop) as `Authorization: Bearer`.
       OAUTH2_PROXY_SKIP_JWT_BEARER_TOKENS: "true"
       OAUTH2_PROXY_EXTRA_JWT_ISSUERS: ${OIDC_ISSUER}=voice-lab-desktop

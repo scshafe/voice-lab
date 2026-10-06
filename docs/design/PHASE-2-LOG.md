@@ -51,9 +51,11 @@ stop at the owner's manifest-hash approval.
     trigger (§3.2) is this rename, which the path unit sees.
   - A package the publisher refuses is moved untouched to `incoming/.refused/` with a
     record in `provenance/intake/refusals/`; the API reports it as `refused`.
-  - The client sends the Pocket ID **ID token** (audience `voice-lab-desktop`), as
-    voice-journey-capture does when the access token is not a JWT; only the refresh token
-    is kept, in the OS keychain.
+  - The client sends a Pocket ID token for `voice-lab-desktop`: the access token when it
+    is a JWT for that client (as voice-journey-capture does), else the ID token (changed
+    in #8 from "the ID token", so a refresh without an ID token still works); only the
+    refresh token is kept, in the OS keychain (tested on the Air's login Keychain with a
+    throwaway item).
   - JSON Schemas are `schemas/api-v1-*.schema.json` (flat, because
     `cole_voice_lab.schema --check` treats a subdirectory as drift), not
     `schemas/api/v1/`.
@@ -130,3 +132,6 @@ stop at the owner's manifest-hash approval.
     was accepted (`25163811…6f1584` = the client's); ledger: 5 entries, chained;
   - refused at the client: tampered, undeclared and symlinked takes, as on Linux.
   - A second read-only snapshot of the acceptance lab holds all five accepted sessions.
+- Step 4 landed: voice-lab #7 (`b4965ec`). A push to `main` queues `deploy.yml`, which
+  waits for the PC's runners that do not exist yet; such runs are cancelled by hand until
+  the host tree is installed (the first deploy is the takeover dispatch anyway).

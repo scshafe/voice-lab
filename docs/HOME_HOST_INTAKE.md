@@ -20,7 +20,8 @@ voice-lab intake upload <session>
 
 ## The protocol (`/api/v1`)
 
-Every `/api/` request carries `Authorization: Bearer <Pocket ID ID token>`. The door checks
+Every `/api/` request carries `Authorization: Bearer <token>`, a Pocket ID token for the
+public client `voice-lab-desktop` (its JWT access token, else its ID token). The door checks
 it, and the API checks it again (`api/auth.py`: RS256 signature against the provider's
 JWKS, issuer, audience `voice-lab-desktop`, lifetime, and a one-subject allow-list).
 
