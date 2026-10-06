@@ -202,7 +202,7 @@ private yourself. It has these keys:
 | capture_host | yes | Capture host identity, 1–255 characters |
 | pilot_approval_path | no (default null) | Relative approved evidence path |
 | pilot_approval_sha256 | no (default null) | Its digest; set exactly when the path is set |
-| finetune_runtime_root | no (default null) | The F5-TTS virtual environment fine-tune jobs run in: an absolute, normalized path without `..` (write `~/.local/share/cole-voice-lab/finetune-f5-01/venv` out in full; a path starting with `~` is refused as relative); the build passes it to the service as `--finetune-runtime-root`. The build neither checks nor freezes the runtime: the app offers Fine-tune model only while `<root>/bin/python` exists, and each job checks the runtime's package and pinned weights when it starts. Without it the app cannot fine-tune |
+| finetune_runtime_root | no (default null) | The F5-TTS virtual environment fine-tune jobs run in: an absolute, normalized path without `..` (write `~/.local/share/voice-lab/finetune-f5-01/venv` out in full; a path starting with `~` is refused as relative); the build passes it to the service as `--finetune-runtime-root`. The build neither checks nor freezes the runtime: the app offers Fine-tune model only while `<root>/bin/python` exists, and each job checks the runtime's package and pinned weights when it starts. Without it the app cannot fine-tune |
 
 The settings name no catalog; the build records against whatever version the
 subject has active in the library's corpus store when the app launches. The

@@ -2,6 +2,10 @@
 
 These files are reviewed templates, not an automatically active service.
 
+The Mac mini intake below predates the rename to `voice-lab` and keeps its
+`cole-voice-lab` paths and LaunchAgent label (see the README's "Name, asset roots
+and stable identifiers").
+
 The [encrypted library vault](vault/README.md) has a separate offline image build,
 disposable local container check, and dedicated Tailscale sidecar deployment.
 Its templates are built but not deployed; all remote setup happens with Cole.

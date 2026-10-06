@@ -3080,7 +3080,7 @@ type Opener = Callable[[str], IO[bytes]]
 def _default_opener(url: str) -> IO[bytes]:
     from urllib.request import Request, urlopen
 
-    return cast(IO[bytes], urlopen(Request(url, headers={"User-Agent": "cole-voice-lab"})))
+    return cast(IO[bytes], urlopen(Request(url, headers={"User-Agent": "voice-lab"})))
 
 
 def download_verified(item: FineTuneDownload, *, opener: Opener = _default_opener) -> Path:

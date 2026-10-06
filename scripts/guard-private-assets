@@ -203,9 +203,12 @@ def _walk_json(value: object) -> tuple[bool, bool]:
             private_path = private_path or child_path
     elif isinstance(value, str):
         lowered = value.lower()
-        private_path = lowered.startswith("/users/") and any(
+        # Asset roots under a macOS or Linux home: ~/.local/share/voice-lab, and the
+        # pre-rename ~/.local/share/cole-voice-lab that existing hosts still use.
+        private_path = lowered.startswith(("/users/", "/home/")) and any(
             marker in lowered
             for marker in (
+                "/voice-lab/",
                 "/cole-voice-lab/",
                 "/voice-assets/",
                 "/capture-sessions/",

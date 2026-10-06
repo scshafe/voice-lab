@@ -4,7 +4,7 @@
 schema_version = "cole-voice-lab.site-config/v1"
 
 [assets]
-root = "/Users/cole/.local/share/cole-voice-lab"
+root = "~/.local/share/voice-lab"
 minimum_free_gib = 10.0
 
 [capture]

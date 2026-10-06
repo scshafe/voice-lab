@@ -40,7 +40,7 @@ UI end-to-end timings, or performance percentiles.
 
 The last operation inspected 950 seconds of audio in aggregate to save a
 ten-second take. The original disposable probe and results were written to
-`/tmp/cole-voice-lab-latency-review/`; execution step 1 creates a maintained,
+`/tmp/voice-lab-latency-review/`; execution step 1 creates a maintained,
 synthetic-only benchmark rather than depending on that temporary directory.
 
 Relevant current implementation boundaries:

@@ -33,7 +33,23 @@ from cole_voice_lab.storage_contracts import VaultNamespaceConfig, VaultServerCo
 from cole_voice_lab.storage_server import hash_token, new_token
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-CACHE = Path.home() / ".cache" / "cole-voice-lab"
+
+
+def cache_root(home: Path) -> Path:
+    """The vault build cache, ``~/.cache/voice-lab``.
+
+    Before the repository was renamed (2026-10) it was ``~/.cache/cole-voice-lab``.
+    A host that has only that directory keeps using it, so its reviewed wheelhouse and
+    base image stay found; ``private_cache`` checks whichever is chosen.
+    """
+    current = home / ".cache" / "voice-lab"
+    previous = home / ".cache" / "cole-voice-lab"
+    if not os.path.lexists(current) and os.path.lexists(previous):
+        return previous
+    return current
+
+
+CACHE = cache_root(Path.home())
 WHEELHOUSE = CACHE / "vault-linux-wheels"
 PYTHON = REPOSITORY / ".venv/bin/python"
 DATA_MOUNT = "/var/lib/voice-lab-vault"

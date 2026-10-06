@@ -289,7 +289,7 @@ work. The kit rebuild and the physical acceptance session on the Air are
 Cole's.
 
 ```text
-You are working in /Users/cole/Projects/cole-voice-lab on branch
+You are working in a voice-lab checkout on branch
 capture-console. Read AGENTS.md, docs/CAPTURE_CONSOLE_PLAN.md, DECISIONS.md,
 SECURITY.md, docs/CAPTURE_AND_SYNC.md, src/cole_voice_lab/capture.py, and
 tests/test_capture.py before writing code.

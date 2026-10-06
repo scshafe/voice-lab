@@ -427,7 +427,7 @@ def fetch_standard_set(
     fails ``source_url``.
     """
     url = HARVARD_URL if name == "harvard" else ARCTIC_URL
-    request = urllib.request.Request(url, headers={"User-Agent": "cole-voice-lab"})
+    request = urllib.request.Request(url, headers={"User-Agent": "voice-lab"})
     fetched_at = clock()
     try:
         with opener(request, timeout=timeout) as response:

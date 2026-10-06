@@ -1,4 +1,4 @@
-# Cole Voice Lab
+# voice-lab
 
 Private, local-first infrastructure for:
 
@@ -66,7 +66,7 @@ version is:
 
 ```bash
 voice-lab doctor
-voice-lab assets init --asset-root /Users/cole/.local/share/cole-voice-lab
+voice-lab assets init --asset-root ~/.local/share/voice-lab
 voice-lab capture devices
 voice-lab desktop --asset-root <macbook-private-root> --device UMIK-1
 voice-lab sync plan <session-directory>
@@ -136,6 +136,34 @@ status and blocks fine-tuned models whose checkpoints were explicitly archived.
 only after verification. The implementation and container templates are built;
 no real vault is deployed. See [the library guide](docs/LIBRARY_VAULT.md) and
 [operator procedures](docs/RUNBOOK.md#9-library-vault).
+
+## Name, asset roots and stable identifiers
+
+The project is `voice-lab`; the repository was `scshafe/cole-voice-lab` until
+2026-10. The conventional locations are now `~/.local/share/voice-lab` for the
+asset root and `~/.cache/voice-lab` for the vault build cache.
+
+- **Asset root.** No command has a default (D-002): every command that handles
+  private data takes `--asset-root` or `COLE_VOICE_LAB_ASSET_ROOT`. A host set
+  up before the rename keeps its `~/.local/share/cole-voice-lab` and passes that
+  path; nothing has to move. The repository guard treats both names as private
+  asset roots, under a macOS or a Linux home.
+- **Vault build cache.** `scripts/vault_container.py` uses `~/.cache/voice-lab`
+  and falls back to `~/.cache/cole-voice-lab` while only the old one exists.
+- **Kept on purpose.** These name stored or deployed things, so renaming them
+  would orphan existing data or installs:
+  - the `cole-voice-lab.<record>/vN` schema and protocol identifiers and the
+    `cole-voice-lab-common-v1` normalization id, which every stored record
+    carries (the vault's sealed blobs also bind one as associated data);
+  - the Python distribution `cole-voice-lab` and package `cole_voice_lab`, bound
+    in install receipts, runtime locks and executed-code evidence, and the
+    `.cole-voice-lab-*` marker files inside runtimes;
+  - the `COLE_VOICE_LAB_*` environment variables;
+  - the Mac mini deployment's names (the `com.scshafe.cole-voice-lab.intake`
+    LaunchAgent, the `cole-voice-lab-mini` alias, its intake path
+    `/Users/cole/.local/share/cole-voice-lab/incoming` and the
+    `cole-voice-lab-vault` image), which the backend's move off the mini
+    replaces.
 
 ## Status
 

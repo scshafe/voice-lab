@@ -190,7 +190,7 @@ from cole_voice_lab.promotion import (
     validate_promotion,
 )
 
-asset_root = Path("/Users/cole/.local/share/cole-voice-lab")
+asset_root = Path.home() / ".local/share/voice-lab"
 manifest = PromotionManifest.model_validate_json(promotion_json)
 
 validation = validate_promotion(

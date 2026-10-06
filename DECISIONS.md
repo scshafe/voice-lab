@@ -3,7 +3,7 @@
 ## D-001 — Sibling lab, not ChloeSpeech core
 
 Capture, biometric storage, dataset construction, training, and comparative
-evaluation remain in `cole-voice-lab`. ChloeSpeech receives only a validated,
+evaluation remain in `voice-lab` (named `cole-voice-lab` until 2026-10). ChloeSpeech receives only a validated,
 hash-pinned promotion manifest. This preserves ChloeSpeech's provider-neutral
 runtime scope.
 
