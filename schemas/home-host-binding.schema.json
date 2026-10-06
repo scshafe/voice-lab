@@ -1,0 +1,43 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Which approval is in force: its id and the digest of the file that was reviewed.",
+  "properties": {
+    "approval_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "approval_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "bound_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.home-host-binding/v1",
+      "default": "cole-voice-lab.home-host-binding/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "approval_id",
+    "approval_sha256",
+    "bound_at"
+  ],
+  "title": "HomeHostBinding",
+  "type": "object"
+}

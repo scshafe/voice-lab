@@ -34,7 +34,7 @@ from typing import Any, NoReturn, cast
 
 import pytest
 
-from cole_voice_lab import storage_http_client
+from cole_voice_lab import storage_http_client, tailnet
 from cole_voice_lab.canonical import canonical_json_bytes
 from cole_voice_lab.storage_contracts import (
     MAX_BLOB_BYTES,
@@ -1600,7 +1600,7 @@ def test_the_resolver_reads_the_node_out_of_two_recorded_answers() -> None:
     for _argv, options in runner.calls:
         assert options["env"] == {
             "PATH": "/usr/bin:/bin",
-            "HOME": storage_http_client._tailscale_environment()["HOME"],
+            "HOME": tailnet._tailscale_environment()["HOME"],
         }
         assert options["timeout"] == 10.0
         assert options["check"] is False
@@ -1621,7 +1621,7 @@ def test_the_resolver_accepts_a_node_without_tags() -> None:
         (
             [completed(tailnet_status(CurrentTailnet={"MagicDNSSuffix": "other.ts.net"}))],
             "STORAGE.IDENTITY_MISMATCH",
-            "this Mac is on the tailnet",
+            "this host is on the tailnet",
         ),
         (
             [completed(tailnet_status(Peer={}))],
@@ -1751,7 +1751,7 @@ def test_a_resolver_that_could_run_anything_is_refused(
 
 def test_the_default_runner_runs_the_command_it_is_given() -> None:
     """The one runner that runs anything; here it runs /bin/echo, never tailscale."""
-    completed_run = storage_http_client._run_tailscale(
+    completed_run = tailnet._run_tailscale(
         ["/bin/echo", "recorded"],
         capture_output=True,
         text=True,
@@ -1764,8 +1764,16 @@ def test_the_default_runner_runs_the_command_it_is_given() -> None:
     assert completed_run.stdout == "recorded\n"
 
 
+def test_the_tailscale_binary_is_the_platform_client() -> None:
+    assert tailnet.platform_tailscale_binary("darwin") == Path(
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    )
+    assert tailnet.platform_tailscale_binary("linux") == Path("/usr/bin/tailscale")
+    assert TAILSCALE_BINARY == tailnet.platform_tailscale_binary()
+
+
 def test_the_tailscale_environment_carries_a_home_and_a_fixed_path() -> None:
-    environment = storage_http_client._tailscale_environment()
+    environment = tailnet._tailscale_environment()
 
     assert set(environment) == {"PATH", "HOME"}
     assert environment["PATH"] == "/usr/bin:/bin"
@@ -1827,7 +1835,7 @@ def test_the_shipped_tls_context_verifies_the_chain_and_the_name() -> None:
 
 
 def test_the_client_module_imports_only_the_standard_library_and_its_storage_modules() -> None:
-    allowed_package = {"storage_contracts", "storage_ports"}
+    allowed_package = {"storage_contracts", "storage_ports", "tailnet"}
     allowed_external = set(__import__("sys").stdlib_module_names) | {"__future__", "pydantic"}
     source = Path(storage_http_client.__file__).read_text(encoding="utf-8")
     for node in ast.walk(ast.parse(source)):

@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One refused package: why, and where it was set aside.",
+  "properties": {
+    "error": {
+      "maxLength": 2000,
+      "title": "Error",
+      "type": "string"
+    },
+    "manifest_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "quarantined_as": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Quarantined As",
+      "type": "string"
+    },
+    "refused_at": {
+      "format": "date-time",
+      "title": "Refused At",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.intake-refusal/v1",
+      "default": "cole-voice-lab.intake-refusal/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "refused_at",
+    "error",
+    "quarantined_as"
+  ],
+  "title": "IntakeRefusalRecord",
+  "type": "object"
+}

@@ -15,9 +15,9 @@ stop at the owner's manifest-hash approval.
 
 | Step | What | Where | State |
 | --- | --- | --- | --- |
-| 1 | Mini constants out of `sync.py` (rsync lane bound to the SSH alias) | voice-lab | in progress |
-| 2 | `/api/v1` (`meta`, `intake`), upload staging under `incoming/`, intake publisher, token checks | voice-lab | todo |
-| 3 | The standing home-host approval (D-021), its ledger, and the HTTPS upload client | voice-lab | todo |
+| 1 | Mini constants out of `sync.py` (rsync lane bound to the SSH alias) | voice-lab | done, #5 |
+| 2 | `/api/v1` (`meta`, `intake`), upload staging under `incoming/`, intake publisher, token checks | voice-lab | in review |
+| 3 | The standing home-host approval (D-021), its ledger, and the HTTPS upload client | voice-lab | in review (with 2) |
 | 4 | `deploy/stack/`, `deploy/host/`, `dev.toml` `kind = "service"` with `[deploy]` | voice-lab | todo |
 | 5 | Vault on Linux: credential key store, Linux tailscale binary, per-destination bindings | voice-lab | todo |
 | 6 | `pc` as an alias of `arch` | scshafe-dev | todo |
@@ -36,3 +36,24 @@ stop at the owner's manifest-hash approval.
   minutes on the PC.
 - Mini check (read-only): `~/.local/lib/cole-voice-lab` and its asset root exist; no
   intake LaunchAgent is loaded. Nothing there is changed by this phase.
+- Step 1 landed: voice-lab #5 (`56b3858`).
+- Steps 2 and 3, built together (one PR): `cole_voice_lab.api` (contracts, staging, auth,
+  server), `intake_publisher`, `home_host` (approval, binding, ledger, sign-in settings),
+  `oidc` (PKCE sign-in, keychain stores, `fetch-jwks`), `intake_client`, `tailnet` (the
+  identity check, moved out of `storage_http_client` so the intake client imports no
+  storage adapter), `synthetic_capture`, the CLI (`home-host approve|show|sign-in|
+  fetch-jwks`, `intake upload|publish|synthetic`), schemas and `docs/HOME_HOST_INTAKE.md`.
+  Choices made inside the design, recorded here:
+  - The upload staging lives in `incoming/.uploads/<id>/` and a finalized package is
+    renamed to `incoming/<id>`, so the API's only writable mount is `incoming/` (design
+    §8.1 `HOST_BINDS`) and the publisher is the existing `intake scan` rule (dot entries
+    skipped) around the unchanged `accept_capture_session`. The design's "FINALIZE file"
+    trigger (§3.2) is this rename, which the path unit sees.
+  - A package the publisher refuses is moved untouched to `incoming/.refused/` with a
+    record in `provenance/intake/refusals/`; the API reports it as `refused`.
+  - The client sends the Pocket ID **ID token** (audience `voice-lab-desktop`), as
+    voice-journey-capture does when the access token is not a JWT; only the refresh token
+    is kept, in the OS keychain.
+  - JSON Schemas are `schemas/api-v1-*.schema.json` (flat, because
+    `cole_voice_lab.schema --check` treats a subdirectory as drift), not
+    `schemas/api/v1/`.

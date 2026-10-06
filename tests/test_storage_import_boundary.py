@@ -434,6 +434,7 @@ def test_the_vault_client_loads_no_other_adapter_and_nothing_of_the_lab() -> Non
         "cole_voice_lab.storage_contracts",
         "cole_voice_lab.storage_http_client",
         "cole_voice_lab.storage_ports",
+        "cole_voice_lab.tailnet",
     }
     assert {adapter for adapter in ADAPTERS if adapter != "cole_voice_lab.storage_http_client"} & (
         loaded
