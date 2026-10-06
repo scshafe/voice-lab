@@ -354,6 +354,25 @@ _RULES: Final = (
         example="incoming/pilot-001/READY",
     ),
     _rule(
+        "intake-outcomes",
+        "provenance/intake{/**}",
+        MAC_ONLY,
+        owner="intake_publisher",
+        reason="the home host's record of each accepted or refused package; the receipt it "
+        "names travels with the package under raw/, and a refusal is operational",
+        example="provenance/intake/sessions/pilot-001.json",
+    ),
+    _rule(
+        "home-host-records",
+        "provenance/home-host{/**}",
+        MAC_ONLY,
+        owner="home_host",
+        reason="a capturing host's standing home-host approval, binding, sign-in settings and "
+        "upload ledger describe its link to the home host; like provenance/vault, they are "
+        "never copied or restored",
+        example="provenance/home-host/ledger/00000001.json",
+    ),
+    _rule(
         "runtimes",
         "runtimes{/**}",
         MAC_ONLY,
