@@ -644,10 +644,12 @@ the PC's host key, and its TPM2 where there is one), and the staging directory i
 The decrypted items exist only in memory, in the staging directory while it lives and in the
 unit's credential directory while it runs.
 
-**The copier unit.** `deploy/host/voice-lab-vault-laptop.service` runs
+**The copier unit.** `deploy/host-manual/voice-lab-vault-laptop.service` runs
 `vault push --destination laptop`, then `vault verify --destination laptop`, as `voice-lab`.
 Each destination has a fixed-name pair (infra's host-unit validator refuses template units
-for now); the Air's, `voice-lab-vault-air.*`, comes with phase 3. It
+for now); the Air's, `voice-lab-vault-air.*`, comes with phase 3. The validator also refuses
+`ImportCredential=`, so the runner lane does not install the pair: it is installed by hand
+(`deploy/host-manual/README.md`) until infra has a rule for credentials. It
 imports `private.cole.voice-lab.vault.*` (the key) and
 `private.cole.voice-lab.vault-destination.laptop.*` (its own tokens only). Its network is the
 tailnet: `IPAddressAllow=100.64.0.0/10`, the tailscaled socket for the identity check, and

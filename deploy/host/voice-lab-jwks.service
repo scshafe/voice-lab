@@ -21,6 +21,10 @@ PrivateDevices=yes
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# The tailnet only (infra host.conf HOST_NETWORK grants this unit the tailnet
+# allowance; the service user's egress table narrows it to the issuer).
+IPAddressDeny=any
+IPAddressAllow=100.64.0.0/10 fd7a:115c:a1e0::/48
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

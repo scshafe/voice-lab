@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import threading
 import wave
@@ -136,10 +137,26 @@ def legacy(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
     index.close()
 
 
+def _unchanged_fields(status: os.stat_result) -> tuple[int, ...]:
+    """What an untouched source keeps: not st_atime, which reading the source may advance
+    (relatime), and which made the whole-stat comparison flaky under the full suite."""
+    return (
+        status.st_mode,
+        status.st_ino,
+        status.st_dev,
+        status.st_nlink,
+        status.st_uid,
+        status.st_gid,
+        status.st_size,
+        status.st_mtime_ns,
+        status.st_ctime_ns,
+    )
+
+
 def test_legacy_trim_intent_blocks_eligibility_until_exact_v1_output(legacy: LegacyRig) -> None:
     source = legacy.layout.root / legacy.source.source_path
     before = source.read_bytes()
-    metadata = source.stat()
+    metadata = _unchanged_fields(source.stat())
     intent = legacy.act("edit", "trim")
     assert legacy_action_event(intent).state == "pending"
     with pytest.raises(ContractError, match="pending"):
@@ -156,7 +173,7 @@ def test_legacy_trim_intent_blocks_eligibility_until_exact_v1_output(legacy: Leg
         wave.open(str(legacy.layout.root / result.edit.derived_path), "rb") as output,
     ):
         assert output.readframes(296) == original.readframes(960)[17 * 3 : 313 * 3]
-    assert source.read_bytes() == before and source.stat() == metadata
+    assert source.read_bytes() == before and _unchanged_fields(source.stat()) == metadata
     assert materialize_legacy_edit(legacy.layout, intent) == result
     assert (
         legacy.resolver.resolve(legacy.library.catalog_sha256, legacy.source.take_id).recorded_at

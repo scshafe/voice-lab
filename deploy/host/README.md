@@ -9,8 +9,7 @@ private network namespace, the btrfs snapshot tool). Design §3.2, §8.1; D-021,
 | --- | --- | --- |
 | `voice-lab-intake.path` → `voice-lab-intake.service` | `voice-lab intake publish`: validates each finalized package in `incoming/` and publishes it into `raw/` | none (`PrivateNetwork=yes`) |
 | `voice-lab-intake.timer` | the same pass every 15 minutes, as a backstop | none |
-| `voice-lab-jwks.timer` → `.service` | `voice-lab home-host fetch-jwks`: the identity provider's signing keys into `state/auth/jwks.json` for the API | the identity provider |
-| `voice-lab-vault-laptop.timer` → `voice-lab-vault-laptop.service` | `voice-lab vault push --destination laptop`, then `vault verify`: a sealed copy of the lab to the laptop's vault, then every file of the new head downloaded, decrypted and re-hashed (design §4.3, D-034); nightly at 02:30 | the tailnet only (`IPAddressAllow=100.64.0.0/10`; the tailscaled socket for the node's identity check) |
+| `voice-lab-jwks.timer` → `.service` | `voice-lab home-host fetch-jwks`: the identity provider's signing keys into `state/auth/jwks.json` for the API | the tailnet only (`IPAddressDeny=any`, `IPAddressAllow=` the tailnet ranges, granted by infra's `host.conf` `HOST_NETWORK`); the service user's egress table narrows it to the issuer |
 
 Every unit here runs as `voice-lab`; nothing from this repository runs as root. The
 root-run parts are infra's, in its signed host tree: the asset layout's provisioning
@@ -20,7 +19,8 @@ snapshot right after it is published, and a nightly `.timer`; kept 14 days, neve
 newest; D-033).
 
 They expect, as installed by the runner lane's entrypoint (D-032; infra's signed host
-tree, pending the owner's approval of its manifest hash):
+tree, installed on the PC 2026-10-06), which validates every unit here before it installs
+it (infra `docs/platform/agent-deploy.md`, "Host units"):
 
 - the released wheel in a sealed, content-addressed release with `current` pointing at
   it: `/opt/voice-lab/current/bin/voice-lab`;
@@ -31,8 +31,9 @@ tree, pending the owner's approval of its manifest hash):
   (`voice-lab 0700`, the key file), `/data/voice-lab/.snapshots/lab` (root 0700).
 
 The vault copier has one fixed-name pair per destination: infra's host-unit validator
-refuses template units for now, so there is no `voice-lab-vault@.service`. The laptop's pair
-is here; the Air destination (phase 3) adds its own, `voice-lab-vault-air.service` and
+refuses template units for now, so there is no `voice-lab-vault@.service`. It also refuses
+`ImportCredential=` until it has a rule for credentials, so the laptop's pair is not here
+but in `../host-manual/`, installed by hand (its README); the Air destination (phase 3) adds its own, `voice-lab-vault-air.service` and
 `.timer` (an hourly probe rather than a nightly copy). Installing a pair enables nothing. A
 destination is copied to only once Cole has created the library key and its tokens,
 encrypted them as systemd credentials, approved and bound the destination, and enabled its

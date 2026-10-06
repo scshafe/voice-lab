@@ -212,6 +212,21 @@ stop at the owner's manifest-hash approval.
   `ok: true`; each restored `raw/<manifest>/` also re-validated as an accepted package
   (receipt and intake QC). The drill copy was removed and the acceptance credentials
   (plaintext, `/run`) shredded. The drill of the **real** session waits for that session.
+- **The approved host tree.** The owner approved infra's manifest
+  `6df55a3849d321f74eb36ace3a1d351c24f529eab1615b77c418c9ae61dd59fb` (infra `main` at
+  `5410973`, after two security reviews), staged root-owned in `/root/scshafe-m0` with that
+  hash. Its tightened validator needs two changes here (this PR):
+  - `voice-lab-jwks.service` adds `IPAddressDeny=any` and
+    `IPAddressAllow=100.64.0.0/10 fd7a:115c:a1e0::/48` (infra `host.conf` grants
+    `HOST_NETWORK=voice-lab-jwks.service:tailnet`); the file is now byte-identical to infra's
+    test fixture.
+  - `voice-lab-vault-laptop.{service,timer}` moved to `deploy/host-manual/`: the validator
+    refuses `ImportCredential=`. The pair stays installed by hand, as it has run since the
+    vault went live (same unit text), and the nightly copy keeps running; infra's
+    `host.conf` names `voice-lab-vault.colobus-stargazer.ts.net:443` in
+    `HOST_EGRESS_TAILNET` so the service user's egress table still lets it reach the vault.
+    **Follow-up:** a credentials rule in infra's validator (an `ImportCredential=` glob
+    allowlist per app, read from `host.conf`), then the pair moves back to `deploy/host/`.
 
 ## Open items and the owner's steps
 
