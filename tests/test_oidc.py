@@ -142,6 +142,53 @@ def test_bearer_refreshes_and_follows_rotation() -> None:
         bearer(issuer=ISSUER, client_id=AUDIENCE, store=MemoryStore(), fetch=provider)
 
 
+def test_bearer_prefers_a_jwt_access_token_and_falls_back_to_the_id_token() -> None:
+    access = mint({"aud": [AUDIENCE], "scope": "openid"})
+    id_token = mint({"aud": AUDIENCE})
+
+    def answering(answer: dict[str, Any]) -> Any:
+        def fetch(request: urllib.request.Request) -> Mapping[str, Any]:
+            return DISCOVERY if "openid-configuration" in request.full_url else answer
+
+        return fetch
+
+    store = MemoryStore("refresh-1")
+    chosen = bearer(
+        issuer=ISSUER,
+        client_id=AUDIENCE,
+        store=store,
+        fetch=answering({"access_token": access, "id_token": id_token}),
+    )
+    assert chosen == access
+    opaque = bearer(
+        issuer=ISSUER,
+        client_id=AUDIENCE,
+        store=store,
+        fetch=answering({"access_token": "opaque", "id_token": id_token}),
+    )
+    assert opaque == id_token
+    foreign = mint({"aud": "another-client"})
+    assert (
+        bearer(
+            issuer=ISSUER,
+            client_id=AUDIENCE,
+            store=store,
+            fetch=answering({"access_token": foreign, "id_token": id_token}),
+        )
+        == id_token
+    )
+    with pytest.raises(SignInError, match="unusable"):
+        bearer(
+            issuer=ISSUER,
+            client_id=AUDIENCE,
+            store=store,
+            fetch=answering({"access_token": foreign, "refresh_token": "refresh-9"}),
+        )
+    assert store.token == "refresh-9"
+    with pytest.raises(SignInError, match="no token for this client"):
+        bearer(issuer=ISSUER, client_id=AUDIENCE, store=store, fetch=answering({}))
+
+
 def test_discovery_and_id_token_checks() -> None:
     with pytest.raises(SignInError, match="https"):
         discover("http://id.example.invalid", fetch=lambda _r: DISCOVERY)

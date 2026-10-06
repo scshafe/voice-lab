@@ -364,8 +364,10 @@ def bearer(
 ) -> str:
     """A fresh bearer token for this command, from the stored refresh token.
 
-    The ID token is sent (its audience is the client, which the API checks); the refresh
-    token is replaced when the provider rotates it.
+    The access token is sent when it is a JWT for this client (Pocket ID's are: RS256,
+    audience the client id), as voice-journey-capture does; otherwise the ID token. Either
+    is checked for issuer, audience and lifetime here, and again by the door and the API.
+    A rotated refresh token is stored before anything else, so a failed check never loses it.
     """
     refresh = store.load()
     if refresh is None:
@@ -376,14 +378,23 @@ def bearer(
         {"grant_type": "refresh_token", "refresh_token": refresh, "client_id": client_id},
         fetch,
     )
-    id_token = tokens.get("id_token")
-    if not isinstance(id_token, str):
-        raise SignInError("the refresh returned no ID token; sign in again")
-    check_id_token(id_token, provider=provider, client_id=client_id, nonce=None, now=clock())
     rotated = tokens.get("refresh_token")
     if isinstance(rotated, str) and rotated != refresh:
         store.save(rotated)
-    return id_token
+    problem = "the refresh returned no token for this client; sign in again"
+    for name in ("access_token", "id_token"):
+        candidate = tokens.get(name)
+        if not isinstance(candidate, str) or candidate.count(".") != 2:
+            continue
+        try:
+            check_id_token(
+                candidate, provider=provider, client_id=client_id, nonce=None, now=clock()
+            )
+        except (SignInError, ValueError) as error:
+            problem = f"the refreshed {name.replace('_', ' ')} is unusable: {error}"
+            continue
+        return candidate
+    raise SignInError(problem)
 
 
 def read_bearer_file(path: Path) -> str:
