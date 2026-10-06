@@ -722,7 +722,7 @@ def test_the_real_client_refuses_a_node_that_is_not_the_approved_one(
     for peer, problem in (
         (approved_peer(node_stable_id="nOTHER"), "the node answering is"),
         (approved_peer(tags=("tag:other",)), "does not carry tag:voice-lab-vault"),
-        (approved_peer(dns_name="other.colobus-stargazer.ts.net."), "calls itself"),
+        (approved_peer(dns_name="other.example-tailnet.ts.net."), "calls itself"),
     ):
         connection = VaultConnection(
             approval.endpoint, NAMESPACE, lambda: "cvlv_" + "a" * 43, FakeResolver(peer), identity

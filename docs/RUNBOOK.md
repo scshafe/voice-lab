@@ -239,8 +239,8 @@ evidence have been reviewed under section 4:
 ```bash
 test -f "$SESSION_DIRECTORY/READY"
 "$VOICE_LAB" sync plan "$SESSION_DIRECTORY" \
-  --identity-file /Users/cole/.ssh/ABSOLUTE_RESTRICTED_INTAKE_KEY \
-  --known-hosts-file /Users/cole/.ssh/ABSOLUTE_REVIEWED_KNOWN_HOSTS \
+  --identity-file $HOME/.ssh/ABSOLUTE_RESTRICTED_INTAKE_KEY \
+  --known-hosts-file $HOME/.ssh/ABSOLUTE_REVIEWED_KNOWN_HOSTS \
   --live-plan --json
 ```
 
@@ -253,8 +253,8 @@ return the original receipt rather than create a second raw package:
 # MacBook Air
 APPROVED_PLAN_SHA256='<reviewed plan_sha256 from the preview>'
 "$VOICE_LAB" sync plan "$SESSION_DIRECTORY" \
-  --identity-file /Users/cole/.ssh/ABSOLUTE_RESTRICTED_INTAKE_KEY \
-  --known-hosts-file /Users/cole/.ssh/ABSOLUTE_REVIEWED_KNOWN_HOSTS \
+  --identity-file $HOME/.ssh/ABSOLUTE_RESTRICTED_INTAKE_KEY \
+  --known-hosts-file $HOME/.ssh/ABSOLUTE_REVIEWED_KNOWN_HOSTS \
   --live-plan --execute --allow-network \
   --approved-plan-sha256 "$APPROVED_PLAN_SHA256"
 ```
@@ -275,8 +275,8 @@ SESSION_ID=capture-console-acceptance-01
 ```bash
 # MacBook Air: repeat the exact approved transfer
 "$VOICE_LAB" sync plan "$SESSION_DIRECTORY" \
-  --identity-file /Users/cole/.ssh/ABSOLUTE_RESTRICTED_INTAKE_KEY \
-  --known-hosts-file /Users/cole/.ssh/ABSOLUTE_REVIEWED_KNOWN_HOSTS \
+  --identity-file $HOME/.ssh/ABSOLUTE_RESTRICTED_INTAKE_KEY \
+  --known-hosts-file $HOME/.ssh/ABSOLUTE_REVIEWED_KNOWN_HOSTS \
   --live-plan --execute --allow-network \
   --approved-plan-sha256 "$APPROVED_PLAN_SHA256"
 ```

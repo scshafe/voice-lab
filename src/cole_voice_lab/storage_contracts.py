@@ -168,7 +168,7 @@ def library_head_ref(library_id: str) -> str:
 def validate_tailnet_endpoint(endpoint: str) -> str:
     """Return ``endpoint`` when it can name the vault's node on the tailnet.
 
-    Params: ``endpoint``, for example ``voice-lab-vault.colobus-stargazer.ts.net``.
+    Params: ``endpoint``, for example ``voice-lab-vault.example-tailnet.ts.net``.
     Returns: ``endpoint`` unchanged.
     Raises: ``StorageNameError`` unless it is a lowercase DNS name of two or more labels
     whose last label holds a letter, at most ``MAX_DNS_NAME_LENGTH`` characters, with no

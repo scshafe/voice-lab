@@ -14,6 +14,9 @@ __pycache__/
 *.py[cod]
 
 .voice-lab.toml
+# Local secrets (the examples are .env.example).
+.env
+deploy/vault/.env
 models.lock.local.json
 
 # Biometric and model artifacts must never enter Git.
