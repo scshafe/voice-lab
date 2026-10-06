@@ -1,4 +1,4 @@
-# Cole Voice Lab agent guide
+# voice-lab agent guide
 
 ## Mission
 

@@ -39,8 +39,9 @@ command, including build and cleanup, pins that validated socket explicitly and
 uses a frozen environment, so later context changes cannot redirect it. Staging
 and sidecar image-pin validation do not consult Docker at all.
 
-It refuses downloads. It stages current source under
-`~/.cache/cole-voice-lab/`, builds a wheel offline, checks the application wheel
+It refuses downloads. It stages current source under `~/.cache/voice-lab/`
+(or the pre-rename `~/.cache/cole-voice-lab/` when only that exists), builds a
+wheel offline, checks the application wheel
 digest in the image, and installs only the hashed Linux Pydantic closure. The
 base is the reviewed multi-architecture index in `Dockerfile` (amd64 and arm64).
 The resulting server runs as 10001:10001, read-only with no capabilities, a small
@@ -57,7 +58,7 @@ until all removals have been attempted. An interrupted run remains unsuccessful
 (exit 130/143), and any failed removals are reported. Ordinary commands have a
 60-second deadline; offline builds have 10 minutes and conformance has 3 minutes.
 
-The default wheelhouse is `~/.cache/cole-voice-lab/vault-linux-wheels` (override
+The default wheelhouse is `~/.cache/voice-lab/vault-linux-wheels` (override
 with `--wheelhouse`). Populate it **only with separate download approval**; this
 one shell command downloads both architectures, because one pip resolution
 chooses only one core wheel:
@@ -68,7 +69,7 @@ for vault_arch in x86_64 aarch64; do
     --require-hashes --only-binary=:all: --no-deps --implementation cp \
     --python-version 3.12 --abi cp312 --platform "manylinux2014_$vault_arch" \
     -r requirements/vault-linux.txt \
-    --dest "$HOME/.cache/cole-voice-lab/vault-linux-wheels"
+    --dest "$HOME/.cache/voice-lab/vault-linux-wheels"
 done
 ```
 

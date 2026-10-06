@@ -141,14 +141,14 @@ starts, must have a canonical absolute path, and must contain no symlink
 component:
 
 ```sh
-install -d -m 700 /Users/cole/.local/share/cole-voice-lab
+install -d -m 700 $HOME/.local/share/voice-lab
 ```
 
 Then install into a fresh, dedicated child below Cole's home:
 
 ```sh
 /absolute/capture-kit/macbook-bootstrap \
-  /Users/cole/.local/share/cole-voice-lab/capture-host \
+  $HOME/.local/share/voice-lab/capture-host \
   /absolute/capture-kit/cole_voice_lab-VERSION-py3-none-any.whl \
   APPLICATION_WHEEL_SHA256 \
   BUNDLE_MANIFEST_SHA256
@@ -161,7 +161,7 @@ target. Keep the old root until every session beneath its `assets/tmp` has
 been synced and accepted:
 
 ```sh
-CAPTURE_ROOT=/Users/cole/.local/share/cole-voice-lab/capture-host-console-01
+CAPTURE_ROOT=$HOME/.local/share/voice-lab/capture-host-console-01
 test ! -e "$CAPTURE_ROOT" && test ! -L "$CAPTURE_ROOT"
 
 "$CAPTURE_KIT/macbook-bootstrap" \
@@ -233,7 +233,7 @@ browser is only an authenticated controller and preview player; native FFmpeg
 in the foreground Terminal remains the sole audio-capture process.
 
 ```sh
-CAPTURE_ROOT=/Users/cole/.local/share/cole-voice-lab/capture-host-console-01
+CAPTURE_ROOT=$HOME/.local/share/voice-lab/capture-host-console-01
 VOICE_LAB="$CAPTURE_ROOT/runtime/bin/voice-lab"
 ASSET_ROOT="$CAPTURE_ROOT/assets"
 SESSION_ID=pilot-YYYYMMDD-01

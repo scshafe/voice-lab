@@ -841,7 +841,7 @@ def test_settings_name_an_optional_finetune_runtime_that_the_service_is_launched
     )
     for refused in (
         "venv",
-        "~/.local/share/cole-voice-lab/finetune-f5-01/venv",
+        "~/.local/share/voice-lab/finetune-f5-01/venv",
         f"{runtime_root}/",
         f"{runtime_root}/../venv",
         f"{tmp_path.resolve()}/./venv",

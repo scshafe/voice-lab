@@ -115,9 +115,9 @@ and the fetch command. It refuses missing base weights, or any of the three chec
 file itself (a Hugging Face cache snapshot holds links to blobs, so copy the files with links
 followed). The big weights are hashed last. A runtime without the vocoder therefore fails in
 seconds, not after two hours of training. The first runtime root is
-`~/.local/share/cole-voice-lab/finetune-f5-01/venv`. Its `pretrained/` is a link to the
+`~/.local/share/voice-lab/finetune-f5-01/venv`. Its `pretrained/` is a link to the
 sibling `pretrained/` directory the manual run downloaded, so its Vocos files belong in
-`~/.local/share/cole-voice-lab/finetune-f5-01/pretrained/vocos-mel-24khz/`.
+`~/.local/share/voice-lab/finetune-f5-01/pretrained/vocos-mel-24khz/`.
 
 ```sh
 voice-lab finetune provision-runtime --runtime-root <dir>                      # prints the plan

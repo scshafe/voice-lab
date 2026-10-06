@@ -3,7 +3,7 @@
 ## 0. Core verification
 
 ```bash
-cd /Users/cole/Projects/cole-voice-lab
+cd ~/Projects/voice-lab  # your checkout (the Air's is ~/Projects/cole-voice-lab)
 scripts/verify
 .venv/bin/voice-lab doctor
 ```
@@ -15,7 +15,7 @@ stricter per-runtime estimate and never downloads models implicitly.
 
 ```bash
 .venv/bin/voice-lab assets init \
-  --asset-root /Users/cole/.local/share/cole-voice-lab
+  --asset-root $HOME/.local/share/voice-lab
 ```
 
 This installs a **pending**, non-authorizing consent record. Cole completes the
@@ -46,7 +46,7 @@ For the zero-shot scope shown above, the personal approval command is:
 
 ```bash
 .venv/bin/voice-lab consent approve-self \
-  --asset-root /Users/cole/.local/share/cole-voice-lab \
+  --asset-root $HOME/.local/share/voice-lab \
   --purpose private-zero-shot-evaluation \
   --execution-boundary capture-host \
   --execution-boundary tailnet-local-host \
@@ -110,9 +110,9 @@ Install into a fresh sibling root; do not reuse or overwrite the earlier
 capture host:
 
 ```bash
-CAPTURE_ROOT=/Users/cole/.local/share/cole-voice-lab/capture-host-console-01
+CAPTURE_ROOT=$HOME/.local/share/voice-lab/capture-host-console-01
 
-/usr/bin/install -d -m 700 /Users/cole/.local/share/cole-voice-lab
+/usr/bin/install -d -m 700 $HOME/.local/share/voice-lab
 test ! -e "$CAPTURE_ROOT" && test ! -L "$CAPTURE_ROOT"
 
 "$CAPTURE_KIT/macbook-bootstrap" \
@@ -150,7 +150,7 @@ Use the freshly bootstrapped root and keep native capture in a foreground
 Terminal:
 
 ```bash
-CAPTURE_ROOT=/Users/cole/.local/share/cole-voice-lab/capture-host-console-01
+CAPTURE_ROOT=$HOME/.local/share/voice-lab/capture-host-console-01
 VOICE_LAB="$CAPTURE_ROOT/runtime/bin/voice-lab"
 ASSET_ROOT="$CAPTURE_ROOT/assets"
 SESSION_ID=capture-console-acceptance-01

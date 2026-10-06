@@ -163,7 +163,7 @@ def _obtain_source(
     destination = staging / expected.source_filename
     request = urllib.request.Request(
         expected.source_url,
-        headers={"User-Agent": "cole-voice-lab-reviewed-wheel-builder/1"},
+        headers={"User-Agent": "voice-lab-reviewed-wheel-builder/1"},
     )
     with urllib.request.urlopen(request, timeout=60) as response, destination.open("xb") as stream:
         remaining = MAX_SOURCE_BYTES + 1

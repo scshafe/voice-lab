@@ -585,6 +585,32 @@ def test_private_asset_guard_allows_only_catalog_json_schemas_and_pending_templa
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize(
+    "asset_path",
+    [
+        "/Users/synthetic/.local/share/voice-lab/raw/take.wav",
+        "/Users/synthetic/.local/share/cole-voice-lab/raw/take.wav",
+        "/home/synthetic/.local/share/voice-lab/raw/take.wav",
+        "/home/synthetic/.local/share/cole-voice-lab/raw/take.wav",
+    ],
+)
+def test_private_asset_guard_rejects_new_and_pre_rename_asset_roots(
+    tmp_path: Path, asset_path: str
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    (root / "notes.json").write_text(json.dumps({"source": asset_path}))
+
+    result = _run(
+        sys.executable,
+        str(REPOSITORY / "scripts" / "guard-private-assets"),
+        "--root",
+        str(root),
+    )
+    assert result.returncode == 1
+    assert "private asset path in JSON" in result.stderr
+
+
 def test_private_asset_guard_reads_staged_blob_and_wheel_members(tmp_path: Path) -> None:
     root = tmp_path / "repository"
     root.mkdir()

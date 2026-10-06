@@ -620,3 +620,15 @@ def test_main_preserves_interrupt_exit_after_cleanup(
     )
     assert container_module.main(["verify"]) == 130
     assert not stage.exists()
+
+
+def test_cache_root_is_voice_lab_and_falls_back_to_the_pre_rename_directory(
+    container_module: ModuleType, tmp_path: Path
+) -> None:
+    current = tmp_path / ".cache" / "voice-lab"
+    previous = tmp_path / ".cache" / "cole-voice-lab"
+    assert container_module.cache_root(tmp_path) == current
+    previous.mkdir(parents=True)
+    assert container_module.cache_root(tmp_path) == previous
+    current.mkdir()
+    assert container_module.cache_root(tmp_path) == current
