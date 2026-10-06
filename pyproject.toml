@@ -8,8 +8,8 @@ version = "0.1.0.dev0"
 description = "Private, reproducible voice capture and local model evaluation infrastructure."
 readme = "README.md"
 requires-python = ">=3.12"
-authors = [{ name = "Cole and Chloe" }]
-license = "LicenseRef-Proprietary"
+authors = [{ name = "voice-lab contributors" }]
+license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
   "pydantic>=2.13.4,<3",

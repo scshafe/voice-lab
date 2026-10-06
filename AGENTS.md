@@ -28,6 +28,11 @@ promoting a winning, hash-pinned voice into ChloeSpeech.
   digest must precede each generation's first new blob upload. `training` is a
   separate opt-in class. Storage needs no synthesis consent; the vault never
   receives plaintext or executes a model.
+- Free, and on Cole's own hardware (D-028): no cloud service and nothing paid,
+  anywhere. No object storage (ciphertext included), no hosted or rented GPU, no
+  paid model, API, signing or notarization, no hosted CI beyond what is free for a
+  public repository. GitHub, PyPI, flagged downloads of public weights at pinned
+  revisions, and the fleet's free tailnet are allowed; none carries a private byte.
 - Model code and weights are identified by immutable revisions. A mutable
   branch, tag, package range, or model alias is not experiment evidence.
 - Incompatible model stacks run in separate environments and communicate

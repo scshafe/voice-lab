@@ -16,6 +16,14 @@ MacBook capture -> checksum-bound READY package -> Tailnet landing zone
     -> blind review -> promotion manifest -> ChloeSpeech
 ```
 
+The next shape of the project, with voice-journey merged in, the backend on the PC,
+and a cross-platform desktop app, is in
+[docs/design/VOICE-PLATFORM.md](docs/design/VOICE-PLATFORM.md) (accepted on
+2026-10-06 and built in phases; not a description of what runs today). Everything it
+uses is free and runs on the owner's own hardware: no cloud service, nothing paid.
+
+voice-lab is released under the [MIT licence](LICENSE).
+
 The Git repository contains only code, schemas, prompts, and policy. Recordings,
 weights, consent evidence, runtime environments, and generated speech belong in
 an explicit private asset root and are rejected by the repository guard.

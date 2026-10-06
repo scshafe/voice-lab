@@ -37,7 +37,8 @@ weights, and recognizable synthetic outputs are biometric assets.
   reviewed plan in addition to the network and execution flags, then requires
   both rsync commands to equal the canonical full argument vectors.
 - Hosted GPU use requires a new approval containing destination, exact payload
-  digest, purpose, retention terms, and expiry.
+  digest, purpose, retention terms, and expiry. Under D-028 the platform uses no
+  hosted GPU and no cloud or paid service at all; the rule stays as a rule.
 - Synthetic output must retain provenance and be disclosed as synthetic when it
   leaves private evaluation.
 - Capture-kit creation is offline by default. Public-network dependency fetching
@@ -115,7 +116,10 @@ database and files; this is storage, never a remote catalog or model service.
   own host holds opaque ciphertext and never synthesizes or runs a model.
   `ConsentRecord.hosted_transfer_allowed` remains `Literal[False]`; hosted GPU
   use still requires its own approval. D-019's separate question about consent
-  for local fine-tuning and Speak remains open. Speak clips (`derived/speech/**`),
+  for local fine-tuning and Speak is answered by D-022 (2026-10-06): when they
+  move to the PC (design phase 5), both require an approved, checksum-bound
+  consent record for the `home-host` boundary; until then the Mac-local behaviour
+  is unchanged. Speak clips (`derived/speech/**`),
   local vault records, locks, caches and unfinished runs stay on the Mac.
 - D-020 permits the exact optional `vault` encryption dependency, hash-locked
   with `cffi` and `pycparser` in `requirements/vault-macos.txt`. Only
