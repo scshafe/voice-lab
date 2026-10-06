@@ -1,0 +1,11 @@
+# A backstop for the path unit (a missed event, a deferred package).
+[Unit]
+Description=voice-lab intake: periodic publisher pass
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=15min
+Unit=voice-lab-intake.service
+
+[Install]
+WantedBy=timers.target

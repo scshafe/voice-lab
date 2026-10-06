@@ -1,0 +1,41 @@
+# The intake publisher (design §3.2, D-021): one bounded pass over incoming/.
+# It validates every finalized package with the unchanged strict validator and
+# publishes it into raw/; it has no network at all. Started by
+# voice-lab-intake.path when the API finalizes a package, and by the timer as a
+# backstop. The read-only btrfs snapshot after raw/ changes is infra's root-run
+# unit (scshafe-voice-lab-snapshot.path, the signed host tree), never this
+# app's: nothing from this repository runs as root.
+[Unit]
+Description=voice-lab intake publisher (no network)
+ConditionPathIsDirectory=/data/voice-lab/lab/incoming
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=voice-lab
+Group=voice-lab
+UMask=0077
+ExecStart=/opt/voice-lab/current/bin/voice-lab intake publish --asset-root /data/voice-lab/lab
+TimeoutStartSec=2h
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ReadWritePaths=/data/voice-lab/lab
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

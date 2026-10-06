@@ -784,3 +784,24 @@ Cole decided on 2026-10-06 (design §13, decisions 12 and 14):
   (intake publisher, job runner, vault copiers). This extends infra's signed host tree and
   needs Cole's approval of its manifest hash before any host runs it; there is no hand
   install.
+
+## D-033 — Phase 2 layout: one lab subvolume, and raw files stay owner-read-only
+
+Recorded 2026-10-06 while building the design's phase 2, as deviations that reality forced
+on two details of the design (§4.1, §9 phase 2 acceptance); the owner reviews them with the
+phase.
+
+- **The snapshot unit is the lab subvolume, not `raw/` alone.** The design makes `raw/` its
+  own btrfs subvolume. But the unchanged validator publishes by renaming a checked copy
+  from `tmp/` into `raw/` in one atomic step, and requires `incoming/`, `tmp/` and `raw/` to
+  be one filesystem (`intake._same_filesystem`, `st_dev`); on btrfs every subvolume has its
+  own `st_dev`, and a rename across subvolumes fails (`EXDEV`). So `/data/voice-lab/lab`
+  (the whole asset root) is the subvolume, and the read-only snapshot taken after every
+  pass that changed `raw/` (and nightly) is of the lab. `raw/` only ever grows, so the newest
+  snapshot holds every accepted original; older snapshots are pruned after 14 days. The
+  property the design wanted, that even a root mistake in `raw/` is recoverable from a
+  read-only snapshot, holds.
+- **Accepted raw files are `0400` in `0500` directories**, as `intake.py` has always made
+  them (D-003), not the `0444`/`0555` the design's text names. Both are read-only; the
+  stricter mode suffices because every reader (the API container and the host units) runs
+  as the owning `voice-lab` user. The acceptance check is "read-only", verified as `0400`.

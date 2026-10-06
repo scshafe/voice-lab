@@ -6,7 +6,19 @@ id = "voice-lab"
 class = "managed"
 
 [app]
-kind = "tool"
+kind = "service"
+
+# DEPLOY-01: how this project reaches production (references, never secrets).
+# The /api/v1 stack on the PC (design phase 2, D-021, D-032): deploy/stack/,
+# with the host units of deploy/host/ installed by the runner lane's entrypoint
+# once the owner has approved that infra change.
+[deploy]
+lane = "runner"
+layout = "app"
+host = "pc"
+tailnet_node = "voice-lab"
+door = "pocket-id"
+verify_on = "pc"
 
 # BASE-06: the one command that verifies this repository; CI runs it. Added
 # with the tool kind's default: change it if this repository verifies

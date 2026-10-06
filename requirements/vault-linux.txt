@@ -1,4 +1,4 @@
-# Vault server only. Reviewed PyPI CPython 3.12 manylinux x86_64/arm64 wheels, 2026-09-19.
+# Vault server and API image (Dockerfile). Reviewed PyPI CPython 3.12 manylinux x86_64/arm64 wheels, 2026-09-19.
 # Downloaded wheel bytes were verified against PyPI JSON SHA-256 digests.
 # No encryption, desktop, model-runtime or capture-kit dependencies.
 annotated-types==0.8.0 --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0

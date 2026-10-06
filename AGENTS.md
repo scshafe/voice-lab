@@ -93,4 +93,8 @@ How a change lands:
 3. Merge your own PR with a merge commit, one change at a time: `gh pr merge <N> --merge --subject "Merge #<N>: <title>"`. Never squash or rebase (both are off on the repository), and pass `--subject`: `gh pr merge` does not make the `Merge #N: <title>` subject by itself.
 
 The project's agent may merge its own PR and push `main`; there is no approval gate.
+
+Merging deploys to production ([deploy] lane `runner`: `.github/workflows/deploy.yml` verifies on the `voice-lab-verify` runner, deploys through the host entrypoint on the `voice-lab-prod` self-hosted runner, then checks health).
+Watch the run yourself with `gh run list -w deploy`, `gh run watch <id>` and `gh run view <id> --log` (a public repository's deploy log is a summary only); say in your reply what the run did, naming the merge commit.
+Roll back by merging a `git revert`, or by dispatching `deploy.yml` with `sha=<older commit on main>` and `allow_rollback=true` (`gh workflow run deploy.yml -f sha=<sha> -f allow_rollback=true`).
 <!-- scshafe-dev:end landing -->
