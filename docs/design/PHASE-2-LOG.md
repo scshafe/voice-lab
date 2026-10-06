@@ -263,9 +263,20 @@ stop at the owner's manifest-hash approval.
   - The approved tool's `prepare` was then run once with the egress hosts left out (a scratch
     `host.conf`, the hand units out for the minute it ran): build, offline install and seal
     all passed (release `628d1948…f24f6a`, 853 entries); its staged `pending` was removed.
-  - **The fix**: infra branch `host-release-v4mapped` (`df0a2d4`), where a v4-mapped answer
+  - **The fix**: infra branch `host-release-v4mapped` (head `80c3c23`), where a v4-mapped answer
     counts as its IPv4 address, still checked against 100.64.0.0/10. Re-signed: `M0.sha256`
     `4e6020d30b146d0fc01af11a916bc68bacbee7503917b42f2228c50df00c761e`, not installed.
+  - **The verify runner cannot run this suite as installed.** The push run of #12 (run
+    37529851848) ran `scripts/verify` on `pc-voice-lab-verify`: 363 failed and 5466 passed,
+    every failure a refused connection to the suite's own servers on `127.0.0.1`. The
+    runner egress table covers the whole uid range 62000-62999, `ci-voice-lab` included,
+    and refuses loopback. Run as `ci-voice-lab` in a network namespace of its own (`unshare
+    --user --map-root-user --net`, `lo` up, then `unshare --user --map-user=62001
+    --map-group=62001 -- scripts/verify`), the whole suite gave 5828 passed and 1 failed: a
+    timing flake in `test_capture_console.py` ("another capture operation is in progress")
+    that passes when rerun. The verify step is scshafe-dev's template (DEPLOY-02), not this
+    repository's toolchain block, so the change belongs there (infra
+    `docs/platform/agent-deploy.md`, "Install log").
   - The vault copier pair was reinstalled by hand from `deploy/host-manual/` (unit body
     unchanged; the nightly timer stays enabled). Until the takeover, a push to `main` runs
     verify on `pc-voice-lab-verify` and then the deploy job is refused at stage 4 ("cannot
@@ -286,6 +297,9 @@ stop at the owner's manifest-hash approval.
    `/usr/local/sbin/scshafe-voice-lab-provision-dev` and the hand-made releases in
    `/opt/voice-lab/releases/` (`aa459aa6…`, `e3cbdec1…`). The transient
    `voice-lab-acceptance-intake.path` is already gone.
+   The push run's verify job also needs the verify step to run in its own network
+   namespace (scshafe-dev DEPLOY-02, above); until then, every push to `main` fails verify
+   on the PC.
 2. **Store the recovery sheet** offline, one copy away from the house; then
    `sudo shred -u /root/voice-lab-library-recovery-sheet-lib-20261006-df017dd15db9.txt`.
 
