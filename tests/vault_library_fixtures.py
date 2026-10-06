@@ -49,7 +49,7 @@ LOCAL_DESTINATION = DestinationContext(
 )
 TAILNET_DESTINATION = DestinationContext(
     backend="tailnet-vault",
-    endpoint="voice-lab-vault.colobus-stargazer.ts.net",
+    endpoint="voice-lab-vault.example-tailnet.ts.net",
     namespace="cole",
     node_stable_id="nQRJBE7CNTRL",
     tag="tag:voice-lab-vault",

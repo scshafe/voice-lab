@@ -162,15 +162,12 @@ the complete member path, byte count, SHA-256, and filesystem identity set; and
 the directory identity set. The JSON preview exposes both that evidence and its
 own snapshot digest.
 
-The default target is the Mac mini's primary Tailnet node:
-
-```text
-100.123.230.91
-```
+The default target is the Mac mini's primary Tailnet node, `PRIMARY_MINI_TARGET`
+in `src/cole_voice_lab/sync.py`.
 
 The single configured alias `cole-voice-lab-mini` is also allowed. Every other
 IP address or hostname—including public hosts, other private/Tailnet peers, and
-the dedicated OpenClaw gateway node (`100.91.94.21`)—is rejected. The remote
+the dedicated OpenClaw gateway node (`OPENCLAW_GATEWAY_TARGET`)—is rejected. The remote
 account and landing root are likewise fixed to Cole's private mini intake lane.
 
 Pass one transfers an explicit allowlist of approved payload paths while

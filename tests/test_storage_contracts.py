@@ -88,8 +88,8 @@ TIME = "2026-09-17T12:00:00Z"
 FIXED = datetime(2026, 9, 17, 12, tzinfo=UTC)
 HELLO_SHA256 = hashlib.sha256(b"hello").hexdigest()
 NAMES = keychain_item_names(LIBRARY)
-TAILNET_ENDPOINT = "voice-lab-vault.colobus-stargazer.ts.net"
-TAILNET_SUFFIX = "colobus-stargazer.ts.net"
+TAILNET_ENDPOINT = "voice-lab-vault.example-tailnet.ts.net"
+TAILNET_SUFFIX = "example-tailnet.ts.net"
 LOCAL_ENDPOINT = "/Volumes/Library Copy/voice-lab-vault"
 PATTERN = "String should match pattern"
 EXTRA = "Extra inputs are not permitted"
@@ -804,7 +804,7 @@ def access_record() -> Payload:
 def request_record() -> Payload:
     return {
         "time": TIME,
-        "endpoint": "voice-lab-vault.colobus-stargazer.ts.net",
+        "endpoint": "voice-lab-vault.example-tailnet.ts.net",
         "namespace": "cole",
         "operation": "get-blob",
         "ref": HELLO_SHA256,

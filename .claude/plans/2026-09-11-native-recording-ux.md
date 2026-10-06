@@ -362,7 +362,7 @@ migrations and data backfill are separate changes. No delegation is required.
     reconciliation at 1,000 and all 1,000 jobs repeated on reopen. The operator
     authorized the executor to choose and implement the written design.
     Characterization, the chosen proposal and excluded trials are recorded in
-    `/Users/coleshaffer/Library/Application Support/Cole Voice Lab/Verification/20260912-defect-b-vch9e1h7/continuation-status.md`.
+    `~/Library/Application Support/Cole Voice Lab/Verification/20260912-defect-b-vch9e1h7/continuation-status.md`.
   - **Boundary 1, authorized 2026-09-12:** Fix the native client's unbounded
     per-cycle memory and take-descriptor retention. Playback source-release
     semantics may change, including Step 12 behavior. Do not raise a bound.
@@ -1603,7 +1603,7 @@ Visible UX amendments belong in sections 5–10 and 12. Steps 16 and 17 remain o
 physical presence, preview destination and separate cutover gates are unchanged.
 
 Evidence and short proposal:
-`/Users/coleshaffer/Library/Application Support/Cole Voice Lab/Verification/20260912-defect-b-vch9e1h7/boundary-2-report.md`
+`~/Library/Application Support/Cole Voice Lab/Verification/20260912-defect-b-vch9e1h7/boundary-2-report.md`
 and `reconciliation-proposal.md` in the same root. Preexisting uncommitted code
 is preserved in `before-reconciliation-fix-code.tar` with a hash manifest.
 

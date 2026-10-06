@@ -54,7 +54,7 @@ the prior launcher recoverable; no commits or unrelated user-app restarts.
 - No existing recorder was running before launch. Opened and revealed the new
   app without starting a take; left it running for Cole. Do not terminate it.
 - The previous launcher is recoverable at
-  `/Users/coleshaffer/.local/share/cole-voice-lab/desktop-launcher-backup.ENxiyn/Cole Voice Lab.app`.
+  `~/.local/share/cole-voice-lab/desktop-launcher-backup.ENxiyn/Cole Voice Lab.app`.
 - Qt explicitly sets the live Dock tile image. `NSRunningApplication.icon`
   returns the Python bundle icon, not reliable evidence of the customized live
   tile. The interpreter-based launcher's process identity remains Python; a

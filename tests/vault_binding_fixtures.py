@@ -46,7 +46,7 @@ from cole_voice_lab.storage_server import VaultServer, hash_token, new_token
 
 LIBRARY_ID = "lib-20260917-0123456789ab"
 NAMESPACE = "cole"
-TAILNET_SUFFIX = "colobus-stargazer.ts.net"
+TAILNET_SUFFIX = "example-tailnet.ts.net"
 ENDPOINT = f"voice-lab-vault.{TAILNET_SUFFIX}"
 NODE_STABLE_ID = "nQRJBE7CNTRL"
 APPROVAL_ID = "vault-2026-09-17"

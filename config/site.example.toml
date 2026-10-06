@@ -14,7 +14,7 @@ channels = 1
 encoding = "pcm_s24le"
 
 [sync]
-host = "100.123.230.91"
+host = "<mini-tailnet-ip>"  # PRIMARY_MINI_TARGET in src/cole_voice_lab/sync.py
 user = "cole"
 alias = "cole-voice-lab-mini"
 remote_incoming = "/Users/cole/.local/share/cole-voice-lab/incoming"

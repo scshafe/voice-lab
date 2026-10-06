@@ -68,7 +68,7 @@ from cole_voice_lab.storage_server import (
 REPOSITORY = Path(__file__).resolve().parents[1]
 NAMESPACE = "cole"
 OTHER_NAMESPACE = "spare"
-SUFFIX = "colobus-test.ts.net"
+SUFFIX = "example-test.ts.net"
 ENDPOINT = f"voice-lab-vault.{SUFFIX}"
 NODE_ID = "nodeVault123"
 TAG = "tag:voice-lab-vault"
@@ -460,8 +460,8 @@ def tailnet_client(
         ({"node_stable_id": "nodeOther999"}, "not the approved"),
         ({"tags": ()}, "does not carry tag:voice-lab-vault"),
         ({"tags": ("tag:other",)}, "does not carry tag:voice-lab-vault"),
-        ({"dns_name": "other.colobus-test.ts.net."}, "calls itself"),
-        ({"address": "vault.colobus-test.ts.net"}, "not an IP address"),
+        ({"dns_name": "other.example-test.ts.net."}, "calls itself"),
+        ({"address": "vault.example-test.ts.net"}, "not an IP address"),
     ],
 )
 def test_a_node_that_is_not_the_approved_one_is_refused_before_anything_is_sent(
@@ -503,13 +503,13 @@ def test_an_endpoint_outside_the_approved_tailnet_is_refused() -> None:
 @pytest.mark.parametrize(
     "endpoint",
     [
-        "http://voice-lab-vault.colobus-test.ts.net",
-        "https://voice-lab-vault.colobus-test.ts.net",
+        "http://voice-lab-vault.example-test.ts.net",
+        "https://voice-lab-vault.example-test.ts.net",
         "100.64.12.34",
         "127.0.0.1",
-        "Voice-Lab-Vault.colobus-test.ts.net",
-        "voice-lab-vault.colobus-test.ts.net.",
-        "voice-lab-vault.colobus-test.ts.net:443",
+        "Voice-Lab-Vault.example-test.ts.net",
+        "voice-lab-vault.example-test.ts.net.",
+        "voice-lab-vault.example-test.ts.net:443",
         "vault",
         "",
     ],
