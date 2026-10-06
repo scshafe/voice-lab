@@ -22,7 +22,7 @@ stop at the owner's manifest-hash approval.
 | 5 | Vault on Linux: credential key store, Linux tailscale binary, per-destination bindings | voice-lab | done, #9 (#10: PC lock, classification) |
 | 6 | `pc` as an alias of `arch` | scshafe-dev | done: #36, `v0.10.4`, installed for agents |
 | 7 | Tailnet tags and grants, `stacks/voice-lab/host.conf` | infra (unsigned) | done: `ff9144a`, policy applied |
-| 8 | Runner on the PC, entrypoint host-unit install, `voice-lab` user, `/data/voice-lab` subvolumes | infra `host/` (signed) | branch `voice-lab-pc-host`, **awaiting the owner's approval of `M0.sha256` `a9fd456d…d614`** |
+| 8 | Runner on the PC, entrypoint host-unit install, `voice-lab` user, `/data/voice-lab` subvolumes | infra `host/` (signed) | `6df55a38…59fb` installed 2026-10-06 (runners, provisioning, snapshots); the takeover is **blocked on a resolver bug in it**: fix `4e6020d3…761e` awaits the owner's approval |
 | 9 | Live: Pocket ID clients, PC layout, laptop vault stack, synthetic sessions, restore drill | hosts | done as a development deployment (below) |
 | 10 | One real session from the Air | owner | open |
 
@@ -227,19 +227,65 @@ stop at the owner's manifest-hash approval.
     `HOST_EGRESS_TAILNET` so the service user's egress table still lets it reach the vault.
     **Follow-up:** a credentials rule in infra's validator (an `ImportCredential=` glob
     allowlist per app, read from `host.conf`), then the pair moves back to `deploy/host/`.
+- **Install and the first takeover attempt (2026-10-06, afternoon).** From infra `main`
+  5410973, staged root-owned in `/root/scshafe-m0`; the staged `M0.sha256` hashed to the
+  approved `6df55a38…59fb`. Installed per infra's "The PC as a second production host":
+  - packages `lttng-ust` and `uv` (pacman; nothing else pulled in); the production infra
+    checkout `~/infra`; `stack-backup` and its units; `/srv/scshafe-backup/stacks`;
+  - `scshafe-voice-lab-provision layout` (nothing to change: the development layout, uid 951
+    and gid 950, was accepted) and `install`: `scshafe-voice-lab-snapshot`, its `@.service`,
+    `.path` and `.timer` (enabled, active), `/etc/voice-lab/host.env` (the template; same
+    issuer value). The nightly instance left `/data/voice-lab/.snapshots/lab/20261006T193206Z`,
+    `ro=true`; the publish instance runs and correctly takes none while `raw/` is unchanged;
+  - `scshafe-host-release runtime`: 3.12.14 already there (sha256 `5ebcd799…f779`);
+  - `/srv/stacks/voice-lab` (`stack init`); every `.env` value moved from
+    `/srv/voice-lab-dev/.env` with `stack env-set` (values never shown; `TS_AUTHKEY` left
+    unset: the node identity is joined); the release `stack.toml` (0444);
+  - runners (2.337.0, sha256 `70920811…6613`; dry runs read first, then one registration
+    token on stdin, shredded after): `pc-voice-lab-prod` (`run-voice-lab`, uid 62000, in
+    `scshafe-runners`) and `pc-voice-lab-verify` (`ci-voice-lab`, uid 62001, no sudo), both
+    online. Each install's gate passed: loopback and the PC's tailnet address refused,
+    api.github.com reachable; the `.env`/`.path` guard and the hook drop-in in place. The
+    queued push run of #11 was picked up by the verify runner (so the pre-job hook admits
+    `deploy.yml` on `main`) and cancelled before the takeover.
+  - **Takeover, refused at 5b/8, nothing deployed.** The dev stack was stopped,
+    `state/tailscale` copied into `/srv/stacks/voice-lab/state/tailscale` (identical bytes,
+    owners and modes; the profile's NodeID is `nMDiVAZnG111CNTRL`), the dev stack started
+    again (the pre-deploy backup reads the identity through `docker exec ts-voice-lab`),
+    the hand-installed intake and JWKS units removed, and the read-only
+    `scshafe-host-release check` at `2f69633` passed. The dispatch (run 37528565746,
+    `allow_rollback=true`) stopped in `prepare`: `HOST_EGRESS_TAILNET
+    id.colobus-stargazer.ts.net resolves to ::ffff:100.124.169.100, outside the tailnet`.
+    MagicDNS on the PC answers no AAAA for tailnet names, and `getent ahostsv6` then
+    returns the IPv4 address v4-mapped. The development deployment was put back at once:
+    the hand units reinstalled and active, `current` unchanged, the dev stack serving
+    (`/healthz` 200, `/api/v1/meta` 401 without a Pocket ID session).
+  - The approved tool's `prepare` was then run once with the egress hosts left out (a scratch
+    `host.conf`, the hand units out for the minute it ran): build, offline install and seal
+    all passed (release `628d1948…f24f6a`, 853 entries); its staged `pending` was removed.
+  - **The fix**: infra branch `host-release-v4mapped` (`df0a2d4`), where a v4-mapped answer
+    counts as its IPv4 address, still checked against 100.64.0.0/10. Re-signed: `M0.sha256`
+    `4e6020d30b146d0fc01af11a916bc68bacbee7503917b42f2228c50df00c761e`, not installed.
+  - The vault copier pair was reinstalled by hand from `deploy/host-manual/` (unit body
+    unchanged; the nightly timer stays enabled). Until the takeover, a push to `main` runs
+    verify on `pc-voice-lab-verify` and then the deploy job is refused at stage 4 ("cannot
+    determine the live commit"), as expected before a takeover.
 
 ## Open items and the owner's steps
 
-1. **Approve the infra host tree** (hash above), then install it with the steps in infra's
-   `docs/platform/agent-deploy.md`. The branch's `stacks/voice-lab/host.conf` names
-   `requirements/home-host-linux.txt` (`b5a512c`, outside the signed tree). The
-   takeover must keep the node identity: copy `/srv/voice-lab-dev/state/tailscale` into
-   `/srv/stacks/voice-lab/state/tailscale` (the Air's approval binds StableID
-   `nMDiVAZnG111CNTRL`). Then the deploy and health jobs can be green (acceptance item).
-   After that, remove the development pieces: `/srv/voice-lab-dev`, the hand-installed
-   units in `/etc/systemd/system/voice-lab-*` (the entrypoint installs its own), the
-   transient `voice-lab-acceptance-intake.path`, `/usr/local/sbin/scshafe-voice-lab-provision-dev`,
-   and the hand-made releases in `/opt/voice-lab/releases/`.
+1. **Approve the fixed host tree**, `M0.sha256` `4e6020d3…761e` (infra branch
+   `host-release-v4mapped`; it differs from the installed `6df55a38…59fb` only in
+   `bin/scshafe-host-release`). Then a session stages it and re-runs the prod runner's
+   installer with `--apply` (it installs the new `scshafe-host-release`; the account and the
+   registration stay), and redoes the takeover: stop the dev stack, **copy
+   `state/tailscale` again** (the copy made on 2026-10-06 may be stale by then), start the
+   dev stack, remove the hand intake and JWKS units, `check`, dispatch with
+   `allow_rollback=true`. After it is green, remove the development pieces:
+   `/srv/voice-lab-dev`, the hand-installed `voice-lab-intake.*` and `voice-lab-jwks.*`
+   (not `voice-lab-vault-laptop.*`, which stay installed by hand; `deploy/host-manual/`),
+   `/usr/local/sbin/scshafe-voice-lab-provision-dev` and the hand-made releases in
+   `/opt/voice-lab/releases/` (`aa459aa6…`, `e3cbdec1…`). The transient
+   `voice-lab-acceptance-intake.path` is already gone.
 2. **Store the recovery sheet** offline, one copy away from the house; then
    `sudo shred -u /root/voice-lab-library-recovery-sheet-lib-20261006-df017dd15db9.txt`.
 
