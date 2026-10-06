@@ -28,7 +28,12 @@ tree; history is as screened.
     - home paths in the SSH examples of `docs/RUNBOOK.md` and
       `docs/CAPTURE_KIT.md` are now `$HOME`;
     - `.env` and `deploy/vault/.env` are ignored.
-- **Still open, blocking:** the licence and the copyright holder (§3.7, §4b.1).
+- **Resolved 2026-10-06, was blocking:** the licence and the copyright holder
+  (§3.7, §4b.1). The owner chose MIT, copyright "2026 voice-lab contributors"
+  (DECISIONS.md D-027); `LICENSE` and `pyproject.toml` changed in PR #4, and
+  "Chloe" is no longer named as a holder. voice-journey's code, which has no
+  licence file and is the owner's, becomes MIT when it is imported (design phase
+  3). No blocking item remains.
 - **Still open, recommended before publishing:** the tailnet IPs in code
   (`PRIMARY_MINI_TARGET`, `OPENCLAW_GATEWAY_TARGET` in
   `src/cole_voice_lab/sync.py`, mirrored in `tests/test_sync.py` and
@@ -73,12 +78,14 @@ The mirror, extracted trees and the scanner were deleted afterwards.
 
 ## 2. Verdict
 
-**Needs owner decision.** No history rewrite is needed. Once the owner settles
-the licence and copyright line, the rest is a tree-only PR.
+**Needs owner decision** (as screened on 2026-10-05). No history rewrite is needed.
+Once the owner settles the licence and copyright line, the rest is a tree-only PR.
+The owner settled it on 2026-10-06 (MIT, D-027), so as of that date nothing
+blocks publication; the recommended items below remain.
 
 | Item | Kind | Blocking? |
 |---|---|---|
-| `LICENSE` says "private and proprietary", copyright "Cole and Chloe"; `pyproject.toml` `LicenseRef-Proprietary` (§3.7) | Owner decision | **Yes** |
+| `LICENSE` says "private and proprietary", copyright "Cole and Chloe"; `pyproject.toml` `LicenseRef-Proprietary` (§3.7) | Owner decision | Was **yes**; resolved 2026-10-06 (MIT, D-027) |
 | Real tailnet IPs of three live nodes in code, tests, docs and examples (§3.3) | Tree-only | No, recommended |
 | Real tailnet name in tests and one docstring (§3.3) | Tree-only | No, recommended |
 | Home paths, including one that spells the owner's full name, in docs, examples and `.claude/plans/` (§3.3) | Tree-only | No |
@@ -254,6 +261,10 @@ legal person, so as a copyright holder it is misleading. The owner needs to
 choose: an open licence (MIT matches mailroom-desktop and voice-journey-capture)
 or a public "all rights reserved" notice, and a copyright holder.
 
+**Resolved 2026-10-06** (DECISIONS.md D-027): MIT, copyright "2026 voice-lab
+contributors". `LICENSE` is the MIT text and `pyproject.toml` has
+`license = "MIT"` and `authors = [{ name = "voice-lab contributors" }]`.
+
 Third-party text in the tree is attributed: the CMU ARCTIC prompts carry their
 COPYING notice (`tests/fixtures/standard_sets/arctic-COPYING.txt`,
 `src/cole_voice_lab/standard_prompt_sets.py`), and the Harvard sentences
@@ -267,6 +278,7 @@ COPYING notice (`tests/fixtures/standard_sets/arctic-COPYING.txt`,
 
 1. **Licence** (after the owner decides, §4b.1): replace `LICENSE`; update
    `pyproject.toml:11` (authors) and `:12` (licence expression, e.g. `MIT`).
+   Done 2026-10-06 (MIT, D-027).
 2. **Tailnet IPs in docs, examples and tests**, replaced with placeholders such
    as `<mini-tailnet-ip>` or synthetic `100.64.0.x` values:
    `config/site.example.toml:17`, `deploy/ssh/capture-host-config.example:2`,
@@ -299,7 +311,8 @@ COPYING notice (`tests/fixtures/standard_sets/arctic-COPYING.txt`,
 ### 4b. Owner decisions (no history rewrite needed)
 
 1. **Licence and copyright holder** (blocking): open licence or public
-   all-rights-reserved; drop "Chloe" as a legal holder.
+   all-rights-reserved; drop "Chloe" as a legal holder. Decided 2026-10-06:
+   MIT, "2026 voice-lab contributors" (D-027).
 2. **University email in 57 commits**: accept, as in infra screen §3.1 (already
    public; a rewrite would only help as a fresh repository). If wanted anyway:
    `git filter-repo --mailmap` to the noreply address, then push as a fresh

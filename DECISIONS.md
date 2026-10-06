@@ -43,12 +43,22 @@ candidate wins, promotion requires either a dedicated, reviewed ChloeSpeech MLX
 provider or a separately evidenced official-runtime reproduction. The lab never
 fabricates Perth-watermark evidence.
 
+Amended 2026-10-06 (D-026): on the PC, Chatterbox candidates run through the official
+upstream PyTorch runtime, which applies its Perth watermark, so a Chatterbox winner from a
+PC bake-off needs no separate official-runtime reproduction. MLX results remain historical
+evidence under the rule above.
+
 ## D-008 — Sequential candidate residency
 
 The 16 GiB mini runs one candidate in one fresh subprocess at a time. Model
 process exit is the Metal-memory release boundary. Weight caches may also need
 sequential explicit lifecycle management because the 10 GiB free-space floor
 prevents all quality profiles from coexisting on the current disk.
+
+Amended 2026-10-06 (D-026): when the model workers move to the PC, the rule stays and
+its reason changes: one candidate at a time within the RX 6900 XT's 16 GB of VRAM and a
+single GPU slot shared with fine-tuning and Speak. Process exit remains the release
+boundary.
 
 ## D-009 — Loopback capture control and fail-closed resume
 
@@ -254,6 +264,11 @@ base weights. It writes under `derived/speech/<operation-id>/`, never into a run
 clips have the standing of listening samples. Neither `voice-lab finetune` nor the app reads
 a consent record; D-019 records that scope and leaves it open for Cole to confirm.
 
+Amended 2026-10-06 (D-022): from design phase 5, fine-tuning runs in the PC's job runner,
+not on the Mac that records, and requires an approved, checksum-bound consent record
+whose purposes include `private-fine-tuning` for the `home-host` execution boundary. Until
+then the Mac-local behaviour above is unchanged.
+
 ## D-017 — The prompt catalog is data in the corpus store
 
 Cole asked on 2026-09-15 that prompts be editable without rebuilding the app. Cole
@@ -387,6 +402,10 @@ Amended 2026-09-19 (D-020): the encrypted library vault is the separately approv
 storage exception to the transfer wording above. Capture sync, hosted model execution,
 local fine-tuning and Speak retain their own boundaries; the vault never synthesizes.
 
+Amended 2026-10-06 (D-022, D-025): the app's Fine-tune model action moves, with phase 5,
+to the PC's job runner behind `/api/v1/jobs` and a consent record; the app itself is
+replaced by the `scshafe-qt` desktop app after phase 4's acceptance criteria.
+
 ## D-019 — In-app speech is a local listening tool
 
 Cole asked on 2026-09-15 for a separate view in the recording app to type text and perform
@@ -450,6 +469,14 @@ copies on Cole's own host; `derived/speech/**` remains Mac-only. The vault never
 model and does not extend local listening to another execution boundary. This amendment
 does not answer the first open question above: consent for local fine-tuning and Speak
 still awaits Cole's decision.
+
+Resolved 2026-10-06 (D-022): Cole answered the first open question. When Speak and
+fine-tuning move to the PC, both require an approved, checksum-bound consent record with a
+matching subject, whose purposes name the act (`private-fine-tuning`, or the new
+`private-home-host-synthesis` for Speak) and whose execution boundaries include the new
+`home-host`. Synthesis then runs on a different machine from the listener, which is why
+"local listening" no longer suffices as a scope. Until phase 5, the Mac-local Speak above is
+unchanged. The second open question, retention of Speak clips, remains open.
 
 ## D-020 — The library vault is an encrypted durable copy
 
@@ -555,3 +582,205 @@ their existing behavior is unchanged by this decision.
 See [docs/LIBRARY_VAULT.md](docs/LIBRARY_VAULT.md),
 [docs/RUNBOOK.md](docs/RUNBOOK.md#9-library-vault), and
 [deploy/vault/README.md](deploy/vault/README.md).
+
+Amended 2026-10-06 (D-023): the direction reverses and the single destination becomes
+several, all on Cole's own hardware. The PC holds the plaintext working library and seals;
+ciphertext-only vaults run on the laptop (nightly) and on the MacBook Air (weekly; the
+offsite copy), with an optional rotated USB drive later. "It is the intended durable copy,
+with no second vault destination or automatic backup" and "there is no automatic second
+copy" no longer hold. The library key becomes an encrypted systemd credential on the PC,
+never held by any vault host. No cloud or paid storage is used (D-028).
+
+## D-021 — The PC is the lab's home host
+
+Cole accepted the combined voice platform design on 2026-10-06
+([docs/design/VOICE-PLATFORM.md](docs/design/VOICE-PLATFORM.md), its §13 decision 6). The
+lab's backend, asset root (`/data/voice-lab/lab`) and model workers move to the PC, the
+Arch workstation (registry key `arch`, AMD RX 6900 XT, `gfx1030`). The Mac mini's intake
+role is retired.
+
+The PC is a GPU host under AGENTS.md's transfer rule. For uploads to it alone, a standing
+home-host approval replaces the per-plan `plan_sha256` approval. It is shaped like D-020's
+`VaultDestinationApproval`: it binds the endpoint FQDN, the node's stable Tailscale ID,
+`tag:voice-lab`, the tailnet suffix, the file classes (`capture`, `measurement`) and a
+mandatory expiry of at most 366 days. The client re-checks the node identity before each
+upload session and writes a chained ledger entry naming the session's manifest digest
+before the first byte. Any other destination of Cole's own needs the separate per-payload
+approval; there is no hosted destination (D-028).
+
+On the PC the network-facing API container cannot write `raw/`; only the intake publisher,
+a host unit without network, publishes accepted audio, through the unchanged validator.
+Model workers run in a private network namespace.
+
+This amends AGENTS.md's transfer rule for this one destination, the "Mac mini" wording of
+AGENTS.md's mission, ARCHITECTURE.md's trust model ("the intake publisher re-hashes…")
+and D-008's reason for sequential residency. Those texts change with the design's phase 2,
+which builds the host; until then they describe what runs.
+
+## D-022 — Fine-tuning and Speak run on the PC, behind a consent record
+
+Cole decided on 2026-10-06 (design §13, decision 7) that fine-tuning and Speak move from
+the Mac that records (D-016, D-018, D-019) to the PC's job runner, and that both then
+require an approved, checksum-bound consent record. This answers D-019's open consent
+question.
+
+- Fine-tuning needs a record whose purposes include `private-fine-tuning`; Speak needs one
+  whose purposes include a new purpose, `private-home-host-synthesis`.
+- Both need a new execution boundary, `home-host`: the host named by the standing
+  home-host approval (D-021). A record for the PC authorizes synthesis nowhere else.
+- Subject, approval state and file checksum are checked as on the lab's other rendering
+  paths. Each run and each clip records the consent record's digest. A missing, pending,
+  revoked or mismatched record refuses the job before a worker starts.
+- Clips stream to the desktop app for listening and are not stored on the client. Speak
+  clips keep the standing D-019 gives them.
+
+`ConsentRecord.hosted_transfer_allowed` stays `Literal[False]`. The Mac-local fine-tuning
+and Speak of D-016 to D-019 are unchanged until the design's phase 5 moves them. D-019's
+retention question for Speak clips remains open.
+
+## D-023 — The vault reverses direction, and every copy stays on Cole's hardware
+
+Cole decided on 2026-10-06 (design §13, decision 3) that the offsite copy of the
+recordings lives on his own hardware only, never in the cloud. D-020's vault is reused with
+its direction reversed: the PC holds the plaintext working library and seals every
+generation before it leaves.
+
+- **The laptop** runs the existing `deploy/vault/` server as a stack: ciphertext only,
+  nightly, from the design's phase 2.
+- **The MacBook Air** runs a second ciphertext-only vault: the same standard-library
+  server under launchd, as a dedicated non-admin account, behind its own userspace
+  tailnet node `voice-lab-vault-air` (`tag:voice-lab-vault-air`). The Air travels with
+  Cole, so it is the offsite copy. It is refreshed weekly; because it sleeps and travels,
+  the PC probes it hourly, catches up a missed week the next time it is online, and
+  resumes an interrupted push from a per-destination journal of stored chunks instead of
+  starting again. The head moves only when a whole generation is stored. From phase 3.
+- **A rotated USB drive** holding a `local-directory` vault may follow, only if Cole
+  asks.
+
+Each destination has its own binding, approval, state, manifest chain and ledger. The
+library key is created on the PC as a root-owned encrypted systemd credential, with
+D-020's offline recovery sheet; no vault host holds it. `memos/phone/` is copied as a new
+`memos` class, because Apple's iCloud sync of the phone is a cloud service and is not
+counted as a backup.
+
+Residual risk, accepted: the PC and the laptop are on one site, so the Air copy is the
+only real offsite copy, and only while the Air is away from home; it can lag a week or
+more. If the only recovery sheet is kept at home, losing the house loses every copy, so a
+copy of the sheet must be kept elsewhere. Losing the Air costs a copy, not privacy. D-020's
+limits (sizes and times visible, a host can withhold or delete) apply to every
+destination. The cloud-bucket option the design first recommended is withdrawn (D-028).
+
+## D-024 — One intake protocol, one validator
+
+voice-journey's resumable HTTPS intake protocol (chunked uploads with `Content-Range`, a
+finalize request) becomes the transport for every capture, prompted takes and measurement
+sessions alike. voice-lab's strict validator, run by the network-less intake publisher, is
+the only publisher of raw audio; the API writes only `incoming/`. rsync capture sync is
+retired with the Mac mini.
+
+## D-025 — The desktop app replaces the Swift app, the legacy Qt desktop and the React SPA
+
+After the design's phase 4 acceptance criteria, one `scshafe-qt` desktop app for macOS and
+Linux replaces the Swift app, the legacy Qt Widgets desktop and voice-journey's React SPA.
+D-015's continuity evidence contract is kept: the Swift app stays the macOS
+prompted-capture path until a PortAudio capture worker passes the recording acceptance
+matrix on both platforms.
+
+The phone gets a server-rendered, read-only web view behind Pocket ID. Cole decided on
+2026-10-06 (design §13, decision 8) that it plays no audio: it shows summaries only and
+serves no recording, transcript or lyric.
+
+## D-026 — Model runtimes on ROCm: spike, then decide
+
+Candidates on the PC run their upstream PyTorch implementations on ROCm, with new runtime
+and weight locks; MLX results stay valid historical evidence but are never ranked with
+ROCm results in one bake-off. Each model gets a spike on `gfx1030` before phase 5 work
+(design §13, decision 5). For a candidate that fails on the GPU, the fallbacks are, in
+order: fp32 on the GPU; the PC's CPU; the Air's Apple runtimes, with a transfer approval
+naming the Air and the payload digest; otherwise it is dropped from the matrix with the
+reason recorded. No hosted GPU is used (D-028).
+
+Amends D-007 (the official Chatterbox runtime is now the evaluated one) and D-008 (VRAM,
+not Metal, is the residency constraint).
+
+## D-027 — MIT licence
+
+Cole decided on 2026-10-06 (design §13, decisions 1 and 4) that voice-lab is released
+under the MIT licence, copyright "2026 voice-lab contributors", the form mailroom-desktop
+and voice-journey-capture use. "Cole and Chloe" is dropped: "Chloe" is an agent persona,
+not a legal person. `LICENSE` and `pyproject.toml` (`license = "MIT"`, authors
+"voice-lab contributors") changed the same day. This settles the blocking item of
+[docs/PUBLICATION-SCREEN.md](docs/PUBLICATION-SCREEN.md).
+
+voice-journey has no licence file; Cole owns its code. Its code becomes MIT when it is
+imported in the design's phase 3, and its analysis code stays in the public repository.
+voice-journey-capture is already MIT. Third-party texts in the tree keep their own
+notices (the CMU ARCTIC `COPYING`, the cited Harvard sentences), and model weights, which
+never enter the repository, keep their own licences.
+
+## D-028 — Free, and on the owner's own hardware
+
+Cole decided on 2026-10-06 that everything in the platform is free and runs on his own
+hardware: no cloud service and nothing paid. Concretely:
+
+- no object storage or other cloud copy of any data, ciphertext included (D-023);
+- no hosted or rented GPU, paid or free (D-026);
+- no paid model, API or service;
+- no paid Apple Developer ID and no notarization: the macOS app is ad-hoc signed, and its
+  install page documents Gatekeeper's first-run prompt and how to allow it (System
+  Settings → Privacy & Security → Open Anyway). Each new ad-hoc build asks for microphone
+  permission again;
+- no hosted CI beyond what is free for a public repository.
+
+Allowed, because they are free and carry no private byte: GitHub, with Actions on the
+public repository and GitHub Packages for public packages; PyPI; one-off, explicitly
+flagged downloads of public code and weights at pinned revisions; and the fleet's existing
+tailnet on Tailscale's free plan as the transport, whose coordination server sees node
+metadata and never payload. SECURITY.md's approval rule for hosted GPU use stays as a
+rule; this decision means the platform has no such use.
+
+## D-029 — One rename, in phase 6
+
+Cole decided on 2026-10-06 (design §13, decision 2) to rename the distribution
+(`cole-voice-lab` → `voice-lab`), the package (`cole_voice_lab` → `voice_lab`) and the
+environment variables (`COLE_VOICE_LAB_*` → `VOICE_LAB_*`) in one breaking release in the
+design's phase 6. That release still reads the old variables as a fallback; the next
+removes them. Stored identifiers never change: the `cole-voice-lab.<record>/vN` schema ids
+and the `cole-voice-lab-common-v1` normalization id stay for ever, and old evidence stays
+verifiable because it names the code it ran.
+
+## D-030 — Import both histories
+
+Cole decided on 2026-10-06 (design §13, decision 11) to import the histories of
+`voice-journey` (its public, single-root history; the older private archive stays where it
+is) in phase 3 and `voice-journey-capture` in phase 4, by `git subtree add`-style merges
+into prefixes, each in one reviewed PR. The publication screen's method runs on each
+imported history first. Both repositories are archived after phase 6, pointing at
+voice-lab.
+
+## D-031 — Standard-library HTTP server, Python 3.12 throughout
+
+Cole decided on 2026-10-06 (design §13, decisions 9 and 10):
+
+- The `/api/v1` server and the web view use the standard library's `ThreadingHTTPServer`,
+  as `storage_server.py` does, with strict Pydantic request and response models and JSON
+  refusals with stable codes. No ASGI framework; JSON Schemas are generated from the
+  models into `schemas/api/v1/`.
+- The desktop app and the backend are both on Python 3.12. `scshafe-qt` widens to
+  `requires-python = ">=3.12"` in its own release.
+
+## D-032 — The `pc` host, its URL, and host units through the runner lane
+
+Cole decided on 2026-10-06 (design §13, decisions 12 and 14):
+
+- voice-lab's `dev.toml` names `host = "pc"`; scshafe-dev resolves `pc` as an alias of the
+  machines.toml registry key `arch`.
+- The stack's node is `voice-lab`. For 90 days after phase 3's cutover the old
+  `voice-journey.<tailnet>.ts.net` answers with a `308` redirect to the same path on
+  `voice-lab.<tailnet>.ts.net`, from a stripped-down voice-journey stack that serves no
+  data; then it is removed.
+- The runner lane's deploy entrypoint installs the released wheel into a sealed,
+  content-addressed release and installs and enables the stack's systemd host units
+  (intake publisher, job runner, vault copiers). This extends infra's signed host tree and
+  needs Cole's approval of its manifest hash before any host runs it; there is no hand
+  install.
