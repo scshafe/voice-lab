@@ -338,17 +338,15 @@ wheels = [
 
 [[package]]
 name = "scshafe-qt"
-version = "0.1.1"
-source = { path = "vendor/scshafe_qt-0.1.1-py3-none-any.whl" }
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyside6-essentials" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/e8/6e/fb0cdceba43b05aaebad32c9724081631508ecf0374c6168ddb67f4c40b3/scshafe_qt-0.1.2.tar.gz", hash = "sha256:dbd994259908a40e93d596e002be448b2be9a9ffae5d78b37a2e2aaf651dea53", size = 83441, upload-time = "2026-10-06T01:34:40.701Z" }
 wheels = [
-    { filename = "scshafe_qt-0.1.1-py3-none-any.whl", hash = "sha256:56510070900c26d6cadabf1077c26220b45d2ccd2dc42521bd0a2d281692385b" },
+    { url = "https://files.pythonhosted.org/packages/6b/f6/5100bad22c60d7e26f5e82e15d39e8e783460109feb5107bae8245abda3e/scshafe_qt-0.1.2-py3-none-any.whl", hash = "sha256:61d71f26766f759fcb2165fd817cbd23d7131156e76000465e656737ec302d78", size = 50861, upload-time = "2026-10-06T01:34:39.093Z" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "pyside6-essentials", specifier = ">=6.11.2,<6.12" }]
 
 [[package]]
 name = "secretstorage"
@@ -423,7 +421,7 @@ requires-dist = [
     { name = "httpx", specifier = "==0.28.1" },
     { name = "keyring", specifier = "==25.7.0" },
     { name = "pyside6-essentials", specifier = ">=6.11.2,<6.12" },
-    { name = "scshafe-qt", path = "vendor/scshafe_qt-0.1.1-py3-none-any.whl" },
+    { name = "scshafe-qt", specifier = ">=0.1.2,<0.2" },
     { name = "sounddevice", specifier = "==0.5.6" },
 ]
 
