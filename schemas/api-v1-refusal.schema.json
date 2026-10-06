@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "ApiErrorCode": {
+      "enum": [
+        "bad_request",
+        "unauthorized",
+        "forbidden",
+        "not_found",
+        "method_not_allowed",
+        "invalid_json",
+        "invalid_request",
+        "body_too_large",
+        "content_length_required",
+        "invalid_content_range",
+        "content_range_out_of_bounds",
+        "range_not_contiguous",
+        "file_not_declared",
+        "file_already_received",
+        "checksum_mismatch",
+        "incomplete",
+        "session_not_found",
+        "session_conflict",
+        "session_busy",
+        "session_finalized",
+        "session_refused",
+        "too_many_open_sessions",
+        "insufficient_storage",
+        "not_accepted",
+        "internal_error"
+      ],
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Every refusal's body: a stable code and a message that carries no secret.\n\n``received_bytes`` accompanies refusals of a ``PUT`` (``range_not_contiguous``,\n``checksum_mismatch``): how much of the file the server holds, so the client resumes\nfrom there.",
+  "properties": {
+    "detail": {
+      "maxLength": 2000,
+      "title": "Detail",
+      "type": "string"
+    },
+    "error": {
+      "$ref": "#/$defs/ApiErrorCode"
+    },
+    "received_bytes": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Received Bytes"
+    }
+  },
+  "required": [
+    "error",
+    "detail"
+  ],
+  "title": "ApiRefusal",
+  "type": "object"
+}

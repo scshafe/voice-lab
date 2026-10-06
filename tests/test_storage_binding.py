@@ -109,6 +109,7 @@ from cole_voice_lab.storage_ports import (
     library_head_ref,
     storage_error,
 )
+from cole_voice_lab.tailnet import platform_tailscale_binary
 
 NAMES = keychain_item_names(LIBRARY_ID)
 FIXED = datetime(2026, 9, 17, 12, tzinfo=UTC)
@@ -1313,7 +1314,7 @@ def test_the_production_seams_build_the_checked_client_and_the_real_keychain() -
     resolver = tailnet_resolver(TAILNET_SUFFIX)
     assert isinstance(resolver, TailscaleCliResolver)
     assert resolver.tailnet_suffix == TAILNET_SUFFIX
-    assert resolver.binary == Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+    assert resolver.binary == platform_tailscale_binary()
 
     connection = vault_connection(
         endpoint=ENDPOINT,

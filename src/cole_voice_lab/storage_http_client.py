@@ -52,21 +52,16 @@ from __future__ import annotations
 import hashlib
 import http.client
 import io
-import ipaddress
 import json
-import os
-import pwd
 import random
 import re
 import socket
 import ssl
-import subprocess
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
 from pydantic import ValidationError
@@ -75,8 +70,6 @@ from .storage_contracts import (
     MAX_BLOB_BYTES,
     MAX_VAULT_ATTEMPTS,
     NAMESPACE_PATTERN,
-    NODE_STABLE_ID_PATTERN,
-    TAILSCALE_TAG_PATTERN,
     VAULT_TOKEN_PATTERN,
     VAULT_TOKEN_PREFIX,
     BlobRef,
@@ -92,6 +85,16 @@ from .storage_ports import (
     StorageError,
     StorageErrorCode,
     storage_error,
+)
+from .tailnet import (
+    MAX_TAILSCALE_OUTPUT_BYTES,
+    TAILSCALE_BINARY,
+    TAILSCALE_TIMEOUT_SECONDS,
+    ExpectedIdentity,
+    ResolvedPeer,
+    TailnetResolver,
+    TailscaleCliResolver,
+    identity_problem,
 )
 
 __all__ = [
@@ -122,17 +125,8 @@ DEFAULT_ATTEMPTS: Final = 4
 BACKOFF_SECONDS: Final = 0.5
 MAX_BACKOFF_SECONDS: Final = 30.0
 IDENTITY_MAX_AGE_SECONDS: Final = 60.0
-# The app binary, not /usr/local/bin/tailscale (a shell wrapper), and not a PATH lookup: the
-# service process has no HOME and no /usr/local/bin on its PATH.
-TAILSCALE_BINARY: Final = Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
-TAILSCALE_TIMEOUT_SECONDS: Final = 10.0
-# A tailnet of any size answers ``status --json`` well inside this; more is not read as JSON.
-MAX_TAILSCALE_OUTPUT_BYTES: Final = 4 * 1024 * 1024
-TAILSCALE_ENVIRONMENT_PATH: Final = "/usr/bin:/bin"
 # The only addresses the test-only loopback constructor accepts.
 LOOPBACK_ADDRESSES: Final = ("127.0.0.1", "::1")
-# Tailscale's own range (100.64.0.0/10): the CLI resolver takes the peer's address from it.
-TAILNET_RANGE: Final = ipaddress.ip_network("100.64.0.0/10")
 
 _BEARER: Final = "Bearer "
 _JSON_CONTENT_TYPE: Final = "application/json; charset=utf-8"
@@ -144,8 +138,6 @@ _SEND_CHUNK_BYTES: Final = 256 * 1024
 _MIN_STATUS: Final = 100
 _MAX_STATUS: Final = 599
 _NAMESPACE = re.compile(NAMESPACE_PATTERN)
-_NODE_STABLE_ID = re.compile(NODE_STABLE_ID_PATTERN)
-_TAILSCALE_TAG = re.compile(TAILSCALE_TAG_PATTERN)
 _TOKEN = re.compile(VAULT_TOKEN_PATTERN)
 # The failure a status means when the answer names no code of its own: a proxy's answer, or a
 # refusal of a HEAD request, which carries its code in a body the HTTP rules never send.
@@ -173,246 +165,10 @@ _STATUS_CODES: Final[Mapping[int, StorageErrorCode]] = {
 _HEAD_STATUS_CODES: Final[Mapping[int, StorageErrorCode]] = {500: "STORAGE.INTEGRITY"}
 
 type RequestLog = Callable[[VaultRequestRecord], None]
-type CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
-
-
-# -- the tailnet identity -------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class ExpectedIdentity:
-    """The node a destination approval named: nothing else may answer for the endpoint.
-
-    Raises (on construction): ``StorageNameError`` when the node id, the tag or the tailnet
-    suffix is not of its form.
-    """
-
-    node_stable_id: str
-    tag: str
-    tailnet_suffix: str
-
-    def __post_init__(self) -> None:
-        if _NODE_STABLE_ID.fullmatch(self.node_stable_id) is None:
-            raise StorageNameError(
-                f"a node's stable id is 1 to 64 letters and digits: {self.node_stable_id!r:.120}"
-            )
-        if _TAILSCALE_TAG.fullmatch(self.tag) is None:
-            raise StorageNameError(f"a tailnet tag is tag:<name>: {self.tag!r:.120}")
-        validate_tailnet_endpoint(self.tailnet_suffix)
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedPeer:
-    """What a resolver found for an endpoint: where it is, and who it says it is.
-
-    ``address`` is the IP literal the client connects to (the tailnet address of the node);
-    ``port`` is where it listens, which only a test resolver ever changes. ``dns_name`` is the
-    node's own name, which Tailscale reports with a trailing dot.
-    """
-
-    address: str
-    node_stable_id: str
-    tags: tuple[str, ...]
-    dns_name: str
-    port: int = HTTPS_PORT
-
-
-class TailnetResolver(Protocol):
-    """Whatever can say where an endpoint is and what node answers there."""
-
-    def resolve(self, endpoint: str) -> ResolvedPeer:
-        """The peer that answers for ``endpoint`` right now.
-
-        Params: ``endpoint``, the vault's DNS name.
-        Returns: the ``ResolvedPeer``; the caller, not the resolver, decides whether it is
-        the approved node.
-        Raises: ``StorageError`` with ``STORAGE.UNAVAILABLE`` or ``STORAGE.TIMEOUT`` when the
-        tailnet cannot be asked, ``STORAGE.PROTOCOL`` when the answer is not what it must be,
-        or ``StorageIntegrityError`` (``STORAGE.IDENTITY_MISMATCH``) when the tailnet knows no
-        such node.
-        """
-
-
-def _identity_problem(endpoint: str, identity: ExpectedIdentity, peer: ResolvedPeer) -> str | None:
-    """What makes ``peer`` not the approved node for ``endpoint``; ``None`` when it is."""
-    if not endpoint.endswith(f".{identity.tailnet_suffix}"):
-        return f"{endpoint} is not a name in the tailnet {identity.tailnet_suffix}"
-    if peer.node_stable_id != identity.node_stable_id:
-        return (
-            f"the node answering is {peer.node_stable_id!r:.80}, not the approved "
-            f"{identity.node_stable_id!r:.80}"
-        )
-    if identity.tag not in peer.tags:
-        return f"the node does not carry {identity.tag}, only {list(peer.tags)!r:.200}"
-    if peer.dns_name.rstrip(".") != endpoint:
-        return f"the node calls itself {peer.dns_name!r:.120}, not {endpoint}"
-    try:
-        ipaddress.ip_address(peer.address)
-    except ValueError:
-        return f"the node's address is not an IP address: {peer.address!r:.80}"
-    return None
-
-
-def _run_tailscale(argv: Sequence[str], **options: Any) -> subprocess.CompletedProcess[str]:
-    """Run the Tailscale binary as the resolver asks; the only runner that runs anything."""
-    return subprocess.run(list(argv), **options)
-
-
-def _tailscale_environment() -> dict[str, str]:
-    """A fixed environment with the passwd database's home, since the service has none."""
-    return {"PATH": TAILSCALE_ENVIRONMENT_PATH, "HOME": pwd.getpwuid(os.getuid()).pw_dir}
-
-
-@dataclass(frozen=True)
-class TailscaleCliResolver:
-    """The tailnet as the local Tailscale app reports it, over two read-only commands.
-
-    ``status --json`` gives the tailnet's MagicDNS suffix and the peer whose ``DNSName`` is
-    the endpoint (with the trailing dot Tailscale writes), from which the first IPv4 address
-    in ``TAILNET_RANGE`` is taken; ``whois --json <address>`` then gives that node's stable
-    id, tags and name. Both run the binary by absolute path with ``PATH=/usr/bin:/bin`` and
-    the passwd database's ``HOME`` (the app's service process has none), a timeout and a cap
-    on the output that is read; no message, log or exception carries the command line or a
-    byte of its output, so nothing the tailnet says can leak through a refusal.
-    Raises (on construction): ``StorageNameError`` for a relative binary path or a tailnet
-    suffix that is not a DNS name.
-    """
-
-    tailnet_suffix: str
-    binary: Path = TAILSCALE_BINARY
-    runner: CommandRunner = _run_tailscale
-    timeout: float = TAILSCALE_TIMEOUT_SECONDS
-
-    def __post_init__(self) -> None:
-        validate_tailnet_endpoint(self.tailnet_suffix)
-        if not self.binary.is_absolute():
-            raise StorageNameError(f"the tailscale binary needs an absolute path: {self.binary}")
-
-    def resolve(self, endpoint: str) -> ResolvedPeer:
-        """The peer that answers for ``endpoint``; see ``TailnetResolver.resolve``."""
-        status = self._json(("status", "--json"), "status")
-        tailnet = _member(status, "CurrentTailnet", "status")
-        suffix = _text(tailnet, "MagicDNSSuffix", "status")
-        if suffix != self.tailnet_suffix:
-            raise storage_error(
-                "STORAGE.IDENTITY_MISMATCH",
-                f"this Mac is on the tailnet {suffix!r:.120}, not {self.tailnet_suffix}",
-            )
-        address = self._peer_address(status, endpoint)
-        node = _member(self._json(("whois", "--json", address), "whois"), "Node", "whois")
-        return ResolvedPeer(
-            address=address,
-            node_stable_id=_text(node, "StableID", "whois"),
-            tags=_texts(node, "Tags", "whois"),
-            dns_name=_text(node, "Name", "whois"),
-        )
-
-    def _peer_address(self, status: Mapping[str, Any], endpoint: str) -> str:
-        """The tailnet address of the one peer named ``endpoint``."""
-        peers = _member(status, "Peer", "status")
-        named = [
-            peer
-            for key in sorted(peers)
-            for peer in (_member(peers, key, "status"),)
-            if _text(peer, "DNSName", "status") == f"{endpoint}."
-        ]
-        if len(named) != 1:
-            raise storage_error(
-                "STORAGE.IDENTITY_MISMATCH",
-                f"the tailnet has {len(named)} nodes named {endpoint}, not one",
-            )
-        for candidate in _texts(named[0], "TailscaleIPs", "status"):
-            try:
-                parsed = ipaddress.ip_address(candidate)
-            except ValueError:
-                continue
-            if parsed.version == 4 and parsed in TAILNET_RANGE:
-                return candidate
-        raise storage_error(
-            "STORAGE.IDENTITY_MISMATCH",
-            f"the node named {endpoint} has no {TAILNET_RANGE} address",
-        )
-
-    def _json(self, arguments: Sequence[str], label: str) -> Mapping[str, Any]:
-        """One command's output as a JSON object; nothing of it reaches a message."""
-        argv = [str(self.binary), *arguments]
-        try:
-            completed = self.runner(
-                argv,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self.timeout,
-                env=_tailscale_environment(),
-            )
-        except subprocess.TimeoutExpired as error:
-            raise storage_error(
-                "STORAGE.TIMEOUT",
-                f"tailscale {label} did not answer within {self.timeout} seconds",
-            ) from error
-        except OSError as error:
-            raise storage_error(
-                "STORAGE.UNAVAILABLE",
-                f"tailscale {label} could not be run from {self.binary}: {error.strerror}",
-            ) from error
-        if completed.returncode != 0:
-            raise storage_error(
-                "STORAGE.UNAVAILABLE",
-                f"tailscale {label} answered with status {completed.returncode}",
-            )
-        if len(completed.stdout) > MAX_TAILSCALE_OUTPUT_BYTES:
-            raise storage_error(
-                "STORAGE.PROTOCOL",
-                f"tailscale {label} answered with more than {MAX_TAILSCALE_OUTPUT_BYTES} "
-                "characters, which is no answer this reads",
-            )
-        try:
-            document = json.loads(completed.stdout)
-        except ValueError as error:
-            raise storage_error(
-                "STORAGE.PROTOCOL", f"tailscale {label} answered with something that is not JSON"
-            ) from error
-        if not isinstance(document, dict):
-            raise storage_error(
-                "STORAGE.PROTOCOL", f"tailscale {label} answered with JSON that is no object"
-            )
-        return cast(Mapping[str, Any], document)
-
-
-def _member(document: Mapping[str, Any], key: str, label: str) -> Mapping[str, Any]:
-    """The JSON object at ``key``; nothing of the value reaches the message."""
-    value = document.get(key)
-    if not isinstance(value, dict):
-        raise storage_error(
-            "STORAGE.PROTOCOL", f"tailscale {label} named no {key} object in its answer"
-        )
-    return cast(Mapping[str, Any], value)
-
-
-def _text(document: Mapping[str, Any], key: str, label: str) -> str:
-    """The string at ``key``; nothing of the value reaches the message."""
-    value = document.get(key)
-    if not isinstance(value, str):
-        raise storage_error(
-            "STORAGE.PROTOCOL", f"tailscale {label} named no {key} string in its answer"
-        )
-    return value
-
-
-def _texts(document: Mapping[str, Any], key: str, label: str) -> tuple[str, ...]:
-    """The strings at ``key`` (an absent key is none); nothing of them reaches the message."""
-    value = document.get(key)
-    if value is None:
-        return ()
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise storage_error(
-            "STORAGE.PROTOCOL", f"tailscale {label} named no {key} list of strings in its answer"
-        )
-    return tuple(cast(list[str], value))
 
 
 # -- one request ----------------------------------------------------------------------------
@@ -495,7 +251,7 @@ class _TailnetRoute:
         now = self.monotonic()
         if self.peer is None or now - self.checked_at >= self.max_age:
             found = self.resolver.resolve(self.endpoint)
-            problem = _identity_problem(self.endpoint, self.identity, found)
+            problem = identity_problem(self.endpoint, self.identity, found)
             if problem is not None:
                 raise storage_error(
                     "STORAGE.IDENTITY_MISMATCH",

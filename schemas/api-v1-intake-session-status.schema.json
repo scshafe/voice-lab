@@ -1,0 +1,158 @@
+{
+  "$defs": {
+    "FileProgress": {
+      "additionalProperties": false,
+      "description": "How much of one declared file the server holds.",
+      "properties": {
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "path": {
+          "$ref": "#/$defs/PackagePath"
+        },
+        "received_bytes": {
+          "minimum": 0,
+          "title": "Received Bytes",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "size_bytes",
+        "received_bytes",
+        "complete"
+      ],
+      "title": "FileProgress",
+      "type": "object"
+    },
+    "IntakeReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_at": {
+          "format": "date-time",
+          "title": "Accepted At",
+          "type": "string"
+        },
+        "intake_qc_report_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "raw_path": {
+          "title": "Raw Path",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.intake-receipt/v2",
+          "default": "cole-voice-lab.intake-receipt/v2",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "session_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "source_qc_report_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "session_id",
+        "manifest_sha256",
+        "source_qc_report_sha256",
+        "intake_qc_report_sha256",
+        "accepted_at",
+        "raw_path"
+      ],
+      "title": "IntakeReceipt",
+      "type": "object"
+    },
+    "PackagePath": {
+      "maxLength": 255,
+      "minLength": 1,
+      "type": "string"
+    },
+    "SessionState": {
+      "enum": [
+        "open",
+        "finalized",
+        "accepted",
+        "refused"
+      ],
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A session as the server sees it.\n\n``open``: files are being received (``files`` shows each one's progress). ``finalized``:\nevery file was received and checked, and the package waits in ``incoming/`` for the\npublisher. ``accepted``: the publisher published it; ``receipt`` is its intake receipt.\n``refused``: the publisher refused it; ``refusal`` says why.",
+  "properties": {
+    "files": {
+      "items": {
+        "$ref": "#/$defs/FileProgress"
+      },
+      "title": "Files",
+      "type": "array"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "receipt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IntakeReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "refusal": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Refusal"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.intake-session-status/v1",
+      "default": "cole-voice-lab.api.intake-session-status/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "state": {
+      "$ref": "#/$defs/SessionState"
+    }
+  },
+  "required": [
+    "session_id",
+    "manifest_sha256",
+    "state",
+    "files"
+  ],
+  "title": "IntakeSessionStatus",
+  "type": "object"
+}

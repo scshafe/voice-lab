@@ -8,6 +8,13 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from .api.contracts import (
+    ApiMeta,
+    ApiRefusal,
+    ChunkAnswer,
+    IntakeSessionRequest,
+    IntakeSessionStatus,
+)
 from .audition import (
     AuditionPlan,
     AuditionRunManifest,
@@ -31,7 +38,9 @@ from .datasets import (
 )
 from .diagnostic_roots import DiagnosticRootMarker
 from .finetune import FINETUNE_SCHEMA_MODELS
+from .home_host import HomeHostApproval, HomeHostBinding, HomeHostLedgerEntry
 from .intake import IntakeReceipt
+from .intake_publisher import IntakeAcceptanceRecord, IntakeRefusalRecord
 from .library_replication_service import VAULT_SUPERVISOR_SCHEMA_MODELS
 from .models import (
     CandidateSpec,
@@ -104,6 +113,16 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "recording-discovery-legacy-group": LegacyProjectionGroup,
     "recording-discovery-legacy-unknown": LegacyProjectionUnknown,
     "recording-legacy-continuation": RecordingLegacyContinuation,
+    "api-v1-chunk-answer": ChunkAnswer,
+    "api-v1-intake-session": IntakeSessionRequest,
+    "api-v1-intake-session-status": IntakeSessionStatus,
+    "api-v1-meta": ApiMeta,
+    "api-v1-refusal": ApiRefusal,
+    "home-host-approval": HomeHostApproval,
+    "home-host-binding": HomeHostBinding,
+    "home-host-ledger-entry": HomeHostLedgerEntry,
+    "intake-acceptance": IntakeAcceptanceRecord,
+    "intake-refusal": IntakeRefusalRecord,
     "audition-plan": AuditionPlan,
     "audition-run": AuditionRunManifest,
     "audition-trial-result": PersistedTrialResult,

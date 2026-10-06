@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "Endpoint": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "HomeHostClass": {
+      "enum": [
+        "capture",
+        "measurement"
+      ],
+      "type": "string"
+    },
+    "NodeStableId": {
+      "pattern": "^[A-Za-z0-9]{1,64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "TailnetName": {
+      "maxLength": 253,
+      "minLength": 1,
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "cole_voice_lab__storage_contracts__NonBlank__1": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "cole_voice_lab__storage_contracts__NonBlank__2": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Cole's standing authorization to upload captures to his own home host.",
+  "properties": {
+    "approval_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "approved": {
+      "const": true,
+      "title": "Approved",
+      "type": "boolean"
+    },
+    "approved_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "approved_by": {
+      "$ref": "#/$defs/cole_voice_lab__storage_contracts__NonBlank__1"
+    },
+    "classes": {
+      "items": {
+        "$ref": "#/$defs/HomeHostClass"
+      },
+      "maxItems": 2,
+      "minItems": 1,
+      "title": "Classes",
+      "type": "array"
+    },
+    "endpoint": {
+      "$ref": "#/$defs/Endpoint"
+    },
+    "expires_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "node_stable_id": {
+      "$ref": "#/$defs/NodeStableId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.home-host-approval/v1",
+      "default": "cole-voice-lab.home-host-approval/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "statement": {
+      "$ref": "#/$defs/cole_voice_lab__storage_contracts__NonBlank__2"
+    },
+    "tag": {
+      "const": "tag:voice-lab",
+      "default": "tag:voice-lab",
+      "title": "Tag",
+      "type": "string"
+    },
+    "tailnet_suffix": {
+      "$ref": "#/$defs/TailnetName"
+    }
+  },
+  "required": [
+    "approval_id",
+    "approved",
+    "endpoint",
+    "tailnet_suffix",
+    "node_stable_id",
+    "classes",
+    "approved_at",
+    "expires_at",
+    "approved_by",
+    "statement"
+  ],
+  "title": "HomeHostApproval",
+  "type": "object"
+}
