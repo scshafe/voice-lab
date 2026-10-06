@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 python_bin=/opt/homebrew/bin/python3.12
 git_bin=/usr/bin/git
 build_artifact_lock="$repo_dir/requirements/capture-kit-build.artifacts.txt"
@@ -158,7 +158,7 @@ PY
 output_parent=$(dirname -- "$output_dir")
 
 if [ -n "$wheelhouse" ]; then
-  wheelhouse=$(CDPATH= cd -- "$wheelhouse" && pwd) || {
+  wheelhouse=$(CDPATH='' cd -- "$wheelhouse" && pwd) || {
     printf 'wheelhouse must be an existing directory: %s\n' "$wheelhouse" >&2
     exit 66
   }

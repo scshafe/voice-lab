@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import macos_only
 import pytest
 from pydantic import ValidationError
 from recording_fixtures import synthetic_catalog
@@ -794,6 +795,7 @@ class ServiceProcess:
         self.evidence.stderr.close()
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_real_service_bootstrap_capture_save_next_lost_reply_and_cursor_recovery(
     tmp_path: Path,
 ) -> None:

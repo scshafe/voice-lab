@@ -69,12 +69,22 @@ these tests does not require the mini's exact installed Homebrew Python.
 `scripts/verify` is the authoritative local gate. It runs:
 
 - Ruff format check and lint
-- strict mypy
-- all synthetic native recording suites, including `vault`
+- strict mypy (checked as macOS on every host)
+- all synthetic native recording suites, including `vault` (macOS only)
 - pytest with branch coverage (90% minimum)
 - package build
 - exact durable-schema set and schema drift check
 - repository asset-leak guard
+
+It runs on macOS and on Linux (the Arch PC; setup in the README). Off macOS the
+native suites are skipped, and so are the tests that need macOS itself: each
+carries a marker from `tests/macos_only.py` naming what it needs (the real
+recording service, whose build identity binds the macOS Python runtime; Core
+Audio; the Homebrew capture bootstrap; launchd; the macOS artifact locks; APFS
+case-insensitivity). Tests of recording logic that only need *a* service build
+identity get a deterministic, test-only stand-in off macOS (`tests/conftest.py`);
+the production code still refuses to compute one there. The 90% branch-coverage
+floor is the same on both hosts.
 
 `pyproject.toml` sets `python_files` to `test_*.py` and `*_conformance.py`, so the
 port conformance suites are collected with everything else. `tests/catalog_conformance.py`

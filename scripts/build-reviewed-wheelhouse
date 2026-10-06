@@ -1,7 +1,9 @@
 #!/bin/sh
 """:"
-SCRIPT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+SCRIPT_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 exec "$SCRIPT_ROOT/.venv/bin/python" -I -P "$0" "$@"
+# The shell never reaches the Python below; this here-document lets sh -n parse past it.
+: <<'# end of the Python program'
 ":"""
 # Reproduce or verify the exact local wheels required by one runtime lock.
 
@@ -540,3 +542,4 @@ if __name__ == "__main__":
     except (OSError, subprocess.SubprocessError, VoiceLabError, ValueError) as error:
         print(f"build-reviewed-wheelhouse: {error}", file=sys.stderr)
         raise SystemExit(2) from error
+# end of the Python program

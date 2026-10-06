@@ -1096,6 +1096,14 @@ def test_prepared_corpus_gate_verifies_once_then_checks_exact_sources(
     )
     group = store.open_group(catalog, "cole", DEVICE, "host", prepared_gate=gate)
 
+    # Tamper with a source the gate covers: a pilot session's audio. The raw store
+    # also holds other sessions, and directory order differs between filesystems.
+    from cole_voice_lab.recording_takes import load_pilot_gate
+
+    pilot_digests = load_pilot_gate(
+        fixture.layout, relative_path=fixture.gate_path, expected_sha256=fixture.gate_sha256
+    ).record.pilot_manifest_sha256s
+
     def forbidden(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("Record repeated expensive accepted-raw verification")
 
@@ -1104,7 +1112,11 @@ def test_prepared_corpus_gate_verifies_once_then_checks_exact_sources(
         approval = fixture.layout.root / fixture.gate_path
         approval.write_bytes(approval.read_bytes() + b" ")
     elif mutation in {"source-preserved-mtime", "replace-source"}:
-        source = next((fixture.layout.root / "raw").rglob("*.wav"))
+        source = min(
+            path
+            for digest in pilot_digests
+            for path in (fixture.layout.root / "raw" / digest).rglob("*.wav")
+        )
         previous = source.stat()
         source.parent.chmod(0o700)
         source.chmod(0o600)

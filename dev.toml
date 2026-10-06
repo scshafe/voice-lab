@@ -1,0 +1,38 @@
+# Project intent (BASE-01). The schema is illustrative until M2/M7 fix it.
+schema_version = 1
+
+[project]
+id = "voice-lab"
+class = "managed"
+
+[app]
+kind = "tool"
+
+# BASE-06: the one command that verifies this repository; CI runs it. Added
+# with the tool kind's default: change it if this repository verifies
+# differently, and keep .github/workflows/ci.yml running the same command.
+[verify]
+command = "scripts/verify"
+
+[skills]
+# BASE-05 asks for .agents/skills; the catalog is M4. Recorded gap.
+selected = []
+
+# Adopted, not generated (D-6): `dev adopt --add-missing` added this file to
+# an existing tool on 2026-10-05. It records which scshafe-dev standard the
+# repository was adopted under; it does not claim scshafe-dev rendered this
+# repository's files, and the ones that existed were left as they are.
+[template]
+source = "scshafe/scshafe-dev"
+version = "0.10.2"
+commit = "6b82460e19d8269ccdb85e74cae31a6c88e3baaf"
+released = true
+dirty = false
+mode = "adopted"
+params = { kind = "tool", name = "voice-lab", date = "2026-10-05" }
+
+# IDENT-01: what this project's agent may do (scshafe/infra docs/platform/agent-identity.md).
+# References, never secrets. `dev identity plan` compares it with the host and GitHub.
+[identity]
+agent = "agent-voice-lab"
+github = ["contents=write", "pull_requests=write", "issues=write", "workflows=write", "actions=write"]

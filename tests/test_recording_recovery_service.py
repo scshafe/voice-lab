@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import macos_only
 import pytest
 from pydantic import ValidationError
 from test_recording_recovery import emergency, legacy_command
@@ -233,6 +234,7 @@ def test_recovery_wire_rejects_cross_take_scope_and_mixed_pagination() -> None:
         )
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_actual_service_startup_recovers_then_independently_verifies(
     rig: Rig, tmp_path: Path
 ) -> None:
@@ -623,6 +625,7 @@ def test_supervisor_close_interrupts_analysis_submission_after_publishing_recove
     assert rig.store.get_take(take_id).seal is not None
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_actual_service_eof_cancels_startup_commit_and_restart_recovers(
     rig: Rig, tmp_path: Path
 ) -> None:

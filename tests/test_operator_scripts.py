@@ -20,6 +20,7 @@ import zipfile
 from collections.abc import Mapping
 from pathlib import Path
 
+import macos_only
 import pytest
 
 from cole_voice_lab.errors import VoiceLabError
@@ -259,6 +260,7 @@ def test_reviewed_wheel_builder_is_executable_and_toolchain_tamper_fails(
     assert '"source": {' in builder
 
 
+@macos_only.LAUNCHD_PLUTIL
 def test_launch_agent_renderer_enforces_types_modes_and_plutil(tmp_path: Path) -> None:
     receipt, receipt_sha256, executable, _, _ = _mini_release(tmp_path)
     receipt_record = json.loads(receipt.read_bytes())
@@ -909,6 +911,7 @@ def _write_test_bundle(
     return wheel, wheel_digest, _sha256(bundle / "SHA256SUMS")
 
 
+@macos_only.HOMEBREW_PYTHON
 def test_bootstrap_requires_independent_manifest_digest_and_exact_membership(
     tmp_path: Path,
 ) -> None:
@@ -936,6 +939,7 @@ def test_bootstrap_requires_independent_manifest_digest_and_exact_membership(
     assert "bundle membership mismatch" in rejected.stderr
 
 
+@macos_only.HOMEBREW_PYTHON
 def test_capture_bundle_trust_starts_with_system_hashes_and_isolated_python(
     tmp_path: Path,
 ) -> None:
@@ -999,6 +1003,7 @@ def test_capture_bundle_trust_starts_with_system_hashes_and_isolated_python(
     assert "command -v python3" not in bootstrap_source
 
 
+@macos_only.HOMEBREW_PYTHON
 def test_verify_only_stock_macos_python_fallback_is_isolated(tmp_path: Path) -> None:
     wheel, wheel_digest, manifest_digest = _write_test_bundle(
         tmp_path / "capture-kit", stock_validation_python=True
@@ -1025,6 +1030,7 @@ def test_verify_only_stock_macos_python_fallback_is_isolated(tmp_path: Path) -> 
     assert not marker.exists()
 
 
+@macos_only.HOMEBREW_PYTHON
 @pytest.mark.parametrize(
     "member",
     ("../outside.py", "/absolute.py", "cole_voice_lab/../../outside.py"),
@@ -1047,6 +1053,7 @@ def test_bootstrap_rejects_unsafe_wheel_member_names(tmp_path: Path, member: str
     assert "member name" in result.stderr
 
 
+@macos_only.HOMEBREW_PYTHON
 def test_bootstrap_rejects_unreviewed_application_dependency_metadata(tmp_path: Path) -> None:
     wheel, wheel_digest, manifest_digest = _write_test_bundle(
         tmp_path / "capture-kit", requires_dist=("unexpected-package>=1",)
@@ -1064,6 +1071,7 @@ def test_bootstrap_rejects_unreviewed_application_dependency_metadata(tmp_path: 
     assert "Requires-Dist names are not in the reviewed bundled dependency set" in result.stderr
 
 
+@macos_only.HOMEBREW_PYTHON
 def test_bootstrap_keeps_the_vault_extra_out_of_a_capture_kit(tmp_path: Path) -> None:
     # As setuptools writes the optional vault encryption (pyproject.toml) into the metadata.
     wheel, wheel_digest, manifest_digest = _write_test_bundle(
@@ -1086,6 +1094,7 @@ def test_bootstrap_keeps_the_vault_extra_out_of_a_capture_kit(tmp_path: Path) ->
     assert "verified capture-kit bundle" in result.stdout
 
 
+@macos_only.HOMEBREW_PYTHON
 @pytest.mark.parametrize(
     ("member_type", "expected"),
     ((stat.S_IFLNK | 0o777, "symlink"), (stat.S_IFCHR | 0o600, "device")),
@@ -1112,6 +1121,7 @@ def test_bootstrap_rejects_nonregular_wheel_members(
     assert f"contains a {expected} member" in result.stderr
 
 
+@macos_only.HOMEBREW_PYTHON
 def test_bootstrap_quarantines_partial_state_seals_fresh_install_and_is_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -1168,6 +1178,7 @@ def test_bootstrap_quarantines_partial_state_seals_fresh_install_and_is_idempote
     assert list(parent.glob(".capture-host.RECOVERY.*")) == recoveries
 
 
+@macos_only.HOMEBREW_PYTHON
 def test_bootstrap_preserves_invalid_ready_stage_and_builds_clean_runtime(tmp_path: Path) -> None:
     wheel, wheel_digest, manifest_digest = _write_test_bundle(
         tmp_path / "capture-kit", portable_bootstrap=True
@@ -1203,6 +1214,7 @@ def test_bootstrap_preserves_invalid_ready_stage_and_builds_clean_runtime(tmp_pa
     assert (target / "runtime" / "bin" / "voice-lab").read_text() != "#!/bin/sh\nexit 99\n"
 
 
+@macos_only.HOMEBREW_PYTHON
 def test_bootstrap_rejects_host_python_evidence_that_does_not_match_bytes(tmp_path: Path) -> None:
     wheel, _, _ = _write_test_bundle(tmp_path / "capture-kit")
     metadata_path = wheel.parent / "BUNDLE.json"
@@ -1280,6 +1292,7 @@ def test_python_runtime_closure_rejects_escape_and_reentry_symlink_hops(
         tree_sha256(keg, "test keg", (keg,))
 
 
+@macos_only.HOMEBREW_PYTHON
 def test_bootstrap_rejects_retargeted_ready_python_launcher(tmp_path: Path) -> None:
     wheel, wheel_digest, manifest_digest = _write_test_bundle(
         tmp_path / "capture-kit", portable_bootstrap=True
@@ -1317,6 +1330,7 @@ def test_bootstrap_rejects_retargeted_ready_python_launcher(tmp_path: Path) -> N
     assert (target / "runtime" / "bin" / launcher.name).resolve() == Path(sys.executable).resolve()
 
 
+@macos_only.HOMEBREW_PYTHON
 def test_bundle_evidence_not_recomputed_ready_controls_runtime_trust(tmp_path: Path) -> None:
     wheel, wheel_digest, manifest_digest = _write_test_bundle(
         tmp_path / "capture-kit", portable_bootstrap=True

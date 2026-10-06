@@ -2,5 +2,5 @@
 set -eu
 # Disposable loopback container only, offline; all owned test resources are removed.
 export PYTHONDONTWRITEBYTECODE=1
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 exec "$repo_dir/.venv/bin/python" -I -B "$repo_dir/scripts/vault_container.py" verify "$@"

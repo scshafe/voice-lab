@@ -1,7 +1,7 @@
 #!/bin/sh
 # Synthetic native build/tests only; retained evidence is private and external.
 set -eu
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 export PYTHONDONTWRITEBYTECODE=1
 exec "$repo_dir/.venv/bin/python" -I -B -c \
     'import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("verify_native_recording", run_name="__main__", alter_sys=True)' \

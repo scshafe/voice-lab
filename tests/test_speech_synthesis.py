@@ -26,6 +26,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import macos_only
 import pytest
 from finetune_speech_runs import sized_catalog, write_wav
 from finetune_speech_runs import write_speech_run as shared_speech_run
@@ -1879,6 +1880,7 @@ def start_speech_service(
     )
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_a_killed_service_leaves_speak_output_that_the_next_start_removes(
     package_rig: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1963,6 +1965,7 @@ def test_a_killed_service_leaves_speak_output_that_the_next_start_removes(
         queue.close()
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_a_real_service_speaks_while_a_take_is_saved(package_rig: Any, tmp_path: Path) -> None:
     rig, analysis, _packages = package_rig
     layout = rig.layout

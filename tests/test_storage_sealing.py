@@ -30,6 +30,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import macos_only
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -1435,6 +1436,7 @@ def nfd(path: Path) -> Path:
     return Path(unicodedata.normalize("NFD", os.fspath(path)))
 
 
+@macos_only.CASE_INSENSITIVE_VOLUME
 def test_a_sheet_is_never_written_inside_a_forbidden_root(
     base: Path, roots: tuple[Path, Path, Path], sheet: str
 ) -> None:

@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import macos_only
 import pytest
 from test_recording_takes import Rig
 from test_recording_takes import rig as rig
@@ -320,6 +321,7 @@ def test_one_corrupt_take_does_not_prevent_other_receipt_recovery(rig: Rig) -> N
     assert statuses == {good_id: "draft", bad.take_id: "unavailable"}
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_recovered_seal_is_not_independent_verification_after_preserved_mtime_tamper(
     rig: Rig,
 ) -> None:

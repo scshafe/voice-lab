@@ -22,6 +22,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import macos_only
 import pytest
 from test_finetune import FFMPEG, _stub_runtime, _write_run
 from test_pilot_v2_coverage import SUBJECT, NativeCoverage, released_pilot_v2
@@ -643,6 +644,7 @@ def test_recovery_refuses_to_kill_a_group_that_will_not_stop(
         queue.close()
 
 
+@macos_only.ZOMBIE_GROUP_EPERM
 def test_a_group_of_zombies_is_not_alive(library: Library) -> None:
     queue = queue_for(library)
     try:
@@ -2055,6 +2057,7 @@ def test_both_backends_answer_fine_tune_commands_without_an_open_context(
         workspace.index.close()
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_a_real_service_keeps_save_fast_during_a_job_and_cancel_leaves_no_process(
     package_rig: Any, tmp_path: Path
 ) -> None:
@@ -2194,6 +2197,7 @@ def test_a_real_service_keeps_save_fast_during_a_job_and_cancel_leaves_no_proces
                 os.kill(row.pid, signal.SIGKILL)
 
 
+@macos_only.REAL_RECORDING_SERVICE
 def test_a_real_service_reports_a_job_it_recovered_before_the_handshake(
     package_rig: Any, tmp_path: Path
 ) -> None:
