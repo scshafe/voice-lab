@@ -1,6 +1,7 @@
 # Nightly copy to the laptop's vault (starts voice-lab-vault-laptop.service).
 # Persistent= catches up a night the PC was off. The Air's pair (phase 3) has its
-# own timer with its own cadence (an hourly probe).
+# own timer with its own cadence (an hourly probe). Installed by hand with its
+# service (deploy/host-manual/README.md).
 [Unit]
 Description=voice-lab vault copy to the laptop, nightly
 

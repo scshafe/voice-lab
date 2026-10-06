@@ -1,11 +1,13 @@
-"""The vault copier's host units (``deploy/host/voice-lab-vault-laptop.{service,timer}``).
+"""The host units: ``deploy/host/`` (installed by the runner lane) and the vault copier's
+``deploy/host-manual/voice-lab-vault-laptop.{service,timer}`` (installed by hand).
 
 Static checks of the unit text: what it runs, as whom, which credentials it imports and what
 network it may reach. They hold the units to the item names ``storage_contracts`` derives and
 to the hardening the intake publisher has, so a change to one is a failing test until the
 other follows; and to infra's host-unit validator, which refuses template units for now
-(each destination has a fixed-name pair: the laptop's now, the Air's in phase 3). Nothing
-here starts a unit or reads a credential.
+(each destination has a fixed-name pair: the laptop's now, the Air's in phase 3), refuses
+``ImportCredential=`` (so the copier stays out of ``deploy/host/``) and requires every service
+to be fenced from the network. Nothing here starts a unit or reads a credential.
 """
 
 from __future__ import annotations
@@ -21,8 +23,17 @@ from cole_voice_lab.storage_contracts import (
 from cole_voice_lab.tailnet import TAILNET_RANGE
 
 HOST = Path(__file__).resolve().parents[1] / "deploy" / "host"
-SERVICE = HOST / "voice-lab-vault-laptop.service"
-TIMER = HOST / "voice-lab-vault-laptop.timer"
+MANUAL = Path(__file__).resolve().parents[1] / "deploy" / "host-manual"
+SERVICE = MANUAL / "voice-lab-vault-laptop.service"
+TIMER = MANUAL / "voice-lab-vault-laptop.timer"
+TAILNET_ALLOWANCE = ["100.64.0.0/10 fd7a:115c:a1e0::/48"]
+CREDENTIAL_KEYS = {
+    "ImportCredential",
+    "LoadCredential",
+    "LoadCredentialEncrypted",
+    "SetCredential",
+    "SetCredentialEncrypted",
+}
 INTAKE = HOST / "voice-lab-intake.service"
 BINARY = "/opt/voice-lab/current/bin/voice-lab"
 LAB = "/data/voice-lab/lab"
@@ -48,9 +59,15 @@ def values(path: Path, section: str, key: str) -> list[str]:
     return [value for where, name, value in settings(path) if (where, name) == (section, key)]
 
 
+def host_units(directory: Path) -> list[Path]:
+    return sorted(
+        path for path in directory.iterdir() if path.suffix in {".service", ".path", ".timer"}
+    )
+
+
 def test_every_host_unit_passes_infras_validator_rules() -> None:
     """Names start with voice-lab-, no template, User/Group voice-lab, no privileged Exec."""
-    units = sorted(HOST.glob("*.service")) + sorted(HOST.glob("*.timer"))
+    units = host_units(HOST) + host_units(MANUAL)
     assert SERVICE in units and TIMER in units
     for unit in units:
         assert unit.name.startswith("voice-lab-") and "@" not in unit.name, unit.name
@@ -61,6 +78,22 @@ def test_every_host_unit_passes_infras_validator_rules() -> None:
         for _, key, value in settings(unit):
             if key.startswith("Exec"):
                 assert value.startswith("/opt/voice-lab/current/"), (unit.name, value)
+
+
+def test_the_lanes_units_import_no_credentials_and_are_fenced() -> None:
+    """The lane's validator refuses credentials and an unfenced service: deploy/host/ has
+    neither; the copier, which needs credentials, is installed by hand from host-manual/."""
+    units = host_units(HOST)
+    assert SERVICE not in units and TIMER not in units
+    for unit in units:
+        assert not {key for _, key, _ in settings(unit)} & CREDENTIAL_KEYS, unit.name
+        if unit.suffix != ".service":
+            continue
+        if values(unit, "Service", "PrivateNetwork") == ["yes"]:
+            continue
+        assert values(unit, "Service", "IPAddressDeny") == ["any"], unit.name
+    jwks = HOST / "voice-lab-jwks.service"
+    assert values(jwks, "Service", "IPAddressAllow") == TAILNET_ALLOWANCE
 
 
 def test_the_copier_pushes_then_verifies_the_laptop_as_voice_lab() -> None:

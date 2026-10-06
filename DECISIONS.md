@@ -850,7 +850,9 @@ credential". The owner reviews it with the phase.
   host-unit validator refuses templates for now): `deploy/host/voice-lab-vault-laptop.service`
   (`vault push --destination laptop`, then `vault verify`, as `voice-lab`, tailnet-only
   network) and its nightly `voice-lab-vault-laptop.timer`; the Air adds its own pair in
-  phase 3.
+  phase 3. *Amended 2026-10-06:* infra's host-unit validator also refuses
+  `ImportCredential=`, so the pair moved to `deploy/host-manual/` and is installed by hand
+  until infra has a rule for credentials (docs/design/PHASE-2-LOG.md).
 - **The restore drill** is one command, `vault drill`: a restore through the bound
   destination into an empty target, then every restored file read back from disk and
   re-hashed against the authenticated manifest (size, SHA-256 and mode). `vault restore`
