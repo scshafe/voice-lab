@@ -10,10 +10,10 @@ authors = [{ name = "voice-journey-capture contributors" }]
 requires-python = ">=3.14,<3.15"
 classifiers = ["Private :: Do Not Upload", "Programming Language :: Python :: 3.14"]
 dependencies = [
-    # The library is a private GitHub Release asset; it is vendored (checked
-    # against the Release's SHA256SUMS) and uv.lock pins its sha256. Upgrade =
-    # a commit swapping the wheel (docs/DEVELOPING.md).
-    "scshafe-qt",
+    # From PyPI (trusted publishing, PEP 740 attestations); uv.lock pins the
+    # sha256, which matches the GitHub Release's SHA256SUMS. Upgrade per
+    # docs/DEVELOPING.md.
+    "scshafe-qt>=0.1.2,<0.2",
     "PySide6-Essentials>=6.11.2,<6.12",
     "httpx==0.28.1",
     "keyring==25.7.0",
@@ -24,9 +24,6 @@ dependencies = [
 
 [project.scripts]
 voice-journey-capture = "voice_journey_capture.cli:main"
-
-[tool.uv.sources]
-scshafe-qt = { path = "vendor/scshafe_qt-0.1.1-py3-none-any.whl" }
 
 [dependency-groups]
 dev = ["pytest==9.1.1", "pytest-qt==4.5.0"]

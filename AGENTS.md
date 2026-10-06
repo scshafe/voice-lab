@@ -21,7 +21,8 @@ API. Read README.md and docs/DEVELOPING.md first; the design is voice-journey
 - Never commit audio (`*.wav` is ignored), recordings, cal files, tokens or private
   text. Logs hold ids, counts, levels and error codes only. Tokens live only in the
   OS keychain. Never follow redirects or keep cookies toward the server.
-- The scshafe-qt wheel is vendored; upgrade it per docs/DEVELOPING.md.
+- scshafe-qt comes from PyPI (`>=0.1.2,<0.2`, hashes pinned in `uv.lock`); upgrade it per
+  docs/DEVELOPING.md.
 - Work on branches. Merge PRs as `Merge #N: <title>` merge commits, after local
   verification.
 

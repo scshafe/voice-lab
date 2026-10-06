@@ -63,19 +63,17 @@ the same change.
 The parsing and the decisions around them are tested; the calls themselves are kept
 small.
 
-## The vendored scshafe-qt wheel
+## scshafe-qt
 
-scshafe-qt is a private GitHub Release asset, which `uv` cannot download from a
-`releases/download` URL. The wheel is therefore committed under `vendor/` with the
-Release's `SHA256SUMS`, and `uv.lock` pins its sha256. No GitHub Package is involved.
-To upgrade:
+scshafe-qt comes from PyPI (`scshafe-qt>=0.1.2,<0.2`; published by trusted publishing
+with PEP 740 attestations), and `uv.lock` pins its sha256. 0.1.1 is the security floor:
+from it on, every `Text` in its components is `Text.PlainText`. To upgrade within 0.1:
 
 ```sh
-rm vendor/*
-gh release download vX.Y.Z -R scshafe/scshafe-qt -p '*.whl' -p SHA256SUMS -D vendor
-(cd vendor && sha256sum -c --ignore-missing SHA256SUMS)
-# point [tool.uv.sources] scshafe-qt at the new file name, then:
-uv lock && uv run pytest
+uv lock --upgrade-package scshafe-qt && uv run pytest
+# the lock's sha256 should match the GitHub Release's SHA256SUMS:
+gh release download vX.Y.Z -R scshafe/scshafe-qt -p SHA256SUMS -O -
 ```
 
-Commit the wheel, `SHA256SUMS`, `pyproject.toml` and `uv.lock` together.
+A 0.2 upgrade moves the bound in `pyproject.toml` too. Commit `pyproject.toml` and
+`uv.lock` together.
