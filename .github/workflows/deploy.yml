@@ -51,9 +51,30 @@ jobs:
           uv venv --python 3.12 .venv
           VIRTUAL_ENV="$PWD/.venv" uv pip install -e '.[dev]' pip -r requirements/development-build.txt
       # scshafe-dev:end toolchain
-      - name: Verify (dev.toml [verify] command)
+      # verify_on = "pc": the PC verify runner's egress table refuses loopback to
+      # its account, so the [verify] command runs in a network namespace of its
+      # own (unprivileged user namespaces): its own loopback for the suite's test
+      # servers, no route to the host's loopback, the LAN, the tailnet or the
+      # internet. The toolchain block above runs outside it (downloads). If the
+      # namespace cannot be made, this step fails: it never runs unisolated.
+      - name: Verify (dev.toml [verify] command, in its own network namespace)
+        shell: bash
         run: |
+          set -euo pipefail
+          IFS= read -r verify <<'SCSHAFE_VERIFY'
           scripts/verify
+          SCSHAFE_VERIFY
+          refuse() { echo "::error::verify_on = pc: $1; refusing to run the [verify] command outside its own network namespace"; exit 1; }
+          command -v unshare >/dev/null || refuse "unshare (util-linux) is not on this runner"
+          command -v ip >/dev/null || refuse "ip (iproute2) is not on this runner"
+          unshare --user --map-root-user --net -- ip link set lo up ||
+            refuse "cannot create a network namespace as $(id -un) (unprivileged user namespaces: sysctl kernel.unprivileged_userns_clone, user.max_user_namespaces)"
+          # Inside: lo up as the namespace's root, then a second user namespace
+          # maps the runner account's own uid and gid back, so the suite never
+          # runs as (namespaced) root.
+          exec unshare --user --map-root-user --net -- sh -c \
+            'ip link set lo up && exec unshare --user --map-user="$1" --map-group="$2" -- bash --noprofile --norc -eo pipefail -c "$3"' \
+            sh "$(id -u)" "$(id -g)" "$verify"
 
   deploy:
     needs: verify
