@@ -22,8 +22,8 @@ stop at the owner's manifest-hash approval.
 | 5 | Vault on Linux: credential key store, Linux tailscale binary, per-destination bindings | voice-lab | done, #9 (#10: PC lock, classification) |
 | 6 | `pc` as an alias of `arch` | scshafe-dev | done: #36, `v0.10.4`, installed for agents |
 | 7 | Tailnet tags and grants, `stacks/voice-lab/host.conf` | infra (unsigned) | done: `ff9144a`, policy applied |
-| 8 | Runner on the PC, entrypoint host-unit install, `voice-lab` user, `/data/voice-lab` subvolumes | infra `host/` (signed) | `6df55a38…59fb` installed 2026-10-06 (runners, provisioning, snapshots); the takeover is **blocked on a resolver bug in it**: fix `4e6020d3…761e` awaits the owner's approval |
-| 9 | Live: Pocket ID clients, PC layout, laptop vault stack, synthetic sessions, restore drill | hosts | done as a development deployment (below) |
+| 8 | Runner on the PC, entrypoint host-unit install, `voice-lab` user, `/data/voice-lab` subvolumes | infra `host/` (signed) | done: `6df55a38…59fb` installed 2026-10-06, then the resolver fix `4e6020d3…761e` (approved); takeover green (run 37559505895) |
+| 9 | Live: Pocket ID clients, PC layout, laptop vault stack, synthetic sessions, restore drill | hosts | done (development deployment, then the runner lane's takeover, below) |
 | 10 | One real session from the Air | owner | open |
 
 ## Entries
@@ -281,6 +281,57 @@ stop at the owner's manifest-hash approval.
     unchanged; the nightly timer stays enabled). Until the takeover, a push to `main` runs
     verify on `pc-voice-lab-verify` and then the deploy job is refused at stage 4 ("cannot
     determine the live commit"), as expected before a takeover.
+
+### 2026-10-06 (evening): the takeover
+
+- **The resolver fix installed.** The owner approved `4e6020d30b146d0fc01af11a916bc68bacbee7503917b42f2228c50df00c761e`
+  (infra `main` `d45445c`; only `bin/scshafe-host-release` differs from `6df55a38…59fb`). Staged
+  root-owned in `/root/scshafe-m0`; the staged `M0.sha256` hashed to exactly that value. The prod
+  runner's installer, dry run then `--apply` from the staged tree (no token: the registration
+  stays), changed one file, `/usr/local/sbin/scshafe-host-release` (now byte-equal to infra's);
+  its egress gate passed again. `~/infra` fast-forwarded to `d45445c`.
+- **Verify in its own network namespace (scshafe-dev v0.10.5, #37).** For `verify_on = "pc"`
+  deploy.yml's verify step runs the `[verify]` command under `unshare --user --map-root-user
+  --net` (`lo` up, then the runner account's uid and gid mapped back); no namespace, no verify
+  (it fails with `::error::`, never runs unisolated); hosted verify is unchanged. Installed for
+  the agents (`scshafe-agent-setup dev v0.10.5`, 7 checks PASS). `dev update` here: #14
+  (`d238be4`). The rendered step, run as `ci-voice-lab` on a clone of that branch: 5829 passed,
+  137 skipped, 0 failed (21 min). The push run of #14 was cancelled (before the takeover).
+- **Takeover, green.** With no runs queued: the dev stack stopped; `state/tailscale` re-copied
+  into `/srv/stacks/voice-lab/state/tailscale` (`rsync -a --delete` as root; identical bytes,
+  modes and owners; the profile's NodeID `nMDiVAZnG111CNTRL`); the dev stack started again for
+  the pre-deploy backup; the hand-installed `voice-lab-intake.*` and `voice-lab-jwks.*` units
+  removed; every `.env` name set but `TS_AUTHKEY` (joined identity); the release `stack.toml`
+  equal to `main`'s; `scshafe-host-release check` at `d238be4` passed. Dispatch with
+  `allow_rollback=true` at `d238be4`: run 37559505895, green in 53 s: 5b/8 prepare (both egress
+  hosts resolved: issuer `100.124.169.100`, laptop vault `100.101.139.46`; release
+  `36e8d776…fa75` sealed, 853 entries), 6/8 backup through `stack-backup@voice-lab`, 7/8 the
+  stack (`voice-lab:d238be4`, takeover mode, `/healthz` 200), 8/8 host units activated
+  (`current` -> `36e8d776…`, five units), health: live, containers, witness, tailnet-only.
+  `scshafe-deploy --verify voice-lab d238be4` as `run-voice-lab`: all ok. From the PC:
+  `/healthz` 200, `/api/v1/meta` 401 without a session. `stack-backup@voice-lab.timer` enabled.
+  `RELEASE.json` names `d238be4`.
+- **Acceptance:**
+  - *Synthetic upload, acceptance root only.* The production door admits only Pocket ID tokens
+    and its API serves the real lab, so the synthetic session went through the deployed
+    artifacts in an acceptance configuration: a throwaway container of the deployed image
+    `voice-lab:d238be4` (the production api's user, read-only root, no capabilities), mounted on
+    `/data/voice-lab-acceptance` only, trusting a throwaway acceptance issuer, on
+    `127.0.0.1:18931`; the deployed sealed release's own client (`upload_session`, loopback test
+    client) and publisher (`intake publish`, as `voice-lab`, `PrivateNetwork=yes`). Session
+    `takeover-synthetic-001` accepted, receipt manifest `ec813d00…b335` = the client's; raw files
+    `-r--------` in `dr-x------` dirs owned by `voice-lab`. The real lab's `raw/` is still empty.
+    The container was removed and the throwaway key and JWKS shredded.
+  - *Snapshot units.* `scshafe-voice-lab-snapshot@nightly` left `20261007T023211Z` (`ro=true`);
+    `@publish` ran and took none (`raw/` unchanged); the path unit and timer are active.
+  - *Per-uid egress (`inet scshafe_host_voice_lab`, `skuid 951`), as `voice-lab`:* refused
+    loopback (127.0.0.1:22), the LAN gateway (:80, :443), the PC's tailnet address (:22, :443),
+    the laptop's tailnet node (:443) and public port 80; allowed the issuer, the laptop vault node
+    and public 443 (api.github.com). The same loopback and gateway targets are open to `cole`, and
+    the table's reject counters rose: the refusals are the table's.
+  - *Laptop vault copier* (hand-installed, now on the sealed release): run once, `Result=success`;
+    generation 1 unchanged (empty library), verify `ok: true`, 0 missing, 0 mismatch. Nightly timer
+    active.
 
 ## Open items and the owner's steps
 
