@@ -332,25 +332,27 @@ stop at the owner's manifest-hash approval.
   - *Laptop vault copier* (hand-installed, now on the sealed release): run once, `Result=success`;
     generation 1 unchanged (empty library), verify `ok: true`, 0 missing, 0 mismatch. Nightly timer
     active.
+- **The plain push (acceptance).** Merging #15 (`4928105`) ran `deploy.yml` (run 37562578683):
+  verify on `pc-voice-lab-verify` in its own network namespace (5829 passed, 137 skipped), deploy
+  (live `d238be4` -> `4928105`, release `991de178…092d`, 54 s), health: all green. `/healthz` 200
+  and `/api/v1/meta` 401 from the PC afterwards; the host units and the egress loader active.
+- **Cleanup (development deployment removed).** `/srv/voice-lab-dev` (its `.env` shredded first),
+  `/usr/local/sbin/scshafe-voice-lab-provision-dev` and the hand-made releases `aa459aa6…` and
+  `e3cbdec1…`; the hand-installed intake and JWKS units went at the takeover (the tool's own
+  are installed). Kept: `voice-lab-vault-laptop.*` (by hand, `deploy/host-manual/`), the
+  acceptance root `/data/voice-lab-acceptance`, the tool-sealed release `628d1948…` (the tool
+  prunes its own). The `voice-lab:dev` image was already gone. One leftover: the door container
+  `voice-lab-oauth2-proxy` is still the one the dev stack created (compose found its
+  configuration unchanged and kept it; it has no mounts, so nothing of `/srv/voice-lab-dev` is
+  used); the lane recreates it at the next change to its configuration.
 
 ## Open items and the owner's steps
 
-1. **Approve the fixed host tree**, `M0.sha256` `4e6020d3…761e` (infra branch
-   `host-release-v4mapped`; it differs from the installed `6df55a38…59fb` only in
-   `bin/scshafe-host-release`). Then a session stages it and re-runs the prod runner's
-   installer with `--apply` (it installs the new `scshafe-host-release`; the account and the
-   registration stay), and redoes the takeover: stop the dev stack, **copy
-   `state/tailscale` again** (the copy made on 2026-10-06 may be stale by then), start the
-   dev stack, remove the hand intake and JWKS units, `check`, dispatch with
-   `allow_rollback=true`. After it is green, remove the development pieces:
-   `/srv/voice-lab-dev`, the hand-installed `voice-lab-intake.*` and `voice-lab-jwks.*`
-   (not `voice-lab-vault-laptop.*`, which stay installed by hand; `deploy/host-manual/`),
-   `/usr/local/sbin/scshafe-voice-lab-provision-dev` and the hand-made releases in
-   `/opt/voice-lab/releases/` (`aa459aa6…`, `e3cbdec1…`). The transient
-   `voice-lab-acceptance-intake.path` is already gone.
-   The push run's verify job also needs the verify step to run in its own network
-   namespace (scshafe-dev DEPLOY-02, above); until then, every push to `main` fails verify
-   on the PC.
+1. **Done 2026-10-06:** the fixed host tree installed, the takeover, the acceptance items on the
+   PC and the cleanup (above). Follow-ups, none blocking: a credentials rule in infra's
+   validator so `voice-lab-vault-laptop.*` moves back to `deploy/host/`; the health job's
+   `--verify` does not check host units yet; infra's runner-install tests read the host's real
+   `Runner.Worker` (rerun them when the runners are idle).
 2. **Store the recovery sheet** offline, one copy away from the house; then
    `sudo shred -u /root/voice-lab-library-recovery-sheet-lib-20261006-df017dd15db9.txt`.
 
