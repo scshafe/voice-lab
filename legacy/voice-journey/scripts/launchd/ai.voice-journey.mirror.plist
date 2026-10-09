@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ai.voice-journey.mirror — pushes the Voice Memos corpus to Lubuntu every
+  15 minutes (docs/move-to-lubuntu.md, phase 3). Template: install per README
+  "Corpus mirror". It runs the FDA-granted launcher in `mirror` mode, so no
+  second Full Disk Access grant is needed.
+
+  Destination vj-mirror@cole-lubuntu-laptop: (a dedicated drop account; forced
+  command `rrsync -wo -no-del -munge`). The key (VOICE_JOURNEY_MIRROR_SSH_KEY)
+  defaults to ~/.ssh/vj-mirror; the rsync binary is the Homebrew 3.x one
+  (/opt/homebrew/bin/rsync). Logs carry counts only; exit 3 means the drop
+  was locked and the next period retries.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.voice-journey.mirror</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/cole/.mission-control/bin/voice-journey-launcher</string>
+    <string>mirror</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>VOICE_JOURNEY_MIRROR_SSH_KEY</key>
+    <string>/Users/cole/.ssh/vj-mirror</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/cole/.mission-control/logs/voice-journey-mirror.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/cole/.mission-control/logs/voice-journey-mirror.log</string>
+</dict>
+</plist>

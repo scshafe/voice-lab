@@ -1,0 +1,248 @@
+/* Voice Journey theme — overrides @scshafe/ui's :root tokens (the documented theming path:
+ * components.css ships dark defaults; consumers re-declare the tokens) to the brass/ink
+ * palette the inline pages established, then adds the app-level layout the packages
+ * deliberately do not own (page grid, header, filter row, chart styling). */
+
+:root {
+  --sui-text: #f5f7fb;
+  --sui-text-strong: #ffffff;
+  --sui-muted: #9aa5b8;
+  --sui-line: #2a3141;
+  --sui-border-strong: #394153;
+  --sui-blue: #8fb3e8;
+  --sui-accent: #d9ad45;
+  --sui-popover: rgba(13, 17, 26, 0.97);
+  --sui-shadow: 0 10px 34px rgba(0, 0, 0, 0.32);
+  --sui-shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.44);
+
+  /* App-only tokens (not part of @scshafe/ui's contract). */
+  --vj-bg: #10131a;
+  --vj-surface: #151a24;
+  --vj-surface-raised: #191f2b;
+  --vj-header-a: #182033;
+  --vj-header-b: #39224c;
+}
+
+html, body { margin: 0; min-height: 100vh; }
+body {
+  background: var(--vj-bg);
+  color: var(--sui-text);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: dark;
+}
+
+.vj-app { min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }
+
+.vj-header {
+  padding: 20px 24px;
+  background: linear-gradient(135deg, var(--vj-header-a), var(--vj-header-b));
+  border-bottom: 1px solid #30384a;
+}
+.vj-header h1 { margin: 0 0 6px; font-size: clamp(24px, 3.4vw, 38px); letter-spacing: -0.04em; }
+.vj-header p { margin: 0; color: #c5ccda; font-size: 14px; }
+
+.vj-nav { margin-bottom: 10px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; display: flex; gap: 14px; }
+.vj-nav a, .vj-nav button {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  color: var(--sui-blue); text-decoration: none; font: inherit; letter-spacing: inherit; text-transform: inherit;
+}
+.vj-nav .vj-nav-active { color: var(--sui-accent); font-weight: 700; cursor: default; }
+
+.vj-status-line { margin-top: 10px; font-size: 13px; color: #d3daea; }
+
+.vj-main { min-width: 0; display: grid; grid-template-rows: auto 1fr; align-content: start; }
+
+.vj-filters {
+  display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: end;
+  padding: 12px 24px; background: var(--vj-surface); border-bottom: 1px solid var(--sui-line);
+}
+.vj-filters .sui-input-field input,
+.vj-filters select { min-width: 150px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--sui-border-strong); background: #0f131b; color: var(--sui-text); }
+.vj-filters label { display: grid; gap: 4px; font-size: 11px; color: #aeb8ca; text-transform: uppercase; letter-spacing: 0.08em; }
+
+.vj-table-region { min-height: 0; }
+.vj-table-region .sui-data-table-scroll { max-height: calc(100vh - 210px); overflow: auto; }
+.vj-table-region .sui-data-table th { position: sticky; top: 0; background: var(--vj-surface-raised); z-index: 2; }
+.vj-table-region .sui-data-table td, .vj-table-region .sui-data-table th { border-bottom: 1px solid #242b38; padding: 8px 12px; }
+.vj-table-region .sui-data-table tbody tr:hover td { background: #171d28; }
+.vj-row-queued td:first-child { box-shadow: inset 2px 0 0 var(--sui-accent); }
+
+.vj-sort-header { border: 0; background: none; color: inherit; font: inherit; font-weight: 600; cursor: pointer; padding: 0; display: inline-flex; gap: 5px; align-items: center; }
+.vj-sort-header[data-active="true"] { color: var(--sui-accent); }
+
+.vj-cell-stack { display: grid; gap: 2px; }
+.vj-cell-stack small { color: var(--sui-muted); }
+.vj-muted { color: var(--sui-muted); }
+.vj-num { font-variant-numeric: tabular-nums; }
+
+.vj-row-actions { display: inline-flex; gap: 6px; align-items: center; }
+.vj-inline-audio { height: 30px; max-width: 250px; }
+
+.vj-detail-grid { display: grid; gap: 10px; }
+.vj-detail-grid dl { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+.vj-detail-grid dt { color: var(--sui-muted); }
+.vj-detail-grid dd { margin: 0; word-break: break-word; }
+.vj-detail-section { border-top: 1px solid var(--sui-line); padding-top: 10px; display: grid; gap: 8px; }
+.vj-detail-section h3 { margin: 0; font-size: 12px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--sui-muted); }
+.vj-verdict-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.vj-transcript-pre { white-space: pre-wrap; word-break: break-word; max-height: 40vh; overflow: auto; background: #0f131b; border: 1px solid var(--sui-line); border-radius: 8px; padding: 10px; font-size: 13px; margin: 0; }
+
+.vj-toast-tray { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 50; }
+.vj-toast { border: 1px solid var(--sui-border-strong); border-radius: 10px; background: var(--vj-surface-raised); color: var(--sui-text); padding: 10px 14px; box-shadow: var(--sui-shadow); cursor: pointer; font-size: 13px; max-width: 380px; }
+.vj-toast[data-kind="error"] { border-color: rgba(255, 107, 107, 0.6); background: rgba(64, 22, 25, 0.94); }
+.vj-toast[data-kind="success"] { border-color: rgba(82, 210, 115, 0.45); }
+
+.vj-page { padding: 20px 24px; display: grid; gap: 18px; align-content: start; }
+.vj-empty { padding: 40px; text-align: center; color: var(--sui-muted); }
+
+/* ---- Journey + Referee (ported from the inline pages' styles, vj- prefixed) ---- */
+
+.vj-page { max-width: 1180px; margin: 0 auto; width: 100%; box-sizing: border-box; }
+.vj-page-narrow { max-width: 960px; }
+
+.vj-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); gap: 10px; }
+.vj-tile { background: rgb(255 255 255 / 0.05); border: 1px solid #30384a; border-radius: 10px; padding: 10px 14px; }
+.vj-tile-v { font-size: 1.5rem; font-weight: 650; }
+.vj-tile-l { font-size: 0.75rem; color: #aeb8ca; margin-top: 2px; }
+
+.vj-card { background: var(--vj-surface); border: 1px solid var(--sui-line); border-radius: 12px; padding: 18px 20px; }
+.vj-card h2 { margin: 0 0 2px; font-size: 1.2rem; }
+.vj-sub { margin: 0 0 14px; font-size: 0.85rem; color: #9aa5b8; }
+.vj-sub strong { color: var(--sui-accent); font-weight: 650; }
+
+.vj-chart-scroller { overflow-x: auto; }
+.vj-card svg text { font: 11px ui-sans-serif, system-ui, sans-serif; fill: #9aa5b8; }
+.vj-notelabel { font-variant-numeric: tabular-nums; }
+.vj-panel-title { font-size: 11px; fill: #aeb8ca; letter-spacing: 0.08em; text-transform: uppercase; }
+
+.vj-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.78rem; color: #aeb8ca; margin-top: 10px; }
+.vj-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.vj-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+.vj-card details { margin-top: 12px; font-size: 0.82rem; color: #9aa5b8; }
+.vj-card details summary { cursor: pointer; }
+.vj-card details table { border-collapse: collapse; margin-top: 8px; font-variant-numeric: tabular-nums; }
+.vj-card details th, .vj-card details td { border: 1px solid var(--sui-line); padding: 3px 9px; text-align: right; color: #c5ccda; }
+.vj-card details th { text-align: left; color: #aeb8ca; }
+.vj-card details td:first-child { text-align: left; }
+
+.vj-chart-tooltip { position: fixed; pointer-events: none; background: #f5f7fb; color: #10131a; font-size: 0.76rem; line-height: 1.4; padding: 6px 9px; border-radius: 7px; opacity: 0; transform: translate(-50%, calc(-100% - 12px)); white-space: nowrap; z-index: 10; transition: opacity 100ms ease; }
+@media (prefers-reduced-motion: reduce) { .vj-chart-tooltip { transition: none; } }
+.vj-chart-tooltip-show { opacity: 1; }
+.vj-chart-tooltip b { font-variant-numeric: tabular-nums; }
+
+.vj-notice { padding: 14px 16px; border: 1px solid #4b5770; border-radius: 10px; background: #1e2635; color: #c5ccda; }
+.vj-notice code, .vj-mutedtile code { background: #0f131b; border-radius: 5px; padding: 1px 6px; }
+
+.vj-togglebar { font-size: 0.82rem; color: #aeb8ca; }
+.vj-togglebar input { accent-color: var(--sui-accent); }
+
+.vj-erarow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.vj-erarow button { border: 1px solid #4b5770; border-radius: 9px; background: #1e2635; color: var(--sui-text); padding: 5px 10px; cursor: pointer; font-size: 0.78rem; }
+.vj-erarow button:hover:not(:disabled) { background: #2a3448; }
+.vj-erarow button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.vj-fingerwrap { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; }
+.vj-yearlegend { display: grid; gap: 5px; font-size: 0.76rem; color: #aeb8ca; padding-top: 8px; }
+.vj-yearlegend span { display: inline-flex; align-items: center; gap: 7px; }
+
+.vj-duo { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.vj-mutedtile { margin-top: 14px; border: 1px dashed #3a4254; border-radius: 10px; padding: 12px 14px; font-size: 0.85rem; color: #8b93a5; }
+.vj-mutedtile strong { color: #aeb8ca; }
+
+.vj-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 8px; margin: 12px 0; }
+.vj-kv div { background: rgb(255 255 255 / 0.04); border: 1px solid var(--sui-line); border-radius: 8px; padding: 7px 10px; font-size: 0.82rem; color: #c5ccda; }
+.vj-kv b { display: block; font-size: 1.05rem; color: var(--sui-text); font-variant-numeric: tabular-nums; }
+
+.vj-verdict-rows { display: grid; gap: 6px; }
+.vj-vrow { display: grid; grid-template-columns: minmax(15rem, 2fr) minmax(7rem, 1fr) minmax(9rem, 1fr) minmax(5rem, 1fr) auto; gap: 10px; align-items: center; background: rgb(255 255 255 / 0.03); border: 1px solid var(--sui-line); border-radius: 9px; padding: 8px 12px; font-size: 0.86rem; color: #c5ccda; }
+.vj-vrow .vj-num { color: var(--sui-text); }
+.vj-vrow small { color: #8b93a5; }
+
+.vj-chip { display: inline-block; font-size: 0.72rem; font-weight: 650; letter-spacing: 0.03em; padding: 3px 10px; border-radius: 99px; border: 1px solid #3a4254; }
+.vj-chip-improving { color: #8fd9a0; border-color: #3d6a4a; }
+.vj-chip-declining { color: #e08585; border-color: #6d4040; }
+.vj-chip-flat, .vj-chip-trending_up, .vj-chip-trending_down { color: #aeb8ca; }
+.vj-chip-insufficient_data { color: #8b93a5; border-style: dashed; }
+
+.vj-songrow { display: grid; grid-template-columns: minmax(6.5rem, 1fr) minmax(8rem, 1fr) 140px minmax(8rem, 1fr) minmax(8rem, 1fr); gap: 12px; align-items: center; border-bottom: 1px solid #242b38; padding: 8px 4px; font-size: 0.85rem; color: #c5ccda; }
+.vj-songrow:last-child { border-bottom: none; }
+.vj-songname { color: var(--sui-text); font-weight: 600; cursor: pointer; }
+.vj-songname:hover { color: var(--sui-accent); }
+.vj-songrow small { color: #8b93a5; display: block; }
+.vj-up { color: #8fd9a0; }
+.vj-down { color: #e08585; }
+.vj-steady { color: #aeb8ca; }
+
+.vj-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.vj-side { border: 1px solid var(--sui-line); border-radius: 10px; padding: 14px; text-align: center; }
+.vj-side h3 { margin: 0 0 10px; font-size: 1.6rem; color: #8fd9a0; letter-spacing: 0.04em; }
+.vj-side audio { width: 100%; }
+.vj-choices { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.vj-choices button { border: 1px solid #4b5770; border-radius: 10px; background: #1e2635; color: var(--sui-text); padding: 10px 16px; cursor: pointer; font-size: 0.9rem; }
+.vj-choices button:hover:not(:disabled) { background: #2a3448; }
+.vj-choices button:disabled { opacity: 0.45; cursor: not-allowed; }
+.vj-choices .vj-choice-primary { border-color: #3d6a4a; color: #8fd9a0; }
+.vj-reveal { margin-top: 14px; padding: 10px 14px; border-radius: 9px; background: rgb(143 217 160 / 0.08); border: 1px solid #3d6a4a; font-size: 0.88rem; color: #c5ccda; min-height: 1.2em; }
+.vj-reveal b { color: var(--sui-text); }
+.vj-progress { font-size: 0.8rem; color: #8b93a5; margin-top: 10px; font-variant-numeric: tabular-nums; }
+.vj-flagged { margin-top: 10px; font-size: 0.8rem; color: #e0b585; }
+
+@media (max-width: 720px) {
+  .vj-vrow, .vj-songrow { grid-template-columns: 1fr 1fr; }
+  .vj-pair { grid-template-columns: 1fr; }
+}
+
+/* ---- Journey subject tabs + education cards ---- */
+
+.vj-subtabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--sui-border-strong); }
+.vj-subtabs button {
+  border: 1px solid transparent; border-bottom: 0; background: none; cursor: pointer;
+  color: #aeb8ca; font: inherit; font-size: 0.85rem; padding: 8px 14px;
+  border-radius: 10px 10px 0 0; position: relative; top: 1px;
+}
+.vj-subtabs button:hover { color: var(--sui-text); background: rgb(255 255 255 / 0.04); }
+.vj-subtabs button[data-active="true"] {
+  color: var(--sui-accent); font-weight: 650; background: var(--vj-surface);
+  border-color: var(--sui-border-strong); border-bottom: 1px solid var(--vj-surface);
+}
+
+.vj-edu h3 { margin: 16px 0 5px; font-size: 0.74rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--sui-accent); }
+.vj-edu p { margin: 0; font-size: 0.88rem; line-height: 1.6; color: #c5ccda; }
+.vj-edu p + p { margin-top: 10px; }
+.vj-edu p strong, .vj-edu p em { color: var(--sui-text); }
+.vj-edu sup { font-size: 0.7em; }
+
+/* ---- Practice page (coach) ---- */
+
+.vj-whychips { display: flex; flex-wrap: wrap; gap: 6px; }
+.vj-whychip { font-size: 0.72rem; border: 1px solid #3a4254; border-radius: 99px; padding: 2px 9px; color: #aeb8ca; }
+
+.vj-duerow {
+  display: grid; grid-template-columns: minmax(10rem, 1.3fr) minmax(6rem, 0.7fr) minmax(6.5rem, 0.7fr) 2fr;
+  gap: 12px; align-items: center; border-bottom: 1px solid #242b38; padding: 10px 4px;
+  font-size: 0.85rem; color: #c5ccda;
+}
+.vj-duerow:last-child { border-bottom: none; }
+
+.vj-frontrow { border-bottom: 1px solid #242b38; padding: 10px 4px; display: grid; gap: 6px; }
+.vj-frontrow:last-child { border-bottom: none; }
+.vj-fronthead { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.vj-rulechip {
+  font-size: 0.68rem; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase;
+  color: #8fd9a0; border: 1px solid #3d6a4a; border-radius: 99px; padding: 2px 9px;
+}
+.vj-frontdetail { font-size: 0.82rem; color: #9aa5b8; margin: 0; }
+
+@media (max-width: 720px) {
+  .vj-duerow { grid-template-columns: 1fr 1fr; }
+}
+
+.vj-goalrow { display: grid; gap: 4px; border-bottom: 1px solid #242b38; padding: 10px 4px; font-size: 0.86rem; color: #c5ccda; }
+.vj-goalrow:last-child { border-bottom: none; }
+.vj-goalhead { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.vj-goaltitle { font-weight: 600; color: var(--sui-text); }
+.vj-goalmeta { font-size: 0.8rem; color: #8b93a5; }
+.vj-goalform { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: end; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--sui-line); }
+.vj-goalform .sui-input-field input, .vj-goalform select { min-width: 130px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--sui-border-strong); background: #0f131b; color: var(--sui-text); }
+.vj-goalform label { display: grid; gap: 4px; font-size: 11px; color: #aeb8ca; text-transform: uppercase; letter-spacing: 0.08em; }

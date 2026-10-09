@@ -1,0 +1,24 @@
+{
+  "name": "voice-journey",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "browser": "node src/corpus-browser.mjs",
+    "capture": "node src/capture.mjs",
+    "features": "node src/features.mjs",
+    "filter": "node src/filter-proof.mjs",
+    "index": "node src/index-recordings.mjs",
+    "journeys": "node src/journeys.mjs",
+    "mirror": "node src/mirror.mjs",
+    "lyric": "node src/lyric-indicators.mjs",
+    "reclassify": "node src/reclassify.mjs",
+    "report": "node src/evidence-report.mjs",
+    "stt": "node src/local-stt.mjs",
+    "test": "node --test",
+    "corpus": "node src/host-access.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

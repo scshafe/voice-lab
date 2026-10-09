@@ -1,0 +1,47 @@
+# The stack's data (stack.toml, schema 1). The host's tools/stack reads it as
+# data, never as shell, and rejects an unknown key; `dev check` (DEPLOY-03)
+# checks the same schema. Secrets are named here and never valued: the owner's
+# provisioning places them on the host. Infra's stacks/voice-journey/host.conf
+# grants what this file cannot (the data root binds, the vj-mirror group).
+schema = 1
+
+[deploy]
+image = "voice-journey"              # the image built from this repository's Dockerfile
+pin = "VOICE_JOURNEY_IMAGE"          # the .env variable stack deploy writes (name:tag)
+pin_style = "ref"
+dockerfile = "Dockerfile"
+containers = ["voice-journey"]       # all must be ready on the candidate
+health = "/healthz"                  # probed through the door at the tailnet name
+ready_attempts = 40                  # the app loads every manifest before /healthz answers (2-core laptop)
+rollback_services = ["app"]          # never the sidecar (the node identity) or the door
+# web/ installs the private @scshafe/ui from GitHub Packages: the Dockerfile
+# mounts this BuildKit secret for `npm ci` only, and the host fills it with the
+# deploy job's token (packages: read).
+build_secrets = ["node_auth_token"]
+
+[check]
+required_health_services = ["app"]
+
+[backup]
+tailscale = true                     # the node identity (always, with a sidecar)
+paths = [".env"]                     # the door's client and cookie secrets
+# The data root's files (data-<UTC>.tar.gz), read inside the app container,
+# because corpus/phone is readable only with group vj-mirror, which the app
+# holds and cole does not:
+#   corpus/phone        the Mini's mirror; a recording deleted on the phone
+#                       survives ONLY here (the drop never deletes).
+#   corpus/measurement  accepted capture sessions: the only copy once the
+#                       client has deleted its local session.
+#   artifacts           transcripts, the feature store, app state, the report.
+#   manifests           the generated manifests (derivable, but hours of CPU).
+# Not models/ (vj-fetch-model re-fetches it against its pinned sha256) and not
+# staging/ (uploads in flight; the client re-sends).
+exec = { container = "voice-journey", root = "/data", paths = ["corpus/phone", "corpus/measurement", "artifacts", "manifests"] }
+# Full copies each night (audio does not compress): keep 3, age out after 7 days.
+keep_min = 3
+retention_days = 7
+
+[env]
+required = ["TS_AUTHKEY", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "ID_TAILNET_IP", "NTFY_TAILNET_IP", "VJ_MIRROR_GID"]
+generated = ["OAUTH2_PROXY_COOKIE_SECRET"]
+owner = []

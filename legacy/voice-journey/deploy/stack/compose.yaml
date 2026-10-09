@@ -1,0 +1,251 @@
+# voice-journey on the tailnet as its own machine, `voice-journey`, served at
+# https://voice-journey.<tailnet>/ (tailnet only; never Funnel): the corpus
+# browser, the watcher (the breathing loop) and the capture intake API. An
+# app-owned stack (scshafe infra docs/platform/agent-deploy.md): a merge to main
+# deploys it through the runner lane; nobody runs `docker compose` on it by hand.
+#
+# The host's tools/stack validates this file against an allowlist before
+# anything runs: no privileges, no host namespaces, binds only under ./state or
+# the host paths infra's stacks/voice-journey/host.conf grants, images either
+# built here (through the pin) or pinned by digest. `dev check` runs the same
+# validator (DEPLOY-04).
+#
+# Auth: oauth2-proxy -> Pocket ID (https://id.<tailnet>), PKCE S256, for
+# browsers; and, for the native capture client (voice-journey-capture, a PUBLIC
+# Pocket ID client), its own Pocket ID access token as a bearer, verified by the
+# proxy (skip-jwt-bearer-tokens + an extra JWT issuer whose audience is that
+# client id). Either way the app gets the identity only as X-Forwarded-User /
+# X-Forwarded-Email from the proxy.
+#
+# Topology (exact addresses are authority; the door layout, V-11):
+#   door      internal /29   ts-voice-journey .2 -> oauth2-proxy .3:4180 (serve.json)
+#   upstream  internal /29   oauth2-proxy .10 -> app .11:8787
+#   egress    bridge         ts-voice-journey (control, DERP, ACME),
+#                            oauth2-proxy (Pocket ID), app (ntfy over the tailnet)
+# The app trusts X-Forwarded-User/-Email from ANY peer, so nothing but the proxy
+# may reach it: the sidecar is not on `upstream`, nothing listens in the
+# sidecar's namespace except Serve (under userspace tailscale a tailnet peer
+# reaches any port listening there), and no app port is published on the host.
+# The deploy witness is /healthz THROUGH the door (the one route the proxy lets
+# through without a session; it returns {"ok":true} and nothing else).
+#
+# Data root /srv/voice-journey (host.conf HOST_BINDS; layout and owners: infra
+# replication/voice-journey-mirror/README.md):
+#   /data                rw   cole-owned: manifests/, artifacts/, models/,
+#                             staging/, corpus/measurement/ (staging and
+#                             measurement share this mount: finalize is one rename)
+#   /data/corpus/phone   ro   the Mini's write-only rrsync drop, vj-mirror:vj-mirror
+#                             2750; read through group_add vj-mirror (host.conf GROUPS)
+# The app runs as uid:gid 1000:1000 (cole, the data root's owner; `node` in the
+# image) with the vj-mirror gid added, so it can write its own directories and
+# only read the phone corpus.
+name: voice-journey
+
+networks:
+  door:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.253.86.0/29
+  upstream:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.253.86.8/29
+  egress:
+    driver: bridge
+
+services:
+  # --- the door ------------------------------------------------------------------
+  ts-voice-journey:
+    # tailscale/tailscale:v1.102.2 (the tag this node ran before the move),
+    # multi-arch index digest
+    image: tailscale/tailscale:v1.102.2@sha256:321ce041508c19079b57a28b6666c8d81ab0b08accc0a2585b3ab663d557ac24
+    container_name: ts-voice-journey
+    # docker-init as PID 1: containerboot waits only on tailscaled, so orphans
+    # an exec leaves behind would stay zombies.
+    init: true
+    restart: unless-stopped
+    environment:
+      TS_HOSTNAME: voice-journey
+      TS_USERSPACE: "true"
+      TS_AUTH_ONCE: "true"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_AUTHKEY: ${TS_AUTHKEY:-}      # consumed on the first join only; state/tailscale is the identity
+    # Public resolvers, NOT 100.100.100.100: quad-100 SERVFAILs public names
+    # here and ACME renewal would die silently (STUDY-GUIDE case study #4).
+    dns: [1.1.1.1, 1.0.0.1]
+    volumes:
+      - ./state/tailscale:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+    networks:
+      door:
+        ipv4_address: 10.253.86.2
+      egress: {}
+    # Userspace tailscale needs no NET_ADMIN or NET_RAW; without NET_RAW this
+    # peer cannot spoof the proxy's address on the door network. Every default
+    # capability is dropped except DAC_OVERRIDE: root here must still open
+    # ./state/tailscale, which the host's stack tool keeps cole-owned at 0700
+    # (cap_add is refused by the validator, V-03, so the set is spelled out).
+    cap_drop:
+      - AUDIT_WRITE
+      - CHOWN
+      - FOWNER
+      - FSETID
+      - KILL
+      - MKNOD
+      - NET_BIND_SERVICE
+      - NET_RAW
+      - SETFCAP
+      - SETGID
+      - SETPCAP
+      - SETUID
+      - SYS_CHROOT
+    security_opt: [no-new-privileges:true]
+
+  oauth2-proxy:
+    # quay.io/oauth2-proxy/oauth2-proxy:v7.15.3 (the tag the door ran before
+    # the move), multi-arch index digest
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:10a1165743a192e1940b4708fb9647027185ce11a681a1c5519b442ff7f1f561
+    container_name: voice-journey-oauth2-proxy
+    restart: unless-stopped
+    user: "65532:65532"  # the image's own nonroot user, spelled out
+    depends_on: [ts-voice-journey]
+    # Flag, not env: --trusted-proxy-ip has no env mapping. The exact peer is
+    # the sidecar on the door network.
+    command: ["--trusted-proxy-ip=10.253.86.2/32"]
+    environment:
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_PROVIDER_DISPLAY_NAME: "Pocket ID"
+      OAUTH2_PROXY_OIDC_ISSUER_URL: https://id.colobus-stargazer.ts.net
+      # The voice-journey Pocket ID client (confidential, PKCE).
+      OAUTH2_PROXY_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OAUTH2_PROXY_REDIRECT_URL: https://voice-journey.colobus-stargazer.ts.net/oauth2/callback
+      OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"   # who may sign in = the clients' allowed groups in Pocket ID
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET}
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_EXPIRE: 12h
+      OAUTH2_PROXY_HTTP_ADDRESS: 10.253.86.3:4180
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_UPSTREAMS: http://10.253.86.11:8787
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      # The capture client: a Pocket ID access token (RS256 JWT, aud = the
+      # client id) as `Authorization: Bearer`, verified against the id node's
+      # JWKS. Only tokens minted for voice-journey-capture (or for the door's
+      # own client) pass; the session it makes sets the same identity headers.
+      OAUTH2_PROXY_SKIP_JWT_BEARER_TOKENS: "true"
+      OAUTH2_PROXY_EXTRA_JWT_ISSUERS: https://id.colobus-stargazer.ts.net=voice-journey-capture
+      # The intake API answers a missing or bad token with 401, not a login redirect.
+      OAUTH2_PROXY_API_ROUTES: "^/api/intake/"
+      # finalize re-hashes up to 4 GiB before it answers; the 30 s default
+      # response-header wait is too short on the 2-core laptop.
+      OAUTH2_PROXY_UPSTREAM_TIMEOUT: 300s
+      # Deploy witness and monitoring: liveness without a session (the deploy
+      # rolls back on a 302 here). The app's /healthz is {"ok":true} only.
+      OAUTH2_PROXY_SKIP_AUTH_ROUTES: "GET=^/healthz$$"
+      # The app reads X-Forwarded-User (the OIDC subject) and X-Forwarded-Email.
+      OAUTH2_PROXY_PASS_USER_HEADERS: "true"
+      # Never manufacture an upstream Basic credential; strip caller-supplied
+      # identity headers before setting the proxy-owned ones (on the skipped
+      # /healthz route too).
+      OAUTH2_PROXY_PASS_BASIC_AUTH: "false"
+      OAUTH2_PROXY_SKIP_AUTH_STRIP_HEADERS: "true"
+      # Sign-out's rd= chain to Pocket ID's end-session works only for a
+      # whitelisted host.
+      OAUTH2_PROXY_WHITELIST_DOMAINS: id.colobus-stargazer.ts.net
+    dns: [1.1.1.1, 1.0.0.1]
+    extra_hosts:
+      # OIDC discovery, JWKS and token exchange go to the id node over the
+      # host's tailnet; the name is pinned because the public resolver cannot
+      # answer it.
+      - "id.colobus-stargazer.ts.net:${ID_TAILNET_IP:?set ID_TAILNET_IP (the id node's tailscale IP) in .env}"
+    networks:
+      door:
+        ipv4_address: 10.253.86.3
+      upstream:
+        ipv4_address: 10.253.86.10
+      egress: {}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  # --- voice-journey (the pinned image) -------------------------------------------
+  # The service keeps its pre-move name `app` so the first deploy replaces the
+  # running container in place (same compose project, same container name).
+  app:
+    # Built by the host from this repository's Dockerfile at the merged commit
+    # and pinned in the runtime .env by the deploy.
+    image: ${VOICE_JOURNEY_IMAGE}
+    container_name: voice-journey
+    restart: unless-stopped
+    depends_on: [oauth2-proxy]
+    # The data root's owner (cole); the image's own user is 10001.
+    user: "1000:1000"
+    group_add:
+      # vj-mirror (getent group vj-mirror; host.conf GROUPS): read access to
+      # the phone corpus.
+      - "${VJ_MIRROR_GID:?set VJ_MIRROR_GID (getent group vj-mirror) in .env}"
+    environment:
+      # The image sets VOICE_JOURNEY_DATA=/data, VOICE_JOURNEY_CONTAINER=1,
+      # the tool paths and WHISPER_CPP_MODEL=/data/models/ggml-medium.bin.
+      # Listen on the upstream address (the proxy's only way in) and loopback
+      # (the container's own healthcheck); nothing else.
+      VOICE_JOURNEY_HOST: 10.253.86.11,127.0.0.1
+      VOICE_JOURNEY_PORT: "8787"
+      # whisper.cpp threads: 2 of the i7-6600U's 4 (medium is ~12% slower than
+      # at 4 and leaves half the CPU to the other stacks).
+      WHISPER_CPP_THREADS: "2"
+      # The breathing loop and playback: the recorded standing release-gate
+      # decisions (README "The breathing loop").
+      VOICE_JOURNEY_WATCH: "1"
+      VOICE_JOURNEY_WATCH_APPROVAL: "release-gate 2026-08-12: standing operator approval — watchd incremental local processing of new takes (breathing-studio plan, phase D)"
+      VOICE_JOURNEY_PLAYBACK_APPROVAL: "release-gate browser playback approval"
+      # Failures and new-take notices (ids and counts, never content) to the
+      # tailnet ntfy server; empty disables them.
+      VOICE_JOURNEY_NTFY: https://ntfy.colobus-stargazer.ts.net/voice-journey
+      # A read-only root: everything a tool caches goes to the tmpfs.
+      HOME: /tmp
+      NUMBA_CACHE_DIR: /tmp/numba
+      MPLCONFIGDIR: /tmp/matplotlib
+    extra_hosts:
+      - "ntfy.colobus-stargazer.ts.net:${NTFY_TAILNET_IP:?set NTFY_TAILNET_IP (the ntfy node's tailscale IP) in .env}"
+    volumes:
+      - type: bind
+        source: /srv/voice-journey
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/voice-journey/corpus/phone
+        target: /data/corpus/phone
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      upstream:
+        ipv4_address: 10.253.86.11
+      egress: {}
+    read_only: true
+    tmpfs:
+      # Transient decodes (ffmpeg PCM) and tool caches.
+      - /tmp:rw,nosuid,nodev,size=1g,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    # whisper.cpp medium: ~1.5 GB model mapped plus its working set.
+    mem_limit: 6g
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

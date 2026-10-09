@@ -1,0 +1,28 @@
+# Keep the build context to code: no recordings, no corpus-derived data.
+.git
+.github
+node_modules
+web/node_modules
+web/dist
+analysis/.venv
+__pycache__
+coverage
+.npm
+local-artifacts
+*.m4a
+*.mp3
+*.wav
+*.aiff
+*.flac
+*.aac
+*.ogg
+*.opus
+*.caf
+# Generated manifests describe the corpus (titles' timestamps, aggregates):
+# they live in the data volume, not in the image. Only the input manifest ships.
+manifests/*
+!manifests/chains.json
+docs
+*.md
+Dockerfile
+.dockerignore

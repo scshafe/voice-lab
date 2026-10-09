@@ -1,0 +1,17 @@
+#!/bin/sh
+# Wrapper the launcher's `mirror` mode runs (installed to
+# ~/.mission-control/bin/voice-journey-mirror-launchd on the Mini). It holds the
+# flags, so the launcher never takes command-line input. Runs under the
+# launcher's Full Disk Access grant; the default key is ~/.ssh/vj-mirror, the
+# default rsync /opt/homebrew/bin/rsync (override VOICE_JOURNEY_RSYNC); logs (counts only) go to launchd's
+# StandardErrorPath.
+set -eu
+
+PROJECT="${VOICE_JOURNEY_PROJECT:-$HOME/.mission-control/projects/voice-journey}"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+cd "$PROJECT"
+exec node src/mirror.mjs \
+  --approval "owner standing approval: corpus mirror to lubuntu (docs/move-to-lubuntu.md phase 3)" \
+  ${VOICE_JOURNEY_MIRROR_DEST:+--dest "$VOICE_JOURNEY_MIRROR_DEST"} \
+  --ssh-key "${VOICE_JOURNEY_MIRROR_SSH_KEY:-$HOME/.ssh/vj-mirror}"

@@ -1,0 +1,81 @@
+name: deploy
+
+# Managed by scshafe-dev (dev.toml [deploy], DEPLOY-02): `dev update` refreshes
+# this file from [deploy] and [verify]; change dev.toml, not these lines. The
+# one project-owned part is the toolchain block in the verify job.
+#
+# A merge to main runs verify, then the deploy job on this app's own
+# self-hosted runner, which calls the host's entrypoint (it fetches main itself,
+# checks ancestry, backs up and deploys), then a read-only health check. The
+# guard rails are the host's, not this file's: the commit must be on main, the
+# runner account has no docker and no route to private addresses, and its one
+# sudo rule is that entrypoint.
+#
+# Roll back by merging a revert, or dispatch this workflow with sha=<older
+# commit on main> and allow_rollback=true.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:            { description: "Full 40-char commit on main (blank = main)", type: string, default: "" }
+      allow_rollback: { description: "Deploy a commit that is not a descendant of live", type: boolean, default: false }
+
+permissions:
+  contents: read
+  packages: read
+
+# One run at a time, never cancelled mid-flight; a newer push replaces a
+# pending run, and the entrypoint skips a push that is behind live.
+concurrency:
+  group: deploy-voice-journey
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # A rollback re-deploys a commit that was verified when it was merged.
+    if: github.repository == 'scshafe/voice-journey' && github.ref == 'refs/heads/main' && !inputs.allow_rollback
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          persist-credentials: false
+      # scshafe-dev:begin toolchain (project-owned: the setup steps the [verify] command needs; keep equal to ci.yml's)
+      # scshafe-dev:end toolchain
+      - name: Verify (dev.toml [verify] command)
+        run: |
+          npm test
+
+  deploy:
+    needs: verify
+    if: >-
+      !cancelled() && github.repository == 'scshafe/voice-journey' && github.ref == 'refs/heads/main' &&
+      (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && inputs.allow_rollback))
+    runs-on: [self-hosted, voice-journey-prod]
+    timeout-minutes: 160  # above the entrypoint's worst case (lock 30 + fetch 10 + backup 30 + stack 60)
+    steps:
+      - name: Deploy through the host entrypoint
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ inputs.sha || github.sha }}
+          EVENT: ${{ github.event_name }}
+          ALLOW_ROLLBACK: ${{ inputs.allow_rollback && 'yes' || 'no' }}
+        run: printf '%s\n' "$GH_TOKEN" | sudo -n /usr/local/sbin/scshafe-deploy voice-journey "$TARGET_SHA" "$EVENT" "$ALLOW_ROLLBACK"
+
+  health:
+    needs: deploy
+    # Explicit, or a rollback's skipped verify would skip this job too (the
+    # implicit success() looks at the whole needs chain).
+    if: ${{ !cancelled() && github.repository == 'scshafe/voice-journey' && github.ref == 'refs/heads/main' && needs.deploy.result == 'success' }}
+    runs-on: [self-hosted, voice-journey-prod]
+    timeout-minutes: 15
+    steps:
+      - name: Health (live commit, containers, witness, tailnet-only)
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.sha || github.sha }}
+        run: sudo -n /usr/local/sbin/scshafe-deploy --verify voice-journey "$TARGET_SHA"

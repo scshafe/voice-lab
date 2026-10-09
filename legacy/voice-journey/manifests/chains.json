@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "voice-journey.chains.v1",
+  "chains": [
+    {
+      "chainId": "iphone-voicememos",
+      "kind": "phone",
+      "label": "iPhone built-in mic → Voice Memos (AGC + AAC)",
+      "controlled": false,
+      "era": { "start": "2019-07-14" },
+      "notes": "The continuity chain — never retired. Uncontrolled by design; its overlap with the measurement chain is the bias-estimation dataset."
+    },
+    {
+      "chainId": "umik1",
+      "kind": "measurement",
+      "label": "miniDSP UMIK-1 → CoreAudio → vj-capture WAV 48k/24",
+      "controlled": true,
+      "era": { "start": null },
+      "deviceName": "umik",
+      "sampleRate": 48000,
+      "distanceCm": 35,
+      "pinnedInputVolume": null,
+      "calFile": "local-artifacts/calibration/umik1-cal.txt",
+      "notes": "era.start is set by the first real session. Before first capture: download the per-serial calibration file from miniDSP into calFile's path, set the UMIK as the input device, set the input-volume slider once, then `npm run capture -- pin-volume --chain umik1`. Re-pinning later is a logged era event, not a casual act."
+    }
+  ]
+}

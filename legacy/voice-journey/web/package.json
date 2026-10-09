@@ -1,0 +1,24 @@
+{
+  "name": "voice-journey-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Voice Journey browser SPA \u2014 React + Redux Toolkit on @scshafe/ui. Builds to web/dist (gitignored); the corpus browser serves it request-time. The repo root stays zero-dependency: this subproject owns the only node_modules.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-web.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "e2e": "node scripts/e2e-smoke.mjs"
+  },
+  "dependencies": {
+    "@reduxjs/toolkit": "^2.12.0",
+    "@scshafe/ui": "0.4.1",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "react-redux": "^9.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "typescript": "^5.8.3",
+    "happy-dom": "^20.0.0"
+  }
+}
