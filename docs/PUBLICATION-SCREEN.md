@@ -321,3 +321,26 @@ COPYING notice (`tests/fixtures/standard_sets/arctic-COPYING.txt`,
    members), the `Claude-Session:` links and the one Dependabot run log. Removing
    them from history would need `git filter-repo --replace-text`, which this
    screen does not recommend.
+
+## 5. Imported histories (design phase 3, 2026-10-09)
+
+Before each import (D-030) the method of §1 ran on the history to be imported,
+from fresh mirror clones in a session scratchpad (deleted afterwards): gitleaks
+8.30.1 (release checksum verified) over `--all`, the history grep of §1 over
+every added line and every commit message, a review of every path ever
+committed and a magic-byte sniff of every blob, and the guard (with phase 3's
+voice-journey rules) against the tree of every commit.
+
+| | `scshafe/voice-journey` (public) | `scshafe/voice-journey-capture` (private) |
+|---|---|---|
+| Refs, commits | `main`, the draft #1 branch, `refs/pull/*`: 10 commits | `main`: 17 commits |
+| gitleaks | 1 hit, false positive: `generic-api-key` on the object key `vibratoDistanceFrom5p5` (`src/journeys.mjs`) | none |
+| Token grep | none | one test value, `https://user:pw@h.example` (a refused-credentials case in `tests/test_config.py`) |
+| Private assets | none: no audio, model, database or manifest path; no binary blob | one binary blob: `vendor/scshafe_qt-0.1.1-py3-none-any.whl` (the owner's public MIT `scshafe-qt` library, QML and Python only; removed in `e3d2d87`) |
+| Guard per commit | 10/10 pass | 17/17 pass |
+| Identities | `scshafe <17..@users.noreply.github.com>` (all) | `cole <sc..@umich.edu>` (9), `scshafe <sc..@umich.edu>` (8 merge commits); the university address, accepted as in §3.5 |
+| Personal data | as screened when it was published: `/Users/cole` in the README and the launchd plist, the tailnet name, the Mini's host name, private Docker subnets | the tailnet name (`co..er.ts.net`) as the default server and issuer in `config.py`, the README and tests; no email but `owner@example.test`, no home path, no tailnet IP |
+
+Verdict: nothing sensitive; both histories are imported. The tailnet name is the
+same accepted item as §4b.4. Tree-only, optional, for phase 4: the capture
+client's default server and issuer become configuration (placeholders in code).

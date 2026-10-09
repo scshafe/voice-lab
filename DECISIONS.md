@@ -865,3 +865,20 @@ credential". The owner reviews it with the phase.
 - **Not changed here.** The approval's tag is still `tag:voice-lab-vault`; the Air's
   `tag:voice-lab-vault-air` and its resume journal are phase 3. `finetune archive` and
   `restore-run` still use the `default` destination; moving them to the PC is phase 5.
+
+## D-035 — Phase 3 deviations
+
+Recorded 2026-10-09 while building the design's phase 3, as the deviations that the
+owner's phase-3 brief or the facts forced on the design; the owner reviews them with the
+phase (docs/design/PHASE-3-LOG.md).
+
+- **Both histories in phase 3.** The brief imports voice-journey-capture's history now,
+  not in phase 4 (D-030). It lands in `apps/desktop/`, as design §5.2 says, unchanged and
+  outside voice-lab's own lint, type and test tooling until phase 4 makes it the desktop
+  app. The separate repository stays the live capture client until then.
+- **`/view/` instead of the SPA on the PC.** Design §9 phase 3 serves voice-journey's
+  React SPA unchanged from the PC. Building it needs the private `@scshafe/ui` package,
+  which a public repository cannot ask for (§6.5) and the PC's runner cannot read. The
+  PC serves the read-only web view of §6.5 (summaries only, no audio, D-025) from phase
+  3; the SPA stays on the laptop until the cutover and is not imported. The acceptance
+  item "the four SPA views work from the PC" reads "`/view/` works from the PC".
