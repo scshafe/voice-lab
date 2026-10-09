@@ -71,7 +71,8 @@ line-length = 100
 target-version = "py312"
 # legacy/voice-journey/ is the imported Node tree being ported (design §5.2, phase 3);
 # its one Python file moves into the package, under these rules, when it is ported.
-extend-exclude = ["legacy"]
+# apps/desktop/ is voice-journey-capture as imported (D-035); phase 4 brings it under them.
+extend-exclude = ["legacy", "apps/desktop"]
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "UP"]
