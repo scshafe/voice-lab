@@ -97,6 +97,21 @@ PRIVATE_BASENAMES = {
     "reveal-map.json",
     "score-sheet.json",
 }
+# voice-journey's generated manifests (design §4.4, phase 3): indices, filter results,
+# transcripts, lyric indicators, features and journeys describe the private corpus.
+# Only the authored chain registry is public (without calibration paths).
+VOICE_JOURNEY_PRIVATE_BASENAMES = {
+    "recording-index.json",
+    "filtering-sample.json",
+    "filter-results.json",
+    "full-corpus-filter-results.json",
+    "local-stt-transcripts.json",
+    "local-lyric-indicators.json",
+    "local-voice-features.json",
+    "song-journeys.json",
+    "latest.json",
+}
+VOICE_JOURNEY_PUBLIC_SCHEMAS = {"voice-journey.chains.v1"}
 PUBLIC_INSTANCE_SCHEMA_PREFIXES = (
     "cole-voice-lab.model-sources-lock/",
     "cole-voice-lab.prompt-suite/",
@@ -251,6 +266,16 @@ def _scan_json(relative: str, payload: bytes, origin: str, findings: set[str]) -
     ):
         findings.add(f"{origin}: private evidence JSON schema: {_display(relative)}")
 
+    if isinstance(value, dict):
+        for key in ("schemaVersion", "schema", "schema_version"):
+            marker = value.get(key)
+            if (
+                isinstance(marker, str)
+                and marker.startswith("voice-journey")
+                and marker not in VOICE_JOURNEY_PUBLIC_SCHEMAS
+            ):
+                findings.add(f"{origin}: voice-journey corpus manifest JSON: {_display(relative)}")
+
     private_record_kind = _private_record_kind(value)
     if private_record_kind is not None and not pending_public_consent:
         findings.add(f"{origin}: {private_record_kind} record in JSON: {_display(relative)}")
@@ -361,6 +386,11 @@ def _scan_blob(
         findings.add(f"{origin}: private evidence filename: {display}")
     if size > MAX_TRACKABLE_BYTES:
         findings.add(f"{origin}: unexpected file larger than 20 MiB: {display}")
+    name = PurePosixPath(relative).name
+    if name.lower() in VOICE_JOURNEY_PRIVATE_BASENAMES:
+        findings.add(f"{origin}: voice-journey corpus manifest filename: {display}")
+    if name.startswith("CloudRecordings.db"):
+        findings.add(f"{origin}: Voice Memos database: {display}")
 
     kind = _magic_kind(payload[:32])
     if kind is not None:

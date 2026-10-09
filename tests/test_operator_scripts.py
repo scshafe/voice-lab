@@ -1445,3 +1445,59 @@ def test_bootstrap_install_is_exact_no_deps_and_help_uses_stdout() -> None:
         assert result.returncode == 0
         assert result.stdout.startswith("usage:")
         assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    ("relative", "payload", "message"),
+    [
+        (
+            "notes/index.json",
+            {"schemaVersion": "voice-journey.recording-index.v1", "recordings": []},
+            "voice-journey corpus manifest JSON",
+        ),
+        (
+            "notes/mirror.json",
+            {"schema": "voice-journey-mirror-manifest/1", "files": {}},
+            "voice-journey corpus manifest JSON",
+        ),
+        ("manifests/local-stt-transcripts.json", {}, "voice-journey corpus manifest filename"),
+        ("phone/_mirror/latest.json", {}, "voice-journey corpus manifest filename"),
+    ],
+)
+def test_private_asset_guard_rejects_voice_journey_corpus_manifests(
+    tmp_path: Path, relative: str, payload: dict[str, object], message: str
+) -> None:
+    root = tmp_path / "repository"
+    target = root / relative
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps(payload))
+
+    result = _run(
+        sys.executable,
+        str(REPOSITORY / "scripts" / "guard-private-assets"),
+        "--root",
+        str(root),
+    )
+    assert result.returncode == 1
+    assert message in result.stderr
+
+
+def test_private_asset_guard_rejects_voice_memos_database_and_allows_chain_registry(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    (root / "CloudRecordings.db-wal").write_bytes(b"\0" * 8)
+    (root / "chains.json").write_text(
+        json.dumps({"schemaVersion": "voice-journey.chains.v1", "chains": []})
+    )
+
+    result = _run(
+        sys.executable,
+        str(REPOSITORY / "scripts" / "guard-private-assets"),
+        "--root",
+        str(root),
+    )
+    assert result.returncode == 1
+    assert "Voice Memos database: CloudRecordings.db-wal" in result.stderr
+    assert "chains.json" not in result.stderr
