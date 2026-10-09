@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+# Recordings and anything derived from them never enter Git.
+*.wav
+*.WAV
+*.flac
+*.m4a
+*.aiff
+sessions/
+calibration/
