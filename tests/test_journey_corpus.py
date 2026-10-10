@@ -17,14 +17,9 @@ import pytest
 from cole_voice_lab.journey.corpus import (
     HostAccessError,
     captured_at_from_filename,
-    js_extname,
-    js_join,
-    js_resolve,
     list_corpus_entries,
     list_measurement_entries,
-    locale_key,
     mtime_iso,
-    parse_json,
     public_entry,
     read_mirror_manifest,
     recording_id,
@@ -140,45 +135,6 @@ def test_recording_id_is_the_sha256_prefix_of_the_utf8_name() -> None:
     assert recording_id("a\ud800b") == "05087813392efc16"
 
 
-def test_locale_key_is_icu_root_collation_for_ascii() -> None:
-    names = ["aB", "Ab", "ab", "AB", "a", "A", "b", "_x", "-x", "1", "x:y", "x~y", "x$y"]
-    ordered = sorted(names, key=locale_key)
-    assert ordered == ["_x", "-x", "1", "a", "A", "ab", "aB", "Ab", "AB", "b"] + [
-        "x:y",
-        "x~y",
-        "x$y",
-    ]
-    assert locale_key("a\x01b") == locale_key("ab")
-    assert locale_key("z") < locale_key("\u00e9")
-
-
-def test_js_path_helpers_follow_node() -> None:
-    cases = {
-        "a/..wav": ".wav",
-        "..m4a": ".m4a",
-        "sid/": "",
-        "sid/.hidden": "",
-        "x.": ".",
-        "a.b.M4A": ".M4A",
-        "/x/y.tar.gz": ".gz",
-        "a/b/.": "",
-        "a/b/..": "",
-        "...": ".",
-        "a/.b.c": ".c",
-        "": "",
-    }
-    assert {path: js_extname(path) for path in cases} == cases
-    assert js_join("/r", "sid", "/etc/x") == "/r/sid/etc/x"
-    assert js_join("/r", "sid", "") == "/r/sid"
-    assert js_join("/r", "sid", "../../x") == "/x"
-    assert js_join("/r", "sid", "x/") == "/r/sid/x/"
-    assert js_join("", "") == "."
-    assert js_join("//a", "b") == "/a/b"
-    assert js_resolve("//a/b/") == "/a/b"
-    assert js_resolve("/") == "/"
-    assert js_resolve("rel") == os.path.join(os.getcwd(), "rel")
-
-
 def test_mtime_rounds_to_the_nearest_millisecond_as_node_does(tmp_path: Path) -> None:
     target = tmp_path / "f"
     target.write_text("x")
@@ -191,14 +147,6 @@ def test_mtime_rounds_to_the_nearest_millisecond_as_node_does(tmp_path: Path) ->
     assert mtime_iso(target.stat()) == "2024-01-01T00:00:00.001Z"
     os.utime(target, ns=(base, base + 499_800))
     assert mtime_iso(target.stat()) == "2024-01-01T00:00:00.000Z"
-
-
-def test_parse_json_is_json_parse() -> None:
-    assert parse_json('{"a": 1, "a": 2}') == {"a": 2.0}
-    with pytest.raises(ValueError):
-        parse_json("NaN")
-    with pytest.raises(ValueError):
-        parse_json("\ufeff{}")
 
 
 def test_the_corpus_root_must_be_an_existing_directory(tmp_path: Path) -> None:

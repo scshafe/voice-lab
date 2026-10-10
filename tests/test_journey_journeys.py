@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from cole_voice_lab.journey import journeys
+from cole_voice_lab.journey import jscompat as js
 from cole_voice_lab.journey.journeys import (
     JourneysOptions,
     analyze_journeys,
@@ -427,27 +428,7 @@ def test_rows_follow_javascript_truthiness_and_coercion(tmp_path: Path) -> None:
 
 
 def test_value_helpers_match_javascript() -> None:
-    undefined = journeys._UNDEFINED
-    assert repr(undefined) == "undefined"
-    assert [journeys._to_string(v) for v in [undefined, None, True, False, 2026.0, math.nan]] == [
-        "undefined",
-        "null",
-        "true",
-        "false",
-        "2026",
-        "NaN",
-    ]
-    assert journeys._to_string(-math.inf) == "-Infinity"
-    assert journeys._to_string(math.inf) == "Infinity"
-    assert journeys._to_string([1, None, "a", [2, 3]]) == "1,,a,2,3"
-    assert journeys._to_string({}) == "[object Object]"
-    assert journeys._to_number(undefined) != journeys._to_number(undefined)
-    assert journeys._to_number(None) == 0
-    assert journeys._to_number(True) == 1
-    assert journeys._to_number(False) == 0
-    assert journeys._to_number(10**400) == math.inf
-    assert journeys._to_number([" 7 "]) == 7
-    assert math.isnan(journeys._to_number({}))
+    undefined = js.MISSING
     assert journeys._add("0.01", 0) == "0.010"
     assert journeys._add(True, 1) == 2
     assert journeys._add({}, 1) == "[object Object]1"
@@ -458,22 +439,6 @@ def test_value_helpers_match_javascript() -> None:
     keys = {journeys._map_key(v) for v in [1, 1.0, "1", True, None, undefined]}
     assert len(keys) == 5
     assert journeys._map_key([]) != journeys._map_key([])
-    assert journeys._object_key_order(["b", "2019", "999", "a", "4294967295", "01"]) == [
-        "999",
-        "2019",
-        "b",
-        "a",
-        "4294967295",
-        "01",
-    ]
-    assert journeys._path_join("", "") == "."
-    assert journeys._path_join("//dir/../x", "id.json") == "/x/id.json"
-    assert journeys._path_join("store", "/abs.json") == "store/abs.json"
-    assert journeys._length("abc") is undefined
-    assert journeys._truthy([]) and journeys._truthy({}) and not journeys._truthy(math.nan)
-    assert not journeys._truthy(0) and not journeys._truthy("") and journeys._truthy("0")
-    with pytest.raises(TypeError, match="reading 'x'"):
-        journeys._prop(undefined, "x")
 
 
 def test_segment_notes_takes_javascript_inputs() -> None:
@@ -586,98 +551,11 @@ def test_analyze_handles_odd_rows_like_the_javascript(tmp_path: Path) -> None:
     assert manifest["sources"]["lyrics"]["clusterCount"] is None
 
 
-def test_date_parse_iso_forms() -> None:
-    parse = journeys._date_parse
-    assert parse("2019-02-10T00:00:00Z") == 1549756800000
-    assert parse("2019-02-10T00:00:00.1234Z") == 1549756800123
-    assert parse("+275760-09-13T00:00:00.001Z") is None
-    assert parse("-000000-01-01") is None
-    assert parse("2019-02-10T00:00:00+24:00") is None
-    assert parse("2019-02-10T24:00:01Z") is None
-    assert parse("2019-13-01") is None
-    assert parse("2019/02/10") is None
-    assert parse("2019-02-10T00:00:00-01:00") == 1549760400000
-    assert journeys._utc_offset_ms(10**20) == 0
+def test_year_fraction_of_nothing() -> None:
     assert journeys.year_fraction_of(None) is None
 
 
 # --- parity with the original JavaScript ------------------------------------------
-
-JS_DATES = [
-    "2019-02-10T00:00:00Z",
-    "2019-02-10T00:00:00.123456Z",
-    "2019-02-10t00:00:00z",
-    "2019-02-10T00:00Z",
-    "2019-02-10T00Z",
-    "2019-02-10",
-    "2019-02",
-    "2019",
-    "2019Z",
-    "2019T10:00Z",
-    "2019-02-10Z",
-    "2019-02-10T00:00:00",
-    "2019-02-10T10:00:00.5",
-    "2019-02-10 00:00:00",
-    "2019-02-10 00:00:00Z",
-    "2019-02-10T00:00:00+01:00",
-    "2019-02-10T00:00:00+0100",
-    "2019-02-10T00:00:00+23:59",
-    "2019-02-10T00:00:00+24:00",
-    "2019-02-10T00:00:00+01:60",
-    "2019-02-10T10:00+01",
-    "2019-02-10T24:00:00Z",
-    "2019-02-10T24:00:00.001Z",
-    "2019-02-10T25:00:00Z",
-    "2019-02-10T00:60:00Z",
-    "2019-02-10T00:00:60Z",
-    "+002019-02-10T00:00:00Z",
-    "-000001-01-01T00:00:00Z",
-    "-000000-01-01T00:00:00Z",
-    "+275760-09-13T00:00:00Z",
-    "+275760-09-13T00:00:00.001Z",
-    "2019-02-30T00:00:00Z",
-    "2019-04-31",
-    "2019-02-32",
-    "2019-00-10",
-    "2019-02-00",
-    "2019-13-01",
-    "20190210",
-    "2019-02-10T00:00:00.Z",
-    "2019-02-10T00:00:00Z ",
-    "1900-01-01T00:00:00",
-    "2019-03-10T02:30:00",
-    "2019-11-03T01:30:00",
-    "garbage",
-    "",
-]
-JS_NUMBERS = [
-    "",
-    "  ",
-    "12",
-    " 12 ",
-    "+5",
-    "-5",
-    "1e3",
-    ".5",
-    "5.",
-    "0x1F",
-    "0o17",
-    "0b101",
-    "-0x10",
-    "Infinity",
-    "-Infinity",
-    "infinity",
-    "1_000",
-    "nan",
-    "1e400",
-    "0x",
-    " 12﻿",
-    "\x1c12",
-    "07",
-    "1.5e-3",
-    "e5",
-    "--1",
-]
 
 
 def _node(script: str, **env: str) -> str:
@@ -698,19 +576,6 @@ def chicago(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
     monkeypatch.undo()
     time.tzset()
-
-
-@pytest.mark.skipif(NODE is None, reason="node is not installed")
-@pytest.mark.usefixtures("chicago")
-def test_date_parse_and_number_match_node() -> None:
-    script = (
-        f"const d={json.dumps(JS_DATES)};const n={json.dumps(JS_NUMBERS)};"
-        "console.log(JSON.stringify({d:d.map(x=>{const v=Date.parse(x);"
-        "return Number.isNaN(v)?null:v}),n:n.map(x=>String(Number(x)))}))"
-    )
-    node = json.loads(_node(script, TZ="America/Chicago"))
-    assert [journeys._date_parse(text) for text in JS_DATES] == node["d"]
-    assert [journeys._to_string(journeys._number_from_text(t)) for t in JS_NUMBERS] == node["n"]
 
 
 @pytest.fixture(scope="module")

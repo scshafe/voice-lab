@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from cole_voice_lab.journey import jscompat as js
-from cole_voice_lab.journey.jsonio import iso_timestamp, to_fixed, write_json
+from cole_voice_lab.journey.jsonio import iso_timestamp, read_json, to_fixed, write_json
 from cole_voice_lab.journey.paths import resolve_paths
 
 RECLASSIFY_METHOD = "voice-journey.evidence-join-reclassify.v2"
@@ -452,8 +452,8 @@ def run(argv: Sequence[str]) -> int:
         sys.stdout.write(HELP)
         return 0
     if options.command == "apply":
-        results_manifest = js.read_json(options.results)
-        lyrics_manifest = js.read_json(options.lyrics)
+        results_manifest = read_json(options.results)
+        lyrics_manifest = read_json(options.lyrics)
         if options.dry_run:
             write_json("-", build_reclassify_dry_run(results_manifest, lyrics_manifest, options))
             return 0

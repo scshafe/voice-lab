@@ -18,20 +18,19 @@ path (it was ``analysis/extract_features.py``), so ``toolRun.extractor`` and
 ``workerScript`` name it; JSON files are written atomically; a failed ffmpeg decode
 removes its temporary directory; a worker that dies or misbehaves is reaped instead of
 leaving the process waiting on it. ``JSON.parse`` is followed (``NaN``/``Infinity`` are
-refused). The constant strings that feed the configuration fingerprint and the dry-run
-text (``workerConfigAuthority``, ``provisioning``, the analysis tool's name) are kept
-verbatim so manifests and fingerprints match voice-journey's.
+refused; ``jsonio.read_json``), and the JavaScript value rules (``?.``, ``??``,
+``Number()``, ``path.join``) are ``journey/jscompat.py``'s. The constant strings that
+feed the configuration fingerprint and the dry-run text (``workerConfigAuthority``,
+``provisioning``, the analysis tool's name) are kept verbatim so manifests and
+fingerprints match voice-journey's.
 """
 
 from __future__ import annotations
 
 import errno
 import hashlib
-import json
 import math
 import os
-import posixpath
-import re
 import shutil
 import subprocess
 import sys
@@ -42,7 +41,16 @@ from dataclasses import dataclass, field
 from typing import IO, Any, Protocol
 
 from ..resources import resource_path
-from .jsonio import format_number, iso_timestamp, manifest_text, write_json
+from . import jscompat as js
+from .jsonio import (
+    format_number,
+    iso_timestamp,
+    manifest_text,
+    parse_json,
+    read_json,
+    stringify_compact,
+    write_json,
+)
 from .paths import is_inside_artifacts, resolve_paths, resolve_tools
 
 MANIFEST_SCHEMA_VERSION = "voice-journey.local-voice-features.v1"
@@ -51,11 +59,6 @@ WORKER_RESOURCE = "journey_extract_features.py"
 DEFAULT_SAMPLE_RATE = 22050
 DEFAULT_BUCKETS = "clean_singing"
 
-# String.prototype.trim's WhiteSpace and LineTerminator code points.
-_JS_WHITESPACE = "\t\n\v\f\r                  　﻿"
-_JS_DECIMAL = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
-_JS_RADIX = re.compile(r"0([xXoObB])([0-9a-zA-Z]+)")
-_RADIX = {"x": 16, "o": 8, "b": 2}
 _MAX_SAFE_INTEGER = 2**53 - 1
 
 HELP = """Voice Journey per-recording feature extraction (Arc 2, feature contract v1).
@@ -162,108 +165,6 @@ class FeatureHooks:
     tool_versions: Mapping[str, Any] | None = None
 
 
-# --- JavaScript semantics ----------------------------------------------------------
-
-
-def _js_trim(text: str) -> str:
-    return text.strip(_JS_WHITESPACE)
-
-
-def _get(value: Any, key: str) -> Any:
-    """``value?.[key]`` with JSON values: None when ``value`` is not an object."""
-
-    return value.get(key) if isinstance(value, dict) else None
-
-
-def _coalesce(*values: Any) -> Any:
-    """``a ?? b ?? ...``."""
-
-    for value in values:
-        if value is not None:
-            return value
-    return None
-
-
-def _truthy(value: Any) -> bool:
-    """JavaScript truthiness of a JSON value (objects and arrays are truthy)."""
-
-    if isinstance(value, dict | list):
-        return True
-    if isinstance(value, float) and math.isnan(value):
-        return False
-    return bool(value)
-
-
-def _js_length(value: Any) -> int | None:
-    """``value?.length`` of a JSON value (strings count UTF-16 code units)."""
-
-    if isinstance(value, list):
-        return len(value)
-    if isinstance(value, str):
-        return len(value.encode("utf-16-le")) // 2
-    return None
-
-
-def _js_number(text: str) -> float:
-    """``Number(text)`` for a string."""
-
-    value = _js_trim(text)
-    if value == "":
-        return 0.0
-    if _JS_DECIMAL.fullmatch(value):
-        return float(value)
-    radix = _JS_RADIX.fullmatch(value)
-    if radix:
-        try:
-            return float(int(radix.group(2), _RADIX[radix.group(1).lower()]))
-        except ValueError:
-            return math.nan
-    if value in ("Infinity", "+Infinity"):
-        return math.inf
-    if value == "-Infinity":
-        return -math.inf
-    return math.nan
-
-
-def _stringify_compact(value: Any) -> str:
-    """``JSON.stringify(value)`` (no indentation)."""
-
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return format_number(value)
-    if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
-    if isinstance(value, Mapping):
-        members = (
-            f"{json.dumps(str(key), ensure_ascii=False)}:{_stringify_compact(child)}"
-            for key, child in value.items()
-        )
-        return "{" + ",".join(members) + "}"
-    if isinstance(value, Sequence):
-        return "[" + ",".join(_stringify_compact(child) for child in value) + "]"
-    raise TypeError(f"not JSON-serializable: {type(value).__name__}")
-
-
-def _refuse_constant(name: str) -> Any:
-    raise ValueError(f"Unexpected token {name} in JSON")
-
-
-def _parse_json(text: str) -> Any:
-    """``JSON.parse``: Python's parser without the NaN/Infinity extension."""
-
-    return json.loads(text, parse_constant=_refuse_constant)
-
-
-def _js_join(*parts: str) -> str:
-    """``path.join`` (POSIX): every part is appended, then the result normalized."""
-
-    joined = "/".join(part for part in parts if part)
-    return posixpath.normpath(joined) if joined else "."
-
-
 def _generated_at(options: FeaturesOptions) -> str:
     """``options.generatedAt ?? new Date().toISOString()``."""
 
@@ -271,7 +172,7 @@ def _generated_at(options: FeaturesOptions) -> str:
 
 
 def _sha256_hex(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(js.utf8(text)).hexdigest()
 
 
 def _spawn_message(command: str, error: OSError) -> str:
@@ -298,7 +199,7 @@ def _require_value(args: list[str], flag: str) -> str:
 
 
 def _parse_positive_integer(value: str, flag: str) -> int | float:
-    parsed = _js_number(value)
+    parsed = js.string_to_number(value)
     if not math.isfinite(parsed) or not parsed.is_integer() or parsed <= 0:
         raise FeaturesError(f"{flag} must be a positive integer")
     return int(parsed) if parsed <= _MAX_SAFE_INTEGER else parsed
@@ -366,7 +267,7 @@ def _write_json(file_path: str, payload: Any) -> None:
 
 def _year_for(entry: dict[str, Any]) -> Any:
     captured_at: Any = entry.get("capturedAt")
-    return captured_at[:4] if _truthy(captured_at) else "unknown"
+    return captured_at[:4] if js.truthy(captured_at) else "unknown"
 
 
 def _bucket_set_for(options: FeaturesOptions) -> list[str]:
@@ -374,7 +275,7 @@ def _bucket_set_for(options: FeaturesOptions) -> list[str]:
 
     buckets: dict[str, None] = {}
     for bucket in options.buckets.split(","):
-        trimmed = _js_trim(bucket)
+        trimmed = js.trim(bucket)
         if trimmed:
             buckets[trimmed] = None
     return list(buckets)
@@ -385,13 +286,13 @@ def select_recordings(
 ) -> list[Selection]:
     buckets = set(_bucket_set_for(options))
     bucket_by_id: dict[Any, Any] = {}
-    for row in _coalesce(_get(results_manifest, "results"), []):
-        bucket_by_id[_get(row, "recordingId")] = _coalesce(
-            _get(_get(row, "classification"), "finalBucket"), "unclassified"
+    for row in js.coalesce(js.get(results_manifest, "results"), []):
+        bucket_by_id[js.get(row, "recordingId")] = js.coalesce(
+            js.get(js.get(row, "classification"), "finalBucket"), "unclassified"
         )
     selected: list[Selection] = []
-    for entry in _coalesce(_get(index_manifest, "recordings"), []):
-        bucket = _coalesce(bucket_by_id.get(_get(entry, "recordingId")), "unclassified")
+    for entry in js.coalesce(js.get(index_manifest, "recordings"), []):
+        bucket = js.coalesce(bucket_by_id.get(js.get(entry, "recordingId")), "unclassified")
         if not isinstance(bucket, str) or bucket not in buckets:
             continue
         selected.append(Selection(entry=entry, bucket=bucket))
@@ -433,7 +334,7 @@ def _analysis_config_for(
 def config_fingerprint_for(
     options: FeaturesOptions, versions: Any, worker_config: Any = None
 ) -> str:
-    return _sha256_hex(_stringify_compact(_analysis_config_for(options, versions, worker_config)))
+    return _sha256_hex(stringify_compact(_analysis_config_for(options, versions, worker_config)))
 
 
 def _ffmpeg_tool_choice(
@@ -441,7 +342,7 @@ def _ffmpeg_tool_choice(
 ) -> dict[str, Any]:
     return {
         "name": "ffmpeg",
-        "version": _coalesce(tool_versions.get("ffmpeg") if tool_versions else None),
+        "version": tool_versions.get("ffmpeg") if tool_versions else None,
         "stage": "decode-to-temporary-mono-wav",
         "openness": "open-source",
         "openSource": True,
@@ -456,7 +357,7 @@ def _ffmpeg_tool_choice(
 def _analysis_tool_choice(options: FeaturesOptions, versions: Any = None) -> dict[str, Any]:
     return {
         "name": "praat-parselmouth + librosa (analysis/.venv)",
-        "version": _stringify_compact(versions) if _truthy(versions) else None,
+        "version": stringify_compact(versions) if js.truthy(versions) else None,
         "stage": "per-recording-voice-feature-extraction",
         "openness": "open-source",
         "openSource": True,
@@ -520,13 +421,14 @@ def build_features_dry_run(
 
 def _source_provenance(manifest: Any) -> dict[str, Any]:
     return {
-        "schemaVersion": _coalesce(_get(manifest, "schemaVersion")),
-        "generatedAt": _coalesce(_get(manifest, "generatedAt")),
-        "updatedAt": _coalesce(_get(manifest, "updatedAt")),
-        "recordingCount": _coalesce(
-            _get(_get(manifest, "totals"), "recordings"),
-            _js_length(_get(manifest, "results")),
-            _js_length(_get(manifest, "recordings")),
+        "schemaVersion": js.coalesce(js.get(manifest, "schemaVersion"), None),
+        "generatedAt": js.coalesce(js.get(manifest, "generatedAt"), None),
+        "updatedAt": js.coalesce(js.get(manifest, "updatedAt"), None),
+        "recordingCount": js.coalesce(
+            js.get(js.get(manifest, "totals"), "recordings"),
+            js.length(js.get(manifest, "results")),
+            js.length(js.get(manifest, "recordings")),
+            None,
         ),
     }
 
@@ -552,7 +454,7 @@ def build_features_manifest(
 ) -> dict[str, Any]:
     more = extras if extras is not None else ManifestExtras()
     timestamp = _generated_at(options)
-    completed_count = sum(1 for row in results if _get(row, "status") == "completed")
+    completed_count = sum(1 for row in results if js.get(row, "status") == "completed")
     selected_count = more.selected_count if more.selected_count is not None else len(results)
     return {
         "schemaVersion": MANIFEST_SCHEMA_VERSION,
@@ -584,9 +486,9 @@ def build_features_manifest(
             **_resume_behavior(),
             "skippedCompletedCount": more.skipped_completed,
             "completedCount": completed_count,
-            "failedCount": sum(1 for row in results if _get(row, "status") == "failed"),
+            "failedCount": sum(1 for row in results if js.get(row, "status") == "failed"),
             "remainingCount": max(selected_count - completed_count, 0),
-            "lastProcessedRecordingId": _coalesce(_get(results[-1], "recordingId"))
+            "lastProcessedRecordingId": js.coalesce(js.get(results[-1], "recordingId"), None)
             if results
             else None,
         },
@@ -625,7 +527,7 @@ def build_feature_row(
     base: dict[str, Any] = {}
     _copy_present(base, "recordingId", entry, "recordingId")
     _copy_present(base, "filename", entry, "filename")
-    base["capturedAt"] = _coalesce(entry.get("capturedAt"))
+    base["capturedAt"] = entry.get("capturedAt")
     base["year"] = _year_for(entry)
     _copy_present(base, "sourceRef", entry, "sourceRef")
     base["bucket"] = bucket
@@ -640,10 +542,10 @@ def build_feature_row(
             "in a temporary directory"
         ),
     }
-    if _get(worker_result, "status") != "completed":
+    if js.get(worker_result, "status") != "completed":
         return {
             **base,
-            "error": _coalesce(_get(worker_result, "error"), "unknown extraction failure"),
+            "error": js.coalesce(js.get(worker_result, "error"), "unknown extraction failure"),
             "features": None,
             "featuresDigest": None,
             "localArtifacts": None,
@@ -673,8 +575,8 @@ def _detail_body(entry: dict[str, Any], worker_result: Any) -> str:
 def _update_resume(manifest: dict[str, Any], selected_count: int, row: dict[str, Any]) -> None:
     results = manifest["results"]
     resume = manifest["resume"]
-    resume["completedCount"] = sum(1 for item in results if _get(item, "status") == "completed")
-    resume["failedCount"] = sum(1 for item in results if _get(item, "status") == "failed")
+    resume["completedCount"] = sum(1 for item in results if js.get(item, "status") == "completed")
+    resume["failedCount"] = sum(1 for item in results if js.get(item, "status") == "failed")
     resume["remainingCount"] = max(selected_count - resume["completedCount"], 0)
     resume["lastProcessedRecordingId"] = row.get("recordingId")
 
@@ -697,15 +599,15 @@ def extract_index_manifest(
     selected = select_recordings(index_manifest, results_manifest, options)
     existing = _read_existing_manifest(options.out)
     completed_by_id: dict[Any, Any] = {}
-    for row in _coalesce(_get(existing, "results"), []):
-        if _get(row, "status") == "completed":
-            completed_by_id[_get(row, "recordingId")] = row
+    for row in js.coalesce(js.get(existing, "results"), []):
+        if js.get(row, "status") == "completed":
+            completed_by_id[js.get(row, "recordingId")] = row
 
     create_worker = seams.create_worker or create_feature_worker
     worker = create_worker(options)
     try:
-        versions = _coalesce(worker.versions)
-        worker_config = _coalesce(worker.config)
+        versions = worker.versions
+        worker_config = worker.config
         config_fingerprint = config_fingerprint_for(options, versions, worker_config)
         tool_versions = (
             seams.tool_versions
@@ -742,8 +644,8 @@ def extract_index_manifest(
             finally:
                 decoded.cleanup()
             extras = RowExtras(config_fingerprint=config_fingerprint)
-            if _get(worker_result, "status") == "completed":
-                feature_json_path = _js_join(options.feature_dir, f"{recording_id}.json")
+            if js.get(worker_result, "status") == "completed":
+                feature_json_path = js.path_join(options.feature_dir, f"{recording_id}.json")
                 body = _detail_body(entry, worker_result)
                 with open(feature_json_path, "w", encoding="utf-8", newline="") as handle:
                     handle.write(body)
@@ -776,7 +678,7 @@ def decode_recording_to_wav(entry: dict[str, Any], options: FeaturesOptions) -> 
                 "error",
                 "-y",
                 "-i",
-                _js_join(options.corpus_root or "", str(filename)),
+                js.path_join(options.corpus_root or "", str(filename)),
                 "-ac",
                 "1",
                 "-ar",
@@ -796,7 +698,7 @@ def decode_recording_to_wav(entry: dict[str, Any], options: FeaturesOptions) -> 
 def _capture_command(command: str, args: Sequence[str], message: str | None = None) -> str:
     """captureCommand: stdout, or the trimmed stderr when stdout is empty."""
 
-    failure = message if message is not None else f"{posixpath.basename(command)} failed"
+    failure = message if message is not None else f"{js.path_basename(command)} failed"
     try:
         completed = subprocess.run(
             [command, *args], stdin=subprocess.DEVNULL, capture_output=True, check=False
@@ -804,7 +706,7 @@ def _capture_command(command: str, args: Sequence[str], message: str | None = No
     except OSError as error:
         raise FeaturesError(_spawn_message(command, error)) from error
     out = completed.stdout.decode("utf-8", errors="replace")
-    err = _js_trim(completed.stderr.decode("utf-8", errors="replace"))
+    err = js.trim(completed.stderr.decode("utf-8", errors="replace"))
     if completed.returncode != 0:
         detail = err or f"exit code {_exit_code_text(completed.returncode)}"
         raise FeaturesError(f"{failure}: {detail}")
@@ -819,8 +721,8 @@ def read_tool_version(command: str, args: Sequence[str]) -> str | None:
     except FeaturesError:
         return None
     for line in result.split("\n"):
-        if _js_trim(line):
-            return _js_trim(line)
+        if js.trim(line):
+            return js.trim(line)
     return None
 
 
@@ -863,8 +765,8 @@ class ProcessFeatureWorker:
             self._child.kill()
             self.close()
             raise
-        self.versions: Any = _coalesce(_get(hello, "versions"))
-        self.config: Any = _coalesce(_get(hello, "config"))
+        self.versions: Any = js.coalesce(js.get(hello, "versions"), None)
+        self.config: Any = js.coalesce(js.get(hello, "config"), None)
 
     def _drain_stderr(self, stream: IO[str]) -> None:
         for chunk in iter(lambda: stream.read(65536), ""):
@@ -873,7 +775,7 @@ class ProcessFeatureWorker:
     def _exited(self) -> FeaturesError:
         returncode = self._child.wait()
         self._stderr_reader.join()
-        lines = _js_trim("".join(self._stderr_chunks)).split("\n")
+        lines = js.trim("".join(self._stderr_chunks)).split("\n")
         tail = "\n".join(lines[-5:])
         suffix = f": {tail}" if tail else ""
         return FeaturesError(f"feature worker exited (code {_exit_code_text(returncode)}){suffix}")
@@ -885,10 +787,10 @@ class ProcessFeatureWorker:
                 raise self._exited()
             if line.endswith("\n"):
                 line = line[:-1]
-            if not _js_trim(line):
+            if not js.trim(line):
                 continue
             try:
-                return _parse_json(line)
+                return parse_json(line)
             except ValueError:
                 raise FeaturesError(
                     f"feature worker emitted unparseable output: {line[:200]}"
@@ -896,7 +798,7 @@ class ProcessFeatureWorker:
 
     def extract(self, task: dict[str, Any]) -> Any:
         try:
-            self._stdin.write(_stringify_compact(task) + "\n")
+            self._stdin.write(stringify_compact(task) + "\n")
             self._stdin.flush()
         except BrokenPipeError:
             pass  # the worker is gone; reading reports how it exited
@@ -922,21 +824,16 @@ def _pipe(stream: IO[str] | None) -> IO[str]:
 
 
 def _is_hello(payload: Any) -> bool:
-    return isinstance(payload, dict) and _truthy(payload.get("hello"))
+    return isinstance(payload, dict) and js.truthy(payload.get("hello"))
 
 
 def create_feature_worker(options: FeaturesOptions) -> FeatureWorker:
     return ProcessFeatureWorker(options)
 
 
-def _read_json(file_path: str) -> Any:
-    with open(file_path, encoding="utf-8") as handle:
-        return _parse_json(handle.read())
-
-
 def _read_existing_manifest(file_path: str) -> Any:
     try:
-        return _read_json(file_path)
+        return read_json(file_path)
     except FileNotFoundError:
         return None
 
@@ -959,8 +856,8 @@ def run(argv: Sequence[str] | None = None) -> int:
         sys.stdout.write(HELP)
         return 0
     if options.command == "extract-index":
-        index_manifest = _read_json(options.index)
-        results_manifest = _read_json(options.results)
+        index_manifest = read_json(options.index)
+        results_manifest = read_json(options.results)
         if options.dry_run:
             _write_json("-", build_features_dry_run(index_manifest, results_manifest, options))
             return 0

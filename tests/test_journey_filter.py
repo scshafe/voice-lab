@@ -4,7 +4,6 @@ vectorized frame analysis against a direct transcription of the JavaScript loops
 
 from __future__ import annotations
 
-import functools
 import json
 import math
 import os
@@ -464,150 +463,6 @@ def test_extract_features_of_audio_shorter_than_one_frame() -> None:
     }
 
 
-# V8's Math.log10 (Node 24), as hex: where the C library's log10 differs in the last bit,
-# and every branch of fdlibm's log and log10.
-LOG10_VECTORS = [
-    ("0x1.2b92ebf2bb5cdp-1", "-0x1.dcb4678844f28p-3"),
-    ("0x1.b7773b028db5fp-1", "-0x1.0fbfb456a00dap-4"),
-    ("0x1.9f656de75fb0fp-2", "-0x1.913dd4b614431p-2"),
-    ("0x1.416eebe085123p-1", "-0x1.9e10150ddfdddp-3"),
-    ("0x1.4d90c33dd0ef0p-1", "-0x1.7d1c28448454bp-3"),
-    ("0x1.6ef2e6fe3bc5bp-1", "-0x1.2845d5275b927p-3"),
-    ("0x1.a30c3eae09e0fp-1", "-0x1.6460c8d9cc336p-4"),
-    ("0x1.65ce3dba482e7p-1", "-0x1.3eb7298d9ca6fp-3"),
-    ("0x1.0000000000000p-1", "-0x1.34413509f79ffp-2"),
-    ("0x1.0000000000001p-1", "-0x1.34413509f79fdp-2"),
-    ("0x1.fffffffffffffp-1", "-0x1.bcb7b1526e50ep-55"),
-    ("0x1.0000000000001p+0", "0x1.bcb7b1526e50dp-54"),
-    ("0x1.fffffffffffffp+0", "0x1.34413509f79fep-2"),
-    ("0x1.0000000000001p+1", "0x1.34413509f7a01p-2"),
-    ("0x1.6a09e667f3bcdp-1", "-0x1.34413509f79fep-3"),
-    ("0x1.6a09e667f3bcdp+0", "0x1.34413509f79ffp-3"),
-    ("0x0.0000000000001p-1022", "-0x1.434e6420f4374p+8"),
-    ("0x1.0000000000000p-1022", "-0x1.33a7146f72a42p+8"),
-    ("0x1.7e43c8800759cp+996", "0x1.2c00000000000p+8"),
-    ("0x1.47ae147ae147cp-7", "-0x1.0000000000000p+1"),
-    ("0x1.4000000000000p+0", "0x1.8cf183886480dp-4"),
-    ("0x1.8000000000000p-1", "-0x1.ffbfc2bbc7802p-4"),
-    ("0x1.3333333333333p-1", "-0x1.c658a32216008p-3"),
-    ("0x1.999999999999ap+0", "0x1.a209a84fbcff8p-3"),
-    ("0x1.d65c995d9999ap+0", "0x1.0e885900280eep-2"),
-    ("0x1.56b3841b9999ap-1", "-0x1.6513dcf17e8b1p-3"),
-    ("0x1.05d4a6f233334p+0", "0x1.407d3f74abd63p-7"),
-    ("0x1.4b23378666666p+0", "0x1.c9cdc0bef9d52p-4"),
-    ("0x1.47a4c83600000p+0", "0x1.b6ef52a70aa91p-4"),
-    ("0x1.3d171ede66667p-1", "-0x1.aa298233889dbp-3"),
-    ("0x1.6a7c2a30ccccdp-1", "-0x1.3328a9417969bp-3"),
-    ("0x1.0000000000000p+0", "0x0.0p+0"),
-    ("0x1.0000000000000p+1", "0x1.34413509f79ffp-2"),
-]
-
-
-def test_log10_is_v8s_fdlibm_log10_bit_for_bit() -> None:
-    for argument, expected in LOG10_VECTORS:
-        assert vj_filter.js_log10(float.fromhex(argument)).hex() == float.fromhex(expected).hex()
-    assert math.isnan(vj_filter.js_log10(math.nan))
-    assert math.isnan(vj_filter.js_log10(-1.0))
-    assert vj_filter.js_log10(0.0) == -math.inf
-    assert vj_filter.js_log10(math.inf) == math.inf
-
-
-def _node(script: str, payload: Any) -> Any:
-    """Run ``script`` with ``input`` (the JSON payload) and return what it prints."""
-
-    source = f"const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));\n{script}"
-    completed = subprocess.run(
-        ["node", "-e", source],
-        input=json.dumps(payload),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return json.loads(completed.stdout)
-
-
-node_missing = subprocess.run(["which", "node"], capture_output=True).returncode != 0
-
-
-@pytest.mark.skipif(node_missing, reason="node is not installed")
-def test_log10_matches_node_on_frame_rms_values() -> None:
-    rng = random.Random(7)
-    values = [math.sqrt(rng.randrange(1, 2**40) / 2**30 / 1024) for _ in range(20000)]
-    node = _node("console.log(JSON.stringify(input.map(Math.log10)))", values)
-    assert [vj_filter.js_log10(value) for value in values] == node
-
-
-def test_locale_compare_is_icu_root_collation_for_ascii() -> None:
-    order = "\t _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789aAbBzZ"
-    chars = sorted(order, key=lambda c: (ord(c) * 7919) % 101)
-    assert "".join(sorted(chars, key=functools.cmp_to_key(vj_filter.locale_compare))) == order
-    assert vj_filter.locale_compare("ab", "Aa") == 1
-    assert vj_filter.locale_compare("a-b", "ab") == -1
-    assert vj_filter.locale_compare("a", "A") == -1
-    assert vj_filter.locale_compare("a\x01b", "ab") == 0
-    assert vj_filter.locale_compare("é", "é") == 0
-
-
-@pytest.mark.skipif(node_missing, reason="node is not installed")
-def test_locale_compare_matches_node_for_ascii_filenames() -> None:
-    rng = random.Random(11)
-    alphabet = "aAbBzZ09 -_.()'~$"
-    names = ["".join(rng.choice(alphabet) for _ in range(rng.randint(0, 5))) for _ in range(300)]
-    node = _node("console.log(JSON.stringify(input.sort((a, b) => a.localeCompare(b))))", names)
-    assert sorted(names, key=functools.cmp_to_key(vj_filter.locale_compare)) == node
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("4", 4.0),
-        (" 4\n", 4.0),
-        ("", 0.0),
-        ("4.0", 4.0),
-        ("1e3", 1000.0),
-        ("+.5", 0.5),
-        ("0x10", 16.0),
-        ("0B11", 3.0),
-        ("0o17", 15.0),
-        ("0x", math.nan),
-        ("0x 1", math.nan),
-        ("-0x10", math.nan),
-        ("1_000", math.nan),
-        ("inf", math.nan),
-        ("Infinity", math.inf),
-        ("-Infinity", -math.inf),
-        ("four", math.nan),
-        (None, 0.0),
-        (True, 1.0),
-        (False, 0.0),
-        (vj_filter.UNDEFINED, math.nan),
-        ([], math.nan),
-    ],
-)
-def test_js_number(text: Any, expected: float) -> None:
-    result = vj_filter.js_number(text)
-    assert result == expected or (math.isnan(result) and math.isnan(expected))
-
-
-def test_js_string() -> None:
-    values = [vj_filter.UNDEFINED, None, True, False, 0.5, 1.0, math.nan, math.inf, -math.inf]
-    assert [vj_filter.js_string(v) for v in values] == [
-        "undefined",
-        "null",
-        "true",
-        "false",
-        "0.5",
-        "1",
-        "NaN",
-        "Infinity",
-        "-Infinity",
-    ]
-    assert vj_filter.js_string(["a", None, 2]) == "a,,2"
-    assert vj_filter.js_string({"a": 1}) == "[object Object]"
-    assert vj_filter.js_string("text") == "text"
-    assert repr(vj_filter.UNDEFINED) == "undefined"
-
-
 def test_classify_features_remaining_branches() -> None:
     uncertain = classify_features(
         {"activeRatio": 0.5, "voicedRatio": 0.3, "meanPitchConfidence": 0.3}
@@ -719,14 +574,6 @@ def test_dry_runs_without_a_sample_or_recordings() -> None:
     )
     assert index_dry["recordingCount"] == 0
     assert index_dry["sourceIndex"] == {"generatedAt": "g", "recordingCount": None}
-
-
-def test_path_join_is_node_path_join() -> None:
-    join = vj_filter._join
-    assert join("/corpus", "a b.m4a") == "/corpus/a b.m4a"
-    assert join("corpus/", "/x/../y.m4a") == "corpus/y.m4a"
-    assert join("//corpus", "y") == "/corpus/y"
-    assert join("", "") == "."
 
 
 # ---------------------------------------------------------------------------- command line

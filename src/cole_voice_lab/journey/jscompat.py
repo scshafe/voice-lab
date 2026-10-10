@@ -3,70 +3,71 @@
 voice-journey's modules read loosely typed JSON and lean on JavaScript's coercions:
 ``undefined`` versus ``null`` (``?.``, ``??``, a key whose value is ``undefined`` is
 dropped by ``JSON.stringify``), truthiness, ``Number(x)`` and ``String(x)``,
-``Date.parse``, ``toFixed`` as a string, ``Math.log2`` and UTF-16 string order. The
-helpers here are those rules, so the ports can keep the JavaScript expressions one to
-one. ``MISSING`` stands for ``undefined``; ``None`` is ``null``.
+``Date.parse``, ``toFixed`` as a string, V8's ``Math.log2``/``Math.log10``, UTF-16
+string order, ``localeCompare`` and Node's ``path`` module. The helpers here are those
+rules, in one place, so the ports keep the JavaScript expressions one to one.
+``MISSING`` (from ``jsonio``, whose ``JSON.stringify`` drops it) stands for
+``undefined``; ``None`` is ``null``. JSON text itself, both ways, and number formatting
+are ``journey/jsonio.py``'s.
 
-Known limits, each outside what the pipeline's manifests contain: ``date_parse``
-implements the ECMAScript date-time string format with V8's leniencies (lower-case
-``t``/``z``, a space before the time, ``+hhmm`` offsets, day-of-month overflow up to 31,
-any number of fraction digits) but not V8's legacy fallback parser (``"Jan 1 2020"``,
-``"2020-1-1"``), which it reports as ``None`` (NaN). ``log2`` is V8's (fdlibm's)
-algorithm, bit for bit on a platform without fused multiply-add contraction.
+Each rule was checked against Node 24 on the inputs the modules use (the tests run the
+comparison where ``node`` is installed). Known limits, each outside what the pipeline's
+manifests contain:
+
+- :func:`date_parse` implements the ECMAScript date-time string format with V8's
+  leniencies (lower-case ``t``/``z``, a space before the time, ``+hhmm`` offsets,
+  day-of-month overflow up to 31, ``24:00``, any number of fraction digits); a date-time
+  without an offset is local time, resolved as V8 does around a transition (the offset
+  in effect before it, ICU's ``LOCAL_FORMER``). V8's legacy fallback parser
+  (``"Jan 1 2020"``, ``"2020/1/1"``, leading whitespace) is not implemented: those give
+  ``None`` (NaN) where V8 parses them as local time.
+- :func:`locale_compare_key` is ICU root collation (``localeCompare`` without a locale)
+  for ASCII, checked for all 128 ASCII characters: C0 controls other than tab to
+  carriage return (and DEL) are ignorable, punctuation and symbols sort before digits
+  before letters, letters compare case-blind first and lowercase first on a tie. A
+  non-ASCII character sorts after every ASCII one, by code point, where ICU would
+  interleave it. Recording ids, file names, session names and timestamps are ASCII.
+- :func:`log2` and :func:`log10` are V8's (fdlibm's) algorithms, bit for bit on a
+  platform without fused multiply-add contraction; the C library's differ from them in
+  the last bit for some arguments. ``Math.sin``/``cos``/``atan2`` have no port here: the
+  platform libm agrees with V8's to an ulp.
 """
 
 from __future__ import annotations
 
-import json
 import math
+import os
+import posixpath
 import re
 import struct
 import time
-from collections.abc import Iterable, Mapping
-from datetime import datetime, timedelta
+from collections.abc import Mapping
 from decimal import ROUND_HALF_UP, Decimal
-from pathlib import Path
 from typing import Any, Final
 
+from cole_voice_lab.journey.jsonio import MISSING as MISSING
 from cole_voice_lab.journey.jsonio import format_number
 
-
-class _Missing:
-    """JavaScript's ``undefined``: absent, as opposed to ``null``."""
-
-    _instance: _Missing | None = None
-
-    def __new__(cls) -> _Missing:
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return "MISSING"
-
-    def __bool__(self) -> bool:
-        return False
-
-
-MISSING: Final = _Missing()
-
-# ECMAScript WhiteSpace and LineTerminator code points (String.prototype.trim, Number()).
-_JS_SPACE = (
-    "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008"
-    "\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
-)
-_DECIMAL = re.compile(r"[+-]?(?:(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|Infinity)", re.ASCII)
-_RADIX = {"x": 16, "X": 16, "o": 8, "O": 8, "b": 2, "B": 2}
-_RADIX_LITERAL = re.compile(r"0([xXoObB])([0-9a-fA-F]+)")
+# ECMAScript WhiteSpace and LineTerminator code points: what String.prototype.trim, /\s/
+# and Number() skip. Python's str.isspace differs (it has U+001C-U+001F and U+0085, it
+# lacks U+FEFF).
+WHITESPACE: Final = "\t\n\v\f\r                  　﻿"
+_DECIMAL = re.compile(r"[+-]?(?:Infinity|(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)")
+_RADIX = re.compile(r"0(?:[xX](?P<x>[0-9a-fA-F]+)|[oO](?P<o>[0-7]+)|[bB](?P<b>[01]+))")
+_RADIX_BASE: Final = {"x": 16, "o": 8, "b": 2}
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 _ISO_DATE = re.compile(
-    r"([+-]\d{6}|\d{4})(?:-(\d{2})(?:-(\d{2}))?)?"
-    r"(?:[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?"
-    r"(?:([Zz])|([+-])(\d{2}):?(\d{2}))?",
+    r"(?P<year>[+-]\d{6}|\d{4})(?:-(?P<month>\d{2})(?:-(?P<day>\d{2}))?)?"
+    r"(?:[Tt ](?P<hour>\d{2}):(?P<minute>\d{2})"
+    r"(?::(?P<second>\d{2})(?:\.(?P<fraction>\d+))?)?)?"
+    r"(?P<zone>[Zz]|(?P<sign>[+-])(?P<zh>\d{2}):?(?P<zm>\d{2}))?",
     re.ASCII,
 )
-_MAX_TIME_MS = 8.64e15
-_MS_PER_DAY = 86_400_000
+_MAX_TIME_MS: Final = 8.64e15
+_MS_PER_DAY: Final = 86_400_000
+
+
+# ---- values -------------------------------------------------------------------------------
 
 
 def get(value: Any, key: str) -> Any:
@@ -77,14 +78,47 @@ def get(value: Any, key: str) -> Any:
     return MISSING
 
 
+def prop(target: Any, key: str) -> Any:
+    """``target.key``: throws on null and undefined, as JavaScript does; ``MISSING`` for
+    a missing key or a primitive."""
+
+    if nullish(target):
+        kind = "null" if target is None else "undefined"
+        raise TypeError(f"Cannot read properties of {kind} (reading '{key}')")
+    return get(target, key)
+
+
+def length(value: Any) -> Any:
+    """``value?.length``: an array's length, a string's UTF-16 length, an object's
+    ``length`` member; ``MISSING`` otherwise."""
+
+    if isinstance(value, list | tuple):
+        return len(value)
+    if isinstance(value, str):
+        return utf16_length(value)
+    return get(value, "length")
+
+
+def defined(fields: Mapping[str, Any] | None = None, /, **more: Any) -> dict[str, Any]:
+    """An object literal as ``JSON.stringify`` sees it: keys whose value is ``MISSING``
+    (``undefined``) are left out."""
+
+    merged = {**(fields or {}), **more}
+    return {key: value for key, value in merged.items() if value is not MISSING}
+
+
 def nullish(value: Any) -> bool:
     return value is None or value is MISSING
 
 
-def coalesce(value: Any, default: Any) -> Any:
-    """``value ?? default``."""
+def coalesce(*values: Any) -> Any:
+    """``a ?? b ?? ...``: the first value that is neither null nor undefined, else the
+    last one."""
 
-    return default if nullish(value) else value
+    for value in values[:-1]:
+        if not nullish(value):
+            return value
+    return values[-1]
 
 
 def truthy(value: Any) -> bool:
@@ -100,28 +134,34 @@ def truthy(value: Any) -> bool:
 
 
 def is_number(value: Any) -> bool:
+    """``typeof value === "number"``."""
+
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 
 def is_finite(value: Any) -> bool:
     """``Number.isFinite``: a finite number, no coercion."""
 
-    return is_number(value) and math.isfinite(value)
+    return is_number(value) and math.isfinite(to_number(value))
+
+
+# ---- Number() and String() ----------------------------------------------------------------
 
 
 def string_to_number(text: str) -> float:
-    """``Number(text)`` for a string (StringToNumber)."""
+    """``Number(text)`` for a string (StringToNumber): trimmed, empty is 0, decimal
+    literals and ``Infinity``, ``0x``/``0o``/``0b`` literals; ``NaN`` otherwise."""
 
-    stripped = text.strip(_JS_SPACE)
+    stripped = text.strip(WHITESPACE)
     if stripped == "":
         return 0.0
-    radix = _RADIX_LITERAL.fullmatch(stripped)
+    radix = _RADIX.fullmatch(stripped)
     if radix:
-        base = _RADIX[radix.group(1)]
+        prefix = stripped[1].lower()
         try:
-            return float(int(radix.group(2), base))
-        except ValueError:
-            return math.nan
+            return float(int(radix[prefix], _RADIX_BASE[prefix]))
+        except OverflowError:
+            return math.inf
     if _DECIMAL.fullmatch(stripped):
         return float(stripped.replace("Infinity", "inf"))
     return math.nan
@@ -137,7 +177,10 @@ def to_number(value: Any) -> float:
     if value is True:
         return 1.0
     if isinstance(value, int | float):
-        return float(value)
+        try:
+            return float(value)
+        except OverflowError:
+            return math.inf if value > 0 else -math.inf
     if isinstance(value, str):
         return string_to_number(value)
     if isinstance(value, list | tuple):
@@ -155,7 +198,12 @@ def to_string(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int | float):
-        return "NaN" if value != value else _number_string(value)
+        number = to_number(value)
+        if number != number:
+            return "NaN"
+        if math.isinf(number):
+            return "Infinity" if number > 0 else "-Infinity"
+        return format_number(value)
     if isinstance(value, str):
         return value
     if isinstance(value, list | tuple):
@@ -163,10 +211,17 @@ def to_string(value: Any) -> str:
     return "[object Object]"
 
 
-def _number_string(value: float | int) -> str:
-    if isinstance(value, float) and math.isinf(value):
-        return "Infinity" if value > 0 else "-Infinity"
-    return format_number(value)
+def to_fixed_string(value: float, digits: int) -> str:
+    """``value.toFixed(digits)``: the exact binary value, halves away from zero."""
+
+    if value != value:
+        return "NaN"
+    if abs(value) >= 1e21:
+        return to_string(value)
+    if value == 0:
+        value = 0.0
+    quantum = Decimal(1).scaleb(-digits)
+    return format(Decimal(value).quantize(quantum, rounding=ROUND_HALF_UP), "f")
 
 
 def js_max(*values: float) -> float:
@@ -193,22 +248,40 @@ def js_min(*values: float) -> float:
     return result
 
 
-def to_fixed_string(value: float, digits: int) -> str:
-    """``value.toFixed(digits)``: the exact binary value, halves away from zero."""
+# ---- strings ------------------------------------------------------------------------------
 
-    if value != value:
-        return "NaN"
-    if abs(value) >= 1e21:
-        return _number_string(value)
-    if value == 0:
-        value = 0.0
-    quantum = Decimal(1).scaleb(-digits)
-    text = format(Decimal(value).quantize(quantum, rounding=ROUND_HALF_UP), "f")
-    return text
+
+def trim(text: str) -> str:
+    """``String.prototype.trim``."""
+
+    return text.strip(WHITESPACE)
+
+
+def utf8(text: str) -> bytes:
+    """Node's UTF-8 encoding of a string (``Buffer.from``, hashes, files): a lone
+    surrogate becomes U+FFFD."""
+
+    return _LONE_SURROGATE.sub("�", text).encode("utf-8")
+
+
+def utf16_length(text: str) -> int:
+    """``text.length``: UTF-16 code units."""
+
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def slice_utf16(text: str, end: int) -> str:
+    """``text.slice(0, end)`` counted in UTF-16 code units (may split a pair, as JS does)."""
+
+    units = text.encode("utf-16-le", "surrogatepass")
+    if len(units) <= end * 2:
+        return text
+    return units[: end * 2].decode("utf-16-le", "surrogatepass")
 
 
 def utf16_key(text: str) -> bytes:
-    """Sort key for JavaScript's default string order (UTF-16 code units)."""
+    """Sort key for JavaScript's default string order (UTF-16 code units): the order of
+    ``Array.prototype.sort()`` without a comparator and of ``<`` on strings."""
 
     return text.encode("utf-16-be", "surrogatepass")
 
@@ -216,16 +289,17 @@ def utf16_key(text: str) -> bytes:
 # ICU root collation (``localeCompare`` without a locale) of the printable ASCII
 # characters and the whitespace controls, in primary order; letters fold case here and
 # differ only at the tertiary level (lower before upper). Other controls are ignorable.
-_ICU_ASCII_PRIMARY = (
+_ICU_ASCII_PRIMARY: Final = (
     "\t\n\x0b\x0c\r _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789abcdefghijklmnopqrstuvwxyz"
 )
-_ICU_WEIGHT = {character: weight for weight, character in enumerate(_ICU_ASCII_PRIMARY)}
+_ICU_WEIGHT: Final = {character: weight for weight, character in enumerate(_ICU_ASCII_PRIMARY)}
 
 
 def locale_compare_key(text: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """Sort key equal to ``String.prototype.localeCompare`` (ICU root collation) on
-    ASCII strings: primary weights, then case (lower before upper). A non-ASCII
-    character sorts after every ASCII one, by code point (an approximation)."""
+    ASCII strings: primary weights, then case (lower before upper); equal keys are
+    exactly the strings ``localeCompare`` calls equal. A non-ASCII character sorts after
+    every ASCII one, by code point (an approximation)."""
 
     primary: list[int] = []
     tertiary: list[int] = []
@@ -241,82 +315,83 @@ def locale_compare_key(text: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
     return tuple(primary), tuple(tertiary)
 
 
-def trim(text: str) -> str:
-    """``String.prototype.trim``."""
+def locale_compare(left: str, right: str) -> int:
+    """``Math.sign(left.localeCompare(right))``, as a comparator."""
 
-    return text.strip(_JS_SPACE)
-
-
-def slice_utf16(text: str, end: int) -> str:
-    """``text.slice(0, end)`` counted in UTF-16 code units (may split a pair, as JS does)."""
-
-    units = text.encode("utf-16-le", "surrogatepass")
-    if len(units) <= end * 2:
-        return text
-    return units[: end * 2].decode("utf-16-le", "surrogatepass")
+    a, b = locale_compare_key(left), locale_compare_key(right)
+    return (a > b) - (a < b)
 
 
-def stringify_compact(value: Any) -> str:
-    """``JSON.stringify(value)`` with no indentation (``MISSING`` members are dropped)."""
-
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return format_number(value)
-    if isinstance(value, str):
-        text = json.dumps(value, ensure_ascii=False)
-        return _LONE_SURROGATE.sub(lambda match: f"\\u{ord(match.group()):04x}", text)
-    if isinstance(value, Mapping):
-        members = (
-            stringify_compact(str(key)) + ":" + stringify_compact(child)
-            for key, child in value.items()
-            if child is not MISSING
-        )
-        return "{" + ",".join(members) + "}"
-    if isinstance(value, list | tuple):
-        return (
-            "["
-            + ",".join("null" if item is MISSING else stringify_compact(item) for item in value)
-            + "]"
-        )
-    raise TypeError(f"not JSON-serializable: {type(value).__name__}")
+# ---- Node's path module (POSIX) -----------------------------------------------------------
 
 
-def _array_index(key: str) -> int | None:
-    if key == "0" or (key[:1] in "123456789" and key.isdigit() and key.isascii()):
-        index = int(key)
-        if index < 2**32 - 1:
-            return index
-    return None
+def _normalize(path: str) -> str:
+    trailing = path.endswith("/")
+    normal = posixpath.normpath(path)
+    if normal.startswith("//"):
+        normal = "/" + normal.lstrip("/")
+    if trailing and normal != "/":
+        normal += "/"
+    return normal
 
 
-def js_object(pairs: Iterable[tuple[str, Any]]) -> dict[str, Any]:
-    """A JSON object with JavaScript's property order: array-index keys ascending first,
-    then the other keys in insertion order (a duplicate keeps its first position)."""
+def path_join(*parts: str) -> str:
+    """``path.join``: empty parts dropped, the rest joined and normalized lexically (a
+    trailing slash is kept, ``//`` collapses)."""
 
-    merged = dict(pairs)
-    indexed = [(index, key) for key in merged if (index := _array_index(key)) is not None]
-    if not indexed:
-        return merged
-    ordered = {key: merged[key] for _, key in sorted(indexed)}
-    ordered.update((key, child) for key, child in merged.items() if key not in ordered)
-    return ordered
+    joined = "/".join(part for part in parts if part)
+    return _normalize(joined) if joined else "."
 
 
-def _refuse_constant(name: str) -> Any:
-    raise ValueError(f"Unexpected token in JSON: {name}")
+def path_resolve(path: str | os.PathLike[str]) -> str:
+    """``path.resolve`` of one path: absolute and lexical (no symlinks)."""
+
+    resolved = _normalize(posixpath.join(os.getcwd(), os.fspath(path)))
+    return resolved.rstrip("/") or "/"
 
 
-def parse_json(text: str) -> Any:
-    """``JSON.parse``: no NaN or Infinity literals, JavaScript object key order."""
+def path_basename(path: str) -> str:
+    """``path.basename``: the last segment, trailing slashes ignored."""
 
-    return json.loads(text, object_pairs_hook=js_object, parse_constant=_refuse_constant)
+    return posixpath.basename(path.rstrip("/"))
 
 
-def read_json(path: Path | str) -> Any:
-    return parse_json(Path(path).read_text(encoding="utf-8"))
+def path_extname(path: str) -> str:
+    """``path.extname``."""
+
+    start_dot = -1
+    start_part = 0
+    end = -1
+    matched_slash = True
+    pre_dot_state = 0
+    for index in range(len(path) - 1, -1, -1):
+        char = path[index]
+        if char == "/":
+            if not matched_slash:
+                start_part = index + 1
+                break
+            continue
+        if end == -1:
+            matched_slash = False
+            end = index + 1
+        if char == ".":
+            if start_dot == -1:
+                start_dot = index
+            elif pre_dot_state != 1:
+                pre_dot_state = 1
+        elif start_dot != -1:
+            pre_dot_state = -1
+    if (
+        start_dot == -1
+        or end == -1
+        or pre_dot_state == 0
+        or (pre_dot_state == 1 and start_dot == end - 1 and start_dot == start_part + 1)
+    ):
+        return ""
+    return path[start_dot:end]
+
+
+# ---- Date -----------------------------------------------------------------------------------
 
 
 def _days_from_civil(year: int, month: int, day: int) -> int:
@@ -340,52 +415,60 @@ def _civil_from_days(days: int) -> tuple[int, int, int]:
     return yoe + era * 400 + (month <= 2), month, day
 
 
-def _local_to_utc_ms(year: int, month: int, day: int, ms_of_day: int) -> int:
-    utc = _days_from_civil(year, month, 1) * _MS_PER_DAY + (day - 1) * _MS_PER_DAY + ms_of_day
-    if not 1 <= year <= 9998:
-        return utc
-    naive = datetime(year, month, 1) + timedelta(days=day - 1, milliseconds=ms_of_day)
-    return round(time.mktime(naive.timetuple()) * 1000) + naive.microsecond // 1000
+def _utc_offset_ms(utc_ms: int) -> int:
+    """The local zone's offset from UTC at an instant (0 where the OS cannot say)."""
+
+    try:
+        return time.localtime(utc_ms // 1000).tm_gmtoff * 1000
+    except (OverflowError, ValueError, OSError):
+        return 0
+
+
+def _local_to_utc_ms(local_ms: int) -> int:
+    """V8's local-time interpretation (ICU's ``LOCAL_FORMER``): the offset in effect
+    before a transition applies to a skipped time and to a repeated one."""
+
+    before = _utc_offset_ms(local_ms - _MS_PER_DAY)
+    after = _utc_offset_ms(local_ms + _MS_PER_DAY)
+    before_valid = _utc_offset_ms(local_ms - before) == before
+    after_valid = _utc_offset_ms(local_ms - after) == after
+    return local_ms - (after if after_valid and not before_valid else before)
 
 
 def date_parse(value: Any) -> float | None:
-    """``Date.parse(String(value))`` in milliseconds; ``None`` where JavaScript gives NaN."""
+    """``Date.parse(String(value))`` in milliseconds; ``None`` where JavaScript gives NaN
+    (see the module docstring for the formats)."""
 
     match = _ISO_DATE.fullmatch(value if isinstance(value, str) else to_string(value))
-    if not match:
+    if not match or match["year"] == "-000000":
         return None
-    year_text, month_text, day_text, hour_text, minute_text, second_text, fraction = match.group(
-        1, 2, 3, 4, 5, 6, 7
-    )
-    zulu, sign, offset_hours, offset_minutes = match.group(8, 9, 10, 11)
-    if year_text == "-000000" or (sign and hour_text is None):
+    if match["sign"] is not None and match["hour"] is None:  # a date-only form takes no offset
         return None
-    year = int(year_text)
-    month = int(month_text or 1)
-    day = int(day_text or 1)
-    hour = int(hour_text or 0)
-    minute = int(minute_text or 0)
-    second = int(second_text or 0)
-    millis = int((fraction or "0")[:3].ljust(3, "0"))
+    year = int(match["year"])
+    month = int(match["month"] or 1)
+    day = int(match["day"] or 1)
+    hour = int(match["hour"] or 0)
+    minute = int(match["minute"] or 0)
+    second = int(match["second"] or 0)
+    millisecond = int((match["fraction"] or "0")[:3].ljust(3, "0"))
     if not (1 <= month <= 12 and 1 <= day <= 31 and minute <= 59 and second <= 59):
         return None
-    if hour > 24 or (hour == 24 and (minute or second or millis)):
+    if hour > 24 or (hour == 24 and (minute or second or millisecond)):
         return None
-    ms_of_day = ((hour * 60 + minute) * 60 + second) * 1000 + millis
-    if sign:
-        if int(offset_hours) > 23 or int(offset_minutes) > 59:
+    days = _days_from_civil(year, month, 1) + day - 1
+    time_ms = days * _MS_PER_DAY + ((hour * 60 + minute) * 60 + second) * 1000 + millisecond
+    if match["zone"] is None:
+        if match["hour"] is not None:
+            time_ms = _local_to_utc_ms(time_ms)
+    elif match["sign"] is not None:
+        zone_hour, zone_minute = int(match["zh"]), int(match["zm"])
+        if zone_hour > 23 or zone_minute > 59:
             return None
-        offset = (int(offset_hours) * 60 + int(offset_minutes)) * 60_000
-        utc = _days_from_civil(year, month, 1) * _MS_PER_DAY + (day - 1) * _MS_PER_DAY
-        result = utc + ms_of_day - (offset if sign == "+" else -offset)
-    elif zulu or hour_text is None:
-        result = _days_from_civil(year, month, 1) * _MS_PER_DAY + (day - 1) * _MS_PER_DAY
-        result += ms_of_day
-    else:
-        result = _local_to_utc_ms(year, month, day, ms_of_day)
-    if abs(result) > _MAX_TIME_MS:
+        offset = (zone_hour * 60 + zone_minute) * 60_000
+        time_ms += -offset if match["sign"] == "+" else offset
+    if abs(time_ms) > _MAX_TIME_MS:
         return None
-    return float(result)
+    return float(time_ms)
 
 
 def _time_value(ms: float) -> int:
@@ -422,6 +505,9 @@ def now_ms() -> int:
     return time.time_ns() // 1_000_000
 
 
+# ---- V8's Math.log2 and Math.log10 (fdlibm, src/base/ieee754.cc) --------------------------
+
+
 def _double(bits: int) -> float:
     return float(struct.unpack("<d", struct.pack("<Q", bits))[0])
 
@@ -430,16 +516,30 @@ def _bits(value: float) -> int:
     return int(struct.unpack("<Q", struct.pack("<d", value))[0])
 
 
-_TWO54 = 2.0**54
-_IVLN2HI = _double(0x3FF7154765200000)
-_IVLN2LO = _double(0x3DE705FC2EEFA200)
-_LG1 = _double(0x3FE5555555555593)
-_LG2 = _double(0x3FD999999997FA04)
-_LG3 = _double(0x3FD2492494229359)
-_LG4 = _double(0x3FCC71C51D8E78AF)
-_LG5 = _double(0x3FC7466496CB03DE)
-_LG6 = _double(0x3FC39A09D078C69F)
-_LG7 = _double(0x3FC2F112DF3E5244)
+def _words(value: float) -> tuple[int, int]:
+    bits = _bits(value)
+    return bits >> 32, bits & 0xFFFFFFFF
+
+
+def _from_words(high: int, low: int) -> float:
+    return _double((high << 32) | low)
+
+
+_TWO54: Final = 2.0**54
+_LN2_HI: Final = _double(0x3FE62E42FEE00000)
+_LN2_LO: Final = _double(0x3DEA39EF35793C76)
+_IVLN2HI: Final = _double(0x3FF7154765200000)
+_IVLN2LO: Final = _double(0x3DE705FC2EEFA200)
+_IVLN10: Final = _double(0x3FDBCB7B1526E50E)
+_LOG10_2HI: Final = _double(0x3FD34413509F6000)
+_LOG10_2LO: Final = _double(0x3D59FEF311F12B36)
+_LG1: Final = _double(0x3FE5555555555593)
+_LG2: Final = _double(0x3FD999999997FA04)
+_LG3: Final = _double(0x3FD2492494229359)
+_LG4: Final = _double(0x3FCC71C51D8E78AF)
+_LG5: Final = _double(0x3FC7466496CB03DE)
+_LG6: Final = _double(0x3FC39A09D078C69F)
+_LG7: Final = _double(0x3FC2F112DF3E5244)
 
 
 def _k_log1p(f: float) -> float:
@@ -492,3 +592,60 @@ def log2(x: float) -> float:
     val_lo += (y - w) + val_hi
     val_hi = w
     return val_lo + val_hi
+
+
+def _fdlibm_log(x: float) -> float:
+    """fdlibm ``__ieee754_log`` for a positive normal ``x`` (:func:`log10`'s domain)."""
+
+    hx, lx = _words(x)
+    k = (hx >> 20) - 1023
+    hx &= 0x000FFFFF
+    i = (hx + 0x95F64) & 0x100000
+    x = _from_words(hx | (i ^ 0x3FF00000), lx)
+    k += i >> 20
+    f = x - 1.0
+    dk = float(k)
+    if (0x000FFFFF & (2 + hx)) < 3:
+        if f == 0.0:
+            return 0.0 if k == 0 else dk * _LN2_HI + dk * _LN2_LO
+        r = f * f * (0.5 - 0.33333333333333333 * f)
+        return f - r if k == 0 else dk * _LN2_HI - ((r - dk * _LN2_LO) - f)
+    s = f / (2.0 + f)
+    z = s * s
+    w = z * z
+    t1 = w * (_LG2 + w * (_LG4 + w * _LG6))
+    t2 = z * (_LG1 + w * (_LG3 + w * (_LG5 + w * _LG7)))
+    r = t2 + t1
+    if (hx - 0x6147A) | (0x6B851 - hx) > 0:
+        hfsq = 0.5 * f * f
+        if k == 0:
+            return f - (hfsq - s * (hfsq + r))
+        return dk * _LN2_HI - ((hfsq - (s * (hfsq + r) + dk * _LN2_LO)) - f)
+    if k == 0:
+        return f - s * (f - r)
+    return dk * _LN2_HI - ((s * (f - r) - dk * _LN2_LO) - f)
+
+
+def log10(x: float) -> float:
+    """``Math.log10``: V8's fdlibm ``e_log10.c`` over ``e_log.c``, bit for bit."""
+
+    if x != x or x < 0:
+        return math.nan
+    if x == 0:
+        return -math.inf
+    if x == math.inf:
+        return x
+    hx, lx = _words(x)
+    k = 0
+    if hx < 0x00100000:
+        k -= 54
+        x *= _TWO54
+        hx, lx = _words(x)
+    if hx == 0x3FF00000 and lx == 0:
+        return 0.0
+    k += (hx >> 20) - 1023
+    i = 1 if k < 0 else 0
+    y = float(k + i)
+    x = _from_words((hx & 0x000FFFFF) | ((0x3FF - i) << 20), lx)
+    z = y * _LOG10_2LO + _IVLN10 * _fdlibm_log(x)
+    return z + y * _LOG10_2HI

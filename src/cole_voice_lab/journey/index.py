@@ -9,31 +9,19 @@ Node pipeline wrote it (``--compact`` is ``JSON.stringify(manifest, null, 0)``).
 Differences from the JS: the defaults (``resolve_paths()``) are read when the command
 runs, not when the module is imported; the manifest file is replaced atomically
 (``jsonio.write_json``); error messages that come from the operating system are
-Python's. Ordering uses ``corpus.locale_key`` (``localeCompare`` for ASCII).
+Python's. Ordering uses ``jscompat.locale_compare_key`` (``localeCompare``, exact for ASCII).
 """
 
 from __future__ import annotations
 
-import json
 import math
-import os
-import re
 import sys
-import tempfile
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
-from .corpus import (
-    Entry,
-    js_extname,
-    js_resolve,
-    list_corpus_entries,
-    list_measurement_entries,
-    locale_key,
-    parse_json,
-)
-from .jsonio import format_number, iso_timestamp, write_json
+from . import jscompat as js
+from .corpus import Entry, list_corpus_entries, list_measurement_entries
+from .jsonio import iso_timestamp, read_json, write_json
 from .paths import resolve_paths
 
 SCHEMA_VERSION = "voice-journey.recording-index.v1"
@@ -55,32 +43,6 @@ class IndexArgumentError(Exception):
 
 
 # ---- the command line -----------------------------------------------------------------
-
-_JS_SPACE = (
-    "\t\n\x0b\x0c\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007"
-    "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
-)
-_JS_DECIMAL = re.compile(r"[+-]?(?:Infinity|(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)")
-_JS_RADIX = re.compile(r"0(?:([xX])([0-9a-fA-F]+)|([oO])([0-7]+)|([bB])([01]+))")
-
-
-def js_number(text: str) -> float:
-    """``Number(text)`` for a string (``NaN`` when it is not a numeric literal)."""
-
-    body = text.strip(_JS_SPACE)
-    if not body:
-        return 0.0
-    radix = _JS_RADIX.fullmatch(body)
-    if radix:
-        digits = radix[2] or radix[4] or radix[6]
-        base = 16 if radix[1] else 8 if radix[3] else 2
-        try:
-            return float(int(digits, base))
-        except OverflowError:
-            return float("inf")
-    if _JS_DECIMAL.fullmatch(body):
-        return float(body.replace("Infinity", "inf"))
-    return float("nan")
 
 
 def _require_value(args: list[str], flag: str) -> str:
@@ -112,7 +74,7 @@ def parse_args(argv: Sequence[str]) -> dict[str, Any]:
         elif arg == "--generated-at":
             options["generatedAt"] = _require_value(args, arg)
         elif arg == "--limit":
-            value = js_number(_require_value(args, arg))
+            value = js.string_to_number(_require_value(args, arg))
             if not math.isfinite(value) or not value.is_integer() or value < 0:
                 raise IndexArgumentError("--limit must be a non-negative integer")
             options["limit"] = int(value)
@@ -141,8 +103,8 @@ def build_dry_run(options: dict[str, Any]) -> dict[str, Any]:
             "readsVia": ["host-access-seam", "seam-feeds-indexer"],
             "writes": ["recording-index-manifest", "indexer-writes-manifest"],
         },
-        "corpusRoot": js_resolve(options["corpusRoot"]),
-        "measurementRoot": js_resolve(options["measurementRoot"]),
+        "corpusRoot": js.path_resolve(options["corpusRoot"]),
+        "measurementRoot": js.path_resolve(options["measurementRoot"]),
         "outputPath": options["out"],
         "readScope": {
             "throughSeamOnly": True,
@@ -183,8 +145,7 @@ def read_previous_index(out: str) -> Any:
     if out == "-":
         return None
     try:
-        with open(out, encoding="utf-8", errors="replace", newline="") as handle:
-            return parse_json(handle.read())
+        return read_json(out)
     except (OSError, ValueError, RecursionError):
         return None
 
@@ -236,32 +197,24 @@ def _captured_key(entry: Entry) -> Any:
         captured = ""
     if not isinstance(captured, str):
         raise TypeError("leftCaptured.localeCompare is not a function")
-    return locale_key(captured)
+    return js.locale_compare_key(captured)
 
 
 def _sort_recordings(recordings: Sequence[Entry]) -> list[Entry]:
     if len(recordings) < 2:
         return list(recordings)
     return sorted(
-        recordings, key=lambda entry: (_captured_key(entry), locale_key(entry["filename"]))
+        recordings,
+        key=lambda entry: (_captured_key(entry), js.locale_compare_key(entry["filename"])),
     )
 
 
-_UNDEFINED = object()
-
-
-def _defined(fields: dict[str, Any]) -> Entry:
-    """``JSON.stringify`` drops a key whose value is ``undefined``."""
-
-    return {key: value for key, value in fields.items() if value is not _UNDEFINED}
-
-
 def _row(entry: Entry) -> Entry:
-    recording_id = entry.get("recordingId", _UNDEFINED)
-    row: Entry = _defined(
+    recording_id = entry.get("recordingId", js.MISSING)
+    row: Entry = js.defined(
         {
             "recordingId": recording_id,
-            "sourceRef": _defined(
+            "sourceRef": js.defined(
                 {
                     "seam": "voice-journey-corpus",
                     "selector": recording_id,
@@ -269,14 +222,14 @@ def _row(entry: Entry) -> Entry:
                 }
             ),
             "filename": entry["filename"],
-            "capturedAt": entry.get("capturedAt", _UNDEFINED),
+            "capturedAt": entry.get("capturedAt", js.MISSING),
             "durationSeconds": None,
             "durationSource": "not_read_metadata_only_index",
-            "file": _defined(
+            "file": js.defined(
                 {
-                    "extension": js_extname(entry["filename"]).lower(),
-                    "sizeBytes": entry.get("sizeBytes", _UNDEFINED),
-                    "modifiedAt": entry.get("modifiedAt", _UNDEFINED),
+                    "extension": js.path_extname(entry["filename"]).lower(),
+                    "sizeBytes": entry.get("sizeBytes", js.MISSING),
+                    "modifiedAt": entry.get("modifiedAt", js.MISSING),
                 }
             ),
         }
@@ -370,51 +323,9 @@ def build_manifest(recordings: Sequence[Entry], options: dict[str, Any]) -> dict
     }
 
 
-def compact_text(value: Any) -> str:
-    """``JSON.stringify(value, null, 0)``: no whitespace at all."""
-
-    if value is None:
-        return "null"
-    if isinstance(value, bool | int | float):
-        return format_number(value)
-    if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
-    if isinstance(value, dict):
-        members = (
-            f"{json.dumps(str(key), ensure_ascii=False)}:{compact_text(item)}"
-            for key, item in value.items()
-        )
-        return "{" + ",".join(members) + "}"
-    if isinstance(value, list | tuple):
-        return "[" + ",".join(compact_text(item) for item in value) + "]"
-    raise TypeError(f"not JSON-serializable: {type(value).__name__}")
-
-
-def _write_compact(out: str, manifest: dict[str, Any]) -> None:
-    body = compact_text(manifest) + "\n"
-    if out == "-":
-        sys.stdout.write(body)
-        return
-    target = Path(out)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(body)
-        os.replace(temporary, target)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-    sys.stdout.write(f"{out}\n")
-
-
 def write_manifest(manifest: dict[str, Any], out: str, *, pretty: bool) -> None:
-    if not pretty:
-        _write_compact(out, manifest)
-    elif out == "-":
-        write_json(out, manifest)
-    else:
-        write_json(out, manifest, announce=False)
+    write_json(out, manifest, announce=False, compact=not pretty)
+    if out != "-":
         sys.stdout.write(f"{out}\n")
 
 
@@ -432,11 +343,11 @@ def run(argv: Sequence[str]) -> int:
         write_json("-", build_dry_run(options))
         return 0
     phone = list_corpus_entries(
-        js_resolve(options["corpusRoot"]), limit=options["limit"], mirror_manifest=True
+        js.path_resolve(options["corpusRoot"]), limit=options["limit"], mirror_manifest=True
     )
     recordings = [
         *mark_phone_state(phone, read_previous_index(options["out"])),
-        *list_measurement_entries(js_resolve(options["measurementRoot"])),
+        *list_measurement_entries(js.path_resolve(options["measurementRoot"])),
     ]
     manifest = build_manifest(recordings, options)
     write_manifest(manifest, options["out"], pretty=options["pretty"])

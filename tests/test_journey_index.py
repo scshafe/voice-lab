@@ -5,7 +5,6 @@ The remaining tests cover the command line and the JavaScript semantics of the p
 from __future__ import annotations
 
 import json
-import math
 import subprocess
 import sys
 from pathlib import Path
@@ -13,11 +12,9 @@ from typing import Any
 
 import pytest
 
-from cole_voice_lab.journey import index
+from cole_voice_lab.journey import index, jsonio
 from cole_voice_lab.journey.index import (
     build_manifest,
-    compact_text,
-    js_number,
     main,
     mark_phone_state,
     run,
@@ -218,7 +215,7 @@ def test_the_index_merges_measurement_sessions_and_writes_node_bytes(
     assert code == 0
     assert stdout == body
     code, stdout = capture(capsys, [*base, "--out", "-", "--generated-at", "G", "--compact"])
-    assert stdout == compact_text(manifest) + "\n"
+    assert stdout == jsonio.stringify_compact(manifest) + "\n"
     assert json.loads(stdout) == manifest
     compact = tmp_path / "deep" / "compact.json"
     capture(capsys, [*base, "--out", str(compact), "--generated-at", "G", "--compact"])
@@ -281,17 +278,6 @@ def test_a_missing_corpus_root_fails_with_exit_1(
 
 
 def test_limit_is_parsed_as_javascript_number() -> None:
-    assert js_number(" 0x1F\n") == 31
-    assert js_number("0o17") == 15
-    assert js_number("0B101") == 5
-    assert js_number("1e2") == 100
-    assert js_number("5.") == 5
-    assert js_number(".5") == 0.5
-    assert js_number("-Infinity") == -math.inf
-    assert js_number("\u00a0\ufeff") == 0
-    assert js_number("0x" + "f" * 300) == math.inf
-    for text in ("1_0", "inf", "nan", "-0x1", "0x", "1e", "e5", "12px"):
-        assert math.isnan(js_number(text))
     options = index.parse_args(["--limit", " 0x3 ", "--measurement-root", "m", "--out", "o"])
     assert options["limit"] == 3
     assert options["measurementRoot"] == "m"
@@ -386,13 +372,6 @@ def test_rows_sort_by_capture_time_then_name_and_omit_undefined_fields() -> None
     assert one[0]["capturedAt"] == 5
     with pytest.raises(TypeError, match="localeCompare"):
         build_manifest([recording(capturedAt=5), recording()], {})
-
-
-def test_compact_text_is_json_stringify_without_spaces() -> None:
-    value = {"a": [1.0, 0.5, None, True, "\u00e9\n"], "b": {}, "c": [], "d": (2,)}
-    assert compact_text(value) == '{"a":[1,0.5,null,true,"\u00e9\\n"],"b":{},"c":[],"d":[2]}'
-    with pytest.raises(TypeError, match="not JSON-serializable: set"):
-        compact_text({1, 2})
 
 
 def test_a_failed_compact_write_leaves_no_temporary_file(

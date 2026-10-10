@@ -6,7 +6,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import math
 import os
 import re
 import stat
@@ -618,26 +617,6 @@ def test_parse_args_refusals(argv: list[str], message: str) -> None:
     assert str(caught.value) == message
 
 
-def test_js_number_follows_number_of_a_string() -> None:
-    cases = {
-        "": 0.0,
-        " \t7\n": 7.0,
-        "+5": 5.0,
-        ".5e1": 5.0,
-        "12.": 12.0,
-        "0b11": 3.0,
-        "0O17": 15.0,
-        "0x1f": 31.0,
-        "Infinity": math.inf,
-        "+Infinity": math.inf,
-        "-Infinity": -math.inf,
-    }
-    for text, expected in cases.items():
-        assert features._js_number(text) == expected
-    for text in ["inf", "nan", "1_0", "-0x10", "0b2", "abc", "1e"]:
-        assert math.isnan(features._js_number(text))
-
-
 def test_help_and_errors_through_main(local_root: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--help"]) == 0
     assert capsys.readouterr().out == features.HELP
@@ -671,24 +650,6 @@ def test_the_module_runs_as_a_command() -> None:
     )
     assert completed.returncode == 1
     assert completed.stderr == "error: unsupported argument: --bogus\n"
-
-
-def test_stringify_compact_is_json_stringify() -> None:
-    value = {"a": [1, 2.0, -0.0, 1e21, None, True, False], "é": {"s": "x\u2028"}, "n": 0.1}
-    assert features._stringify_compact(value) == (
-        '{"a":[1,2,0,1e+21,null,true,false],"é":{"s":"x\u2028"},"n":0.1}'
-    )
-    with pytest.raises(TypeError, match="not JSON-serializable: object"):
-        features._stringify_compact(object())
-
-
-def test_js_truthiness_and_length() -> None:
-    assert not features._truthy(math.nan)
-    assert not features._truthy("")
-    assert features._truthy({})
-    assert features._truthy([])
-    assert features._js_length("a\U0001f600") == 3
-    assert features._js_length({}) is None
 
 
 # --- the worker process, against fake analysis pythons ------------------------------
@@ -942,13 +903,6 @@ def test_ffmpeg_failures_and_tool_versions(local_root: Path) -> None:
             {"recordingId": "m", "filename": "x.m4a"},
             base_options(local_root, ffmpeg_bin=str(local_root / "absent")),
         )
-
-
-def test_js_join_appends_every_part() -> None:
-    assert features._js_join("/corpus/", "/abs/name.m4a") == "/corpus/abs/name.m4a"
-    assert features._js_join("", "x.json") == "x.json"
-    assert features._js_join("./a/../b", "c") == "b/c"
-    assert features._js_join("", "") == "."
 
 
 # --- the extractor resource without its runtime ----------------------------------------

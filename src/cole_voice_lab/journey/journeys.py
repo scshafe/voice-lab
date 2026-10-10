@@ -16,39 +16,35 @@ Parity with the JavaScript module:
   ``Number(v.toFixed(p))`` (:func:`jsonio.to_fixed`); sums are left folds in the
   JavaScript order (never ``sum()``, which compensates since Python 3.12); medians pick
   an element, as the JavaScript did.
-- JavaScript value rules are kept where a manifest can carry any JSON: truthiness,
-  ``??``, ``Number(...)``, ``String(...)``, ``+`` concatenating strings, ``Map`` keys
-  (``1`` and ``"1"`` differ), keys whose value is ``undefined`` being omitted, the
-  ordering of integer-like keys in ``perYear`` and its prototype-key failure.
-- ``Date.parse`` accepts the ECMAScript date-time format with V8's tolerances (lowercase
-  ``t``/``z``, a space separator, ``+hhmm`` offsets, any number of fraction digits, day
-  overflow such as ``02-31``, ``24:00``); a time without an offset is local time. V8's
-  legacy fallback formats (``2019/02/10``, ``Feb 10 2019``, leading whitespace) give
-  null here where V8 parses them as local time.
+- JavaScript value rules are kept where a manifest can carry any JSON (the shared ones
+  are ``journey/jscompat.py``'s): truthiness, ``??``, ``Number(...)``, ``String(...)``,
+  ``+`` concatenating strings, ``Map`` keys (``1`` and ``"1"`` differ), keys whose value
+  is ``undefined`` being omitted, the ordering of integer-like keys in ``perYear`` and its
+  prototype-key failure.
+- ``Date.parse`` is :func:`jscompat.date_parse` (the ECMAScript date-time format with
+  V8's tolerances; a time without an offset is local time). V8's legacy fallback formats
+  (``2019/02/10``, ``Feb 10 2019``, leading whitespace) give null here where V8 parses
+  them as local time.
+- ``Math.log2`` is V8's fdlibm port (:func:`jscompat.log2`), bit for bit.
 
-Where Python can differ: ``Math.log2``, ``Math.sin``, ``Math.cos`` and ``Math.atan2``
-are V8's fdlibm ports, Python's are the platform libm. They agree to 1 ulp (2 ulp on a
-cents value); an output differs only if an intermediate lies within those ulps of a
-rounding boundary (1 to 4 decimals) or of the 25-cent and 80-cent thresholds.
-``capturedAt`` is sliced by code point, not UTF-16 unit, and a non-string ``capturedAt``
-fails (V8 would slice an array). A JSON file that is not valid UTF-8 is refused (Node
-read it with replacement characters). Defaults for the paths are resolved when the
-options are built, not when the module is imported. The output file is replaced
+Where Python can differ: ``Math.sin``, ``Math.cos`` and ``Math.atan2`` are V8's fdlibm
+ports, Python's are the platform libm. They agree to 1 ulp (2 ulp on a cents value); an
+output differs only if an intermediate lies within those ulps of a rounding boundary (1 to
+4 decimals). ``capturedAt`` is sliced by code point, not UTF-16 unit, and a non-string
+``capturedAt`` fails (V8 would slice an array). Defaults for the paths are resolved when
+the options are built, not when the module is imported. The output file is replaced
 atomically (Node wrote it in place).
 """
 
 from __future__ import annotations
 
-import json
 import math
-import posixpath
-import re
 import sys
-import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from cole_voice_lab.journey import jscompat as js
 from cole_voice_lab.journey import jsonio
 from cole_voice_lab.journey.paths import resolve_paths
 
@@ -112,21 +108,8 @@ class JourneysError(Exception):
     """A refused command line or command."""
 
 
-class _Undefined:
-    """JavaScript's ``undefined``: a missing property, distinct from JSON ``null``."""
-
-    def __repr__(self) -> str:
-        return "undefined"
-
-
-_UNDEFINED: Final = _Undefined()
 _UINT32: Final = 2**32
 _MS_PER_YEAR: Final = 31557600000
-_MAX_TIME_MS: Final = 8.64e15
-_JS_WHITESPACE: Final = "\t\n\v\f\r                  　﻿"
-_DECIMAL = re.compile(r"[+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)")
-_RADIX = re.compile(r"0(?:[xX](?P<hex>[0-9a-fA-F]+)|[oO](?P<oct>[0-7]+)|[bB](?P<bin>[01]+))")
-_ARRAY_INDEX = re.compile(r"0|[1-9][0-9]*")
 _OBJECT_PROTOTYPE_KEYS: Final = frozenset(
     {
         "constructor",
@@ -143,159 +126,35 @@ _OBJECT_PROTOTYPE_KEYS: Final = frozenset(
         "toLocaleString",
     }
 )
-_ISO_DATE = re.compile(
-    r"(?P<year>[+-]\d{6}|\d{4})(?:-(?P<month>\d{2})(?:-(?P<day>\d{2}))?)?"
-    r"(?:[Tt ](?P<hour>\d{2}):(?P<minute>\d{2})"
-    r"(?::(?P<second>\d{2})(?:\.(?P<fraction>\d+))?)?)?"
-    r"(?P<zone>[Zz]|(?P<sign>[+-])(?P<zh>\d{2}):?(?P<zm>\d{2}))?"
-)
 
 
 # --- JavaScript value rules -------------------------------------------------------
 
 
-def _nullish(value: Any) -> bool:
-    return value is None or value is _UNDEFINED
-
-
-def _coalesce(value: Any, default: Any) -> Any:
-    """``value ?? default``."""
-
-    return default if _nullish(value) else value
-
-
-def _is_number(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool)
-
-
-def _finite(value: Any) -> bool:
-    """``Number.isFinite``: numbers only, no coercion."""
-
-    return _is_number(value) and math.isfinite(value)
-
-
-def _truthy(value: Any) -> bool:
-    if _nullish(value) or value is False or value == "":
-        return False
-    if _is_number(value):
-        return value != 0 and not math.isnan(value)
-    return True
-
-
-def _prop(target: Any, key: str) -> Any:
-    """``target.key``: throws on null/undefined, undefined for a missing key or a
-    primitive."""
-
-    if _nullish(target):
-        kind = "null" if target is None else "undefined"
-        raise TypeError(f"Cannot read properties of {kind} (reading '{key}')")
-    if isinstance(target, dict):
-        return target.get(key, _UNDEFINED)
-    return _UNDEFINED
-
-
-def _opt(target: Any, key: str) -> Any:
-    """``target?.key``."""
-
-    return _UNDEFINED if _nullish(target) else _prop(target, key)
-
-
 def _array(value: Any, what: str) -> list[Any]:
     """``(value ?? [])`` used as an array."""
 
-    if _nullish(value):
+    if js.nullish(value):
         return []
     if isinstance(value, list):
         return value
     raise TypeError(f"{what} is not an array")
 
 
-def _length(value: Any) -> Any:
-    """``value?.length`` for the arrays it is used on (anything else threw earlier)."""
-
-    return len(value) if isinstance(value, list) else _UNDEFINED
-
-
-def _number_from_text(text: str) -> float:
-    """``Number(string)``."""
-
-    body = text.strip(_JS_WHITESPACE)
-    if body == "":
-        return 0.0
-    radix = _RADIX.fullmatch(body)
-    if radix:
-        digits, base = next(
-            (digits, base)
-            for digits, base in zip(radix.group("hex", "oct", "bin"), (16, 8, 2), strict=True)
-            if digits
-        )
-        try:
-            return float(int(digits, base))
-        except OverflowError:
-            return math.inf
-    if _DECIMAL.fullmatch(body):
-        return float(body)
-    return math.nan
-
-
-def _to_number(value: Any) -> float:
-    """``ToNumber``."""
-
-    if value is _UNDEFINED:
-        return math.nan
-    if value is None:
-        return 0.0
-    if isinstance(value, bool):
-        return 1.0 if value else 0.0
-    if isinstance(value, int | float):
-        try:
-            return float(value)
-        except OverflowError:
-            return math.inf if value > 0 else -math.inf
-    if isinstance(value, str):
-        return _number_from_text(value)
-    if isinstance(value, list):
-        return _number_from_text(_to_string(value))
-    return math.nan
-
-
-def _to_string(value: Any) -> str:
-    """``String(value)``."""
-
-    if value is _UNDEFINED:
-        return "undefined"
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        number = _to_number(value)
-        if math.isnan(number):
-            return "NaN"
-        if math.isinf(number):
-            return "Infinity" if number > 0 else "-Infinity"
-        return jsonio.format_number(number)
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return ",".join("" if _nullish(item) else _to_string(item) for item in value)
-    return "[object Object]"
-
-
 def _add(left: Any, right: Any) -> Any:
     """``left + right``: concatenation when either side is (or becomes) a string."""
 
-    left = _to_string(left) if isinstance(left, list | dict) else left
-    right = _to_string(right) if isinstance(right, list | dict) else right
+    left = js.to_string(left) if isinstance(left, list | dict) else left
+    right = js.to_string(right) if isinstance(right, list | dict) else right
     if isinstance(left, str) or isinstance(right, str):
-        return _to_string(left) + _to_string(right)
-    return _to_number(left) + _to_number(right)
+        return js.to_string(left) + js.to_string(right)
+    return js.to_number(left) + js.to_number(right)
 
 
 def _sub(left: Any, right: Any) -> float:
     """``left - right``."""
 
-    return _to_number(left) - _to_number(right)
+    return js.to_number(left) - js.to_number(right)
 
 
 def _div(left: float, right: float) -> float:
@@ -311,33 +170,17 @@ def _div(left: float, right: float) -> float:
 def _map_key(value: Any) -> tuple[Any, ...]:
     """A ``Map`` key under SameValueZero: ``1`` and ``"1"`` and ``true`` differ."""
 
-    if value is _UNDEFINED:
+    if value is js.MISSING:
         return ("undefined",)
     if value is None:
         return ("null",)
     if isinstance(value, bool):
         return ("boolean", value)
     if isinstance(value, int | float):
-        return ("number", _to_number(value))
+        return ("number", js.to_number(value))
     if isinstance(value, str):
         return ("string", value)
     return ("object", id(value))
-
-
-def _utf16_key(text: str) -> bytes:
-    """``Array.prototype.sort()`` order: UTF-16 code units."""
-
-    return text.encode("utf-16-be", "surrogatepass")
-
-
-def _object_key_order(keys: Sequence[str]) -> list[str]:
-    """Own-key order of a plain object: array indices ascending, then insertion order."""
-
-    def is_index(key: str) -> bool:
-        return bool(_ARRAY_INDEX.fullmatch(key)) and int(key) < _UINT32 - 1
-
-    indices = sorted((key for key in keys if is_index(key)), key=int)
-    return indices + [key for key in keys if not is_index(key)]
 
 
 def _slice(value: Any, start: int, end: int) -> str:
@@ -346,75 +189,13 @@ def _slice(value: Any, start: int, end: int) -> str:
     return value[start:end]
 
 
-def _days_from_civil(year: int, month: int, day: int) -> int:
-    year -= month <= 2
-    era = year // 400
-    year_of_era = year - era * 400
-    day_of_year = (153 * (month + (-3 if month > 2 else 9)) + 2) // 5 + day - 1
-    day_of_era = year_of_era * 365 + year_of_era // 4 - year_of_era // 100 + day_of_year
-    return era * 146097 + day_of_era - 719468
-
-
-def _utc_offset_ms(utc_ms: int) -> int:
-    """The local zone's offset from UTC at an instant (0 where the OS cannot say)."""
-
-    try:
-        return time.localtime(utc_ms // 1000).tm_gmtoff * 1000
-    except (OverflowError, ValueError, OSError):
-        return 0
-
-
-def _local_to_utc_ms(local_ms: int) -> int:
-    """V8's local-time interpretation (ICU's ``LOCAL_FORMER``): the offset in effect
-    before a transition applies to a skipped time and to a repeated one."""
-
-    before = _utc_offset_ms(local_ms - 86400000)
-    after = _utc_offset_ms(local_ms + 86400000)
-    before_valid = _utc_offset_ms(local_ms - before) == before
-    after_valid = _utc_offset_ms(local_ms - after) == after
-    return local_ms - (after if after_valid and not before_valid else before)
-
-
-def _date_parse(text: str) -> int | None:
-    """``Date.parse`` for the ECMAScript date-time format (see the module docstring)."""
-
-    match = _ISO_DATE.fullmatch(text)
-    if not match or match["year"] == "-000000":
-        return None
-    year = int(match["year"])
-    month = int(match["month"] or 1)
-    day = int(match["day"] or 1)
-    hour = int(match["hour"] or 0)
-    minute = int(match["minute"] or 0)
-    second = int(match["second"] or 0)
-    millisecond = int((match["fraction"] or "0")[:3].ljust(3, "0"))
-    if not (1 <= month <= 12 and 1 <= day <= 31 and minute <= 59 and second <= 59):
-        return None
-    if hour > 24 or (hour == 24 and (minute or second or millisecond)):
-        return None
-    days = _days_from_civil(year, month, 1) + day - 1
-    time_ms = days * 86400000 + ((hour * 60 + minute) * 60 + second) * 1000 + millisecond
-    if match["zone"] is None:
-        if match["hour"] is not None:
-            time_ms = _local_to_utc_ms(time_ms)
-    elif match["sign"] is not None:
-        zone_hour, zone_minute = int(match["zh"]), int(match["zm"])
-        if zone_hour > 23 or zone_minute > 59:
-            return None
-        offset = (zone_hour * 60 + zone_minute) * 60000
-        time_ms += -offset if match["sign"] == "+" else offset
-    if abs(time_ms) > _MAX_TIME_MS:
-        return None
-    return time_ms
-
-
 # --- numeric helpers --------------------------------------------------------------
 
 
 def _round(value: Any, places: int = 3) -> float | None:
     """``Number.isFinite(v) ? Number(v.toFixed(places)) : null``."""
 
-    return jsonio.to_fixed(value, places) if _finite(value) else None
+    return jsonio.to_fixed(value, places) if js.is_finite(value) else None
 
 
 def _weight(value: Any) -> float:
@@ -424,18 +205,18 @@ def _weight(value: Any) -> float:
 
 
 def cents_of(hz: float) -> float:
-    return 1200 * math.log2(float(hz) / 440)
+    return 1200 * js.log2(float(hz) / 440)
 
 
 def median_of(values: Sequence[Any]) -> Any:
-    ordered = sorted(value for value in values if _finite(value))
+    ordered = sorted(value for value in values if js.is_finite(value))
     if not ordered:
         return None
     return ordered[(len(ordered) - 1) // 2]
 
 
 def quantile_of(values: Sequence[Any], p: float) -> Any:
-    ordered = sorted(value for value in values if _finite(value))
+    ordered = sorted(value for value in values if js.is_finite(value))
     if not ordered:
         return None
     return ordered[math.floor((len(ordered) - 1) * p)]
@@ -444,7 +225,7 @@ def quantile_of(values: Sequence[Any], p: float) -> Any:
 def _to_uint32(value: float | int) -> int:
     """``value >>> 0``."""
 
-    number = _to_number(value)
+    number = js.to_number(value)
     if not math.isfinite(number):
         return 0
     return int(number) % _UINT32
@@ -481,7 +262,7 @@ def segment_notes(
 ) -> list[dict[str, Any]]:
     """Split a ``[[t, hz], ...]`` contour into note cores."""
 
-    if _nullish(contour) or isinstance(contour, str):
+    if js.nullish(contour) or isinstance(contour, str):
         points: list[Any] = []
     elif isinstance(contour, list):
         points = contour
@@ -490,7 +271,7 @@ def segment_notes(
     runs: list[list[tuple[Any, float]]] = []
     current: list[tuple[Any, float]] = []
     for point in points:
-        if not isinstance(point, list) or len(point) < 2 or not _finite(point[1]):
+        if not isinstance(point, list) or len(point) < 2 or not js.is_finite(point[1]):
             continue
         if point[1] <= 0:
             continue
@@ -640,7 +421,7 @@ def verdict_for(direction: str, ci: Sequence[Any] | None) -> str:
 
 
 def year_fraction_of(captured_at: Any) -> float | None:
-    parsed = _date_parse(_to_string(captured_at))
+    parsed = js.date_parse(js.to_string(captured_at))
     return None if parsed is None else parsed / _MS_PER_YEAR + 1970
 
 
@@ -648,36 +429,38 @@ def reliable_feature_takes(features_manifest: Any) -> list[Any]:
     """Completed, dated takes whose f0 frame rejection is at most 10%."""
 
     reliable = []
-    for row in _array(_prop(features_manifest, "results"), "results"):
-        if _prop(row, "status") != "completed" or not _truthy(_prop(row, "features")):
+    for row in _array(js.prop(features_manifest, "results"), "results"):
+        if js.prop(row, "status") != "completed" or not js.truthy(js.prop(row, "features")):
             continue
-        if not _truthy(_prop(row, "capturedAt")):
+        if not js.truthy(js.prop(row, "capturedAt")):
             continue
-        features = _prop(row, "features")
-        voicing = _coalesce(_prop(features, "voicing"), {})
+        features = js.prop(row, "features")
+        voicing = js.coalesce(js.prop(features, "voicing"), {})
         rejected = _add(
-            _coalesce(_prop(voicing, "rejectedOutlierShare"), 0),
-            _coalesce(_prop(voicing, "rejectedGlobalOutlierShare"), 0),
+            js.coalesce(js.prop(voicing, "rejectedOutlierShare"), 0),
+            js.coalesce(js.prop(voicing, "rejectedGlobalOutlierShare"), 0),
         )
-        if _to_number(rejected) <= RELIABLE_REJECTION_MAX:
+        if js.to_number(rejected) <= RELIABLE_REJECTION_MAX:
             reliable.append(row)
     return reliable
 
 
 def take_metrics_for(row: Any, note_core: Mapping[str, Any] | None) -> dict[str, Any]:
-    features = _prop(row, "features")
-    vibrato_rate = _coalesce(_opt(_prop(features, "vibrato"), "meanRateHz"), None)
+    features = js.prop(row, "features")
+    vibrato_rate = js.coalesce(js.get(js.prop(features, "vibrato"), "meanRateHz"), None)
     return {
         "noteCoreCentError": None if note_core is None else note_core["centErrorMedian"],
         "inTuneShare": None if note_core is None else note_core["inTuneShare"],
-        "rangeSemitones": _coalesce(_opt(_prop(features, "pitch"), "rangeSemitonesP05P95"), None),
-        "cpps": _coalesce(_opt(_prop(features, "quality"), "cpps"), None),
-        "longestSustain": _coalesce(
-            _opt(_prop(features, "phrasing"), "longestSustainedSeconds"), None
+        "rangeSemitones": js.coalesce(
+            js.get(js.prop(features, "pitch"), "rangeSemitonesP05P95"), None
+        ),
+        "cpps": js.coalesce(js.get(js.prop(features, "quality"), "cpps"), None),
+        "longestSustain": js.coalesce(
+            js.get(js.prop(features, "phrasing"), "longestSustainedSeconds"), None
         ),
         "vibratoDistanceFrom5p5": None
         if vibrato_rate is None
-        else _round(abs(_to_number(vibrato_rate) - 5.5), 2),
+        else _round(abs(js.to_number(vibrato_rate) - 5.5), 2),
     }
 
 
@@ -687,8 +470,8 @@ def eligible_clusters(
     """Clusters with at least 6 reliable takes spanning at least 1.5 years."""
 
     eligible = []
-    for cluster in _array(_prop(lyrics_manifest, "clusters"), "clusters"):
-        ids = _array(_prop(cluster, "recordingIds"), "recordingIds")
+    for cluster in _array(js.prop(lyrics_manifest, "clusters"), "clusters"):
+        ids = _array(js.prop(cluster, "recordingIds"), "recordingIds")
         takes = [take for take in (takes_by_id.get(_map_key(i)) for i in ids) if take is not None]
         fractions = [take["yearFraction"] for take in takes if take["yearFraction"] is not None]
         span = max(fractions) - min(fractions) if fractions else 0
@@ -729,7 +512,7 @@ def journeys_method(options: JourneysOptions) -> dict[str, Any]:
         "slopes": {"id": "theil_sen_per_cluster.v1", **SLOPES},
         "bootstrap": {"id": "cluster_resample_median.v1", **BOOTSTRAP, "seed": options.seed},
         "reliability": "takes with total f0 frame rejection <= "
-        + _to_string(RELIABLE_REJECTION_MAX),
+        + js.to_string(RELIABLE_REJECTION_MAX),
         "clusterVerificationNote": "clusters come from transcript-shingle similarity; acoustic "
         "verification/splitting is a planned upgrade and would need its own gated audio pass",
     }
@@ -752,8 +535,8 @@ def build_journeys_dry_run(
 ) -> dict[str, Any]:
     reliable = reliable_feature_takes(features_manifest)
     takes_by_id = {
-        _map_key(_prop(row, "recordingId")): {
-            "yearFraction": year_fraction_of(_prop(row, "capturedAt"))
+        _map_key(js.prop(row, "recordingId")): {
+            "yearFraction": year_fraction_of(js.prop(row, "capturedAt"))
         }
         for row in reliable
     }
@@ -776,61 +559,35 @@ def build_journeys_dry_run(
         "outputPath": options.out,
         "scope": {
             "reliableTakes": len(reliable),
-            "clustersTotal": _coalesce(_length(_opt(lyrics_manifest, "clusters")), 0),
+            "clustersTotal": js.coalesce(js.length(js.get(lyrics_manifest, "clusters")), 0),
             "clustersEligible": len(eligible),
-            "eligibilityRule": f">= {_to_string(SLOPES['minTakes'])} reliable takes spanning "
-            f">= {_to_string(SLOPES['minSpanYears'])} years",
+            "eligibilityRule": f">= {js.to_string(SLOPES['minTakes'])} reliable takes spanning "
+            f">= {js.to_string(SLOPES['minSpanYears'])} years",
         },
         "method": journeys_method(options),
         "readScope": journeys_read_scope(),
     }
 
 
-def _path_join(directory: str, name: str) -> str:
-    """Node's ``path.join`` for two segments."""
-
-    joined = "/".join(part for part in (directory, name) if part)
-    if not joined:
-        return "."
-    normal = posixpath.normpath(joined)
-    return normal[1:] if normal.startswith("//") else normal
-
-
-def _read_json(file_path: str) -> Any:
-    """``JSON.parse(readFile(...))``: every number is a double; NaN/Infinity refused."""
-
-    def refuse(token: str) -> Any:
-        raise ValueError(f"Unexpected token {token} in JSON")
-
-    with open(file_path, encoding="utf-8") as handle:
-        return json.loads(handle.read(), parse_int=float, parse_constant=refuse)
-
-
 def _detail_reader(feature_dir: str) -> Callable[[Any], Any]:
     def read(recording_id: Any) -> Any:
         try:
-            return _read_json(_path_join(feature_dir, f"{_to_string(recording_id)}.json"))
+            return jsonio.read_json(js.path_join(feature_dir, f"{js.to_string(recording_id)}.json"))
         except FileNotFoundError:
             return None
 
     return read
 
 
-def _strip_undefined(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """``JSON.stringify`` omits a key whose value is undefined."""
-
-    return {key: value for key, value in payload.items() if value is not _UNDEFINED}
-
-
 def _per_year_rollup(takes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     per_year: dict[str, list[Mapping[str, Any]]] = {}
     for take in takes:
-        key = _to_string(take["year"])
+        key = js.to_string(take["year"])
         if key in _OBJECT_PROTOTYPE_KEYS:
             raise TypeError("perYear[take.year].push is not a function")
         per_year.setdefault(key, []).append(take)
     rollup: dict[str, Any] = {}
-    for year in _object_key_order(sorted(per_year, key=_utf16_key)):
+    for year in jsonio.object_key_order(sorted(per_year, key=js.utf16_key)):
         group = per_year[year]
 
         def median(key: str, group: Sequence[Mapping[str, Any]] = group) -> Any:
@@ -859,14 +616,14 @@ def _journey(cluster: Any, takes: Sequence[Mapping[str, Any]]) -> dict[str, Any]
             _round(theil_sen_slope(points), 4) if len(points) >= SLOPES["minTakes"] else None
         )
     fractions = [take["yearFraction"] for take in takes if take["yearFraction"] is not None]
-    cluster_id = _prop(cluster, "clusterId")
-    return _strip_undefined(
+    cluster_id = js.prop(cluster, "clusterId")
+    return js.defined(
         {
             "clusterId": cluster_id,
-            "label": _coalesce(_prop(cluster, "label"), cluster_id),
+            "label": js.coalesce(js.prop(cluster, "label"), cluster_id),
             "takesUsed": len(takes),
-            "firstYear": _to_string(math.floor(min(fractions))),
-            "lastYear": _to_string(math.floor(max(fractions))),
+            "firstYear": js.to_string(math.floor(min(fractions))),
+            "lastYear": js.to_string(math.floor(max(fractions))),
             "perYear": _per_year_rollup(takes),
             "slopesPerYear": slopes,
         }
@@ -891,26 +648,26 @@ def analyze_journeys(
     takes_by_id: dict[tuple[Any, ...], dict[str, Any]] = {}
     missing_details = 0
     for row in reliable:
-        recording_id = _prop(row, "recordingId")
+        recording_id = js.prop(row, "recordingId")
         if read_detail is None:
             detail = default_reader(recording_id)
         else:
-            detail = read_detail(None if recording_id is _UNDEFINED else recording_id)
-        contour = _opt(_opt(detail, "detail"), "f0ContourVoiced50ms")
+            detail = read_detail(None if recording_id is js.MISSING else recording_id)
+        contour = js.get(js.get(detail, "detail"), "f0ContourVoiced50ms")
         note_core: dict[str, Any] | None = None
-        if _truthy(contour):
+        if js.truthy(contour):
             note_core = note_core_tuning(segment_notes(contour))
         else:
             missing_details += 1
-        captured_at = _prop(row, "capturedAt")
-        year = _prop(row, "year")
-        if _nullish(year):
-            year = _slice(captured_at, 0, 4) if _truthy(captured_at) else "unknown"
+        captured_at = js.prop(row, "capturedAt")
+        year = js.prop(row, "year")
+        if js.nullish(year):
+            year = _slice(captured_at, 0, 4) if js.truthy(captured_at) else "unknown"
         quarter = None
-        if _truthy(captured_at):
-            month_third = _number_from_text(_slice(captured_at, 5, 7)) / 3
+        if js.truthy(captured_at):
+            month_third = js.string_to_number(_slice(captured_at, 5, 7)) / 3
             ceiling = math.ceil(month_third) if math.isfinite(month_third) else month_third
-            quarter = f"{_slice(captured_at, 0, 4)}-Q{_to_string(ceiling)}"
+            quarter = f"{_slice(captured_at, 0, 4)}-Q{js.to_string(ceiling)}"
         take = {
             "id": recording_id,
             "year": year,
@@ -922,7 +679,7 @@ def analyze_journeys(
         takes_by_id[_map_key(recording_id)] = take
         if note_core is not None:
             note_core_takes.append(
-                _strip_undefined(
+                js.defined(
                     {
                         "id": take["id"],
                         "year": take["year"],
@@ -958,23 +715,23 @@ def analyze_journeys(
         )
 
     analyzed_at = options.analyzed_at if options.analyzed_at is not None else jsonio.iso_timestamp()
-    results = _opt(features_manifest, "results")
-    clusters = _opt(lyrics_manifest, "clusters")
+    results = js.get(features_manifest, "results")
+    clusters = js.get(lyrics_manifest, "clusters")
     manifest = {
         "schemaVersion": MANIFEST_SCHEMA_VERSION,
         "generatedAt": analyzed_at,
         "updatedAt": analyzed_at,
         "sources": {
             "features": {
-                "schemaVersion": _coalesce(_opt(features_manifest, "schemaVersion"), None),
-                "generatedAt": _coalesce(_opt(features_manifest, "generatedAt"), None),
-                "updatedAt": _coalesce(_opt(features_manifest, "updatedAt"), None),
-                "recordingCount": _coalesce(_length(results), None),
+                "schemaVersion": js.coalesce(js.get(features_manifest, "schemaVersion"), None),
+                "generatedAt": js.coalesce(js.get(features_manifest, "generatedAt"), None),
+                "updatedAt": js.coalesce(js.get(features_manifest, "updatedAt"), None),
+                "recordingCount": js.coalesce(js.length(results), None),
             },
             "lyrics": {
-                "schemaVersion": _coalesce(_opt(lyrics_manifest, "schemaVersion"), None),
-                "generatedAt": _coalesce(_opt(lyrics_manifest, "generatedAt"), None),
-                "clusterCount": _coalesce(_length(clusters), None),
+                "schemaVersion": js.coalesce(js.get(lyrics_manifest, "schemaVersion"), None),
+                "generatedAt": js.coalesce(js.get(lyrics_manifest, "generatedAt"), None),
+                "clusterCount": js.coalesce(js.length(clusters), None),
             },
         },
         "method": journeys_method(options),
@@ -1021,7 +778,7 @@ def _require_value(args: list[str], flag: str) -> str:
 
 
 def _non_negative_integer(value: str, flag: str) -> float | int:
-    parsed = _number_from_text(value)
+    parsed = js.string_to_number(value)
     if not math.isfinite(parsed) or not parsed.is_integer() or parsed < 0:
         raise JourneysError(f"{flag} must be a non-negative integer")
     return int(parsed) if parsed < 2**53 else parsed
@@ -1061,8 +818,8 @@ def run(argv: Sequence[str]) -> int:
         sys.stdout.write(HELP)
         return 0
     if options.command == "analyze":
-        features_manifest = _read_json(options.features)
-        lyrics_manifest = _read_json(options.lyrics)
+        features_manifest = jsonio.read_json(options.features)
+        lyrics_manifest = jsonio.read_json(options.lyrics)
         if options.dry_run:
             _write("-", build_journeys_dry_run(features_manifest, lyrics_manifest, options))
             return 0

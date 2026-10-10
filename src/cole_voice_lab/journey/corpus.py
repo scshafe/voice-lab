@@ -14,20 +14,20 @@ and it writes nothing. Drop rules, as in the JS: only regular ``.m4a`` files dir
 the drop count; dot files (rsync's ``.name.XXXXXX`` temporaries, ``.rsync-partial/``),
 directories (``_mirror/``) and other files are ignored.
 
-Where JavaScript semantics needed a translation:
+Where JavaScript semantics needed a translation (the shared rules are
+``journey/jscompat.py``'s and ``journey/jsonio.py``'s):
 
-- ``localeCompare`` (ICU root collation) orders the listings: :func:`locale_key` is that
-  collation for ASCII, checked against Node 24 for all 128 ASCII characters (the
-  control characters are ignorable, punctuation sorts before digits before letters,
-  letters compare case-blind first and lowercase first on a tie). Voice Memos names and
-  session directory names are ASCII; a non-ASCII character sorts after every ASCII one
-  by code point, which may differ from ICU for such names.
+- ``localeCompare`` (ICU root collation) orders the listings:
+  :func:`jscompat.locale_compare_key`, exact for ASCII. Voice Memos names and session
+  directory names are ASCII; a non-ASCII character sorts after every ASCII one by code
+  point, which may differ from ICU for such names.
 - ``stats.mtime.toISOString()``: Node rounds ``mtimeMs`` (``sec * 1e3 + nsec / 1e6``)
   to the nearest millisecond; :func:`mtime_iso` does the same arithmetic.
-- ``path.join`` / ``path.resolve`` / ``path.extname`` are Node's lexical rules
-  (:func:`js_join`, :func:`js_resolve`, :func:`js_extname`), not ``pathlib``'s.
-- ``JSON.parse`` refuses ``NaN``/``Infinity`` literals; :func:`parse_json` does too and
-  reads every number as a JavaScript double.
+- ``path.join`` / ``path.extname`` are Node's lexical rules (``jscompat.path_join``,
+  ``jscompat.path_extname``), not ``pathlib``'s; ``Buffer.from(name)`` is
+  ``jscompat.utf8``.
+- ``JSON.parse(readFile(...))`` is ``jsonio.read_json`` (``NaN``/``Infinity`` refused,
+  invalid UTF-8 replaced).
 - A file name that is not valid UTF-8 is decoded with replacement characters, as
   Node's ``readdir`` does (its stat then fails, as in Node). Errors that Node raises
   (a missing file between listing and stat, a malformed ``session.json`` shape) are
@@ -37,7 +37,6 @@ Where JavaScript semantics needed a translation:
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import posixpath
 import re
@@ -45,7 +44,8 @@ import stat
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .jsonio import js_round
+from . import jscompat as js
+from .jsonio import js_round, read_json
 
 Entry = dict[str, Any]
 
@@ -68,147 +68,23 @@ class HostAccessError(Exception):
 
 # ---- JavaScript semantics -------------------------------------------------------------
 
-# ICU root collation order of the printable ASCII characters (Node 24, `localeCompare`);
-# letters appear lowercase only: their case is a tertiary difference.
-_ICU_ASCII_ORDER = "\t\n\x0b\x0c\r _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789" + "".join(
-    chr(code) for code in range(ord("a"), ord("z") + 1)
-)
-_PRIMARY = {char: rank for rank, char in enumerate(_ICU_ASCII_ORDER)}
-_NON_ASCII_BASE = len(_ICU_ASCII_ORDER)
-
-
-def locale_key(text: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """A sort key whose order is ``a.localeCompare(b)`` for ASCII strings (equal keys
-    are exactly the strings ``localeCompare`` calls equal)."""
-
-    primary: list[int] = []
-    tertiary: list[int] = []
-    for char in text:
-        code = ord(char)
-        if code >= 0x80:
-            primary.append(_NON_ASCII_BASE + code)
-            tertiary.append(0)
-            continue
-        weight = _PRIMARY.get(char.lower())
-        if weight is None:  # C0 controls other than whitespace, and DEL: ignorable
-            continue
-        primary.append(weight)
-        tertiary.append(1 if char.isupper() else 0)
-    return tuple(primary), tuple(tertiary)
-
-
-def js_extname(path: str) -> str:
-    """Node's ``path.posix.extname``."""
-
-    start_dot = -1
-    start_part = 0
-    end = -1
-    matched_slash = True
-    pre_dot_state = 0
-    for index in range(len(path) - 1, -1, -1):
-        char = path[index]
-        if char == "/":
-            if not matched_slash:
-                start_part = index + 1
-                break
-            continue
-        if end == -1:
-            matched_slash = False
-            end = index + 1
-        if char == ".":
-            if start_dot == -1:
-                start_dot = index
-            elif pre_dot_state != 1:
-                pre_dot_state = 1
-        elif start_dot != -1:
-            pre_dot_state = -1
-    if (
-        start_dot == -1
-        or end == -1
-        or pre_dot_state == 0
-        or (pre_dot_state == 1 and start_dot == end - 1 and start_dot == start_part + 1)
-    ):
-        return ""
-    return path[start_dot:end]
-
-
-def _normalize(path: str) -> str:
-    trailing = path.endswith("/")
-    normal = posixpath.normpath(path)
-    if normal.startswith("//"):
-        normal = "/" + normal.lstrip("/")
-    if trailing and normal != "/":
-        normal += "/"
-    return normal
-
-
-def js_join(*parts: str) -> str:
-    """Node's ``path.posix.join``: empty parts dropped, the rest normalized lexically."""
-
-    joined = "/".join(part for part in parts if part)
-    return _normalize(joined) if joined else "."
-
-
-def js_resolve(path: str | os.PathLike[str]) -> str:
-    """Node's ``path.posix.resolve`` of one path: absolute and lexical (no symlinks)."""
-
-    resolved = _normalize(posixpath.join(os.getcwd(), os.fspath(path)))
-    return resolved.rstrip("/") or "/"
-
-
-def _iso_from_ms(milliseconds: int) -> str:
-    moment = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=milliseconds)
-    return (
-        f"{moment.year:04d}-{moment.month:02d}-{moment.day:02d}T"
-        f"{moment.hour:02d}:{moment.minute:02d}:{moment.second:02d}."
-        f"{moment.microsecond // 1000:03d}Z"
-    )
-
 
 def mtime_iso(stats: os.stat_result) -> str:
-    """``stats.mtime.toISOString()``."""
+    """``stats.mtime.toISOString()``: Node rounds ``mtimeMs`` (``sec * 1e3 + nsec / 1e6``)
+    to the nearest millisecond."""
 
     seconds, nanoseconds = divmod(stats.st_mtime_ns, 1_000_000_000)
-    milliseconds = js_round(seconds * 1e3 + nanoseconds / 1e6)
-    return _iso_from_ms(int(milliseconds))
-
-
-def _refuse_constant(name: str) -> Any:
-    raise ValueError(f"not JSON: {name}")
-
-
-def parse_json(text: str) -> Any:
-    """``JSON.parse``: no ``NaN``/``Infinity`` literals; every number is a double."""
-
-    return json.loads(text, parse_constant=_refuse_constant, parse_int=float)
-
-
-def _read_text(path: str) -> str:
-    with open(path, encoding="utf-8", errors="replace", newline="") as handle:
-        return handle.read()
-
-
-_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
-
-
-def _utf8(text: str) -> bytes:
-    """Node's UTF-8 encoding of a string: a lone surrogate becomes U+FFFD."""
-
-    return _LONE_SURROGATE.sub("\ufffd", text).encode("utf-8")
+    return js.iso_from_ms(js_round(seconds * 1e3 + nanoseconds / 1e6))
 
 
 def _node_name(name: str) -> str:
     return name.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
 
 
-def _is_number(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool)
-
-
 def _sorted_dirents(root: str) -> list[tuple[str, os.DirEntry[str]]]:
     with os.scandir(root) as iterator:
         dirents = [(_node_name(entry.name), entry) for entry in iterator]
-    return sorted(dirents, key=lambda pair: locale_key(pair[0]))
+    return sorted(dirents, key=lambda pair: js.locale_compare_key(pair[0]))
 
 
 # ---- host-access.mjs ------------------------------------------------------------------
@@ -217,7 +93,7 @@ def _sorted_dirents(root: str) -> list[tuple[str, os.DirEntry[str]]]:
 def recording_id(filename: str) -> str:
     """The first 16 hex digits of the SHA-256 of the UTF-8 file name."""
 
-    return hashlib.sha256(_utf8(filename)).hexdigest()[:16]
+    return hashlib.sha256(js.utf8(filename)).hexdigest()[:16]
 
 
 def captured_at_from_filename(filename: str) -> str | None:
@@ -226,7 +102,7 @@ def captured_at_from_filename(filename: str) -> str | None:
     """
 
     base = filename.rsplit("/", 1)[-1]
-    stem = base[: len(base) - len(js_extname(base))]
+    stem = base[: len(base) - len(js.path_extname(base))]
     match = _FILENAME_STEM.match(stem)
     if match is None:
         return None
@@ -265,10 +141,10 @@ def _list_entries(root: str) -> list[Entry]:
         if (
             not dirent.is_file(follow_symlinks=False)
             or name.startswith(".")
-            or js_extname(name).lower() not in ALLOWED_EXTENSIONS
+            or js.path_extname(name).lower() not in ALLOWED_EXTENSIONS
         ):
             continue
-        host_path = js_join(root, name)
+        host_path = js.path_join(root, name)
         stats = os.stat(host_path)
         entries.append(
             {
@@ -289,7 +165,7 @@ def read_mirror_manifest(root: str | os.PathLike[str]) -> dict[str, Any] | None:
     Read-only; a torn or foreign file counts as absent."""
 
     try:
-        manifest = parse_json(_read_text(js_join(os.fspath(root), MIRROR_MANIFEST_PATH)))
+        manifest = read_json(js.path_join(os.fspath(root), MIRROR_MANIFEST_PATH))
     except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(manifest, dict) or manifest.get("schema") != MIRROR_MANIFEST_SCHEMA:
@@ -354,7 +230,7 @@ def list_corpus_entries(
 
 
 def _same_size(listed: Any, entry: Entry) -> bool:
-    return _is_number(listed) and bool(listed == entry["sizeBytes"])
+    return js.is_number(listed) and bool(listed == entry["sizeBytes"])
 
 
 def _segment_keys(session: dict[str, Any]) -> dict[str, Any]:
@@ -406,7 +282,7 @@ def list_measurement_entries(root: str | os.PathLike[str]) -> list[Entry]:
         if not dirent.is_dir(follow_symlinks=False) or not _SESSION_DIR.match(name):
             continue
         try:
-            session = parse_json(_read_text(js_join(directory, name, "session.json")))
+            session = read_json(js.path_join(directory, name, "session.json"))
         except (OSError, ValueError, RecursionError):
             continue
         if session is None:
@@ -414,7 +290,7 @@ def list_measurement_entries(root: str | os.PathLike[str]) -> list[Entry]:
         fields: dict[str, Any] = session if isinstance(session, dict) else {}
         segment_by_file = _segment_keys(fields)
         for file_name in _session_files(fields):
-            host_path = js_join(directory, name, file_name)
+            host_path = js.path_join(directory, name, file_name)
             try:
                 stats = os.stat(host_path)
             except (OSError, ValueError):
@@ -446,14 +322,9 @@ __all__ = [
     "Entry",
     "HostAccessError",
     "captured_at_from_filename",
-    "js_extname",
-    "js_join",
-    "js_resolve",
     "list_corpus_entries",
     "list_measurement_entries",
-    "locale_key",
     "mtime_iso",
-    "parse_json",
     "public_entry",
     "read_mirror_manifest",
     "recording_id",

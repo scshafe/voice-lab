@@ -31,12 +31,15 @@ Differences from the JS:
   (``error: [Errno 2] ...`` rather than ``error: ENOENT: ...``); a binary that cannot
   be started is reported as ``spawn <bin> <ERRNO>`` as Node did.
 - The help text names ``python -m cole_voice_lab.journey.stt``.
+
+The JavaScript value rules (``?.``, ``??``, ``String()``, ``Number()``, ``trim``,
+``path.join``/``basename``) are ``journey/jscompat.py``'s; JSON is read and written by
+``journey/jsonio.py``.
 """
 
 from __future__ import annotations
 
 import errno
-import json
 import math
 import os
 import re
@@ -49,10 +52,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, TypedDict
 
+from cole_voice_lab.journey import jscompat as js
 from cole_voice_lab.journey.jsonio import (
     format_number,
     iso_timestamp,
     manifest_text,
+    read_json,
     to_fixed,
     write_json,
 )
@@ -61,15 +66,7 @@ from cole_voice_lab.journey.paths import is_inside_artifacts, resolve_paths, res
 MANIFEST_SCHEMA_VERSION = "voice-journey.local-stt-transcripts.v1"
 SAMPLE_RATE = 16000
 
-# ECMAScript WhiteSpace and LineTerminator: what String.prototype.trim, /\s/u and
-# Number() skip. Python's str.isspace differs (it has U+001C-U+001F and U+0085, it
-# lacks U+FEFF).
-_JS_SPACE = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
-_JS_WORD_SPLIT = re.compile(f"[{_JS_SPACE}]+")
-_JS_TRIM = re.compile(f"^[{_JS_SPACE}]+|[{_JS_SPACE}]+$")
-_JS_DECIMAL = re.compile(r"[+-]?(?:Infinity|(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)")
-_JS_RADIX = re.compile(r"0([xX][0-9a-fA-F]+|[oO][0-7]+|[bB][01]+)")
-_RADIX_BASE = {"x": 16, "o": 8, "b": 2}
+_JS_WORD_SPLIT = re.compile(f"[{js.WHITESPACE}]+")
 
 JsonObject = dict[str, Any]
 
@@ -120,113 +117,13 @@ TranscribeRecording = Callable[[JsonObject, SttOptions], TranscriptionResult]
 # --- JavaScript value rules -------------------------------------------------------------
 
 
-def _get(value: Any, key: str) -> Any:
-    """``value?.[key]``: undefined (None) unless ``value`` is an object that has it."""
-
-    return value.get(key) if isinstance(value, dict) else None
-
-
-def _member(value: Any, key: str) -> Any:
-    """``value.key``: reading a property of null or undefined throws."""
-
-    if value is None:
-        raise TypeError(f"Cannot read properties of null (reading '{key}')")
-    return _get(value, key)
-
-
-def _coalesce(*values: Any) -> Any:
-    """``a ?? b ?? ...``: the first value that is not null or undefined."""
-
-    for value in values:
-        if value is not None:
-            return value
-    return None
-
-
-def _js_string(value: Any) -> str:
-    """``String(value)`` for JSON values."""
-
-    if value is None:
-        return "null"
-    if isinstance(value, bool | int | float):
-        return format_number(value)
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return ",".join("" if item is None else _js_string(item) for item in value)
-    return "[object Object]"
-
-
-def _js_trim(text: str) -> str:
-    return _JS_TRIM.sub("", text)
-
-
-def _js_number(text: str) -> float:
-    """``Number(text)`` for a string: trimmed, empty is 0, decimal, Infinity, 0x/0o/0b."""
-
-    trimmed = _js_trim(text)
-    if trimmed == "":
-        return 0.0
-    if _JS_DECIMAL.fullmatch(trimmed):
-        return float(trimmed.replace("Infinity", "inf"))
-    radix = _JS_RADIX.fullmatch(trimmed)
-    if radix:
-        digits = radix.group(1)
-        return float(int(digits[1:], _RADIX_BASE[digits[0].lower()]))
-    return math.nan
-
-
-def _js_max(values: Sequence[float]) -> float:
-    """``Math.max(...values)`` for a non-empty list: NaN wins."""
-
-    if any(math.isnan(value) for value in values):
-        return math.nan
-    return max(values)
-
-
-def _utf16_length(text: str) -> int:
-    """``text.length``: UTF-16 code units."""
-
-    return len(text.encode("utf-16-le", "surrogatepass")) // 2
-
-
-def _js_join(*parts: str) -> str:
-    """``path.join``: joined and normalized."""
-
-    return os.path.normpath(os.path.join(*parts))
-
-
-def _js_basename(file_path: str) -> str:
-    """``path.basename``: trailing separators are ignored."""
-
-    return os.path.basename(file_path.rstrip("/"))
-
-
 def number_or_null(value: Any) -> float | None:
     """``typeof value === "number" && Number.isFinite(value) ? value : null``."""
 
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    try:
-        number = float(value)
-    except OverflowError:
-        return None
-    return number if math.isfinite(number) else None
+    return js.to_number(value) if js.is_finite(value) else None
 
 
 # --- files and tools --------------------------------------------------------------------
-
-
-def _reject_constant(name: str) -> Any:
-    raise json.JSONDecodeError(f"{name} is not valid JSON", name, 0)
-
-
-def read_json(file_path: str) -> Any:
-    """``JSON.parse(await readFile(path, "utf8"))``: invalid UTF-8 is replaced, and
-    ``NaN``/``Infinity`` literals are refused as JavaScript refuses them."""
-
-    text = Path(file_path).read_text(encoding="utf-8", errors="replace")
-    return json.loads(text, parse_constant=_reject_constant)
 
 
 def _read_existing_manifest(file_path: str) -> Any:
@@ -237,7 +134,7 @@ def _read_existing_manifest(file_path: str) -> Any:
 
 
 def _capture_command(command: str, args: Sequence[str], message: str | None = None) -> str:
-    failure = message if message is not None else f"{_js_basename(command)} failed"
+    failure = message if message is not None else f"{js.path_basename(command)} failed"
     try:
         completed = subprocess.run(
             [command, *args], stdin=subprocess.DEVNULL, capture_output=True, check=False
@@ -246,7 +143,7 @@ def _capture_command(command: str, args: Sequence[str], message: str | None = No
         code = errno.errorcode.get(error.errno or 0, "UNKNOWN")
         raise LocalSttError(f"spawn {command} {code}") from error
     out = completed.stdout.decode("utf-8", "replace")
-    err = _js_trim(completed.stderr.decode("utf-8", "replace"))
+    err = js.trim(completed.stderr.decode("utf-8", "replace"))
     if completed.returncode != 0:
         exit_code = "null" if completed.returncode < 0 else str(completed.returncode)
         raise LocalSttError(f"{failure}: {err or f'exit code {exit_code}'}")
@@ -259,8 +156,8 @@ def _read_tool_version(command: str, args: Sequence[str]) -> str | None:
     except Exception:
         return None
     for line in result.split("\n"):
-        if _js_trim(line):
-            return _js_trim(line)
+        if js.trim(line):
+            return js.trim(line)
     return None
 
 
@@ -281,34 +178,34 @@ def _is_gitignored_local_path(file_path: str) -> bool:
 
 
 def _segments_from_transcript(raw_transcript: Any) -> list[Any]:
-    segments = _get(raw_transcript, "segments")
+    segments = js.get(raw_transcript, "segments")
     if isinstance(segments, list):
         return segments
-    transcription = _get(raw_transcript, "transcription")
+    transcription = js.get(raw_transcript, "transcription")
     if isinstance(transcription, list):
         return transcription
     return []
 
 
 def _text_from_transcript(raw_transcript: Any) -> str:
-    text = _get(raw_transcript, "text")
+    text = js.get(raw_transcript, "text")
     if isinstance(text, str):
         return text
     pieces = []
     for segment in _segments_from_transcript(raw_transcript):
-        piece = _coalesce(_member(segment, "text"), "")
-        pieces.append(_js_string(piece))
-    return _js_trim(" ".join(pieces))
+        piece = js.coalesce(js.prop(segment, "text"), "")
+        pieces.append(js.to_string(piece))
+    return js.trim(" ".join(pieces))
 
 
 def _timestamp_seconds(value: Any) -> float | None:
-    if isinstance(value, int | float) and not isinstance(value, bool):
+    if js.is_number(value):
         number = number_or_null(value)
         if number is not None:
             return number
     if not isinstance(value, str):
         return None
-    parts = [_js_number(part.replace(",", ".", 1)) for part in value.split(":")]
+    parts = [js.string_to_number(part.replace(",", ".", 1)) for part in value.split(":")]
     if any(math.isnan(part) for part in parts):
         return None
     if len(parts) == 3:
@@ -319,24 +216,24 @@ def _timestamp_seconds(value: Any) -> float | None:
 
 
 def _segment_end_seconds(segment: Any) -> float | None:
-    offset_ms = number_or_null(_get(_member(segment, "offsets"), "to"))
+    offset_ms = number_or_null(js.get(js.prop(segment, "offsets"), "to"))
     if offset_ms is not None:
         return offset_ms / 1000
     return _timestamp_seconds(
-        _coalesce(
-            _member(segment, "end"),
-            _member(segment, "t1"),
-            _get(_member(segment, "timestamps"), "to"),
+        js.coalesce(
+            js.prop(segment, "end"),
+            js.prop(segment, "t1"),
+            js.get(js.prop(segment, "timestamps"), "to"),
         )
     )
 
 
 def _duration_from_transcript(raw_transcript: Any, segments: list[Any]) -> float | None:
     explicit = number_or_null(
-        _coalesce(
-            _get(raw_transcript, "durationSeconds"),
-            _get(raw_transcript, "duration_seconds"),
-            _get(raw_transcript, "duration"),
+        js.coalesce(
+            js.get(raw_transcript, "durationSeconds"),
+            js.get(raw_transcript, "duration_seconds"),
+            js.get(raw_transcript, "duration"),
         )
     )
     if explicit is not None:
@@ -344,7 +241,7 @@ def _duration_from_transcript(raw_transcript: Any, segments: list[Any]) -> float
     ends = [
         end for end in (_segment_end_seconds(segment) for segment in segments) if end is not None
     ]
-    return to_fixed(_js_max(ends), 3) if ends else None
+    return to_fixed(js.js_max(*ends), 3) if ends else None
 
 
 def _mean_or_null(values: list[float | None]) -> float | None:
@@ -361,7 +258,7 @@ def _confidence_stats_for(segments: list[Any]) -> JsonObject:
     def mean_of(snake: str, camel: str) -> float | None:
         return _mean_or_null(
             [
-                number_or_null(_coalesce(_member(segment, snake), _member(segment, camel)))
+                number_or_null(js.coalesce(js.prop(segment, snake), js.prop(segment, camel)))
                 for segment in segments
             ]
         )
@@ -375,13 +272,13 @@ def _confidence_stats_for(segments: list[Any]) -> JsonObject:
 
 def _confidence_stats_all_null(stats: Any) -> bool:
     return all(
-        _get(stats, key) is None
+        js.nullish(js.get(stats, key))
         for key in ("meanLogProbability", "meanNoSpeechProbability", "meanCompressionRatio")
     )
 
 
 def _word_count_for(text: str) -> int:
-    trimmed = _js_trim(text)
+    trimmed = js.trim(text)
     return len(_JS_WORD_SPLIT.split(trimmed)) if trimmed else 0
 
 
@@ -392,15 +289,17 @@ def normalize_transcript(raw_transcript: Any, language: str | None = "auto") -> 
     text = _text_from_transcript(raw_transcript)
     word_count = _word_count_for(text)
     duration = _duration_from_transcript(raw_transcript, segments)
-    result = _get(raw_transcript, "result")
+    result = js.get(raw_transcript, "result")
     return {
         "language": {
-            "requested": _coalesce(language, "auto"),
-            "detected": _coalesce(_get(raw_transcript, "language"), _get(result, "language"), None),
+            "requested": js.coalesce(language, "auto"),
+            "detected": js.coalesce(
+                js.get(raw_transcript, "language"), js.get(result, "language"), None
+            ),
             "probability": number_or_null(
-                _coalesce(
-                    _get(raw_transcript, "languageProbability"),
-                    _get(result, "language_probability"),
+                js.coalesce(
+                    js.get(raw_transcript, "languageProbability"),
+                    js.get(result, "language_probability"),
                 )
             ),
         },
@@ -409,7 +308,7 @@ def normalize_transcript(raw_transcript: Any, language: str | None = "auto") -> 
         "counts": {
             "words": word_count,
             "segments": len(segments),
-            "characters": _utf16_length(text),
+            "characters": js.utf16_length(text),
         },
         "derivedFeatures": {
             "wordsPerMinute": to_fixed(word_count / (duration / 60), 2) if duration else None,
@@ -426,7 +325,7 @@ def normalize_transcript(raw_transcript: Any, language: str | None = "auto") -> 
 
 
 def _recordings(index_manifest: Any) -> list[Any] | None:
-    recordings = _get(index_manifest, "recordings")
+    recordings = js.get(index_manifest, "recordings")
     return recordings if isinstance(recordings, list) else None
 
 
@@ -441,8 +340,8 @@ def _source_index_for(index_manifest: Any) -> JsonObject:
         if isinstance(index_manifest, dict) and key in index_manifest:
             source[key] = index_manifest[key]
     recordings = _recordings(index_manifest)
-    source["recordingCount"] = _coalesce(
-        _get(_get(index_manifest, "totals"), "recordings"),
+    source["recordingCount"] = js.coalesce(
+        js.get(js.get(index_manifest, "totals"), "recordings"),
         len(recordings) if recordings is not None else None,
     )
     return source
@@ -464,7 +363,7 @@ def _read_scope() -> JsonObject:
 def _ffmpeg_tool_choice(options: SttOptions, tool_versions: Mapping[str, Any]) -> JsonObject:
     return {
         "name": "ffmpeg",
-        "version": _coalesce(tool_versions.get("ffmpeg"), None),
+        "version": js.coalesce(tool_versions.get("ffmpeg"), None),
         "stage": "decode-to-temporary-16khz-mono-wav",
         "openness": "open-source",
         "openSource": True,
@@ -479,7 +378,7 @@ def _ffmpeg_tool_choice(options: SttOptions, tool_versions: Mapping[str, Any]) -
 def _stt_tool_choice(options: SttOptions, tool_versions: Mapping[str, Any]) -> JsonObject:
     return {
         "name": "whisper.cpp",
-        "version": _coalesce(tool_versions.get("whisperCpp"), None),
+        "version": js.coalesce(tool_versions.get("whisperCpp"), None),
         "stage": "local-speech-to-text",
         "openness": "open-source",
         "openSource": True,
@@ -526,7 +425,7 @@ def build_stt_dry_run(index_manifest: Any, options: SttOptions) -> JsonObject:
         "model": {
             "path": options.model,
             "family": "whisper.cpp ggml",
-            "defaultSelection": _js_basename(options.model),
+            "defaultSelection": js.path_basename(options.model),
             "openSource": True,
         },
         "language": options.language,
@@ -556,7 +455,7 @@ def build_stt_dry_run(index_manifest: Any, options: SttOptions) -> JsonObject:
 
 
 def _completed(rows: list[Any]) -> list[Any]:
-    return [row for row in rows if _member(row, "status") == "completed"]
+    return [row for row in rows if js.prop(row, "status") == "completed"]
 
 
 def build_stt_manifest(
@@ -571,7 +470,7 @@ def build_stt_manifest(
     completed_count = len(_completed(results))
     return {
         "schemaVersion": MANIFEST_SCHEMA_VERSION,
-        "generatedAt": _coalesce(options.generated_at, iso_timestamp()),
+        "generatedAt": js.coalesce(options.generated_at, iso_timestamp()),
         "updatedAt": iso_timestamp(),
         "sourceIndex": _source_index_for(index_manifest),
         "releaseGateApproval": options.approval,
@@ -592,10 +491,12 @@ def build_stt_manifest(
             "key": "recordingId",
             "outputWrittenAfterEachRecording": True,
             "existingCompletedResultsSkipped": True,
-            "skippedCompletedCount": _coalesce(skipped_completed, 0),
+            "skippedCompletedCount": js.coalesce(skipped_completed, 0),
             "completedCount": completed_count,
             "remainingCount": max(_recording_count(index_manifest) - completed_count, 0),
-            "lastCompletedRecordingId": _get(results[-1], "recordingId") if results else None,
+            "lastCompletedRecordingId": js.coalesce(js.get(results[-1], "recordingId"), None)
+            if results
+            else None,
         },
         "toolChoices": [
             _ffmpeg_tool_choice(options, versions),
@@ -658,10 +559,10 @@ def transcribe_recording_entry(entry: JsonObject, options: SttOptions) -> Transc
     the transcript directory (the only place transcript text is written)."""
 
     corpus_root = options.corpus_root or ""
-    filename = _js_string(entry.get("filename"))
-    recording_id = _js_string(entry.get("recordingId"))
-    audio_path = _js_join(corpus_root, filename)
-    transcript_base = _js_join(options.transcript_dir, recording_id)
+    filename = js.to_string(js.get(entry, "filename"))
+    recording_id = js.to_string(js.get(entry, "recordingId"))
+    audio_path = js.path_join(corpus_root, filename)
+    transcript_base = js.path_join(options.transcript_dir, recording_id)
     temp_root = tempfile.mkdtemp(prefix="voice-journey-stt-")
     wav_path = os.path.join(temp_root, f"{recording_id}.wav")
     try:
@@ -710,21 +611,23 @@ def transcribe_recording_entry(entry: JsonObject, options: SttOptions) -> Transc
 def _materialize_transcript_result(
     entry: JsonObject, result: TranscriptionResult, options: SttOptions
 ) -> MaterializedTranscript:
-    transcript_base = _js_join(options.transcript_dir, _js_string(entry.get("recordingId")))
+    transcript_base = js.path_join(
+        options.transcript_dir, js.to_string(js.get(entry, "recordingId"))
+    )
     raw_transcript = result.get("rawTranscript")
     if raw_transcript is None:
         raw_transcript = {
-            "text": _coalesce(result.get("transcriptText"), ""),
-            "language": _coalesce(result.get("language"), options.language),
-            "segments": _coalesce(result.get("segments"), []),
+            "text": js.coalesce(result.get("transcriptText"), ""),
+            "language": js.coalesce(result.get("language"), options.language),
+            "segments": js.coalesce(result.get("segments"), []),
             "durationSeconds": result.get("durationSeconds"),
         }
-    text_path = _coalesce(result.get("textPath"), f"{transcript_base}.txt")
-    json_path = _coalesce(result.get("jsonPath"), f"{transcript_base}.json")
+    text_path = js.coalesce(result.get("textPath"), f"{transcript_base}.txt")
+    json_path = js.coalesce(result.get("jsonPath"), f"{transcript_base}.json")
     if not result.get("textPath"):
         text = result.get("transcriptText")
         body = text if text is not None else _text_from_transcript(raw_transcript)
-        Path(text_path).write_text(f"{_js_string(body)}\n", encoding="utf-8")
+        Path(text_path).write_text(f"{js.to_string(body)}\n", encoding="utf-8")
     if not result.get("jsonPath"):
         Path(json_path).write_text(manifest_text(raw_transcript), encoding="utf-8")
     return MaterializedTranscript(text_path, json_path, raw_transcript)
@@ -752,8 +655,8 @@ def transcribe_index_manifest(
     Path(options.transcript_dir).mkdir(parents=True, exist_ok=True)
     existing = _read_existing_manifest(options.out)
     completed_by_id: dict[Any, Any] = {}
-    for row in _completed(_coalesce(_get(existing, "results"), [])):
-        completed_by_id[_get(row, "recordingId")] = row
+    for row in _completed(js.coalesce(js.get(existing, "results"), [])):
+        completed_by_id[js.get(row, "recordingId")] = row
     versions = (
         tool_versions
         if tool_versions is not None
@@ -774,11 +677,11 @@ def transcribe_index_manifest(
     transcribe = transcribe_recording or transcribe_recording_entry
     results: list[Any] = manifest["results"]
     resume: JsonObject = manifest["resume"]
-    for entry in _coalesce(_recordings(index_manifest), []):
-        if entry.get("recordingId") in completed_by_id:
+    for entry in js.coalesce(_recordings(index_manifest), []):
+        if js.get(entry, "recordingId") in completed_by_id:
             continue
         # Measurement-chain takes are indexed but not transcribed yet (Phase B).
-        if _get(entry.get("source"), "type") == "measurement":
+        if js.get(js.get(entry, "source"), "type") == "measurement":
             continue
         result = transcribe(entry, options)
         materialized = _materialize_transcript_result(entry, result, options)
@@ -829,7 +732,7 @@ def _backfill_target_for(options: SttOptions) -> str:
 def build_backfill_dry_run(manifest: Any, options: SttOptions) -> JsonObject:
     """What ``backfill-manifest`` would change; reads only the manifest."""
 
-    rows: list[Any] = _coalesce(_get(manifest, "results"), [])
+    rows: list[Any] = js.coalesce(js.get(manifest, "results"), [])
     return {
         "dryRun": True,
         "operation": "local-stt-duration-backfill",
@@ -845,18 +748,20 @@ def build_backfill_dry_run(manifest: Any, options: SttOptions) -> JsonObject:
             "total": len(rows),
             "completed": len(_completed(rows)),
             "durationProcessedSecondsNull": sum(
-                1 for row in rows if _member(row, "durationProcessedSeconds") is None
+                1 for row in rows if js.nullish(js.prop(row, "durationProcessedSeconds"))
             ),
             "wordsPerMinuteNull": sum(
-                1 for row in rows if _get(_member(row, "derivedFeatures"), "wordsPerMinute") is None
+                1
+                for row in rows
+                if js.nullish(js.get(js.prop(row, "derivedFeatures"), "wordsPerMinute"))
             ),
             "segmentDensityPerMinuteNull": sum(
                 1
                 for row in rows
-                if _get(_member(row, "derivedFeatures"), "segmentDensityPerMinute") is None
+                if js.nullish(js.get(js.prop(row, "derivedFeatures"), "segmentDensityPerMinute"))
             ),
             "confidenceStatsAllNull": sum(
-                1 for row in rows if _confidence_stats_all_null(_member(row, "confidenceStats"))
+                1 for row in rows if _confidence_stats_all_null(js.prop(row, "confidenceStats"))
             ),
         },
         "method": _backfill_method(),
@@ -868,7 +773,7 @@ def backfill_manifest(manifest: JsonObject, options: SttOptions) -> JsonObject:
     """Re-derive durations and duration-based rates from the local transcript JSONs and
     write only numbers back to the manifest."""
 
-    rows: list[Any] = _coalesce(manifest.get("results"), [])
+    rows: list[Any] = js.coalesce(manifest.get("results"), [])
     counters = {
         "rowsExamined": 0,
         "rowsSkippedNotCompleted": 0,
@@ -882,12 +787,12 @@ def backfill_manifest(manifest: JsonObject, options: SttOptions) -> JsonObject:
     missing_recording_ids: list[Any] = []
     for row in rows:
         counters["rowsExamined"] += 1
-        if _member(row, "status") != "completed":
+        if js.prop(row, "status") != "completed":
             counters["rowsSkippedNotCompleted"] += 1
             continue
         recording_id = row["recordingId"] if "recordingId" in row else None
-        name = _js_string(recording_id) if "recordingId" in row else "undefined"
-        json_path = _js_join(options.transcript_dir, f"{name}.json")
+        name = js.to_string(recording_id) if "recordingId" in row else "undefined"
+        json_path = js.path_join(options.transcript_dir, f"{name}.json")
         try:
             raw_transcript = read_json(json_path)
         except FileNotFoundError:
@@ -909,8 +814,8 @@ def backfill_manifest(manifest: JsonObject, options: SttOptions) -> JsonObject:
                 counters["rowsRefreshedDuration"] += 1
             row["durationProcessedSeconds"] = duration
             counts = row.get("counts")
-            words = _coalesce(_get(counts, "words"), 0)
-            segment_count = _coalesce(_get(counts, "segments"), len(segments))
+            words = js.coalesce(js.get(counts, "words"), 0)
+            segment_count = js.coalesce(js.get(counts, "segments"), len(segments))
             existing = row.get("derivedFeatures")
             row["derivedFeatures"] = {
                 **(existing if isinstance(existing, dict) else {}),
@@ -923,7 +828,7 @@ def backfill_manifest(manifest: JsonObject, options: SttOptions) -> JsonObject:
         if not _confidence_stats_all_null(confidence_stats):
             row["confidenceStats"] = confidence_stats
             counters["rowsConfidenceStatsUpdated"] += 1
-    backfilled_at = _coalesce(options.backfilled_at, iso_timestamp())
+    backfilled_at = js.coalesce(options.backfilled_at, iso_timestamp())
     manifest["durationBackfill"] = {
         "method": _backfill_method(),
         "backfilledAt": backfilled_at,
@@ -1007,7 +912,7 @@ def _require_value(args: list[str], flag: str) -> str:
 
 
 def _parse_positive_integer(value: str, flag: str) -> int:
-    parsed = _js_number(value)
+    parsed = js.string_to_number(value)
     if not math.isfinite(parsed) or parsed != math.floor(parsed) or parsed <= 0:
         raise LocalSttError(f"{flag} must be a positive integer")
     return int(parsed)

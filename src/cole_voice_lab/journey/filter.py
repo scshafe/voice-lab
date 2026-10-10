@@ -18,18 +18,18 @@ and is bit-exact with the JavaScript:
 
 Everything accumulated over frames (means, the standard deviation) is plain Python in
 the JavaScript order (never ``sum()``, which compensates its rounding on Python 3.12).
-``Math.log10`` is V8's fdlibm ``log10``, ported here; the C library's ``log10`` differs
-from it in the last bit for about 6% of the RMS values (measured against Node 24).
+``Math.log10`` is V8's fdlibm ``log10`` (``jscompat.log10``); the C library's ``log10``
+differs from it in the last bit for about 6% of the RMS values (measured against Node 24).
+The other JavaScript value rules (``Number()``, ``String()``, ``??``, ``undefined``) are
+``journey/jscompat.py``'s.
 
 Differences from the JavaScript, all deliberate:
 
 - The DSP entry of ``toolChoices`` names this Python implementation and its versions
   instead of ``Node.js standard library DSP heuristics`` and ``process.version``.
 - ``localeCompare`` (the tie-break between recordings of equal size in a year) is ICU
-  root collation, implemented for ASCII (Node 24's order, three levels: punctuation and
-  symbols, digits, letters case-insensitively, then lowercase before uppercase; ASCII
-  controls other than tab to carriage return are ignorable). Other characters sort after
-  ASCII by code point, where ICU would interleave them.
+  root collation, exact for ASCII (``jscompat.locale_compare``). Other characters sort
+  after ASCII by code point, where ICU would interleave them.
 - Error messages from failures outside this module (an unreadable or invalid JSON file)
   are Python's; the exit code is the same.
 """
@@ -40,9 +40,6 @@ import errno
 import functools
 import math
 import platform
-import posixpath
-import re
-import struct
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -50,6 +47,7 @@ from dataclasses import dataclass
 from importlib import metadata
 from typing import Any, NamedTuple
 
+from cole_voice_lab.journey import jscompat as js
 from cole_voice_lab.journey import jsonio
 from cole_voice_lab.journey.paths import resolve_paths, resolve_tools
 
@@ -67,125 +65,6 @@ AnalyzeRecording = Callable[[Json], Json]
 
 class FilterProofError(Exception):
     """A refusal; the command line prints ``error: <message>`` and exits 1."""
-
-
-class _Undefined:
-    """JavaScript's ``undefined``: a missing key (``JSON.stringify`` omits it)."""
-
-    def __repr__(self) -> str:
-        return "undefined"
-
-
-UNDEFINED: Any = _Undefined()
-
-
-def _get(value: Any, key: str) -> Any:
-    """``value?.[key]``: ``UNDEFINED`` when ``value`` is not an object or lacks the key."""
-
-    if isinstance(value, Mapping):
-        return value.get(key, UNDEFINED)
-    return UNDEFINED
-
-
-def _nullish(value: Any) -> bool:
-    return value is None or value is UNDEFINED
-
-
-def _coalesce(*values: Any) -> Any:
-    """``a ?? b ?? c``."""
-
-    for value in values[:-1]:
-        if not _nullish(value):
-            return value
-    return values[-1]
-
-
-def _length(value: Any) -> Any:
-    """``value?.length`` for a JSON array (``UNDEFINED`` otherwise)."""
-
-    return len(value) if isinstance(value, list) else UNDEFINED
-
-
-def _defined(**fields: Any) -> Json:
-    """An object literal; keys whose value is ``undefined`` are left out."""
-
-    return {key: value for key, value in fields.items() if value is not UNDEFINED}
-
-
-def _truthy(value: Any) -> bool:
-    if _nullish(value) or value is False:
-        return False
-    if isinstance(value, int | float):
-        return value == value and value != 0
-    if isinstance(value, str):
-        return value != ""
-    return True
-
-
-_JS_WHITESPACE = "\t\n\v\f\r \xa0                　﻿"  # noqa: E501
-_DECIMAL = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
-_RADIX = {
-    "0x": (16, re.compile(r"[0-9a-fA-F]+")),
-    "0o": (8, re.compile(r"[0-7]+")),
-    "0b": (2, re.compile(r"[01]+")),
-}
-
-
-def js_number(value: Any) -> float:
-    """``Number(value)`` for JSON values (``ToNumber``)."""
-
-    if value is UNDEFINED:
-        return math.nan
-    if value is None or value is False:
-        return 0.0
-    if value is True:
-        return 1.0
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        text = value.strip(_JS_WHITESPACE)
-        if text == "":
-            return 0.0
-        if text in ("Infinity", "+Infinity"):
-            return math.inf
-        if text == "-Infinity":
-            return -math.inf
-        radix = _RADIX.get(text[:2].lower())
-        if radix is not None:
-            base, digits = radix
-            return float(int(text[2:], base)) if digits.fullmatch(text[2:]) else math.nan
-        return float(text) if _DECIMAL.fullmatch(text) else math.nan
-    return math.nan
-
-
-def js_string(value: Any) -> str:
-    """``String(value)`` (template-literal interpolation) for JSON values."""
-
-    if value is UNDEFINED:
-        return "undefined"
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return jsonio.format_number(value) if math.isfinite(value) else _non_finite(value)
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return ",".join("" if _nullish(item) else js_string(item) for item in value)
-    return "[object Object]"
-
-
-def _non_finite(value: float) -> str:
-    if value != value:
-        return "NaN"
-    return "Infinity" if value > 0 else "-Infinity"
-
-
-def _js_min(left: float, right: float) -> float:
-    if left != left or right != right:
-        return math.nan
-    return right if right < left else left
 
 
 def _clamp(value: float) -> float:
@@ -222,133 +101,6 @@ def _stddev(values: Sequence[float]) -> float:
 
 def _ratio(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator else 0
-
-
-# V8's Math.log10: fdlibm's e_log10.c over fdlibm's e_log.c (src/base/ieee754.cc).
-_LN2_HI = 6.93147180369123816490e-01
-_LN2_LO = 1.90821492927058770002e-10
-_TWO54 = 1.80143985094819840000e16
-_LG1 = 6.666666666666735130e-01
-_LG2 = 3.999999999940941908e-01
-_LG3 = 2.857142874366239149e-01
-_LG4 = 2.222219843214978396e-01
-_LG5 = 1.818357216161805012e-01
-_LG6 = 1.531383769920937332e-01
-_LG7 = 1.479819860511658591e-01
-_IVLN10 = 4.34294481903251816668e-01
-_LOG10_2HI = 3.01029995663611771306e-01
-_LOG10_2LO = 3.69423907715893078616e-13
-
-
-def _words(value: float) -> tuple[int, int]:
-    bits: int = struct.unpack("<Q", struct.pack("<d", value))[0]
-    return bits >> 32, bits & 0xFFFFFFFF
-
-
-def _from_words(high: int, low: int) -> float:
-    result: float = struct.unpack("<d", struct.pack("<Q", (high << 32) | low))[0]
-    return result
-
-
-def _fdlibm_log(x: float) -> float:
-    """fdlibm ``__ieee754_log`` for a positive normal ``x`` (the only caller's domain)."""
-
-    hx, lx = _words(x)
-    k = (hx >> 20) - 1023
-    hx &= 0x000FFFFF
-    i = (hx + 0x95F64) & 0x100000
-    x = _from_words(hx | (i ^ 0x3FF00000), lx)
-    k += i >> 20
-    f = x - 1.0
-    dk = float(k)
-    if (0x000FFFFF & (2 + hx)) < 3:
-        if f == 0.0:
-            return 0.0 if k == 0 else dk * _LN2_HI + dk * _LN2_LO
-        r = f * f * (0.5 - 0.33333333333333333 * f)
-        return f - r if k == 0 else dk * _LN2_HI - ((r - dk * _LN2_LO) - f)
-    s = f / (2.0 + f)
-    z = s * s
-    w = z * z
-    t1 = w * (_LG2 + w * (_LG4 + w * _LG6))
-    t2 = z * (_LG1 + w * (_LG3 + w * (_LG5 + w * _LG7)))
-    r = t2 + t1
-    if (hx - 0x6147A) | (0x6B851 - hx) > 0:
-        hfsq = 0.5 * f * f
-        if k == 0:
-            return f - (hfsq - s * (hfsq + r))
-        return dk * _LN2_HI - ((hfsq - (s * (hfsq + r) + dk * _LN2_LO)) - f)
-    if k == 0:
-        return f - s * (f - r)
-    return dk * _LN2_HI - ((s * (f - r) - dk * _LN2_LO) - f)
-
-
-def js_log10(x: float) -> float:
-    """``Math.log10`` as V8 computes it (fdlibm), bit for bit."""
-
-    if x != x or x < 0:
-        return math.nan
-    if x == 0:
-        return -math.inf
-    if x == math.inf:
-        return x
-    hx, lx = _words(x)
-    k = 0
-    if hx < 0x00100000:
-        k -= 54
-        x *= _TWO54
-        hx, lx = _words(x)
-    if hx == 0x3FF00000 and lx == 0:
-        return 0.0
-    k += (hx >> 20) - 1023
-    i = 1 if k < 0 else 0
-    y = float(k + i)
-    x = _from_words((hx & 0x000FFFFF) | ((0x3FF - i) << 20), lx)
-    z = y * _LOG10_2LO + _IVLN10 * _fdlibm_log(x)
-    return z + y * _LOG10_2HI
-
-
-_ASCII_ORDER = "\t\n\v\f\r _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789" + "".join(
-    chr(code) for code in range(ord("a"), ord("z") + 1)
-)
-
-
-def _collation_weights() -> dict[str, tuple[int, int]]:
-    weights: dict[str, tuple[int, int]] = {}
-    for rank, char in enumerate(_ASCII_ORDER):
-        weights[char] = (rank + 1, 0)
-        if char.isalpha():
-            weights[char.upper()] = (rank + 1, 1)
-    return weights
-
-
-_COLLATION = _collation_weights()
-
-
-def _collation_key(text: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    primary: list[int] = []
-    tertiary: list[int] = []
-    for char in text:
-        weight = _COLLATION.get(char)
-        if weight is None:
-            if ord(char) < 0x80:
-                continue  # completely ignorable ASCII control
-            weight = (0x100 + ord(char), 0)
-        primary.append(weight[0])
-        tertiary.append(weight[1])
-    return tuple(primary), tuple(tertiary)
-
-
-def locale_compare(left: str, right: str) -> int:
-    """``left.localeCompare(right)`` (ICU root collation) for ASCII strings."""
-
-    a, b = _collation_key(left), _collation_key(right)
-    return (a > b) - (a < b)
-
-
-def _utf16_key(text: str) -> bytes:
-    """The default ``Array.prototype.sort`` order: UTF-16 code units."""
-
-    return text.encode("utf-16-be", "surrogatepass")
 
 
 # ---------------------------------------------------------------------------- options
@@ -425,7 +177,7 @@ def _require_value(args: list[str], flag: str) -> str:
 
 
 def _parse_non_negative_integer(value: str, flag: str) -> int:
-    parsed = js_number(value)
+    parsed = js.to_number(value)
     if not math.isfinite(parsed) or not parsed.is_integer() or parsed < 0:
         raise FilterProofError(f"{flag} must be a non-negative integer")
     return int(parsed)
@@ -450,8 +202,8 @@ execution path and therefore require release-gate approval before use.
 
 
 def _year_for(entry: Json) -> str:
-    captured_at = _get(entry, "capturedAt")
-    if not _truthy(captured_at):
+    captured_at = js.get(entry, "capturedAt")
+    if not js.truthy(captured_at):
         return "unknown"
     if not isinstance(captured_at, str):
         raise TypeError("entry.capturedAt.slice is not a function")
@@ -459,12 +211,12 @@ def _year_for(entry: Json) -> str:
 
 
 def _compare_by_size_then_name(left: Json, right: Json) -> int:
-    difference = js_number(_coalesce(_get(_get(left, "file"), "sizeBytes"), 0)) - js_number(
-        _coalesce(_get(_get(right, "file"), "sizeBytes"), 0)
-    )
+    difference = js.to_number(
+        js.coalesce(js.get(js.get(left, "file"), "sizeBytes"), 0)
+    ) - js.to_number(js.coalesce(js.get(js.get(right, "file"), "sizeBytes"), 0))
     if difference == difference and difference != 0:
         return -1 if difference < 0 else 1
-    return locale_compare(left["filename"], right["filename"])
+    return js.locale_compare(left["filename"], right["filename"])
 
 
 def select_sample(
@@ -477,19 +229,19 @@ def select_sample(
     if generated_at is None:
         generated_at = jsonio.iso_timestamp()
     by_year: dict[str, list[Json]] = {}
-    recordings = _coalesce(_get(index_manifest, "recordings"), [])
+    recordings = js.coalesce(js.get(index_manifest, "recordings"), [])
     for recording in recordings:
-        if _get(_get(recording, "source"), "type") == "measurement":
+        if js.get(js.get(recording, "source"), "type") == "measurement":
             continue
         by_year.setdefault(_year_for(recording), []).append(recording)
 
     selected: list[tuple[Json, str]] = []
     seen: set[Any] = set()
-    for year in sorted(by_year, key=_utf16_key):
+    for year in sorted(by_year, key=js.utf16_key):
         entries = sorted(by_year[year], key=functools.cmp_to_key(_compare_by_size_then_name))
         for index in _candidate_indexes_for(len(entries), per_year):
             entry = entries[index]
-            recording_id = _get(entry, "recordingId")
+            recording_id = js.get(entry, "recordingId")
             if recording_id in seen:
                 continue
             seen.add(recording_id)
@@ -498,11 +250,11 @@ def select_sample(
     return {
         "schemaVersion": SAMPLE_SCHEMA_VERSION,
         "generatedAt": generated_at,
-        "sourceIndex": _defined(
-            schemaVersion=_get(index_manifest, "schemaVersion"),
-            recordingCount=_coalesce(
-                _get(_get(index_manifest, "totals"), "recordings"),
-                _length(_get(index_manifest, "recordings")),
+        "sourceIndex": js.defined(
+            schemaVersion=js.get(index_manifest, "schemaVersion"),
+            recordingCount=js.coalesce(
+                js.get(js.get(index_manifest, "totals"), "recordings"),
+                js.length(js.get(index_manifest, "recordings")),
                 None,
             ),
         ),
@@ -519,16 +271,16 @@ def select_sample(
         },
         "releaseGateRequiredForAnalysis": True,
         "sample": [
-            _defined(
+            js.defined(
                 sampleOrder=order + 1,
-                recordingId=_get(entry, "recordingId"),
-                filename=_get(entry, "filename"),
-                capturedAt=_get(entry, "capturedAt"),
+                recordingId=js.get(entry, "recordingId"),
+                filename=js.get(entry, "filename"),
+                capturedAt=js.get(entry, "capturedAt"),
                 year=_year_for(entry),
-                sizeBytes=_coalesce(_get(_get(entry, "file"), "sizeBytes"), None),
+                sizeBytes=js.coalesce(js.get(js.get(entry, "file"), "sizeBytes"), None),
                 selectionReason=reason,
-                sourceRef=_get(entry, "sourceRef"),
-                indexClassification=_get(entry, "contentClassification"),
+                sourceRef=js.get(entry, "sourceRef"),
+                indexClassification=js.get(entry, "contentClassification"),
             )
             for order, (entry, reason) in enumerate(selected[:max])
         ],
@@ -594,13 +346,13 @@ def extracted_feature_names() -> list[str]:
 def analyze_dry_run(
     sample_manifest: Json, *, corpus_root: str | None, ffmpeg_bin: str, out: str
 ) -> Json:
-    sample = _get(sample_manifest, "sample")
+    sample = js.get(sample_manifest, "sample")
     return {
         "dryRun": True,
         "operation": "filtering-proof-sample-analysis",
         "architecture": _architecture(),
         "corpusRoot": corpus_root,
-        "sampleCount": _coalesce(_length(sample), 0),
+        "sampleCount": js.coalesce(js.length(sample), 0),
         "ffmpegBin": ffmpeg_bin,
         "outputPath": out,
         "readScope": {
@@ -616,11 +368,11 @@ def analyze_dry_run(
         },
         "extractedFeatures": _feature_names(),
         "sample": [
-            _defined(
-                recordingId=_get(entry, "recordingId"),
-                filename=_get(entry, "filename"),
-                year=_get(entry, "year"),
-                sizeBytes=_get(entry, "sizeBytes"),
+            js.defined(
+                recordingId=js.get(entry, "recordingId"),
+                filename=js.get(entry, "filename"),
+                year=js.get(entry, "year"),
+                sizeBytes=js.get(entry, "sizeBytes"),
             )
             for entry in (sample if isinstance(sample, list) else [])
         ],
@@ -630,18 +382,18 @@ def analyze_dry_run(
 def analyze_index_dry_run(
     index_manifest: Json, *, corpus_root: str | None, ffmpeg_bin: str, out: str
 ) -> Json:
-    recordings = _length(_get(index_manifest, "recordings"))
+    recordings = js.length(js.get(index_manifest, "recordings"))
     return {
         "dryRun": True,
         "operation": "full-corpus-classification",
         "architecture": _architecture(),
         "corpusRoot": corpus_root,
-        "recordingCount": _coalesce(recordings, 0),
-        "sourceIndex": _defined(
-            schemaVersion=_get(index_manifest, "schemaVersion"),
-            generatedAt=_get(index_manifest, "generatedAt"),
-            recordingCount=_coalesce(
-                _get(_get(index_manifest, "totals"), "recordings"), recordings, None
+        "recordingCount": js.coalesce(recordings, 0),
+        "sourceIndex": js.defined(
+            schemaVersion=js.get(index_manifest, "schemaVersion"),
+            generatedAt=js.get(index_manifest, "generatedAt"),
+            recordingCount=js.coalesce(
+                js.get(js.get(index_manifest, "totals"), "recordings"), recordings, None
             ),
         ),
         "ffmpegBin": ffmpeg_bin,
@@ -674,18 +426,6 @@ def analyze_index_dry_run(
 # ---------------------------------------------------------------------------- analysis
 
 
-def _join(*parts: str) -> str:
-    """Node's ``path.join``: join the non-empty parts, then normalize."""
-
-    joined = "/".join(part for part in parts if part)
-    if not joined:
-        return "."
-    normalized = posixpath.normpath(joined)
-    if normalized.startswith("//"):
-        normalized = "/" + normalized.lstrip("/")
-    return normalized
-
-
 def _spawn(command: str, args: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
     try:
         return subprocess.run(
@@ -699,8 +439,8 @@ def _spawn(command: str, args: Sequence[str]) -> subprocess.CompletedProcess[byt
 def read_tool_version(command: str, args: Sequence[str]) -> str:
     completed = _spawn(command, args)
     if completed.returncode != 0:
-        stderr = completed.stderr.decode("utf-8", "replace").strip()
-        raise FilterProofError(f"{posixpath.basename(command)} version probe failed: {stderr}")
+        stderr = js.trim(completed.stderr.decode("utf-8", "replace"))
+        raise FilterProofError(f"{js.path_basename(command)} version probe failed: {stderr}")
     return completed.stdout.decode("utf-8", "replace").split("\n")[0]
 
 
@@ -724,8 +464,8 @@ def decode_pcm_with_ffmpeg(audio_path: str, ffmpeg_bin: str) -> bytes:
         ],
     )
     if completed.returncode != 0:
-        stderr = completed.stderr.decode("utf-8", "replace").strip()
-        raise FilterProofError(f"ffmpeg failed for {posixpath.basename(audio_path)}: {stderr}")
+        stderr = js.trim(completed.stderr.decode("utf-8", "replace"))
+        raise FilterProofError(f"ffmpeg failed for {js.path_basename(audio_path)}: {stderr}")
     return completed.stdout
 
 
@@ -820,7 +560,7 @@ def extract_features_from_pcm(buffer: bytes, sample_rate: float = SAMPLE_RATE) -
         "activeRatio": _ratio(len(active), len(frames)),
         "voicedRatio": _ratio(len(voiced), len(frames)),
         "meanRmsDb": _round(
-            _mean([20 * js_log10(frame.rms if frame.rms else 1e-9) for frame in active]), 2
+            _mean([20 * js.log10(frame.rms if frame.rms else 1e-9) for frame in active]), 2
         ),
         "meanZeroCrossingRate": _round(_mean([frame.zero_crossing_rate for frame in active]), 4),
         "meanPitchHz": _round(_mean(pitch_values), 1) if pitch_values else None,
@@ -838,12 +578,12 @@ def extract_features_from_pcm(buffer: bytes, sample_rate: float = SAMPLE_RATE) -
 def classify_features(features: Mapping[str, Any]) -> Json:
     """``classifyFeatures``: the content, contamination and final bucket."""
 
-    active_ratio = js_number(_get(features, "activeRatio"))
-    voiced_ratio = js_number(_get(features, "voicedRatio"))
-    pitch_confidence = js_number(_get(features, "meanPitchConfidence"))
-    zero_crossing_rate = js_number(_get(features, "meanZeroCrossingRate"))
-    clipping_ratio = js_number(_get(features, "clippingRatio"))
-    pitch_stability = js_number(_coalesce(_get(features, "pitchStability"), 1))
+    active_ratio = js.to_number(js.get(features, "activeRatio"))
+    voiced_ratio = js.to_number(js.get(features, "voicedRatio"))
+    pitch_confidence = js.to_number(js.get(features, "meanPitchConfidence"))
+    zero_crossing_rate = js.to_number(js.get(features, "meanZeroCrossingRate"))
+    clipping_ratio = js.to_number(js.get(features, "clippingRatio"))
+    pitch_stability = js.to_number(js.coalesce(js.get(features, "pitchStability"), 1))
 
     content_label = "uncertain"
     content_confidence = 0.45
@@ -885,7 +625,7 @@ def classify_features(features: Mapping[str, Any]) -> Json:
     elif content_label == "uncertain":
         contamination_label = "uncertain"
 
-    confidence = _js_min(
+    confidence = js.js_min(
         content_confidence,
         content_confidence if contamination_confidence == 0 else contamination_confidence,
     )
@@ -897,10 +637,10 @@ def classify_features(features: Mapping[str, Any]) -> Json:
         "confidence": _round(confidence, 3),
         "rationale": (
             f"content={content_label}; contamination={contamination_label}; "
-            f"voicedRatio={js_string(_get(features, 'voicedRatio'))}; "
-            f"pitchConfidence={js_string(_get(features, 'meanPitchConfidence'))}; "
-            f"zcr={js_string(_get(features, 'meanZeroCrossingRate'))}; "
-            f"activeRatio={js_string(_get(features, 'activeRatio'))}"
+            f"voicedRatio={js.to_string(js.get(features, 'voicedRatio'))}; "
+            f"pitchConfidence={js.to_string(js.get(features, 'meanPitchConfidence'))}; "
+            f"zcr={js.to_string(js.get(features, 'meanZeroCrossingRate'))}; "
+            f"activeRatio={js.to_string(js.get(features, 'activeRatio'))}"
         ),
     }
 
@@ -922,7 +662,7 @@ def _final_bucket_for(content_label: str, contamination_label: str) -> str:
 def _spot_check_recommended(classification: Json) -> bool:
     return (
         classification["finalBucket"] == "uncertain_manual_review"
-        or js_number(classification["confidence"]) < 0.7
+        or js.to_number(classification["confidence"]) < 0.7
     )
 
 
@@ -1013,10 +753,10 @@ def build_results_manifest(
     return {
         "schemaVersion": RESULTS_SCHEMA_VERSION,
         "generatedAt": generated_at if generated_at is not None else jsonio.iso_timestamp(),
-        "sourceSample": _defined(
-            schemaVersion=_get(sample_manifest, "schemaVersion"),
-            generatedAt=_get(sample_manifest, "generatedAt"),
-            sampleCount=_coalesce(_length(_get(sample_manifest, "sample")), 0),
+        "sourceSample": js.defined(
+            schemaVersion=js.get(sample_manifest, "schemaVersion"),
+            generatedAt=js.get(sample_manifest, "generatedAt"),
+            sampleCount=js.coalesce(js.length(js.get(sample_manifest, "sample")), 0),
         ),
         "releaseGateApproval": approval,
         "readScope": {
@@ -1028,7 +768,7 @@ def build_results_manifest(
             "corpusMutation": False,
         },
         "toolChoices": [
-            _ffmpeg_choice(_coalesce(_get(tool_versions, "ffmpeg"), None), "sample audio"),
+            _ffmpeg_choice(js.coalesce(js.get(tool_versions, "ffmpeg"), None), "sample audio"),
             _dsp_choice("sample proof implementation"),
             _afinfo_choice(),
         ],
@@ -1046,16 +786,16 @@ def build_full_corpus_results_manifest(
     tool_versions: Mapping[str, Any] | None = None,
     skipped_completed: int | None = None,
 ) -> Json:
-    recording_count = _coalesce(_length(_get(index_manifest, "recordings")), 0)
+    recording_count = js.coalesce(js.length(js.get(index_manifest, "recordings")), 0)
     return {
         "schemaVersion": FULL_CORPUS_RESULTS_SCHEMA_VERSION,
         "generatedAt": generated_at if generated_at is not None else jsonio.iso_timestamp(),
         "updatedAt": jsonio.iso_timestamp(),
-        "sourceIndex": _defined(
-            schemaVersion=_get(index_manifest, "schemaVersion"),
-            generatedAt=_get(index_manifest, "generatedAt"),
-            recordingCount=_coalesce(
-                _get(_get(index_manifest, "totals"), "recordings"), recording_count
+        "sourceIndex": js.defined(
+            schemaVersion=js.get(index_manifest, "schemaVersion"),
+            generatedAt=js.get(index_manifest, "generatedAt"),
+            recordingCount=js.coalesce(
+                js.get(js.get(index_manifest, "totals"), "recordings"), recording_count
             ),
         ),
         "releaseGateApproval": approval,
@@ -1076,11 +816,13 @@ def build_full_corpus_results_manifest(
             "completedCount": len(results),
             "remainingCount": max(recording_count - len(results), 0),
             "lastCompletedRecordingId": (
-                _coalesce(_get(results[-1], "recordingId"), None) if results else None
+                js.coalesce(js.get(results[-1], "recordingId"), None) if results else None
             ),
         },
         "toolChoices": [
-            _ffmpeg_choice(_coalesce(_get(tool_versions, "ffmpeg"), None), "approved local audio"),
+            _ffmpeg_choice(
+                js.coalesce(js.get(tool_versions, "ffmpeg"), None), "approved local audio"
+            ),
             _dsp_choice("classifier implementation"),
             _afinfo_choice(),
         ],
@@ -1091,12 +833,12 @@ def build_full_corpus_results_manifest(
 
 def build_result_row(entry: Json, features: Json) -> Json:
     classification = classify_features(features)
-    return _defined(
-        recordingId=_get(entry, "recordingId"),
-        filename=_get(entry, "filename"),
-        capturedAt=_coalesce(_get(entry, "capturedAt"), None),
+    return js.defined(
+        recordingId=js.get(entry, "recordingId"),
+        filename=js.get(entry, "filename"),
+        capturedAt=js.coalesce(js.get(entry, "capturedAt"), None),
         year=_year_for(entry),
-        sourceRef=_get(entry, "sourceRef"),
+        sourceRef=js.get(entry, "sourceRef"),
         features=features,
         classification=classification,
         humanSpotCheck={
@@ -1122,16 +864,16 @@ def analyze_sample(
         raise FilterProofError("analyze requires --corpus-root")
     tool_versions = {"ffmpeg": read_tool_version(ffmpeg_bin, ["-version"])}
     results: list[Json] = []
-    for entry in _coalesce(_get(sample_manifest, "sample"), []):
-        audio_path = _join(corpus_root, entry["filename"])
+    for entry in js.coalesce(js.get(sample_manifest, "sample"), []):
+        audio_path = js.path_join(corpus_root, entry["filename"])
         features = extract_features_from_pcm(decode_pcm_with_ffmpeg(audio_path, ffmpeg_bin))
         classification = classify_features(features)
         results.append(
-            _defined(
-                recordingId=_get(entry, "recordingId"),
-                filename=_get(entry, "filename"),
-                year=_get(entry, "year"),
-                sourceRef=_get(entry, "sourceRef"),
+            js.defined(
+                recordingId=js.get(entry, "recordingId"),
+                filename=js.get(entry, "filename"),
+                year=js.get(entry, "year"),
+                sourceRef=js.get(entry, "sourceRef"),
                 features=features,
                 classification=classification,
                 humanSpotCheck={
@@ -1182,8 +924,8 @@ def analyze_index_manifest(
 
     existing = _read_existing(out)
     existing_by_id: dict[Any, Json] = {}
-    for row in _coalesce(_get(existing, "results"), []):
-        existing_by_id[_get(row, "recordingId")] = row
+    for row in js.coalesce(js.get(existing, "results"), []):
+        existing_by_id[js.get(row, "recordingId")] = row
     if tool_versions is None:
         tool_versions = {"ffmpeg": read_tool_version(ffmpeg_bin, ["-version"])}
     manifest = build_full_corpus_results_manifest(
@@ -1197,27 +939,27 @@ def analyze_index_manifest(
     jsonio.write_json(out, manifest)
 
     def analyze_entry(entry: Json) -> Json:
-        audio_path = _join(corpus_root, entry["filename"])
+        audio_path = js.path_join(corpus_root, entry["filename"])
         pcm = decode_pcm_with_ffmpeg(audio_path, ffmpeg_bin)
         return build_result_row(entry, extract_features_from_pcm(pcm))
 
     analyze = analyze_recording if analyze_recording is not None else analyze_entry
-    recordings = _coalesce(_get(index_manifest, "recordings"), [])
+    recordings = js.coalesce(js.get(index_manifest, "recordings"), [])
     for entry in recordings:
-        if _get(entry, "recordingId") in existing_by_id:
+        if js.get(entry, "recordingId") in existing_by_id:
             continue
         # Measurement-chain takes are not Voice Memos: the singing filter does not apply.
-        if _get(_get(entry, "source"), "type") == "measurement":
+        if js.get(js.get(entry, "source"), "type") == "measurement":
             continue
         row = analyze(entry)
         results: list[Json] = manifest["results"]
         results.append(row)
         resume: Json = manifest["resume"]
         resume["completedCount"] = len(results)
-        resume["remainingCount"] = max(_coalesce(_length(recordings), 0) - len(results), 0)
+        resume["remainingCount"] = max(js.coalesce(js.length(recordings), 0) - len(results), 0)
         resume.pop("lastCompletedRecordingId", None)
-        last = _get(row, "recordingId")
-        if last is not UNDEFINED:
+        last = js.get(row, "recordingId")
+        if last is not js.MISSING:
             resume["lastCompletedRecordingId"] = last
         manifest["updatedAt"] = jsonio.iso_timestamp()
         jsonio.write_json(out, manifest)

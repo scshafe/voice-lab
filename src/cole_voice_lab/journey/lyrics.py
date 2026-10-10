@@ -22,11 +22,17 @@ import sys
 import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from cole_voice_lab.journey import jscompat as js
-from cole_voice_lab.journey.jsonio import iso_timestamp, to_fixed, write_json
+from cole_voice_lab.journey.jsonio import (
+    iso_timestamp,
+    read_json,
+    read_text,
+    to_fixed,
+    write_json,
+)
 from cole_voice_lab.journey.paths import resolve_paths
 
 SCHEMA_VERSION = "voice-journey.local-lyric-indicators.v1"
@@ -191,7 +197,7 @@ def analyze_lyric_indicators(
 def read_transcript_for_row(row: Json, options: LyricOptions) -> str:
     file_path = _resolve_transcript_path(row, options)
     try:
-        return file_path.read_text(encoding="utf-8", errors="replace")
+        return read_text(file_path)
     except OSError as error:
         recording_id = js.to_string(js.get(row, "recordingId"))
         raise LyricIndicatorError(
@@ -200,11 +206,11 @@ def read_transcript_for_row(row: Json, options: LyricOptions) -> str:
 
 
 def _resolve_transcript_path(row: Json, options: LyricOptions) -> Path:
-    directory = Path(options.transcript_dir or "")
+    directory = options.transcript_dir or ""
     text_path = js.get(js.get(row, "localArtifacts"), "transcriptTextPath")
     if js.truthy(text_path):
-        return directory / PurePosixPath(js.to_string(text_path)).name
-    return directory / f"{js.to_string(js.get(row, 'recordingId'))}.txt"
+        return Path(js.path_join(directory, js.path_basename(js.to_string(text_path))))
+    return Path(js.path_join(directory, f"{js.to_string(js.get(row, 'recordingId'))}.txt"))
 
 
 def _analyze_transcript_row(row: Json, text: str) -> _Analyzed:
@@ -520,7 +526,7 @@ def tokenize(text: str) -> list[str]:
 
 
 def _shingle_hashes(tokens: list[str], size: int) -> set[str]:
-    return {hashlib.sha256(gram.encode("utf-8")).hexdigest()[:16] for gram in _ngrams(tokens, size)}
+    return {hashlib.sha256(js.utf8(gram)).hexdigest()[:16] for gram in _ngrams(tokens, size)}
 
 
 def _ngrams(tokens: list[str], size: int) -> list[str]:
@@ -549,7 +555,7 @@ def run(argv: Sequence[str]) -> int:
         sys.stdout.write(HELP)
         return 0
     if options.command == "analyze":
-        transcript_manifest = js.read_json(options.transcripts or "")
+        transcript_manifest = read_json(options.transcripts or "")
         if options.dry_run:
             write_json("-", build_dry_run(transcript_manifest, options))
             return 0

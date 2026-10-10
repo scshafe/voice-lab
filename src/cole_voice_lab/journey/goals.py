@@ -28,6 +28,7 @@ from typing import Any, NamedTuple
 
 from cole_voice_lab.journey import jscompat as js
 from cole_voice_lab.journey.coach import cluster_rollup, median
+from cole_voice_lab.journey.jsonio import stringify_compact
 
 Json = dict[str, Any]
 
@@ -121,7 +122,7 @@ def create_goal(spec: Json, *, now: float) -> Json:
         cluster = spec.get("clusterId")
         scope = f" on {js.to_string(cluster)}" if js.truthy(cluster) else ""
         title = f"{metric_label} {sign} {js.to_string(spec.get('target', js.MISSING))}{scope}"
-    digest = hashlib.sha256(f"{js.stringify_compact(spec)}:{created_at}".encode()).hexdigest()
+    digest = hashlib.sha256(js.utf8(f"{stringify_compact(spec)}:{created_at}")).hexdigest()
     return {
         "goalId": digest[:16],
         "createdAt": created_at,
