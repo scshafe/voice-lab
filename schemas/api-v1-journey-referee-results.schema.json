@@ -1,0 +1,40 @@
+{
+  "$defs": {
+    "JsonObject": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/referee/results``: the Bradley-Terry fit by year.",
+  "properties": {
+    "enabled": {
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "fit": {
+      "$ref": "#/$defs/JsonObject"
+    },
+    "pool_size": {
+      "minimum": 0,
+      "title": "Pool Size",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-referee-results/v1",
+      "default": "cole-voice-lab.api.journey-referee-results/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "enabled",
+    "pool_size",
+    "fit"
+  ],
+  "title": "RefereeResults",
+  "type": "object"
+}

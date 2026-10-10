@@ -1,0 +1,47 @@
+{
+  "$defs": {
+    "Timestamp": {
+      "maxLength": 64,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``POST /api/v1/referee/verdicts`` (needs the playback approval).",
+  "properties": {
+    "choice": {
+      "enum": [
+        "a",
+        "b",
+        "too_close",
+        "not_same_song",
+        "skip"
+      ],
+      "title": "Choice",
+      "type": "string"
+    },
+    "judged_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "pair_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Pair Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "pair_id",
+    "choice"
+  ],
+  "title": "RefereeVerdictRequest",
+  "type": "object"
+}

@@ -15,6 +15,7 @@ from .api.contracts import (
     IntakeSessionRequest,
     IntakeSessionStatus,
 )
+from .api.journey_contracts import JOURNEY_API_SCHEMA_MODELS
 from .audition import (
     AuditionPlan,
     AuditionRunManifest,
@@ -148,6 +149,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "experiment-result": ExperimentResult,
     "executed-code-evidence": ExecutedCodeEvidence,
     **FINETUNE_SCHEMA_MODELS,
+    **JOURNEY_API_SCHEMA_MODELS,
     "fine-tuning-transfer-plan": FineTuningTransferPlan,
     "headphone-review": HeadphoneReviewEvidence,
     "hosted-transfer-approval": HostedTransferApproval,

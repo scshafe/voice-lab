@@ -1,0 +1,83 @@
+{
+  "$defs": {
+    "RefereePair": {
+      "additionalProperties": false,
+      "description": "A blind trial: no year, date or cluster until the verdict reveals them.",
+      "properties": {
+        "a": {
+          "$ref": "#/$defs/RefereeSide"
+        },
+        "b": {
+          "$ref": "#/$defs/RefereeSide"
+        },
+        "pair_id": {
+          "title": "Pair Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pair_id",
+        "a",
+        "b"
+      ],
+      "title": "RefereePair",
+      "type": "object"
+    },
+    "RefereeSide": {
+      "additionalProperties": false,
+      "properties": {
+        "audio_url": {
+          "title": "Audio Url",
+          "type": "string"
+        },
+        "gain_db": {
+          "title": "Gain Db",
+          "type": "number"
+        }
+      },
+      "required": [
+        "audio_url",
+        "gain_db"
+      ],
+      "title": "RefereeSide",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/referee/next`` (needs the playback approval).",
+  "properties": {
+    "judged": {
+      "minimum": 0,
+      "title": "Judged",
+      "type": "integer"
+    },
+    "pair": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RefereePair"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pool_size": {
+      "minimum": 0,
+      "title": "Pool Size",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-referee-next/v1",
+      "default": "cole-voice-lab.api.journey-referee-next/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "judged",
+    "pool_size",
+    "pair"
+  ],
+  "title": "RefereeNext",
+  "type": "object"
+}

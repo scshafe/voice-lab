@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "RefereeReveal": {
+      "additionalProperties": false,
+      "properties": {
+        "a_captured_at": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "a_year": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "b_captured_at": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "b_year": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "cluster_id": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "cluster_label": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "a_year",
+        "b_year",
+        "a_captured_at",
+        "b_captured_at",
+        "cluster_id",
+        "cluster_label"
+      ],
+      "title": "RefereeReveal",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "judged": {
+      "minimum": 0,
+      "title": "Judged",
+      "type": "integer"
+    },
+    "pool_size": {
+      "minimum": 0,
+      "title": "Pool Size",
+      "type": "integer"
+    },
+    "reveal": {
+      "$ref": "#/$defs/RefereeReveal"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-referee-verdict/v1",
+      "default": "cole-voice-lab.api.journey-referee-verdict/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "reveal",
+    "judged",
+    "pool_size"
+  ],
+  "title": "RefereeVerdictAnswer",
+  "type": "object"
+}
