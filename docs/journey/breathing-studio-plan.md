@@ -13,8 +13,8 @@ Two capture chains into one machine:
 
 - **Measurement chain (new):** singer at fixed 35 cm → miniDSP UMIK-1 (omni, per-serial
   factory cal file, 48 kHz/24-bit, no DSP) → USB → CoreAudio (input slider PINNED and
-  logged; capture refuses to run if moved) → `vj-capture` (ffmpeg/avfoundation) →
-  raw WAV + `session.json` (chain id, slider, distance, cal-file hash, segment map).
+  logged; the client records the level with each session) → `voice-journey-capture`
+  (native client) → raw WAV + `session.json` (chain id, slider, distance, cal-file hash, segment map).
 - **Phone chain (continuity, never retired):** iPhone → Voice Memos (AGC + AAC,
   uncontrolled) → iCloud → group container on the mini (seam-only reads; TCC held by
   `voice-journey-launcher`). Both chains hear every performance — the overlap is the
@@ -34,8 +34,8 @@ incremental/resumable by design (STT-pattern). The only non-automatable station 
 
 ## Phases
 
-- **A — Session capture & spine ritual** *(gear-gated)*: `npm run capture -- session
-  --chain umik1`; keypress-segmented ritual (silence → cal tone → /a/ soft+loud → glide
+- **A — Session capture & spine ritual** *(gear-gated)*: `voice-journey-capture`
+  (native client; `npm run capture` was retired in phase 6); keypress-segmented ritual (silence → cal tone → /a/ soft+loud → glide
   → anchor song → free); `manifests/chains.json` chain registry; slider-pin guard.
   Done when: a real session produces segmented WAVs + session.json, and a nudged
   slider refuses to record.

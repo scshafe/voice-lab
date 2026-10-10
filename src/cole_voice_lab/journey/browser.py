@@ -81,7 +81,7 @@ from .jsonio import (
     to_fixed,
     write_json,
 )
-from .paths import JourneyPaths, resolve_paths
+from .paths import JourneyPaths, packaged_chains, resolve_paths
 
 Json = dict[str, Any]
 SearchParams = Sequence[tuple[str, str]]
@@ -1484,7 +1484,8 @@ class JourneyConfig:
     """Where the corpus browser reads and writes, and its gates.
 
     The manifests are read only. Every write (verdicts, goals, referee judgments) goes
-    to ``state_dir``. Playback needs ``playback_approval`` (design §4.2: the approval
+    to ``state_dir``. ``chains`` is the chain registry ``GET /api/v1/chains`` projects
+    (``api/chains.py``). Playback needs ``playback_approval`` (design §4.2: the approval
     carries over as configuration the API refuses to run without); transcript text and
     feature detail need their directories."""
 
@@ -1504,6 +1505,7 @@ class JourneyConfig:
     referee_seed: int = DEFAULT_REFEREE_SEED
     referee_pairs_per_cluster: int = REFEREE_PAIRS_PER_CLUSTER
     allow_empty_manifests: bool = False
+    chains: Path = field(default_factory=packaged_chains)
 
     @classmethod
     def from_paths(
@@ -1539,6 +1541,7 @@ class JourneyConfig:
             queue_size=queue_size,
             referee_seed=referee_seed,
             allow_empty_manifests=rooted,
+            chains=resolved.chains,
         )
 
     @property

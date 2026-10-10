@@ -25,6 +25,7 @@ served by the API (an ``api.routing`` route of ``ApiServer``), over the data lay
 ``/api/v1/referee/verdicts``              ``/api/referee/verdicts``                   POST
 ``/api/v1/referee/results``               ``/api/referee/results``                    GET
 ``/api/v1/watch``                         ``/api/watch/status``                       GET
+``/api/v1/chains``                        ``/api/chains`` (voice-journey PR #1)       GET
 =======================================  ==========================================  ===
 
 The voice-journey paths answer during phase 3 only (design §3.4), as thin aliases of the
@@ -40,6 +41,8 @@ bearer verification (issuer, audience, lifetime, signature, the one allowed subj
 ``/api/v1/meta`` (design §3.5). The 308 redirects carry nothing and need no identity.
 
 **Gates.** Without ``serve --journey`` the routes answer ``503 journey_unavailable``.
+The chain registry (``api/chains.py``) is read on each request; a missing file is
+``503 chain_registry_unavailable``.
 Playback (audio and the blind referee) needs ``--playback-approval`` (design §4.2), local
 transcript text a transcript directory, feature detail a feature directory. The
 ``/api/v1`` referee refuses without the approval (``403 playback_not_approved``); the
@@ -99,6 +102,7 @@ from ..journey.browser import (
 from ..journey.goals import GoalError
 from ..journey.jsonio import MISSING, parse_json, read_json, read_text, stringify
 from ..journey.paths import assert_bind_allowed, resolve_paths
+from .chains import ChainRegistryError, read_chain_registry, registry_view
 from .contracts import ApiErrorCode
 from .journey_contracts import (
     FilterOptions,
@@ -158,6 +162,7 @@ _ALIAS_PATHS: Final = frozenset(
         "/api/referee/verdicts",
         "/api/referee/results",
         "/api/watch/status",
+        "/api/chains",
     }
 )
 ACCESS_DENIED_HINT: Final = (
@@ -805,6 +810,17 @@ def _v1_watch(store: JourneyStore, request: RouteRequest) -> RouteResponse:
     return _model(200, "journey.watch", answer)
 
 
+def _v1_chains(store: JourneyStore, request: RouteRequest) -> RouteResponse:
+    try:
+        projection = read_chain_registry(store.config.chains)
+        if projection is None:
+            _refuse(503, "chain_registry_unavailable", "the chain registry file is missing")
+        answer = registry_view(projection)
+    except ChainRegistryError as error:
+        _refuse(500, "chain_registry_invalid", str(error))
+    return _model(200, "journey.chains", answer)
+
+
 _V1_ROUTES: Final[dict[str, dict[str, _Handler]]] = {
     "/api/v1/recordings": {"GET": _v1_recordings},
     "/api/v1/review/queue": {"GET": _v1_review_queue},
@@ -818,6 +834,7 @@ _V1_ROUTES: Final[dict[str, dict[str, _Handler]]] = {
     "/api/v1/referee/verdicts": {"POST": _v1_referee_verdict},
     "/api/v1/referee/results": {"GET": _v1_referee_results},
     "/api/v1/watch": {"GET": _v1_watch},
+    "/api/v1/chains": {"GET": _v1_chains},
 }
 
 
@@ -891,6 +908,9 @@ def _alias_dispatch(store: JourneyStore, request: RouteRequest) -> RouteResponse
         return _js(200, route, coach_payload(store.current()))
     if get and path == "/api/watch/status":
         return _js(200, route, store.watch_status())
+    if get and path == "/api/chains":
+        status, payload = _alias_chains(store)
+        return _js(status, route, payload)
     if get and path.startswith("/api/audio/"):
         return _alias_audio(store, request, _alias_id(path, "/api/audio/"))
     if get and path.startswith("/api/transcript/"):
@@ -904,6 +924,16 @@ def _alias_dispatch(store: JourneyStore, request: RouteRequest) -> RouteResponse
     if not (get or post):
         raise _JsAnswer(405, {"error": "method_not_allowed"})
     raise _JsAnswer(404, {"error": "not_found"})
+
+
+def _alias_chains(store: JourneyStore) -> tuple[int, Json]:
+    try:
+        projection = read_chain_registry(store.config.chains)
+    except ChainRegistryError as error:
+        return 500, {"error": str(error)}
+    if projection is None:
+        return 503, {"error": "chain_registry_unavailable"}
+    return 200, projection
 
 
 def _alias_rows(store: JourneyStore, query: str) -> Json:

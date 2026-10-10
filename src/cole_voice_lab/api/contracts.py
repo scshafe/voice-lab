@@ -73,6 +73,9 @@ type ApiErrorCode = Literal[
     "invalid_goal",
     "goal_not_found",
     "pair_not_found",
+    # the chain registry (api/chains.py)
+    "chain_registry_unavailable",
+    "chain_registry_invalid",
     "internal_error",
 ]
 REFUSAL_CODES: Final[frozenset[str]] = frozenset(get_args(ApiErrorCode.__value__))
