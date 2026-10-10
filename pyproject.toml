@@ -24,6 +24,8 @@ vault = [
   "cryptography==50.0.1",
 ]
 dev = [
+  # The locks pin 2.13.5; pydantic 2.14 changes TypeAdapter typing under strict mypy.
+  "pydantic==2.13.5",
   "build>=1.2,<2",
   "setuptools==80.9.0",
   "wheel==0.46.3",
