@@ -882,3 +882,46 @@ phase (docs/design/PHASE-3-LOG.md).
   PC serves the read-only web view of §6.5 (summaries only, no audio, D-025) from phase
   3; the SPA stays on the laptop until the cutover and is not imported. The acceptance
   item "the four SPA views work from the PC" reads "`/view/` works from the PC".
+- **The job runner has no network, so no ntfy.** voice-journey's watcher posted
+  notifications to ntfy from inside the server; on the PC it is a network-less host unit
+  (§3.2), so notifications are files in an outbox (`state/journey/notify-outbox/`) for a
+  sender with tailnet egress, which phase 3 does not build. ntfy remains possible where a
+  URL is configured.
+- **One state directory for the journey.** The API's verdicts, goals and referee state and
+  the watcher's state live in `/data/voice-lab/state/journey/` (the API's only writable
+  mount besides `incoming/`); measurement sessions are read from the lab's `raw/`
+  (`VOICE_JOURNEY_MEASUREMENT_DIR`), not from a `corpus/measurement/` copy.
+- **The capture client's compatibility path** maps a voice-journey measurement session
+  onto a capture package the unchanged validator accepts (suite
+  `voice-journey-measurement`, subject `cole-self`, the `room-silence` segment as room
+  tone). The separate client writes no D-021 ledger entry; that closes in phase 4.
+- **No float tolerance.** §5.3 expected one for the filter's features; the port is
+  bit-identical (exact integer sums, V8's `log2`/`log10`, sums in JavaScript's order), and
+  the fixture parity has 0 differences at tolerance 0.
+
+## D-036 — The Air vault as built
+
+Recorded 2026-10-09 while building the Air's side of the vault (design §4.3, phase 3); the
+owner reviews it with the phase. Where the build differs from the design:
+
+- **Records.** The resume journal is `provenance/vault/destinations/<d>/resume.jsonl`
+  (D-034's layout, not `provenance/vault/air/`), and every destination keeps one: it costs
+  the laptop nothing. Beside it, `checked.json` records when the newest generation was last
+  found current and last verified. Both are new local records with schemas
+  (`replication-resume-entry`, `replication-check`); nothing else changes version.
+- **Age counts from "last found current".** A push that finds the library unchanged does not
+  write a generation, so the age of a copy (for the weekly cadence and the 14-day flag) is
+  the time since a push last found the head holding the library, not since its generation was
+  written. Otherwise an unchanged library would read as stale, and the hourly unit would
+  re-read the whole library every hour once a week had passed.
+- **Cadence as flags.** The Air's units are a fixed-name pair, `voice-lab-vault-air.service`
+  and `.timer` (infra refuses templates; the design wrote `voice-lab-vault@air.timer`),
+  running `vault push --if-older-than 7d --skip-unreachable` and `vault verify
+  --if-unverified --skip-unreachable`. The probe is the copier's own identity check plus the
+  tailnet's `Online` flag and one read of the head; a skipped run exits 0.
+- **The approval's tag is chosen at approval time** (`vault approve --tag`), limited to
+  `tag:voice-lab-vault` and `tag:voice-lab-vault-<suffix>`. The approval stays `v2`: the
+  laptop's existing approval (the old fixed default) parses to the same bytes and digest.
+- **Memos** are named `memos/<path>` in a manifest, read from `--memos-root` (a flag of the
+  push, so the PC's `v2` bindings stay valid; a binding opts in with the `memos` class), and
+  restored only into a `--memos-target` of their own, never into the library.

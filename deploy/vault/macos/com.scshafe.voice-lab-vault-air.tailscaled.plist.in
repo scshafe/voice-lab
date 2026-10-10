@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The Air vault's own tailnet node (design §4.3, phase 3): a second tailscaled, in userspace
+  networking, with a state directory and a socket of its own, run as the vault's account.
+  It joins as voice-lab-vault-air with tag:voice-lab-vault-air and serves HTTPS on 443, with
+  the node's tailnet certificate, to the vault server on 127.0.0.1:@VAULT_PORT@ (a Serve
+  setting kept in its state; README.md). The Air's own Tailscale app and Cole's account are
+  untouched. Rendered by deploy/vault/macos/README.md; every placeholder is replaced there.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.scshafe.voice-lab-vault-air.tailscaled</string>
+  <key>UserName</key>
+  <string>@VAULT_USER@</string>
+  <key>GroupName</key>
+  <string>@VAULT_USER@</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@TAILSCALED@</string>
+    <string>--tun=userspace-networking</string>
+    <string>--statedir=@VAULT_HOME@/tailscale</string>
+    <string>--socket=@VAULT_HOME@/tailscale/tailscaled.sock</string>
+    <string>--port=0</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>@VAULT_HOME@/tailscale/tailscaled.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@VAULT_HOME@/tailscale/tailscaled.err.log</string>
+</dict>
+</plist>

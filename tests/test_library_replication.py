@@ -113,7 +113,9 @@ from cole_voice_lab.storage_ports import (
 )
 from cole_voice_lab.storage_sealing import MAX_SEALED_PLAINTEXT_BYTES
 
-ALL_CLASSES: tuple[FileClass, ...] = tuple(sorted(get_args(FileClass.__value__)))
+# Every class of the asset root; ``memos`` is read from a root of its own (MemosSource), and
+# tests/test_vault_air.py pushes it.
+ALL_CLASSES: tuple[FileClass, ...] = tuple(sorted(set(get_args(FileClass.__value__)) - {"memos"}))
 CHUNK = 4096
 HEAD = library_head_ref(LIBRARY_ID)
 CONSENT = "provenance/consents/cole-self-v1.json"
@@ -454,7 +456,13 @@ def test_an_unchanged_library_is_up_to_date_and_nothing_is_written(
         [e for e in manifest_of(vault, first.head).entries if e.chunks]
     )
     assert vault_snapshot(vault.root) == stores
-    assert vault_snapshot(library.root / "provenance/vault") == records
+    # Only the record of when the head was last found current moved (vault staleness).
+    checked = "destinations/default/checked.json"
+    after = vault_snapshot(library.root / "provenance/vault")
+    assert after.pop(checked) != records.pop(checked)
+    assert after == records
+    found = VaultRecords(library).read_check(VaultRecords(library).read_state(LIBRARY_ID))
+    assert found is not None and found.generation == first.generation
 
 
 class HookedLedger(ReplicationLedger):

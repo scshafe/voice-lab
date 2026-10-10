@@ -1,0 +1,66 @@
+# The vault copier for the MacBook Air destination, the offsite copy (design §4.3 "The Air
+# vault", D-023, D-034; phase 3). Started hourly by voice-lab-vault-air.timer. The Air
+# sleeps and travels, so each run is built for intermittent reach:
+#   1. push: nothing at all while the copy is less than seven days old (--if-older-than 7d,
+#      read from this host's records alone); otherwise the probe runs the node identity check
+#      every copy makes (StableID, tag:voice-lab-vault-air, DNS name, tailnet suffix) and, if
+#      the tailnet reports the node offline or it does not answer, the run ends successfully
+#      without sending anything (--skip-unreachable); otherwise a sealed push of the lab and
+#      of the phone's memos drop. A push the Air's sleep interrupts is resumed by the next run
+#      from the destination's resume journal; the head moves only once a generation is whole.
+#   2. verify: once per generation (--if-unverified), every file of the head downloaded,
+#      decrypted and re-hashed, again only when the node answers.
+# The operator can push at once: `voice-lab vault push --destination air --memos-root …`.
+# A fixed-name unit, not a template (infra's host-unit validator refuses templates for now),
+# like the laptop's pair. Installed by hand, not by the runner lane: it lives in
+# deploy/host-manual/ because infra's host-unit validator refuses ImportCredential= (README.md).
+#
+# The library key and this destination's two vault tokens are encrypted systemd credentials
+# in /etc/credstore.encrypted/ (docs/LIBRARY_VAULT.md); these globs import the key and the
+# Air's tokens, never another destination's.
+#
+# Network: the tailnet only. The client checks the vault node's identity with
+# /usr/bin/tailscale (the local tailscaled socket) and connects to the checked
+# 100.64.0.0/10 address; nothing else is reachable. Files: the lab is writable (its vault
+# records and scratch); the memos drop is only read (ProtectSystem=strict), through the
+# voice-lab group the drop grants.
+[Unit]
+Description=voice-lab vault copy to the MacBook Air (weekly when reachable, sealed push, then verify)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=voice-lab
+Group=voice-lab
+UMask=0077
+ImportCredential=private.cole.voice-lab.vault.*
+ImportCredential=private.cole.voice-lab.vault-destination.air.*
+ExecStart=/opt/voice-lab/current/bin/voice-lab vault push --asset-root /data/voice-lab/lab --destination air --memos-root /data/voice-lab/memos/phone --if-older-than 7d --skip-unreachable
+ExecStart=/opt/voice-lab/current/bin/voice-lab vault verify --asset-root /data/voice-lab/lab --destination air --if-unverified --skip-unreachable
+TimeoutStartSec=12h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=100.64.0.0/10
+ProtectSystem=strict
+ReadWritePaths=/data/voice-lab/lab
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

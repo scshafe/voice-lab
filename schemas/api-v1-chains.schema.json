@@ -1,0 +1,155 @@
+{
+  "$defs": {
+    "ChainDevice": {
+      "additionalProperties": false,
+      "description": "How a client recognizes the chain's device: a name match and a USB ``vid:pid``.",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChainText"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usb": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChainText"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "usb"
+      ],
+      "title": "ChainDevice",
+      "type": "object"
+    },
+    "ChainText": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "ClientChain": {
+      "additionalProperties": false,
+      "description": "One chain as a client sees it (no calibration path, distance or notes).",
+      "properties": {
+        "bit_depth": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Bit Depth"
+        },
+        "device": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChainDevice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "era_start": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChainText"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/ChainText"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChainText"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "$ref": "#/$defs/ChainText"
+        },
+        "pinned_input_volume": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pinned Input Volume"
+        },
+        "sample_rate": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sample Rate"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "device",
+        "sample_rate",
+        "bit_depth",
+        "era_start",
+        "pinned_input_volume"
+      ],
+      "title": "ClientChain",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/chains``: the chain registry's client projection, in registry order.",
+  "properties": {
+    "chains": {
+      "items": {
+        "$ref": "#/$defs/ClientChain"
+      },
+      "title": "Chains",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.chains/v1",
+      "default": "cole-voice-lab.api.chains/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "chains"
+  ],
+  "title": "ChainRegistryView",
+  "type": "object"
+}

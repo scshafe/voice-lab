@@ -1,6 +1,6 @@
 """paths.test.mjs, translated (design §5.3). The two server cases of that file
 (an empty data root starts; /healthz answers without identity) are translated with the
-HTTP surface, in tests/test_journey_api.py."""
+HTTP surface, in tests/test_api_journey.py."""
 
 from __future__ import annotations
 

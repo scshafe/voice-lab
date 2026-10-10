@@ -1,0 +1,108 @@
+{
+  "$defs": {
+    "BlobRef": {
+      "additionalProperties": false,
+      "description": "One stored blob, named by the SHA-256 and size of the bytes the store keeps.",
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size": {
+          "maximum": 16777216,
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size"
+      ],
+      "title": "BlobRef",
+      "type": "object"
+    },
+    "LibraryId": {
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+      "type": "string"
+    },
+    "PositiveStorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One sealed chunk a push stored, as ``\u2026/destinations/<d>/resume.jsonl`` records it.\n\nA line is appended as soon as the chunk's ``put`` returned, before the next one is sealed,\nso a push that stops part-way (the Air went to sleep) leaves the pieces it stored on the\nrecord. ``file_sha256`` and ``file_size`` name the plaintext file the piece belongs to,\n``offset`` where in that file it starts, ``chunk_bytes`` the piece size the push cut with,\n``plaintext_sha256`` and ``plaintext_size`` the piece itself, and ``ref`` the sealed blob\nthat holds it (its ciphertext digest and size). ``destination_sha256`` is the\n``destination_digest`` of the vault the blob went to, so a destination bound again to\nanother vault ignores the journal. The journal is a hint, never evidence: the next push\nreuses a piece only after reading the blob back, which proves its ciphertext digest and\nauthenticates it, and only when the decrypted bytes are the bytes at that offset of the\nfile it is sealing now. Kept on the copying host (``provenance/vault`` never leaves it).",
+  "properties": {
+    "chunk_bytes": {
+      "maximum": 16777216,
+      "minimum": 1,
+      "title": "Chunk Bytes",
+      "type": "integer"
+    },
+    "destination_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "file_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "file_size": {
+      "$ref": "#/$defs/PositiveStorageCounter"
+    },
+    "library_id": {
+      "$ref": "#/$defs/LibraryId"
+    },
+    "offset": {
+      "$ref": "#/$defs/StorageCounter"
+    },
+    "plaintext_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "plaintext_size": {
+      "maximum": 16777216,
+      "minimum": 1,
+      "title": "Plaintext Size",
+      "type": "integer"
+    },
+    "recorded_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "ref": {
+      "$ref": "#/$defs/BlobRef"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.replication-resume-entry/v1",
+      "default": "cole-voice-lab.replication-resume-entry/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "library_id",
+    "destination_sha256",
+    "file_sha256",
+    "file_size",
+    "offset",
+    "chunk_bytes",
+    "plaintext_sha256",
+    "plaintext_size",
+    "ref",
+    "recorded_at"
+  ],
+  "title": "ResumeJournalEntry",
+  "type": "object"
+}

@@ -82,10 +82,8 @@ packages = ["cole_voice_lab"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# legacy/voice-journey/ is the imported Node tree being ported (design §5.2, phase 3);
-# its one Python file moves into the package, under these rules, when it is ported.
 # apps/desktop/ is voice-journey-capture as imported (D-035); phase 4 brings it under them.
-extend-exclude = ["legacy", "apps/desktop"]
+extend-exclude = ["apps/desktop"]
 # Extensionless Python scripts Ruff would otherwise skip.
 extend-include = ["scripts/journey-parity"]
 

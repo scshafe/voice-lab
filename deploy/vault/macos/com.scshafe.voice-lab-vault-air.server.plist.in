@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The Air's vault server (design §4.3, phase 3): a LaunchDaemon run as the dedicated
+  non-admin account that owns the vault directory (0700). The durable launcher verifies the
+  sealed release, then runs the standard-library storage_server on 127.0.0.1:@VAULT_PORT@
+  only; the second tailscaled (com.scshafe.voice-lab-vault-air.tailscaled) serves it on the
+  tailnet. Rendered by deploy/vault/macos/README.md; every placeholder is replaced there.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.scshafe.voice-lab-vault-air.server</string>
+  <key>UserName</key>
+  <string>@VAULT_USER@</string>
+  <key>GroupName</key>
+  <string>@VAULT_USER@</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>@VAULT_HOME@/launcher/run-installed-vault.py</string>
+    <string>--receipt</string>
+    <string>@INSTALL_RECEIPT@</string>
+    <string>--expected-receipt-sha256</string>
+    <string>@INSTALL_RECEIPT_SHA256@</string>
+    <string>--config</string>
+    <string>@VAULT_HOME@/config/vault-server-config.json</string>
+    <string>--data-root</string>
+    <string>@VAULT_HOME@/vault/data</string>
+    <string>--access-log</string>
+    <string>@VAULT_HOME@/vault/logs/access.jsonl</string>
+    <string>--port</string>
+    <string>@VAULT_PORT@</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>@VAULT_HOME@/vault/logs/server.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@VAULT_HOME@/vault/logs/server.err.log</string>
+</dict>
+</plist>

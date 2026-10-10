@@ -70,9 +70,9 @@ import stat
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Final, Literal, NamedTuple, get_args
+from typing import BinaryIO, Final, Literal, NamedTuple, cast, get_args
 
 from pydantic import BaseModel, ValidationError
 
@@ -91,6 +91,7 @@ from .library_replication import (
     MAX_CHUNK_BYTES,
     PRETRAINED_PIN_SOURCE,
     CarriedPath,
+    MemosSource,
     OwnerResult,
     PassEntry,
     PassResult,
@@ -100,12 +101,14 @@ from .library_replication import (
     SourceChangedError,
     collect_pass,
     library_sources,
+    memos_source_path,
 )
 from .models import utc_now
 from .paths import ASSET_DIRECTORIES, AssetLayout, validate_absolute_path, validate_relative_path
 from .storage_contracts import (
     DEFAULT_VAULT_DESTINATION,
     MAX_MANIFEST_BYTES,
+    MEMOS_PREFIX,
     VAULT_DESTINATIONS_DIRECTORY,
     VAULT_PROVENANCE_ROOT,
     FileClass,
@@ -117,7 +120,9 @@ from .storage_contracts import (
     ManifestEnvelope,
     ManifestPlan,
     PlannedManifestEntry,
+    ReplicationCheck,
     ReplicationState,
+    ResumeJournalEntry,
     StorageBackend,
     destination_digest,
     destination_records_path,
@@ -140,14 +145,17 @@ from .storage_ports import (
 )
 
 __all__ = [
+    "CHECK_NAME",
     "LEDGER_DIRECTORY",
     "MANIFEST_COPIES_DIRECTORY",
     "PUSH_LOCK_NAME",
     "READ_ONLY_TREES",
     "RESTORE_MARGIN_BYTES",
+    "RESUME_JOURNAL_NAME",
     "STATE_NAME",
     "VAULT_RECORDS_ROOT",
     "DestinationContext",
+    "DestinationFreshness",
     "HeadProblem",
     "OwnerOutcome",
     "PinOutcome",
@@ -160,6 +168,7 @@ __all__ = [
     "RestoreResult",
     "RestoredFile",
     "RestoredFiles",
+    "ResumeJournal",
     "StoredManifest",
     "VaultRecords",
     "VerifiedEntry",
@@ -167,6 +176,7 @@ __all__ = [
     "library_records_directory",
     "make_library_records_directory",
     "push_generation",
+    "read_freshness",
     "read_stored_manifest",
     "recorded_destinations",
     "rehash_restored_library",
@@ -181,6 +191,13 @@ STATE_NAME: Final = "state.json"
 LEDGER_DIRECTORY: Final = "ledger"
 MANIFEST_COPIES_DIRECTORY: Final = "manifests"
 PUSH_LOCK_NAME: Final = ".push.lock"
+# The per-destination resume journal (design §4.3 "Resume": ``provenance/vault/air/
+# resume.jsonl``; as built, beside the destination's other records, D-034's layout).
+RESUME_JOURNAL_NAME: Final = "resume.jsonl"
+# When the destination's newest generation was last found current, and last verified.
+CHECK_NAME: Final = "checked.json"
+# A journal line is a few hundred bytes: this holds the pieces of far more than a library.
+MAX_RESUME_JOURNAL_BYTES: Final = 512 * 1024 * 1024
 # state.json and ledger entries are small; anything larger is not one of them.
 MAX_VAULT_RECORD_BYTES: Final = 1024 * 1024
 # Ledger entries are named by an eight-digit sequence.
@@ -571,6 +588,69 @@ class VaultRecords:
                 f"{path} already keeps a different manifest of generation {manifest.generation}"
             )
 
+    def read_check(self, state: ReplicationState | None) -> ReplicationCheck | None:
+        """``checked.json`` when it names the generation ``state`` names, else ``None``.
+
+        A record of another generation (one a later push superseded, or one a crash left
+        behind) is stale and ignored, never an error.
+        Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) for an unsafe, invalid or
+        non-canonical ``checked.json``.
+        """
+        if state is None or state.generation == 0:
+            return None
+        directory = self.directory()
+        if directory is None:
+            return None
+        data = _read_private_file(directory / CHECK_NAME, MAX_VAULT_RECORD_BYTES)
+        if data is None:
+            return None
+        check = _parse_record(ReplicationCheck, data, f"{directory / CHECK_NAME}")
+        if (check.library_id, check.generation, check.manifest_sha256) != (
+            state.library_id,
+            state.generation,
+            state.manifest_sha256,
+        ):
+            return None
+        return check
+
+    def record_current(self, state: ReplicationState, at: datetime) -> ReplicationCheck:
+        """Record that ``state``'s generation held the library as it was at ``at``.
+
+        Keeps the generation's ``verified_at``; a record of another generation is replaced.
+        Raises: ``StorageIntegrityError`` as ``read_check``; ``OSError`` from the write.
+        """
+        if state.manifest_sha256 is None:
+            raise ValueError("only a pushed generation can be current")
+        kept = self.read_check(state)
+        check = ReplicationCheck(
+            library_id=state.library_id,
+            generation=state.generation,
+            manifest_sha256=state.manifest_sha256,
+            current_at=at,
+            verified_at=None if kept is None else kept.verified_at,
+        )
+        write_canonical_json(self.make_directory() / CHECK_NAME, check, mode=0o600)
+        return check
+
+    def record_verified(self, state: ReplicationState, at: datetime) -> ReplicationCheck:
+        """Record that every entry of ``state``'s generation was verified at ``at``.
+
+        A generation with no record yet counts as current since ``state.updated_at``.
+        Raises: as ``record_current``.
+        """
+        if state.manifest_sha256 is None:
+            raise ValueError("only a pushed generation can be verified")
+        kept = self.read_check(state)
+        check = ReplicationCheck(
+            library_id=state.library_id,
+            generation=state.generation,
+            manifest_sha256=state.manifest_sha256,
+            current_at=state.updated_at if kept is None else kept.current_at,
+            verified_at=at,
+        )
+        write_canonical_json(self.make_directory() / CHECK_NAME, check, mode=0o600)
+        return check
+
     @contextmanager
     def push_lock(self) -> Iterator[None]:
         """Hold the destination's ``.push.lock`` without waiting.
@@ -599,6 +679,112 @@ class VaultRecords:
             yield
         finally:
             os.close(descriptor)
+
+
+# -- the resume journal ----------------------------------------------------------------------
+
+
+class ResumeJournal:
+    """The sealed chunks an unfinished push to one destination stored (design §4.3 "Resume").
+
+    ``resume.jsonl`` beside the destination's other records: one ``ResumeJournalEntry`` per
+    line, appended (``O_APPEND``, then ``fsync``) as each chunk's ``put`` returns, so a push
+    that stops part-way leaves every stored piece on the record. ``load`` returns the pieces of
+    this library and vault, indexed by the plaintext file they belong to and their offset;
+    reading stops at the first line that is not a valid entry (a line a crash cut short), and
+    when anything was dropped the journal is rewritten without it before the next append, so
+    no line is ever appended to a torn one. ``clear`` removes it once a generation is stored.
+    The journal is a hint: a push reuses a piece only after reading its blob back (see
+    ``push_generation``). Like every record here it must be a private regular file of this
+    user with one link; an unsafe one is refused, never repaired.
+    """
+
+    def __init__(self, records: VaultRecords) -> None:
+        self.records = records
+
+    @property
+    def path(self) -> Path:
+        return self.records.root / RESUME_JOURNAL_NAME
+
+    def load(
+        self, library_id: str, destination_sha256: str
+    ) -> dict[tuple[str, int], dict[int, ResumeJournalEntry]]:
+        """The journalled pieces of ``library_id`` stored in the vault ``destination_sha256``.
+
+        Returns: ``{(file_sha256, file_size): {offset: entry}}`` (the later line wins).
+        Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) for an unsafe journal or
+        destination directory, or one larger than ``MAX_RESUME_JOURNAL_BYTES``; ``OSError``
+        from the rewrite.
+        """
+        directory = self.records.directory()
+        data = (
+            None if directory is None else _read_private_file(self.path, MAX_RESUME_JOURNAL_BYTES)
+        )
+        if data is None:
+            return {}
+        kept: list[bytes] = []
+        found: dict[tuple[str, int], dict[int, ResumeJournalEntry]] = {}
+        lines = data.split(b"\n")
+        complete = lines[:-1]
+        dropped = lines[-1] != b""
+        for line in complete:
+            try:
+                entry = ResumeJournalEntry.model_validate_json(line)
+            except ValidationError:
+                dropped = True
+                break
+            if (entry.library_id, entry.destination_sha256) != (library_id, destination_sha256):
+                dropped = True
+                continue
+            kept.append(line)
+            found.setdefault((entry.file_sha256, entry.file_size), {})[entry.offset] = entry
+        if dropped:
+            self._rewrite(kept)
+        return found
+
+    def _rewrite(self, lines: Sequence[bytes]) -> None:
+        temporary = self.path.parent / f".{RESUME_JOURNAL_NAME}.tmp-{secrets.token_hex(8)}"
+        with os.fdopen(os.open(temporary, _CREATE_FLAGS, 0o600), "wb") as stream:
+            stream.write(b"".join(line + b"\n" for line in lines))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, self.path)
+        fsync_directory(self.path.parent)
+
+    def append(self, entry: ResumeJournalEntry) -> None:
+        """Append one stored piece and flush it to disk.
+
+        Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) for an unsafe journal;
+        ``OSError`` from the write.
+        """
+        path = self.records.make_directory() / RESUME_JOURNAL_NAME
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            descriptor = os.open(path, flags, 0o600)
+        except OSError as error:
+            raise _integrity(f"{path} cannot be opened safely: {error.strerror}") from error
+        try:
+            try:
+                require_private_metadata(os.fstat(descriptor), str(path))
+            except SecurityError as error:
+                raise _integrity(f"{path} is not a private regular file with one link") from error
+            line = memoryview(canonical_json_bytes(entry) + b"\n")
+            while line:
+                line = line[os.write(descriptor, line) :]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def clear(self) -> None:
+        """Remove the journal (a stored generation needs none). Raises: ``OSError``."""
+        directory = self.records.directory()
+        if directory is None:
+            return
+        try:
+            os.unlink(directory / RESUME_JOURNAL_NAME)
+        except FileNotFoundError:
+            return
+        fsync_directory(directory)
 
 
 # -- the ledger ------------------------------------------------------------------------------
@@ -1328,6 +1514,9 @@ class PushResult:
     holds yet. ``uploaded_files`` counts the distinct file contents uploaded,
     ``reused_files`` the file entries whose content the previous generation already held, and
     ``sent_blobs``/``sent_bytes`` the stored blobs and bytes this call added.
+    ``resumed_blobs``/``resumed_bytes`` count the pieces an earlier, interrupted push had
+    already stored that this call reused from the resume journal (read back and proven, never
+    sent again); they are not part of ``sent_blobs``/``sent_bytes``.
     """
 
     outcome: PushOutcome
@@ -1343,6 +1532,8 @@ class PushResult:
     sent_bytes: int
     adopted_generation: int | None = None
     source_change: SourceChangedError | None = None
+    resumed_blobs: int = 0
+    resumed_bytes: int = 0
 
     @property
     def refused_owners(self) -> tuple[OwnerOutcome, ...]:
@@ -1365,11 +1556,90 @@ class _Progress:
         self.files = 0
         self.blobs = 0
         self.bytes = 0
+        self.resumed_blobs = 0
+        self.resumed_bytes = 0
 
     def put(self, blob_store: BlobStore, data: bytes) -> BlobRef:
         ref = blob_store.put(data)
         self.blobs += 1
         self.bytes += ref.size
+        return ref
+
+
+class _Resume:
+    """Stores a file's pieces, reusing those the resume journal proves the vault holds.
+
+    A journalled piece is reused only when it was cut with this push's chunk size, its
+    plaintext digest and size are those of the piece being stored now, and its blob, read
+    back through the sealed store (which checks the ciphertext digest and size and
+    authenticates the blob), decrypts to exactly these bytes. A blob that is gone or does not
+    open is not reused: the piece is sealed and sent again. Every piece sent is journalled.
+    """
+
+    def __init__(
+        self,
+        journal: ResumeJournal,
+        held: Mapping[tuple[str, int], Mapping[int, ResumeJournalEntry]],
+        *,
+        library_id: str,
+        destination_sha256: str,
+        chunk_bytes: int,
+        clock: Clock,
+    ) -> None:
+        self.journal = journal
+        self.held = held
+        self.library_id = library_id
+        self.destination_sha256 = destination_sha256
+        self.chunk_bytes = chunk_bytes
+        self.clock = clock
+
+    def _stored(
+        self, blob_store: BlobStore, key: _ContentKey, offset: int, piece: bytes, digest: str
+    ) -> BlobRef | None:
+        entry = self.held.get((key.sha256, key.size), {}).get(offset)
+        if entry is None or (entry.chunk_bytes, entry.plaintext_sha256, entry.plaintext_size) != (
+            self.chunk_bytes,
+            digest,
+            len(piece),
+        ):
+            return None
+        try:
+            stored = blob_store.get(entry.ref)
+        except StorageError as error:
+            if error.code not in ("STORAGE.NOT_FOUND", "STORAGE.INTEGRITY"):
+                raise
+            return None
+        return entry.ref if stored == piece else None
+
+    def store(
+        self,
+        blob_store: BlobStore,
+        key: _ContentKey,
+        offset: int,
+        piece: bytes,
+        progress: _Progress,
+    ) -> BlobRef:
+        digest = hashlib.sha256(piece).hexdigest()
+        ref = self._stored(blob_store, key, offset, piece, digest)
+        if ref is not None:
+            progress.resumed_blobs += 1
+            progress.resumed_bytes += ref.size
+            return ref
+        ref = progress.put(blob_store, piece)
+        self.journal.append(
+            ResumeJournalEntry(
+                library_id=self.library_id,
+                destination_sha256=self.destination_sha256,
+                file_sha256=key.sha256,
+                file_size=key.size,
+                offset=offset,
+                chunk_bytes=self.chunk_bytes,
+                plaintext_sha256=digest,
+                plaintext_size=len(piece),
+                ref=ref,
+                recorded_at=self.clock(),
+            )
+        )
         return ref
 
 
@@ -1390,7 +1660,7 @@ class _PushSink:
 
     def begin(self, owner: str, item: ReplicationItem) -> None:
         self._item = item
-        if item.source == item.path:
+        if not _spooled(item):
             return
         scratch = self._scratch or ScratchDirectory(self._root)
         self._scratch = scratch
@@ -1415,6 +1685,13 @@ class _PushSink:
     def close(self) -> None:
         if self._scratch is not None:
             self._scratch.remove()
+
+
+def _spooled(item: ReplicationItem) -> bool:
+    """Whether a pass reads ``item`` from a scratch copy the push must spool (a backup)."""
+    if item.file_class == "memos":
+        return False
+    return item.source != item.path
 
 
 def _planned(entry: PassEntry | ManifestEntry) -> PlannedManifestEntry:
@@ -1587,23 +1864,38 @@ def _new_contents(
 
 
 def _upload_file(
-    blob_store: BlobStore, item: ReplicationItem, chunk_bytes: int, progress: _Progress
+    blob_store: BlobStore,
+    item: ReplicationItem,
+    chunk_bytes: int,
+    progress: _Progress,
+    resume: _Resume,
 ) -> tuple[BlobRef, ...]:
-    """Read a planned file again and put it in pieces of ``chunk_bytes``.
+    """Read a planned file again and store it in pieces of ``chunk_bytes``.
 
+    Each piece goes through ``resume``, which reuses one an interrupted push already stored
+    and journals each one it sends.
     Raises: ``SourceChangedError`` when the file no longer has the planned identity, size or
-    digest (pieces already put stay unreferenced); whatever ``put`` raises.
+    digest (pieces already put stay unreferenced, and journalled); whatever ``put`` or
+    ``get`` raises.
     """
+    key = _ContentKey(cast(str, item.expected_sha256), cast(int, item.expected_size))
     refs: list[BlobRef] = []
     buffer = bytearray()
+    offset = 0
+
+    def store(piece: bytes) -> None:
+        nonlocal offset
+        refs.append(resume.store(blob_store, key, offset, piece, progress))
+        offset += len(piece)
+
     with item.open(chunk_bytes=chunk_bytes) as reader:
         for data in reader.chunks():
             buffer += data
             while len(buffer) >= chunk_bytes:
-                refs.append(progress.put(blob_store, bytes(buffer[:chunk_bytes])))
+                store(bytes(buffer[:chunk_bytes]))
                 del buffer[:chunk_bytes]
         if buffer:
-            refs.append(progress.put(blob_store, bytes(buffer)))
+            store(bytes(buffer))
     progress.files += 1
     return tuple(refs)
 
@@ -1651,6 +1943,7 @@ def push_generation(
     dry_run: bool = False,
     ledger: ReplicationLedger | None = None,
     sources: Sequence[ReplicationSource] | None = None,
+    memos_root: Path | None = None,
 ) -> PushResult:
     """Copy the library's current files to the vault as its next generation.
 
@@ -1682,10 +1975,24 @@ def push_generation(
     reading a file again, uploading anything or writing any record (an interrupted push is
     then reported as a fork rather than finished, because finishing it would write);
     ``ledger`` (default: the ledger of ``destination.name`` in the layout); ``sources``
-    (default: ``library_sources()``). Every record read or written is ``destination.name``'s
-    (``VaultRecords``), so pushes to two destinations never share a lock, a state or a chain.
+    (default: ``library_sources()``, plus a ``MemosSource`` over ``memos_root`` when the
+    destination copies ``memos``); ``memos_root``, the phone's memos drop outside the asset
+    root (required with the default sources exactly when ``classes`` holds ``memos``). Every
+    record read or written is ``destination.name``'s (``VaultRecords``), so pushes to two
+    destinations never share a lock, a state or a chain.
+    Resume (design §4.3): every piece step (5) stores is appended to the destination's resume
+    journal (``ResumeJournal``) as soon as it is stored. A later push, even one whose plan has
+    grown, reuses a journalled piece of a file whose digest and size are unchanged once its
+    blob, read back through the sealed store, decrypts to exactly the bytes at that offset,
+    and stores only the pieces it cannot prove (``full`` reuses none). The head still moves
+    only once the whole generation is stored, so a push that stops part-way leaves the
+    previous generation intact and current; a push that stores a generation, or finds the
+    head already holding the library (``up-to-date``), clears the journal and records in
+    ``checked.json`` that the head was current (``read_freshness``). A dry run reads the
+    journal for nothing and writes neither.
     Returns: the ``PushResult``.
-    Raises: ``ValueError`` for no or an unknown class or a bad chunk size, and
+    Raises: ``ValueError`` for no or an unknown class or a bad chunk size, for ``memos``
+    without ``memos_root`` (or a ``memos_root`` without ``memos``) on the default sources, and
     ``StorageNameError`` for a bad library id (before any I/O); ``PushRunningError``;
     ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) when the head check fails (message
     ``vault head check failed (<check>)``, with ``(fork)`` also when the head changed during
@@ -1696,6 +2003,13 @@ def push_generation(
     """
     wanted = _require_push_arguments(classes, chunk_bytes)
     validate_library_id(library_id)
+    if sources is None:
+        if ("memos" in wanted) != (memos_root is not None):
+            raise ValueError(
+                "a destination that copies memos needs the memos root, and only such a "
+                "destination takes one"
+            )
+        sources = library_sources() + (() if memos_root is None else (MemosSource(memos_root),))
     layout = AssetLayout.validate(layout.root)
     records = VaultRecords(layout, destination.name)
     vault = _Vault(
@@ -1706,7 +2020,6 @@ def push_generation(
         library_id,
     )
     finish = _Finish(destination, clock)
-    sources = library_sources() if sources is None else sources
     with records.push_lock():
         resolved = _resolve_head(vault, None if dry_run else finish, destination)
         sink = _PushSink(layout.root)
@@ -1792,6 +2105,9 @@ def _push(
         and previous is not None
         and (plan.classes, plan.entries) == (previous.classes, manifest_plan(previous).entries)
     ):
+        if not dry_run and resolved.state is not None:
+            vault.records.record_current(resolved.state, finish.clock())
+            ResumeJournal(vault.records).clear()
         return unchanged
     new = _new_contents(plan, reusable, readable)
     if dry_run:
@@ -1817,13 +2133,22 @@ def _push(
     )
     progress = _Progress()
     chunks = dict(held)
+    journal = ResumeJournal(vault.records)
+    resume = _Resume(
+        journal,
+        {} if full else journal.load(vault.library_id, finish.destination.digest),
+        library_id=vault.library_id,
+        destination_sha256=finish.destination.digest,
+        chunk_bytes=chunk_bytes,
+        clock=finish.clock,
+    )
     try:
         for entry in new:
             item = replace(
                 sink.items[entry.path], expected_sha256=entry.sha256, expected_size=entry.size
             )
             chunks[_ContentKey(entry.sha256, entry.size)] = _upload_file(
-                vault.blob_store, item, chunk_bytes, progress
+                vault.blob_store, item, chunk_bytes, progress, resume
             )
     except SourceChangedError as error:
         # Whatever the re-read found, the file is no longer the one the plan names.
@@ -1837,6 +2162,8 @@ def _push(
             sent_blobs=progress.blobs,
             sent_bytes=progress.bytes,
             source_change=change,
+            resumed_blobs=progress.resumed_blobs,
+            resumed_bytes=progress.resumed_bytes,
         )
     written = store_manifest(vault.blob_store, _manifest(plan, chunks), chunk_bytes=chunk_bytes)
     try:
@@ -1851,7 +2178,9 @@ def _push(
         raise _head_failure(
             "fork", f"the vault's head changed while generation {plan.generation} was pushed"
         ) from error
-    _finish(vault, finish, written, head, previous, started)
+    settled = _finish(vault, finish, written, head, previous, started)
+    vault.records.record_current(settled, settled.updated_at)
+    journal.clear()
     blobs, size = _sent(written, previous)
     return replace(
         unchanged,
@@ -1860,8 +2189,10 @@ def _push(
         manifest_sha256=written.digest,
         head=head,
         uploaded_files=progress.files,
-        sent_blobs=blobs,
-        sent_bytes=size,
+        sent_blobs=blobs - progress.resumed_blobs,
+        sent_bytes=size - progress.resumed_bytes,
+        resumed_blobs=progress.resumed_blobs,
+        resumed_bytes=progress.resumed_bytes,
     )
 
 
@@ -1946,6 +2277,7 @@ def verify_generation(
     paths: Collection[str] | None = None,
     classes: Collection[FileClass] | None = None,
     destination: str = DEFAULT_VAULT_DESTINATION,
+    clock: Clock = utc_now,
 ) -> VerifyReport:
     """Download and check every chunk of a generation; the vault's word counts for nothing.
 
@@ -1958,7 +2290,11 @@ def verify_generation(
     ``library_id``; ``generation``; ``paths``, manifest paths or directories whose entries to
     check (default: all); ``classes``, the classes to check (default: all). An entry is
     checked when it matches both filters. ``destination`` names whose records anchor the
-    head (the vault the stores reach must be that destination's).
+    head (the vault the stores reach must be that destination's); ``clock`` stamps the record
+    a whole verify leaves: when every entry of the head's generation (no generation, path or
+    class named) is present or pinned, ``checked.json`` records it as verified, so ``vault
+    verify --if-unverified`` and ``read_freshness`` know (skipped while a push holds the lock
+    or once the head moved on).
     Returns: the ``VerifyReport``.
     Raises: ``StorageNameError`` for a bad library id; ``PushRunningError``;
     ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) when the head check fails;
@@ -2001,13 +2337,88 @@ def verify_generation(
             )
         )
     )
-    return VerifyReport(
+    report = VerifyReport(
         library_id=library_id,
         generation=manifest.generation,
         manifest_sha256=manifest_digest(manifest),
         created_at=manifest.created_at,
         entries=tuple(_verify_entry(blob_store, entry) for entry in selected),
         unknown_paths=unknown,
+    )
+    if generation is None and paths is None and classes is None and report.ok:
+        _record_verified(records, library_id, report, clock)
+    return report
+
+
+def _record_verified(
+    records: VaultRecords, library_id: str, report: VerifyReport, clock: Clock
+) -> None:
+    """Note a whole, clean verify of the head, unless a push now holds or moved the head."""
+    try:
+        with records.push_lock():
+            state = records.read_state(library_id)
+            if (
+                state is not None
+                and state.generation == report.generation
+                and state.manifest_sha256 == report.manifest_sha256
+            ):
+                records.record_verified(state, clock())
+    except PushRunningError:
+        return
+
+
+# -- freshness -------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DestinationFreshness:
+    """How old one destination's copy is, from this host's records alone (no vault is asked).
+
+    ``generation`` and ``manifest_sha256`` name the newest complete generation ``state.json``
+    records (generation 0: nothing was pushed). ``created_at`` is when that generation's pass
+    began (the kept manifest copy's ``created_at``). ``current_at`` is the last time a push
+    found that generation holding the library as it was (``checked.json``; a destination
+    pushed before that record existed counts from ``state.json``'s ``updated_at``), so an
+    unchanged library does not age its copy. ``verified_at`` is the last whole, clean ``vault
+    verify`` of it (``None``: none recorded since it was pushed).
+    """
+
+    destination: str
+    generation: int
+    manifest_sha256: str | None
+    created_at: datetime | None
+    current_at: datetime | None
+    verified_at: datetime | None
+
+    def age(self, now: datetime) -> timedelta | None:
+        """How long ago the copy was last known current (``None`` when nothing was pushed)."""
+        return None if self.current_at is None else now - self.current_at
+
+
+def read_freshness(
+    layout: AssetLayout, library_id: str, destination: str = DEFAULT_VAULT_DESTINATION
+) -> DestinationFreshness:
+    """The age of one destination's newest complete generation, from local records only.
+
+    Params: ``layout``; ``library_id``; ``destination``.
+    Returns: the ``DestinationFreshness``; it reads, and writes nothing.
+    Raises: ``StorageIntegrityError`` (``STORAGE.INTEGRITY``) for an unsafe or invalid
+    record; ``StorageNameError`` for a bad library id or destination.
+    """
+    validate_library_id(library_id)
+    records = VaultRecords(AssetLayout.validate(layout.root), destination)
+    state = records.read_state(library_id)
+    if state is None or state.generation == 0:
+        return DestinationFreshness(destination, 0, None, None, None, None)
+    check = records.read_check(state)
+    copy = _kept_copy(records, state.generation, state.manifest_sha256)
+    return DestinationFreshness(
+        destination=destination,
+        generation=state.generation,
+        manifest_sha256=state.manifest_sha256,
+        created_at=None if copy is None else copy.created_at,
+        current_at=state.updated_at if check is None else check.current_at,
+        verified_at=None if check is None else check.verified_at,
     )
 
 
@@ -2033,6 +2444,8 @@ class RestoreResult:
     ``restored_files`` and ``restored_bytes`` count the files written from the vault;
     ``pins`` says how each pin entry was restored; ``manifest`` is the authenticated manifest
     the restore wrote from (``rehash_restored_library`` holds the restored files against it).
+    ``memos_target`` is where the ``memos`` entries were restored (their own root, outside the
+    library); with no target they are not restored and ``skipped_memos`` counts them.
     The recording index is not restored: it rebuilds itself when the library is next opened.
     """
 
@@ -2046,6 +2459,8 @@ class RestoreResult:
     restored_bytes: int
     pins: tuple[PinOutcome, ...]
     manifest: LibraryManifest = field(repr=False, compare=False)
+    memos_target: Path | None = None
+    skipped_memos: int = 0
 
     @property
     def pin_missing(self) -> tuple[PinOutcome, ...]:
@@ -2112,6 +2527,35 @@ def _restorable_parts(path: str) -> tuple[str, ...]:
             f"the manifest names {path}, which is outside the asset directories",
         )
     return parts
+
+
+def _memos_parts(entry: ManifestEntry) -> tuple[str, ...]:
+    """The components of a ``memos`` entry below the memos root.
+
+    Raises: ``RestoreRefusedError`` (``unrestorable-path``) for a memos entry that is not a
+    file under ``memos/`` with a canonical path.
+    """
+    try:
+        relative = validate_relative_path(memos_source_path(entry.path))
+    except ValueError as error:
+        raise RestoreRefusedError(
+            "unrestorable-path",
+            f"the manifest names the memo {entry.path!r:.200}, which is not a file below "
+            f"{MEMOS_PREFIX}/",
+        ) from error
+    if entry.kind != "file":
+        raise RestoreRefusedError("unrestorable-path", f"the memo {entry.path} is not a file")
+    return PurePosixPath(relative).parts
+
+
+def _require_apart(target: Path, memos_target: Path) -> None:
+    """The library and its memos are restored into two roots, neither inside the other."""
+    if target == memos_target or target in memos_target.parents or memos_target in target.parents:
+        raise RestoreRefusedError(
+            "unsafe-target",
+            f"the memos are restored beside the library, not into it: {memos_target} and "
+            f"{target} overlap",
+        )
 
 
 def _require_head_this_mac_pushed(
@@ -2264,8 +2708,13 @@ def _make_directories(staging: Path, parts: Sequence[str]) -> Path:
     return directory
 
 
-def _restore_file(blob_store: BlobStore, staging: Path, entry: ManifestEntry) -> None:
-    parts = PurePosixPath(entry.path).parts
+def _restore_file(
+    blob_store: BlobStore,
+    staging: Path,
+    entry: ManifestEntry,
+    parts: Sequence[str] | None = None,
+) -> None:
+    parts = PurePosixPath(entry.path).parts if parts is None else parts
     destination = _make_directories(staging, parts[:-1]) / parts[-1]
     with os.fdopen(os.open(destination, _CREATE_FLAGS, 0o600), "wb") as stream:
         for piece in _entry_plaintext(blob_store, entry):
@@ -2431,6 +2880,7 @@ def restore_library(
     records: VaultRecords | None = None,
     runtime_root: Path | None = None,
     free_bytes: Callable[[Path], int] = _free_bytes,
+    memos_target: Path | None = None,
 ) -> RestoreResult:
     """Restore one generation of a library into an empty asset root.
 
@@ -2459,7 +2909,11 @@ def restore_library(
     ``generation`` and ``manifest_sha256``, or ``accept_latest``; ``records``, the Mac-side
     vault records whose manifest copies reach older generations; ``runtime_root``, the
     fine-tune runtime to re-link pinned weights from; ``free_bytes``, the free space of a
-    directory's filesystem.
+    directory's filesystem; ``memos_target``, an empty root (as ``target``, and apart from it)
+    for the ``memos`` entries: each ``memos/<path>`` is written as ``<memos_target>/<path>``
+    (0600 files, 0700 directories) through its own private sibling staging directory, which
+    is published right after the library. Without it the memos are not restored
+    (``skipped_memos`` counts them); the library's own root never receives one.
     Returns: the ``RestoreResult``.
     Raises: ``ValueError`` when neither or both ways of naming the generation are given, or
     for a bad target path (before any I/O); ``StorageNameError`` for a bad library id;
@@ -2481,21 +2935,33 @@ def restore_library(
         )
     validate_library_id(library_id)
     existed = _require_empty_target(target)
+    memos_existed = False
+    if memos_target is not None:
+        _require_apart(target, memos_target)
+        memos_existed = _require_empty_target(memos_target)
     manifest = _manifest_to_restore(blob_store, ref_store, library_id, selection, records)
-    files = [entry for entry in manifest.entries if entry.kind == "file"]
-    pins = [entry for entry in manifest.entries if entry.kind == "pin"]
-    for entry in manifest.entries:
+    memos = [entry for entry in manifest.entries if entry.file_class == "memos"]
+    entries = [entry for entry in manifest.entries if entry.file_class != "memos"]
+    files = [entry for entry in entries if entry.kind == "file"]
+    pins = [entry for entry in entries if entry.kind == "pin"]
+    for entry in entries:
         _restorable_parts(entry.path)
-    needed = sum(entry.size for entry in (files if runtime_root is None else manifest.entries))
-    required = needed + needed // RESTORE_MARGIN_DIVISOR + RESTORE_MARGIN_BYTES
-    available = free_bytes(target.parent)
-    if available < required:
-        raise RestoreRefusedError(
-            "insufficient-space",
-            f"restoring generation {manifest.generation} needs {required} bytes free beside "
-            f"{target}, but {available} are",
+    memo_parts = [(entry, _memos_parts(entry)) for entry in memos]
+    needed = sum(entry.size for entry in (files if runtime_root is None else entries))
+    _require_room(free_bytes, target, needed, f"restoring generation {manifest.generation}")
+    if memos_target is not None:
+        _require_room(
+            free_bytes,
+            memos_target,
+            sum(entry.size for entry in memos),
+            f"restoring the memos of generation {manifest.generation}",
         )
     staging = target.parent / f"{target.name}{RESTORING_INFIX}{secrets.token_hex(8)}"
+    memos_staging = (
+        None
+        if memos_target is None
+        else memos_target.parent / f"{memos_target.name}{RESTORING_INFIX}{secrets.token_hex(8)}"
+    )
     os.mkdir(staging, 0o700)
     try:
         os.chmod(staging, 0o700)
@@ -2506,15 +2972,26 @@ def restore_library(
         outcomes = tuple(_restore_pin(staging, entry, runtime_root) for entry in pins)
         _open_as_owner(staging)
         _seal_directories(staging)
+        if memos_staging is not None:
+            os.mkdir(memos_staging, 0o700)
+            os.chmod(memos_staging, 0o700)
+            for entry, parts in memo_parts:
+                _restore_file(blob_store, memos_staging, entry, parts)
+            for directory, _, _ in os.walk(memos_staging):
+                fsync_directory(Path(directory))
         _publish(staging, target, existed)
+        if memos_staging is not None and memos_target is not None:
+            _publish(memos_staging, memos_target, memos_existed)
     except BaseException:
-        if os.path.lexists(staging):
-            _remove_tree(staging)
+        for leftover in (staging, memos_staging):
+            if leftover is not None and os.path.lexists(leftover):
+                _remove_tree(leftover)
         raise
     AssetLayout.validate(target)
     counts = {file_class: 0 for file_class in manifest.classes}
     for entry in manifest.entries:
         counts[entry.file_class] += 1
+    written = files + (memos if memos_target is not None else [])
     return RestoreResult(
         target=target,
         library_id=library_id,
@@ -2522,11 +2999,24 @@ def restore_library(
         manifest_sha256=manifest_digest(manifest),
         created_at=manifest.created_at,
         class_counts=counts,
-        restored_files=len(files),
-        restored_bytes=sum(entry.size for entry in files),
+        restored_files=len(written),
+        restored_bytes=sum(entry.size for entry in written),
         pins=outcomes,
         manifest=manifest,
+        memos_target=memos_target,
+        skipped_memos=0 if memos_target is not None else len(memos),
     )
+
+
+def _require_room(free_bytes: Callable[[Path], int], target: Path, needed: int, label: str) -> None:
+    """Refuse a restore whose target's filesystem lacks the bytes plus a tenth and a margin."""
+    required = needed + needed // RESTORE_MARGIN_DIVISOR + RESTORE_MARGIN_BYTES
+    available = free_bytes(target.parent)
+    if available < required:
+        raise RestoreRefusedError(
+            "insufficient-space",
+            f"{label} needs {required} bytes free beside {target}, but {available} are",
+        )
 
 
 # -- the restore drill -------------------------------------------------------------------------
@@ -2580,8 +3070,10 @@ class RehashReport:
         return 0 if self.ok else 1
 
 
-def _rehash_entry(root_directory: int, entry: ManifestEntry) -> RehashedEntry:
-    parts = PurePosixPath(entry.path).parts
+def _rehash_entry(
+    root_directory: int, entry: ManifestEntry, parts: Sequence[str] | None = None
+) -> RehashedEntry:
+    parts = PurePosixPath(entry.path).parts if parts is None else parts
     found: RehashState = "missing"
     detail: str | None = "no regular file is at this path"
     with _restore_directory(root_directory, parts[:-1], create=False) as directory:
@@ -2618,7 +3110,9 @@ def _rehash_outcome(
     return "match", None
 
 
-def rehash_restored_library(target: Path, manifest: LibraryManifest) -> RehashReport:
+def rehash_restored_library(
+    target: Path, manifest: LibraryManifest, *, memos_target: Path | None = None
+) -> RehashReport:
     """Read every restored file back from disk and hold it against the manifest.
 
     This is the restore drill's last step (design §4.3: fetch a generation, decrypt, re-hash
@@ -2628,17 +3122,38 @@ def rehash_restored_library(target: Path, manifest: LibraryManifest) -> RehashRe
     link at any component, and its size, SHA-256 and mode compared. Pin entries are not
     files the vault holds and are not checked here (``RestoreResult.pins`` reports them).
     Params: ``target``, the restored asset root; ``manifest``, the generation restored
-    (``RestoreResult.manifest``).
+    (``RestoreResult.manifest``); ``memos_target``, where its ``memos`` entries were restored
+    (``memos/<path>`` is read as ``<memos_target>/<path>``); without it every memo is
+    reported ``missing``, so a drill that left the memos out does not pass.
     Returns: the ``RehashReport``; it reads, and never writes or removes anything.
     Raises: ``RestoreRefusedError`` (``unsafe-target``) when the target or a directory on an
     entry's path is a symlink or not a directory; ``OSError`` from a read.
     """
+    files = [entry for entry in manifest.entries if entry.kind == "file"]
+    memos = [entry for entry in files if entry.file_class == "memos"]
     with _restore_root(target) as root_directory:
-        entries = tuple(
-            _rehash_entry(root_directory, entry)
-            for entry in manifest.entries
-            if entry.kind == "file"
+        checked = {
+            entry.path: _rehash_entry(root_directory, entry)
+            for entry in files
+            if entry.file_class != "memos"
+        }
+    if memos and memos_target is None:
+        checked.update(
+            (
+                entry.path,
+                RehashedEntry(
+                    entry.path, entry.file_class, entry.size, "missing", "no memos root was given"
+                ),
+            )
+            for entry in memos
         )
+    elif memos and memos_target is not None:
+        with _restore_root(memos_target) as memos_directory:
+            checked.update(
+                (entry.path, _rehash_entry(memos_directory, entry, _memos_parts(entry)))
+                for entry in memos
+            )
+    entries = tuple(checked[entry.path] for entry in files)
     return RehashReport(
         target=target,
         generation=manifest.generation,

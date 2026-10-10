@@ -104,7 +104,10 @@ class ResolvedPeer:
 
     ``address`` is the IP literal the client connects to (the tailnet address of the node);
     ``port`` is where it listens, which only a test resolver ever changes. ``dns_name`` is the
-    node's own name, which Tailscale reports with a trailing dot.
+    node's own name, which Tailscale reports with a trailing dot. ``online`` is whether the
+    tailnet's coordination server last saw the node connected (``None`` when the resolver
+    cannot say): a node that sleeps or travels (the Air's vault) is checked for it before a
+    copy is attempted, never instead of the identity check.
     """
 
     address: str
@@ -112,6 +115,7 @@ class ResolvedPeer:
     tags: tuple[str, ...]
     dns_name: str
     port: int = HTTPS_PORT
+    online: bool | None = None
 
 
 class TailnetResolver(Protocol):
@@ -205,17 +209,18 @@ class TailscaleCliResolver:
                 "STORAGE.IDENTITY_MISMATCH",
                 f"this host is on the tailnet {suffix!r:.120}, not {self.tailnet_suffix}",
             )
-        address = self._peer_address(status, endpoint)
+        address, online = self._peer_address(status, endpoint)
         node = _member(self._json(("whois", "--json", address), "whois"), "Node", "whois")
         return ResolvedPeer(
             address=address,
             node_stable_id=_text(node, "StableID", "whois"),
             tags=_texts(node, "Tags", "whois"),
             dns_name=_text(node, "Name", "whois"),
+            online=online,
         )
 
-    def _peer_address(self, status: Mapping[str, Any], endpoint: str) -> str:
-        """The tailnet address of the one peer named ``endpoint``."""
+    def _peer_address(self, status: Mapping[str, Any], endpoint: str) -> tuple[str, bool | None]:
+        """The tailnet address of the one peer named ``endpoint``, and its ``Online`` flag."""
         peers = _member(status, "Peer", "status")
         named = [
             peer
@@ -234,7 +239,8 @@ class TailscaleCliResolver:
             except ValueError:
                 continue
             if parsed.version == 4 and parsed in TAILNET_RANGE:
-                return candidate
+                online = named[0].get("Online")
+                return candidate, online if isinstance(online, bool) else None
         raise storage_error(
             "STORAGE.IDENTITY_MISMATCH",
             f"the node named {endpoint} has no {TAILNET_RANGE} address",

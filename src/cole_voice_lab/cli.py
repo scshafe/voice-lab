@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -12,8 +13,9 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, get_args
 
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
@@ -114,7 +116,7 @@ from .runtime import (
     verify_local_source,
     verify_runtime_install_receipt,
 )
-from .storage_contracts import DEFAULT_VAULT_DESTINATION
+from .storage_contracts import DEFAULT_VAULT_DESTINATION, VAULT_NODE_TAG
 from .storage_ports import StorageError, storage_error
 from .sync import (
     PRIMARY_MINI_ALIAS,
@@ -139,7 +141,20 @@ MAX_CLI_DATASET_JSON_BYTES = 16 * 1024 * 1024
 # A recovery sheet or one vault token, as it arrives on standard input.
 MAX_CLI_SECRET_INPUT_BYTES = 64 * 1024
 # The file classes a vault binding or a destination approval may name.
-VAULT_FILE_CLASSES = ("derived-edits", "prompt-database", "recordings", "records", "training")
+VAULT_FILE_CLASSES = (
+    "derived-edits",
+    "memos",
+    "prompt-database",
+    "recordings",
+    "records",
+    "training",
+)
+# How long a destination's copy may go without being found current before ``vault staleness``
+# flags it, unless ``--stale-after`` says otherwise: the Air, the offsite copy that is pushed
+# weekly, after 14 days (design §4.3 "Staleness").
+DEFAULT_STALE_AFTER: Mapping[str, timedelta] = MappingProxyType({"air": timedelta(days=14)})
+_DURATION = re.compile(r"^([1-9][0-9]{0,5})([smhd])$")
+_DURATION_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
 VAULT_BACKENDS = ("local-directory", "tailnet-vault")
 # `prompts show` names built-ins only; unversioned names stay v1 (docs/PROMPT_CATALOG_V2.md §4).
 PROMPT_SHOW_RESOURCES = {
@@ -3240,6 +3255,40 @@ def _destination_argument(value: str) -> str:
         raise argparse.ArgumentTypeError(str(error)) from error
 
 
+def _duration_argument(value: str) -> timedelta:
+    """A ``--if-older-than`` or ``--stale-after`` length: digits and one unit (``7d``, ``12h``)."""
+    match = _DURATION.fullmatch(value)
+    if match is None:
+        raise argparse.ArgumentTypeError(
+            f"a duration is a whole number and one unit of s, m, h or d (7d, 12h): {value!r:.40}"
+        )
+    return timedelta(**{_DURATION_UNITS[match[2]]: int(match[1])})
+
+
+def _stale_after_argument(value: str) -> tuple[str, timedelta]:
+    """A ``--stale-after`` value: ``<destination>=<duration>`` (``laptop=3d``)."""
+    destination, separator, duration = value.partition("=")
+    if not separator:
+        raise argparse.ArgumentTypeError(f"expected <destination>=<duration>: {value!r:.80}")
+    return _destination_argument(destination), _duration_argument(duration)
+
+
+def _vault_tag_argument(value: str) -> str:
+    """A vault node's tag: ``tag:voice-lab-vault`` or ``tag:voice-lab-vault-<suffix>``."""
+    from .storage_contracts import VAULT_NODE_TAG_PATTERN
+
+    if re.fullmatch(VAULT_NODE_TAG_PATTERN, value) is None:
+        raise argparse.ArgumentTypeError(
+            f"a vault node's tag is tag:voice-lab-vault or tag:voice-lab-vault-<suffix>: "
+            f"{value!r:.80}"
+        )
+    return value
+
+
+def _seconds(value: timedelta | None) -> int | None:
+    return None if value is None else int(value.total_seconds())
+
+
 def _vault_init(options: argparse.Namespace) -> int:
     from .storage_binding import initialize_library
 
@@ -3267,6 +3316,7 @@ def _vault_approval(options: argparse.Namespace, library_id: str) -> VaultDestin
         endpoint=options.endpoint,
         tailnet_suffix=options.tailnet_suffix,
         node_stable_id=options.node_stable_id,
+        tag=options.tag,
         namespace=options.namespace,
         classes=tuple(sorted(set(options.classes))),
         approved_at=options.approved_at or datetime.now().astimezone(),
@@ -3525,11 +3575,76 @@ def _vault_status(options: argparse.Namespace) -> int:
     return 0
 
 
+def _vault_memos_root(options: argparse.Namespace, vault: LibraryVault) -> Path | None:
+    """The memos drop a push reads: given exactly when the binding copies ``memos``."""
+    copies = "memos" in vault.classes
+    if options.memos_root is None:
+        if copies:
+            raise _vault_usage(
+                f"destination {options.destination} copies memos: name the memos drop with "
+                "--memos-root (on the PC, /data/voice-lab/memos/phone)"
+            )
+        return None
+    if not copies:
+        raise _vault_usage(
+            f"destination {options.destination} does not copy memos, so it takes no "
+            "--memos-root; bind it with the memos class to copy them"
+        )
+    root = Path(os.path.abspath(Path(options.memos_root).expanduser()))
+    if not root.is_dir() or root.is_symlink():
+        raise _vault_usage(f"the memos root {root} is not a directory")
+    return root
+
+
+def _vault_skipped(
+    options: argparse.Namespace, vault: LibraryVault, skipped: str, detail: str | None
+) -> int:
+    """Report a run that did nothing on purpose (``--if-older-than``, ``--skip-unreachable``).
+
+    It succeeds: an hourly unit whose vault is asleep or whose copy is fresh has not failed.
+    """
+    _json_print(
+        {
+            "destination": options.destination,
+            "library_id": vault.library_id,
+            "outcome": "skipped",
+            "skipped": skipped,
+            "detail": detail,
+        }
+    )
+    return 0
+
+
+def _vault_unreachable(options: argparse.Namespace, vault: LibraryVault) -> str | None:
+    """Why the vault cannot be reached now, when ``--skip-unreachable`` asks; else ``None``."""
+    from .storage_binding import probe_library_vault
+
+    if not options.skip_unreachable:
+        return None
+    probe = probe_library_vault(vault)
+    return None if probe.reachable else (probe.reason or "the vault did not answer")
+
+
 def _vault_push(options: argparse.Namespace) -> int:
-    from .library_generations import push_generation
+    from .library_generations import push_generation, read_freshness
 
     layout = _vault_layout(options)
     vault = _open_bound_vault(layout, options.destination)
+    memos_root = _vault_memos_root(options, vault)
+    if options.if_older_than is not None:
+        freshness = read_freshness(layout, vault.library_id, options.destination)
+        age = freshness.age(datetime.now(UTC))
+        if age is not None and age < options.if_older_than:
+            return _vault_skipped(
+                options,
+                vault,
+                "fresh",
+                f"generation {freshness.generation} was found current {_seconds(age)} s ago, "
+                f"under --if-older-than {_seconds(options.if_older_than)} s",
+            )
+    unreachable = _vault_unreachable(options, vault)
+    if unreachable is not None:
+        return _vault_skipped(options, vault, "unreachable", unreachable)
     result = push_generation(
         layout,
         blob_store=vault.blob_store,
@@ -3540,6 +3655,7 @@ def _vault_push(options: argparse.Namespace) -> int:
         chunk_bytes=vault.chunk_bytes,
         full=options.full,
         dry_run=options.dry_run,
+        memos_root=memos_root,
     )
     _json_print(
         {
@@ -3554,6 +3670,8 @@ def _vault_push(options: argparse.Namespace) -> int:
             "reused_files": result.reused_files,
             "sent_blobs": result.sent_blobs,
             "sent_bytes": result.sent_bytes,
+            "resumed_blobs": result.resumed_blobs,
+            "resumed_bytes": result.resumed_bytes,
             "waiting_paths": list(result.waiting_paths),
             "owners": [
                 {
@@ -3573,10 +3691,30 @@ def _vault_push(options: argparse.Namespace) -> int:
 
 
 def _vault_verify(options: argparse.Namespace) -> int:
-    from .library_generations import verify_generation
+    from .library_generations import read_freshness, verify_generation
 
     layout = _vault_layout(options)
     vault = _open_bound_vault(layout, options.destination)
+    if options.if_unverified:
+        if options.generation is not None or options.paths or options.classes:
+            raise _vault_usage(
+                "--if-unverified verifies the whole newest generation, so it takes no "
+                "--generation, --path or --class"
+            )
+        freshness = read_freshness(layout, vault.library_id, options.destination)
+        if freshness.generation == 0:
+            return _vault_skipped(options, vault, "nothing-pushed", None)
+        if freshness.verified_at is not None:
+            return _vault_skipped(
+                options,
+                vault,
+                "verified",
+                f"generation {freshness.generation} was verified at "
+                f"{freshness.verified_at.isoformat()}",
+            )
+    unreachable = _vault_unreachable(options, vault)
+    if unreachable is not None:
+        return _vault_skipped(options, vault, "unreachable", unreachable)
     report = verify_generation(
         layout,
         blob_store=vault.blob_store,
@@ -3644,6 +3782,7 @@ def _vault_restore(options: argparse.Namespace) -> int:
             node_stable_id=options.node_stable_id,
             tailnet_suffix=options.tailnet_suffix,
             destination=options.destination,
+            tag=options.tag,
         )
         records = None
     target = Path(os.path.abspath(Path(options.target).expanduser()))
@@ -3657,10 +3796,13 @@ def _vault_restore(options: argparse.Namespace) -> int:
         accept_latest=options.accept_latest,
         records=records,
         runtime_root=None if options.runtime_root is None else Path(options.runtime_root),
+        memos_target=_memos_target(options),
     )
     _json_print(
         {
             "target": str(result.target),
+            "memos_target": _optional_path(result.memos_target),
+            "skipped_memos": result.skipped_memos,
             "library_id": result.library_id,
             "generation": result.generation,
             "manifest_sha256": result.manifest_sha256,
@@ -3675,6 +3817,12 @@ def _vault_restore(options: argparse.Namespace) -> int:
     )
     # A pin is only expected to land when a runtime was named to re-link it from.
     return 1 if options.runtime_root is not None and result.pin_missing else 0
+
+
+def _memos_target(options: argparse.Namespace) -> Path | None:
+    if options.memos_target is None:
+        return None
+    return Path(os.path.abspath(Path(options.memos_target).expanduser()))
 
 
 def _vault_drill(options: argparse.Namespace) -> int:
@@ -3702,12 +3850,16 @@ def _vault_drill(options: argparse.Namespace) -> int:
         manifest_sha256=options.manifest_sha256,
         accept_latest=options.accept_latest,
         records=VaultRecords(layout, options.destination),
+        memos_target=_memos_target(options),
     )
-    report = rehash_restored_library(result.target, result.manifest)
+    report = rehash_restored_library(
+        result.target, result.manifest, memos_target=result.memos_target
+    )
     _json_print(
         {
             "destination": options.destination,
             "target": str(result.target),
+            "memos_target": _optional_path(result.memos_target),
             "library_id": result.library_id,
             "generation": result.generation,
             "manifest_sha256": result.manifest_sha256,
@@ -3726,6 +3878,80 @@ def _vault_drill(options: argparse.Namespace) -> int:
         }
     )
     return report.exit_status
+
+
+def _vault_staleness(options: argparse.Namespace) -> int:
+    """The age of every destination's newest complete generation, from local records only.
+
+    Design §4.3 "Staleness": a copy is as old as the last time a push found it holding the
+    library (``read_freshness``); a destination with a threshold (the Air: 14 days, or any
+    ``--stale-after``) is flagged once its copy is older, or when nothing was ever copied
+    there. Nothing is sent to any vault and nothing is written. Exit status 0, or with
+    ``--check`` 1 when a destination is stale (for the health check).
+    """
+    from .library_generations import read_freshness
+    from .storage_binding import read_library_identity, vault_destinations
+
+    layout = _vault_layout(options)
+    identity = read_library_identity(layout)
+    thresholds = dict(DEFAULT_STALE_AFTER) | dict(options.stale_after)
+    now = datetime.now(UTC)
+    rows: list[dict[str, JsonValue]] = []
+    stale: list[str] = []
+    library_id = None if identity is None else identity.library_id
+    for destination in () if library_id is None else vault_destinations(layout):
+        freshness = read_freshness(layout, cast(str, library_id), destination)
+        age = freshness.age(now)
+        threshold = thresholds.get(destination)
+        flagged = None if threshold is None else age is None or age > threshold
+        if flagged:
+            stale.append(destination)
+        rows.append(
+            {
+                "destination": destination,
+                "generation": freshness.generation,
+                "manifest_sha256": freshness.manifest_sha256,
+                "created_at": _timestamp_json(freshness.created_at),
+                "current_at": _timestamp_json(freshness.current_at),
+                "verified_at": _timestamp_json(freshness.verified_at),
+                "age_seconds": _seconds(age),
+                "stale_after_seconds": _seconds(threshold),
+                "stale": flagged,
+            }
+        )
+    document: dict[str, JsonValue] = {
+        "library_id": library_id,
+        "checked_at": now.isoformat(),
+        "destinations": cast(JsonValue, rows),
+        "stale": cast(JsonValue, stale),
+        "ok": not stale,
+    }
+    if options.json:
+        _json_print(document)
+    else:
+        for row in rows:
+            print(_vault_staleness_line(row))
+        if not rows:
+            print("no destination has been bound or copied to")
+    return 1 if options.check and stale else 0
+
+
+def _vault_staleness_line(row: Mapping[str, JsonValue]) -> str:
+    age = row["age_seconds"]
+    if not isinstance(age, int):
+        text = f"{row['destination']}: nothing copied yet"
+    else:
+        days, rest = divmod(age, 86_400)
+        text = (
+            f"{row['destination']}: generation {row['generation']}, current "
+            f"{days} d {rest // 3600} h ago"
+        )
+        if row["verified_at"] is not None:
+            text += f", verified {row['verified_at']}"
+    if row["stale"]:
+        limit = cast(int, row["stale_after_seconds"]) // 86_400
+        text += f" - STALE (over {limit} d)"
+    return text
 
 
 def _vault_audit(options: argparse.Namespace) -> int:
@@ -3927,6 +4153,22 @@ def _vault_token_import(options: argparse.Namespace) -> int:
         }
     )
     return 0
+
+
+JOURNEY_COMMANDS = {
+    "watch": "cole_voice_lab.jobs.watch",
+    **{
+        stage: f"cole_voice_lab.journey.{stage}"
+        for stage in ("index", "filter", "stt", "lyrics", "reclassify", "features", "journeys")
+    },
+}
+
+
+def _journey(options: argparse.Namespace) -> int:
+    """``voice-lab journey <command> ARGS``: the module's own command line, ARGS as given."""
+
+    module = importlib.import_module(JOURNEY_COMMANDS[options.journey_command])
+    return cast(Callable[[list[str]], int], module.main)(list(options.arguments))
 
 
 def _add_consent_scope_arguments(parser: argparse.ArgumentParser) -> None:
@@ -4745,11 +4987,26 @@ def build_parser() -> argparse.ArgumentParser:
             )
         return parser
 
+    def _skip_unreachable_argument(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--skip-unreachable",
+            action="store_true",
+            help="probe the vault (after its node identity check) and, when it does not "
+            "answer, do nothing and succeed",
+        )
+
     def _vault_destination_arguments(parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--approval-id", required=True)
         parser.add_argument("--endpoint", required=True)
         parser.add_argument("--tailnet-suffix", required=True)
         parser.add_argument("--node-stable-id", required=True)
+        parser.add_argument(
+            "--tag",
+            type=_vault_tag_argument,
+            default=VAULT_NODE_TAG,
+            help=f"the vault node's tag (default {VAULT_NODE_TAG}; the Air's node carries "
+            "tag:voice-lab-vault-air)",
+        )
         parser.add_argument("--namespace", required=True)
         parser.add_argument(
             "--classes", nargs="+", required=True, choices=VAULT_FILE_CLASSES, metavar="CLASS"
@@ -4811,6 +5068,16 @@ def build_parser() -> argparse.ArgumentParser:
     vault_push.add_argument(
         "--full", action="store_true", help="re-upload every file instead of reusing chunks"
     )
+    vault_push.add_argument(
+        "--memos-root", help="the phone's memos drop, for a destination that copies memos"
+    )
+    vault_push.add_argument(
+        "--if-older-than",
+        type=_duration_argument,
+        metavar="DURATION",
+        help="push only when the copy was last found current at least this long ago (7d)",
+    )
+    _skip_unreachable_argument(vault_push)
     vault_push.set_defaults(handler=_vault_push)
 
     vault_verify = _vault_arguments(
@@ -4821,6 +5088,12 @@ def build_parser() -> argparse.ArgumentParser:
     vault_verify.add_argument(
         "--class", dest="classes", action="append", default=[], choices=VAULT_FILE_CLASSES
     )
+    vault_verify.add_argument(
+        "--if-unverified",
+        action="store_true",
+        help="verify only when the newest generation has no whole, clean verify yet",
+    )
+    _skip_unreachable_argument(vault_verify)
     vault_verify.set_defaults(handler=_vault_verify)
 
     vault_restore = _vault_arguments(
@@ -4837,6 +5110,10 @@ def build_parser() -> argparse.ArgumentParser:
     vault_restore.add_argument("--namespace")
     vault_restore.add_argument("--node-stable-id")
     vault_restore.add_argument("--tailnet-suffix")
+    vault_restore.add_argument("--tag", type=_vault_tag_argument)
+    vault_restore.add_argument(
+        "--memos-target", help="an empty root for the memos (outside the library's target)"
+    )
     vault_restore.set_defaults(handler=_vault_restore)
 
     vault_drill = _vault_arguments(
@@ -4849,7 +5126,31 @@ def build_parser() -> argparse.ArgumentParser:
     drill_generation.add_argument("--accept-latest", action="store_true")
     drill_generation.add_argument("--generation", type=_positive_number)
     vault_drill.add_argument("--manifest-sha256", type=_sha256_argument)
+    vault_drill.add_argument(
+        "--memos-target", help="an empty root for the memos (outside the library's target)"
+    )
     vault_drill.set_defaults(handler=_vault_drill)
+
+    vault_staleness = _vault_arguments(
+        vault_commands.add_parser(
+            "staleness",
+            help="the age of each destination's newest complete generation (local records only)",
+        ),
+        destination=False,
+    )
+    vault_staleness.add_argument(
+        "--stale-after",
+        type=_stale_after_argument,
+        action="append",
+        default=[],
+        metavar="DESTINATION=DURATION",
+        help="flag a destination's copy older than this (default: air=14d)",
+    )
+    vault_staleness.add_argument("--json", action="store_true")
+    vault_staleness.add_argument(
+        "--check", action="store_true", help="exit 1 when a destination is stale"
+    )
+    vault_staleness.set_defaults(handler=_vault_staleness)
 
     vault_audit = _vault_arguments(
         vault_commands.add_parser("audit", help="hold the vault's access log against this Mac's")
@@ -4895,6 +5196,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vault_token_import.add_argument("--scope", required=True, choices=("write", "read"))
     vault_token_import.set_defaults(handler=_vault_token_import)
+
+    journey = commands.add_parser("journey", help="the voice-journey pipeline and its watcher")
+    journey_commands = journey.add_subparsers(dest="journey_command", required=True)
+    for name, module in JOURNEY_COMMANDS.items():
+        # Every argument goes to the module's own parser: no option is parsed here.
+        forward = journey_commands.add_parser(
+            name, help=f"python -m {module}", add_help=False, prefix_chars="\0"
+        )
+        forward.add_argument("arguments", nargs=argparse.REMAINDER)
+        forward.set_defaults(handler=_journey)
 
     return parser
 

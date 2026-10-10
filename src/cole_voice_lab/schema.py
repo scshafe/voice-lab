@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from .api.chains import ChainRegistryView
 from .api.contracts import (
     ApiMeta,
     ApiRefusal,
@@ -15,6 +16,7 @@ from .api.contracts import (
     IntakeSessionRequest,
     IntakeSessionStatus,
 )
+from .api.journey_contracts import JOURNEY_API_SCHEMA_MODELS
 from .audition import (
     AuditionPlan,
     AuditionRunManifest,
@@ -113,6 +115,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "recording-discovery-legacy-group": LegacyProjectionGroup,
     "recording-discovery-legacy-unknown": LegacyProjectionUnknown,
     "recording-legacy-continuation": RecordingLegacyContinuation,
+    "api-v1-chains": ChainRegistryView,
     "api-v1-chunk-answer": ChunkAnswer,
     "api-v1-intake-session": IntakeSessionRequest,
     "api-v1-intake-session-status": IntakeSessionStatus,
@@ -148,6 +151,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "experiment-result": ExperimentResult,
     "executed-code-evidence": ExecutedCodeEvidence,
     **FINETUNE_SCHEMA_MODELS,
+    **JOURNEY_API_SCHEMA_MODELS,
     "fine-tuning-transfer-plan": FineTuningTransferPlan,
     "headphone-review": HeadphoneReviewEvidence,
     "hosted-transfer-approval": HostedTransferApproval,

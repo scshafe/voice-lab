@@ -1,0 +1,51 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "RecordingId": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/recordings/{id}/transcript``: local transcript text, on request.",
+  "properties": {
+    "language": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "local_only": {
+      "const": true,
+      "default": true,
+      "title": "Local Only",
+      "type": "boolean"
+    },
+    "recording_id": {
+      "$ref": "#/$defs/RecordingId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-transcript/v1",
+      "default": "cole-voice-lab.api.journey-transcript/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "word_count": {
+      "$ref": "#/$defs/JsonValue"
+    }
+  },
+  "required": [
+    "recording_id",
+    "status",
+    "language",
+    "word_count",
+    "text"
+  ],
+  "title": "JourneyTranscript",
+  "type": "object"
+}

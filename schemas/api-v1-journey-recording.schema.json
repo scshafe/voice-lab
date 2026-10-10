@@ -1,0 +1,34 @@
+{
+  "$defs": {
+    "JsonObject": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/recordings/{id}``: one row, every column.",
+  "properties": {
+    "row": {
+      "$ref": "#/$defs/JsonObject"
+    },
+    "rows_schema_version": {
+      "title": "Rows Schema Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-recording/v1",
+      "default": "cole-voice-lab.api.journey-recording/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "rows_schema_version",
+    "row"
+  ],
+  "title": "JourneyRecording",
+  "type": "object"
+}

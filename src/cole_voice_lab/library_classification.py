@@ -460,6 +460,16 @@ _RULES: Final = (
         reason="a native package being prepared",
         example="tmp/.native-package-stage-native-1/audio/000-room-tone.wav",
     ),
+    _rule(
+        "memos-mirror-temporaries",
+        "memos{/**}/.*{/**}",
+        MAC_ONLY,
+        owner="the phone mirror's rsync (the vj-mirror drop)",
+        reason="rsync's temporary files and its .rsync-partial directory: a file being "
+        "received, which the drop publishes by renaming it into place",
+        example="memos/.rsync-partial/20261009 101500.m4a",
+        wins_over=("memos",),
+    ),
     # -- Single Mac-only files among copied ones. ------------------------------------------
     _rule(
         "take-commit-journal",
@@ -878,6 +888,18 @@ _RULES: Final = (
         reason="a finished fine-tune run, carried only while no fine-tune job or Speak request "
         "is active",
         example="derived/finetune/run-1/checkpoints/model_last.pt",
+    ),
+    # -- Copied: the phone's Voice Memos (the opt-in memos class). --------------------------
+    # The drop is outside the asset root; a pass reads it from the configured memos root and
+    # names its files under ``memos/`` (library_replication.MemosSource). A ``memos/`` path in
+    # the asset root itself is refused (require_classified_tree).
+    _rule(
+        "memos",
+        "memos/**",
+        "memos",
+        owner="the phone mirror (vj-mirror's rrsync drop, design §5.5)",
+        reason="Voice Memos and their metadata database; iCloud is not a backup (D-023)",
+        example="memos/20261009 101500.m4a",
     ),
 )
 

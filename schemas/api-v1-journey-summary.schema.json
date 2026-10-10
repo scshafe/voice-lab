@@ -1,0 +1,192 @@
+{
+  "$defs": {
+    "FilterOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "buckets": {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Buckets",
+          "type": "array"
+        },
+        "lyric_match_statuses": {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Lyric Match Statuses",
+          "type": "array"
+        },
+        "spot_check_statuses": {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Spot Check Statuses",
+          "type": "array"
+        },
+        "transcript_statuses": {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Transcript Statuses",
+          "type": "array"
+        },
+        "years": {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Years",
+          "type": "array"
+        }
+      },
+      "required": [
+        "buckets",
+        "years",
+        "spot_check_statuses",
+        "transcript_statuses",
+        "lyric_match_statuses"
+      ],
+      "title": "FilterOptions",
+      "type": "object"
+    },
+    "JsonObject": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "type": "object"
+    },
+    "JsonValue": {},
+    "ReviewQueueInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "recording_ids": {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Recording Ids",
+          "type": "array"
+        },
+        "selected_count": {
+          "minimum": 0,
+          "title": "Selected Count",
+          "type": "integer"
+        },
+        "strategy": {
+          "title": "Strategy",
+          "type": "string"
+        },
+        "target_size": {
+          "title": "Target Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "strategy",
+        "target_size",
+        "selected_count",
+        "recording_ids"
+      ],
+      "title": "ReviewQueueInfo",
+      "type": "object"
+    },
+    "RowTotals": {
+      "additionalProperties": false,
+      "description": "Counts over a set of rows (the filtered set, or the whole corpus).",
+      "properties": {
+        "buckets": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Buckets",
+          "type": "object"
+        },
+        "review_queue_selected": {
+          "minimum": 0,
+          "title": "Review Queue Selected",
+          "type": "integer"
+        },
+        "reviewed": {
+          "minimum": 0,
+          "title": "Reviewed",
+          "type": "integer"
+        },
+        "rows": {
+          "minimum": 0,
+          "title": "Rows",
+          "type": "integer"
+        },
+        "years": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Years",
+          "type": "object"
+        }
+      },
+      "required": [
+        "rows",
+        "buckets",
+        "years",
+        "review_queue_selected",
+        "reviewed"
+      ],
+      "title": "RowTotals",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/summary``: what is loaded, which gates are open, the totals.",
+  "properties": {
+    "feature_detail_enabled": {
+      "title": "Feature Detail Enabled",
+      "type": "boolean"
+    },
+    "filter_options": {
+      "$ref": "#/$defs/FilterOptions"
+    },
+    "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+    },
+    "playback_enabled": {
+      "title": "Playback Enabled",
+      "type": "boolean"
+    },
+    "review_queue": {
+      "$ref": "#/$defs/ReviewQueueInfo"
+    },
+    "rows_schema_version": {
+      "title": "Rows Schema Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-summary/v1",
+      "default": "cole-voice-lab.api.journey-summary/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/JsonObject"
+    },
+    "totals": {
+      "$ref": "#/$defs/RowTotals"
+    },
+    "transcript_text_enabled": {
+      "title": "Transcript Text Enabled",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "rows_schema_version",
+    "generated_at",
+    "playback_enabled",
+    "transcript_text_enabled",
+    "feature_detail_enabled",
+    "source",
+    "review_queue",
+    "totals",
+    "filter_options"
+  ],
+  "title": "JourneySummary",
+  "type": "object"
+}

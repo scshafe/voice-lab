@@ -747,6 +747,17 @@ now, and `journalctl -u voice-lab-vault-laptop.service` shows the push's and the
 JSON. A failed push or verify fails the unit. Stopping the copies is `systemctl disable --now
 voice-lab-vault-laptop.timer`; nothing on the PC or the vault is removed by it.
 
+### The Air (phase 3): the offsite destination
+
+The Air's server, node and install are in
+[deploy/vault/macos/README.md](../deploy/vault/macos/README.md); on the PC its steps are the
+laptop's above with `--destination air`: its own tokens (`vault token create --destination
+air`), its approval naming `--tag tag:voice-lab-vault-air` and binding with the `memos`
+class, a first push by hand at home (`--memos-root /data/voice-lab/memos/phone`; `vl_creds`
+importing `vault-destination.air.*`), the verify and a drill with `--memos-target`, then
+`deploy/host-manual/voice-lab-vault-air.{service,timer}`. `vault staleness` reports every
+destination's age and flags the Air after 14 days ([LIBRARY_VAULT.md](LIBRARY_VAULT.md#the-air-resume-cadence-and-staleness-phase-3)).
+
 ### Prepare the Mac and protect the recovery material
 
 Use the reviewed application environment with the exact vault closure from

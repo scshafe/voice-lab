@@ -55,6 +55,27 @@ type ApiErrorCode = Literal[
     "too_many_open_sessions",
     "insufficient_storage",
     "not_accepted",
+    # the journey routes (api/journey_routes.py)
+    "journey_unavailable",
+    "recording_not_found",
+    "unsupported_fields_projection",
+    "playback_not_approved",
+    "corpus_access_denied",
+    "seam_handle_mismatch",
+    "audio_not_found",
+    "transcript_dir_not_configured",
+    "transcript_not_available",
+    "transcript_text_missing",
+    "invalid_transcript_path",
+    "feature_dir_not_configured",
+    "feature_detail_missing",
+    "invalid_feature_detail_path",
+    "invalid_goal",
+    "goal_not_found",
+    "pair_not_found",
+    # the chain registry (api/chains.py)
+    "chain_registry_unavailable",
+    "chain_registry_invalid",
     "internal_error",
 ]
 REFUSAL_CODES: Final[frozenset[str]] = frozenset(get_args(ApiErrorCode.__value__))

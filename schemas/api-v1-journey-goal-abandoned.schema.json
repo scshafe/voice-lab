@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "abandoned_at": {
+      "title": "Abandoned At",
+      "type": "string"
+    },
+    "goal_id": {
+      "title": "Goal Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-goal-abandoned/v1",
+      "default": "cole-voice-lab.api.journey-goal-abandoned/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "goal_id",
+    "abandoned_at"
+  ],
+  "title": "GoalAbandoned",
+  "type": "object"
+}

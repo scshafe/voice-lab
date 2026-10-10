@@ -1,0 +1,59 @@
+# The journey job runner (design §3.2, §5.3, phase 3): one watch tick. It scans the Voice
+# Memos drop, and when two scans agree and differ from the recording index it runs the
+# journey pipeline in order (index, filter, stt, lyric, reclassify, features, journeys),
+# each stage a subprocess of the sealed release. It has no network at all: whisper.cpp
+# and the analysis runtime run here, on the PC's CPU; notifications go to a file outbox.
+#
+# Inert until the owner turns it on at the cutover (docs/design/PHASE-3-RUNBOOKS.md):
+# it runs only once infra's provisioning has made /data/voice-lab/journey (phase 3) and
+# /etc/voice-lab/journey.env exists. That file (root:root 0644, not a secret) holds the
+# owner's standing approval for the audio-reading stages (VOICE_JOURNEY_APPROVAL, §4.2)
+# and the paths:
+#   VOICE_JOURNEY_DATA=/data/voice-lab/journey
+#   VOICE_JOURNEY_CORPUS_ROOT=/data/voice-lab/memos/phone
+#   VOICE_JOURNEY_STATE_DIR=/data/voice-lab/state/journey   (the API reads the watch state there)
+#   VOICE_JOURNEY_MEASUREMENT_DIR=/data/voice-lab/lab/raw    (measurement sessions, accepted by intake)
+#   FFMPEG_BIN=/usr/bin/ffmpeg
+#   WHISPER_CPP_BIN=/usr/bin/whisper-cli
+#   VOICE_JOURNEY_APPROVAL=<the owner's text>
+[Unit]
+Description=voice-lab journey job runner: one watch tick (no network)
+ConditionPathIsDirectory=/data/voice-lab/journey/manifests
+ConditionPathExists=/etc/voice-lab/journey.env
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=voice-lab
+Group=voice-lab
+UMask=0077
+EnvironmentFile=/etc/voice-lab/journey.env
+WorkingDirectory=/data/voice-lab/journey
+ExecStart=/opt/voice-lab/current/bin/voice-lab journey watch --once --notify-outbox /data/voice-lab/state/journey/notify-outbox
+# A full first pass over the corpus (whisper.cpp medium on the CPU) takes hours; the
+# timer never starts a second tick while one runs, and the watch lock covers overlap.
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=idle
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ReadWritePaths=/data/voice-lab/journey /data/voice-lab/state
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# Not MemoryDenyWriteExecute: the analysis runtime's librosa compiles with numba (JIT).

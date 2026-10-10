@@ -167,6 +167,23 @@ def string_to_number(text: str) -> float:
     return math.nan
 
 
+_LEADING_DECIMAL = re.compile(r"[+-]?([0-9]*)")
+
+
+def parse_int(value: Any) -> float:
+    """``parseInt(value, 10)``: ``String(value)``, leading whitespace skipped, an optional
+    sign, the longest run of ASCII digits; ``NaN`` when there is none (``-0`` for a
+    negative zero, ``Infinity`` beyond the double range)."""
+
+    text = to_string(value).lstrip(WHITESPACE)
+    match = _LEADING_DECIMAL.match(text)
+    digits = match[1] if match else ""
+    if not digits:
+        return math.nan
+    number = float(digits)  # correctly rounded; Infinity beyond the double range
+    return -number if text.startswith("-") else number
+
+
 def to_number(value: Any) -> float:
     """``Number(value)`` for a JSON value (or ``MISSING``)."""
 

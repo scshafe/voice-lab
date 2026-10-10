@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from cole_voice_lab.canonical import canonical_json_bytes
+from cole_voice_lab.intake import RECEIPT_NAME, IntakeReceipt
 from cole_voice_lab.journey.corpus import (
     HostAccessError,
     captured_at_from_filename,
@@ -24,6 +27,7 @@ from cole_voice_lab.journey.corpus import (
     read_mirror_manifest,
     recording_id,
 )
+from cole_voice_lab.models import AudioFileEvidence, AudioSpec, CaptureDevice, CaptureManifest
 
 MIRROR_A = "20240101 101010-AAAA1111.m4a"
 MIRROR_B = "20240102 101010-BBBB2222.m4a"
@@ -314,3 +318,102 @@ def test_a_malformed_session_shape_fails_the_listing_as_in_node(
     session(tmp_path, "sessionZ9", payload, {})
     with pytest.raises(TypeError, match=message):
         list_measurement_entries(tmp_path)
+
+
+def raw_package(
+    root: Path, digest: str, manifest: CaptureManifest, *, receipt: str | None = None
+) -> Path:
+    """A ``raw/<digest>/`` package as the publisher leaves it, for the listing only (the
+    listing reads the manifest and the receipt, never the audio)."""
+
+    package = root / digest
+    package.mkdir(parents=True)
+    (package / "manifest.json").write_bytes(canonical_json_bytes(manifest) + b"\n")
+    for evidence in manifest.files:
+        member = package / evidence.path
+        member.parent.mkdir(exist_ok=True)
+        member.write_bytes(b"w" * evidence.size_bytes)
+    named = IntakeReceipt(
+        session_id=manifest.session_id,
+        manifest_sha256=receipt or digest,
+        source_qc_report_sha256="c" * 64,
+        intake_qc_report_sha256="d" * 64,
+        accepted_at=datetime(2026, 10, 9, tzinfo=UTC),
+        raw_path=f"raw/{digest}",
+    )
+    (package / RECEIPT_NAME).write_bytes(canonical_json_bytes(named) + b"\n")
+    return package
+
+
+def measurement_manifest(**changes: object) -> CaptureManifest:
+    audio = AudioSpec(
+        sample_rate_hz=48000,
+        channels=1,
+        sample_width_bytes=3,
+        encoding="pcm_s24le",
+        frames=48000,
+        duration_seconds=1.0,
+    )
+    fields: dict[str, object] = {
+        "session_id": "vj-s-20261003-101500",
+        "subject_id": "cole-self",
+        "prompt_suite_id": "voice-journey-measurement",
+        "capture_host": "voice-journey-capture",
+        "captured_at": datetime(2026, 10, 3, 10, 15, tzinfo=UTC),
+        "finalized_at": datetime(2026, 10, 3, 10, 25, tzinfo=UTC),
+        "capture_device": CaptureDevice(
+            device_id="voice-journey-chain:umik1", display_name="miniDSP UMIK-1"
+        ),
+        "files": (
+            AudioFileEvidence(
+                path="room-silence/01-room-silence.wav",
+                kind="room-tone",
+                sha256="1" * 64,
+                size_bytes=3,
+                audio=audio,
+            ),
+            AudioFileEvidence(
+                path="02-loose.wav", kind="calibration", sha256="2" * 64, size_bytes=2
+            ),
+        ),
+    }
+    fields.update(changes)
+    return CaptureManifest.model_validate(fields)
+
+
+def test_measurement_sessions_in_the_lab_raw_store_list_as_voice_journey_listed_them(
+    tmp_path: Path,
+) -> None:
+    raw = tmp_path / "raw"
+    package = raw_package(raw, "a" * 64, measurement_manifest())
+    raw_package(raw, "b" * 64, measurement_manifest(), receipt="f" * 64)
+    raw_package(raw, "c" * 64, measurement_manifest(prompt_suite_id="cole-corpus"))
+    raw_package(raw, "d" * 64, measurement_manifest(session_id="native-0001"))
+    other_device = CaptureDevice(device_id="coreaudio:umik", display_name="UMIK-1")
+    raw_package(raw, "e" * 64, measurement_manifest(capture_device=other_device))
+    (raw_package(raw, "0" * 64, measurement_manifest()) / RECEIPT_NAME).unlink()
+    torn = raw_package(raw, "1" * 64, measurement_manifest())
+    (torn / "manifest.json").write_bytes(b" " * (1024 * 1024 + 1))
+    gone = raw_package(raw, "2" * 64, measurement_manifest(session_id="vj-s-20261003-111500"))
+    (gone / "02-loose.wav").unlink()
+    session(raw, "sessionA1", {"files": [{"name": "x.wav"}]}, {"x.wav": "x"})
+
+    entries = list_measurement_entries(raw)
+    assert [entry["filename"] for entry in entries] == [
+        "s-20261003-111500/01-room-silence.wav",
+        "s-20261003-101500/01-room-silence.wav",
+        "s-20261003-101500/02-loose.wav",
+        "sessionA1/x.wav",
+    ]
+    first, loose = entries[1], entries[2]
+    assert first["recordingId"] == recording_id("measurement/s-20261003-101500/01-room-silence.wav")
+    assert first["hostPath"] == str(package / "room-silence" / "01-room-silence.wav")
+    assert first["capturedAt"] == "2026-10-03T10:15:00.000Z"
+    assert first["sizeBytes"] == 3
+    assert first["source"] == {
+        "type": "measurement",
+        "chainId": "umik1",
+        "sessionId": "s-20261003-101500",
+        "segmentKey": "room-silence",
+    }
+    assert loose["source"]["segmentKey"] is None

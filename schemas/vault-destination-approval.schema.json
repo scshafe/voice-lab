@@ -15,7 +15,8 @@
         "prompt-database",
         "recordings",
         "derived-edits",
-        "training"
+        "training",
+        "memos"
       ],
       "type": "string"
     },
@@ -53,6 +54,11 @@
       "format": "date-time",
       "type": "string"
     },
+    "VaultNodeTag": {
+      "maxLength": 128,
+      "pattern": "^tag:voice-lab-vault(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
     "cole_voice_lab__storage_contracts__NonBlank__1": {
       "maxLength": 256,
       "minLength": 1,
@@ -65,7 +71,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Cole's standing authorization to copy a library to one tailnet vault.\n\nIt is authored by ``voice-lab vault approve`` after the preview's digest is reviewed, kept\nwrite-once at 0400 under ``provenance/vault/destinations/<destination>/approvals/``, and\nnamed by that destination's binding with its digest. ``destination`` is the short name the\ncopying host gives this vault (``laptop``, ``air``); an approval kept or bound under\nanother destination's name is refused. It binds the destination to a node, not to a name:\nthe endpoint must be a name in\n``tailnet_suffix``, the node answering must have ``node_stable_id`` and carry ``tag``, and\nthe copy may hold only ``classes`` (``training`` \u2014 fine-tune runs and datasets \u2014 only when\nit is listed, which is the opt-in). It is effective from ``approved_at`` until\n``expires_at``, which is at most ``MAX_APPROVAL_DAYS`` days later, so a standing approval\nis renewed rather than forgotten. A ``local-directory`` destination needs no approval, so\n``backend`` is always ``tailnet-vault``. It names no consent record: vault storage is not\na hosted transfer (D-020 says why) and carries no secret.",
+  "description": "Cole's standing authorization to copy a library to one tailnet vault.\n\nIt is authored by ``voice-lab vault approve`` after the preview's digest is reviewed, kept\nwrite-once at 0400 under ``provenance/vault/destinations/<destination>/approvals/``, and\nnamed by that destination's binding with its digest. ``destination`` is the short name the\ncopying host gives this vault (``laptop``, ``air``); an approval kept or bound under\nanother destination's name is refused. It binds the destination to a node, not to a name:\nthe endpoint must be a name in\n``tailnet_suffix``, the node answering must have ``node_stable_id`` and carry ``tag`` (a tag\nof the vault family, ``tag:voice-lab-vault`` by default and ``tag:voice-lab-vault-air`` for\nthe Air; an approval written before the tag could be chosen names the default and stays\nvalid byte for byte), and\nthe copy may hold only ``classes`` (``training`` \u2014 fine-tune runs and datasets \u2014 only when\nit is listed, which is the opt-in). It is effective from ``approved_at`` until\n``expires_at``, which is at most ``MAX_APPROVAL_DAYS`` days later, so a standing approval\nis renewed rather than forgotten. A ``local-directory`` destination needs no approval, so\n``backend`` is always ``tailnet-vault``. It names no consent record: vault storage is not\na hosted transfer (D-020 says why) and carries no secret.",
   "properties": {
     "approval_id": {
       "$ref": "#/$defs/StableId"
@@ -118,10 +124,8 @@
       "$ref": "#/$defs/cole_voice_lab__storage_contracts__NonBlank__2"
     },
     "tag": {
-      "const": "tag:voice-lab-vault",
-      "default": "tag:voice-lab-vault",
-      "title": "Tag",
-      "type": "string"
+      "$ref": "#/$defs/VaultNodeTag",
+      "default": "tag:voice-lab-vault"
     },
     "tailnet_suffix": {
       "$ref": "#/$defs/TailnetName"

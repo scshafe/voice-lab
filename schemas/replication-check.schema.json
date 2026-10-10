@@ -1,0 +1,63 @@
+{
+  "$defs": {
+    "LibraryId": {
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+      "type": "string"
+    },
+    "PositiveStorageCounter": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "When one destination's newest generation was last found current, and last verified.\n\nKept as ``\u2026/destinations/<d>/checked.json`` beside ``state.json``, and read only while it\nnames the generation and manifest ``state.json`` names (anything else is stale and\nignored). ``current_at`` is the last time a push found that generation holding the library\nas it then was: the push that stored it, or a later one that found nothing to copy\n(``up-to-date``). So the age of a destination's copy is ``now - current_at``: an unchanged\nlibrary is not reported stale, and a cadence that pushes only when the copy is a week old\ndoes not re-read the whole library every hour once a week has passed. ``verified_at`` is\nthe last time ``vault verify`` downloaded, decrypted and re-hashed every entry of that\ngeneration and found all of them (``null`` until then).",
+  "properties": {
+    "current_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "generation": {
+      "$ref": "#/$defs/PositiveStorageCounter"
+    },
+    "library_id": {
+      "$ref": "#/$defs/LibraryId"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.replication-check/v1",
+      "default": "cole-voice-lab.replication-check/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "verified_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "library_id",
+    "generation",
+    "manifest_sha256",
+    "current_at",
+    "verified_at"
+  ],
+  "title": "ReplicationCheck",
+  "type": "object"
+}

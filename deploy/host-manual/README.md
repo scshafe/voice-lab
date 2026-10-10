@@ -10,6 +10,7 @@ and the lane installs them like the others.
 | Unit | Runs | Network |
 | --- | --- | --- |
 | `voice-lab-vault-laptop.timer` → `voice-lab-vault-laptop.service` | `voice-lab vault push --destination laptop`, then `vault verify`: a sealed copy of the lab to the laptop's vault, then every file of the new head downloaded, decrypted and re-hashed (design §4.3, D-034); nightly at 02:30 | the tailnet only (`IPAddressAllow=100.64.0.0/10`; the tailscaled socket for the node's identity check) |
+| `voice-lab-vault-air.timer` → `voice-lab-vault-air.service` | `voice-lab vault push --destination air --memos-root /data/voice-lab/memos/phone --if-older-than 7d --skip-unreachable`, then `vault verify --if-unverified --skip-unreachable`: the offsite copy on the MacBook Air (design §4.3, phase 3). Hourly; a run does nothing while the copy is under a week old, and succeeds without sending anything when the Air's node is offline or does not answer (after the same node identity check every copy makes); an interrupted push resumes from the destination's journal; each generation is verified once | the tailnet only, as the laptop's |
 
 The service user's egress table (written by the lane from infra's
 `stacks/voice-lab/host.conf`) applies to these units too: the vault's name,
@@ -23,6 +24,18 @@ sudo install -o root -g root -m 0644 deploy/host-manual/voice-lab-vault-laptop.s
   deploy/host-manual/voice-lab-vault-laptop.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now voice-lab-vault-laptop.timer
+```
+
+The Air's pair is installed the same way, once the Air's vault answers (`deploy/vault/macos/
+README.md`), its destination is approved and bound, infra's `stacks/voice-lab/host.conf`
+names `voice-lab-vault-air.<tailnet>.ts.net:443` in `HOST_EGRESS_TAILNET` beside the laptop's
+vault, and the first full seeding was run by hand at home (docs/LIBRARY_VAULT.md, "The Air"):
+
+```sh
+sudo install -o root -g root -m 0644 deploy/host-manual/voice-lab-vault-air.service \
+  deploy/host-manual/voice-lab-vault-air.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now voice-lab-vault-air.timer
 ```
 
 The unit runs `/opt/voice-lab/current/bin/voice-lab`, the release the lane activates, so

@@ -1,0 +1,14 @@
+# Hourly probe of the Air's vault (starts voice-lab-vault-air.service). Most runs do nothing:
+# the copy is younger than a week, or the Air is asleep or away. The first run after the Air
+# wakes with a copy a week old pushes it, wherever the Air is. Persistent= runs a missed
+# hour once the PC is back. Installed by hand with its service (deploy/host-manual/README.md).
+[Unit]
+Description=voice-lab vault copy to the MacBook Air, probed hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
