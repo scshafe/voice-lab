@@ -1,0 +1,10 @@
+# Reviewed roots for the CPython 3.12 journey analysis runtime (design §5.3): the
+# isolated environment that runs the voice-feature extractor
+# (src/cole_voice_lab/resources/journey_extract_features.py) and its self-test.
+# voice-journey's analysis/requirements.txt, moved as is: exact pins, NOT hash-locked
+# (no companion artifact lock yet). All open-source; torchcrepe is deliberately deferred.
+numpy==2.2.6
+scipy==1.15.3
+librosa==0.11.0
+praat-parselmouth==0.4.5
+soundfile==0.13.1

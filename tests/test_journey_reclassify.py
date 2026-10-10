@@ -3,7 +3,6 @@ remaining branches."""
 
 from __future__ import annotations
 
-import importlib
 import json
 from pathlib import Path
 from typing import Any
@@ -11,6 +10,7 @@ from typing import Any
 import pytest
 
 from cole_voice_lab.journey import reclassify
+from cole_voice_lab.journey.filter import classify_features
 from cole_voice_lab.journey.reclassify import (
     ReclassifyError,
     ReclassifyOptions,
@@ -258,33 +258,20 @@ def test_decided_rows_are_untouched_and_non_singing_rows_in_clusters_get_flags()
     assert counters["decidedRowsUntouched"] == 2
 
 
-def _v1_classify(row_features: dict[str, Any]) -> dict[str, Any] | None:
-    """The v1 classifier once ``filter-proof.mjs`` is ported (journey/filter.py)."""
-
-    try:
-        module = importlib.import_module("cole_voice_lab.journey.filter")
-    except ImportError:
-        return None
-    classified: dict[str, Any] = module.classify_features(row_features)
-    return classified
-
-
 def test_contamination_score_formulas_agree_with_the_v1_classifier() -> None:
     noisy = features(
         voicedRatio=0.5, meanPitchConfidence=0.5, pitchStability=0.2, meanZeroCrossingRate=0.4
     )
-    v1_noisy = _v1_classify(noisy)
-    if v1_noisy is not None:
-        assert v1_noisy["contentLabel"] == "singing"
-        assert v1_noisy["contaminationLabel"] == "noise_contaminated"
+    v1_noisy = classify_features(noisy)
+    assert v1_noisy["contentLabel"] == "singing"
+    assert v1_noisy["contaminationLabel"] == "noise_contaminated"
     assert noise_score_for(noisy) >= 0.55
 
     clean = features(
         voicedRatio=0.5, meanPitchConfidence=0.7, pitchStability=0.2, meanZeroCrossingRate=0.1
     )
-    v1_clean = _v1_classify(clean)
-    if v1_clean is not None:
-        assert v1_clean["contaminationLabel"] == "clean"
+    v1_clean = classify_features(clean)
+    assert v1_clean["contaminationLabel"] == "clean"
     assert noise_score_for(clean) < 0.55
     assert music_score_for(clean) < 0.62
 

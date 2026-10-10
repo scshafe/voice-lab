@@ -84,6 +84,8 @@ target-version = "py312"
 # its one Python file moves into the package, under these rules, when it is ported.
 # apps/desktop/ is voice-journey-capture as imported (D-035); phase 4 brings it under them.
 extend-exclude = ["legacy", "apps/desktop"]
+# Extensionless Python scripts Ruff would otherwise skip.
+extend-include = ["scripts/journey-parity"]
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "UP"]

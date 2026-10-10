@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import math
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -159,3 +161,112 @@ def test_iso_timestamp_is_to_iso_string() -> None:
     moment = datetime(2026, 10, 9, 7, 5, 3, 45678, tzinfo=UTC)
     assert jsonio.iso_timestamp(moment) == "2026-10-09T07:05:03.045Z"
     assert jsonio.iso_timestamp().endswith("Z")
+
+
+def test_json_rules(tmp_path: Path) -> None:
+    payload = {
+        "b": True,
+        "n": None,
+        "f": 1.0,
+        "s": "é\ud83d",
+        "skip": jsonio.MISSING,
+        "l": [jsonio.MISSING, 2],
+        "t": (False,),
+    }
+    assert jsonio.stringify_compact(payload) == (
+        '{"b":true,"n":null,"f":1,"s":"é\\ud83d","l":[null,2],"t":[false]}'
+    )
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        jsonio.stringify_compact({1, 2})
+    path = tmp_path / "x.json"
+    path.write_text('{"b": 1, "10": 2, "2": 3, "a": 4, "b": 5, "4294967295": 6, "01": 7}')
+    assert list(jsonio.read_json(path).items()) == [
+        ("2", 3),
+        ("10", 2),
+        ("b", 5),
+        ("a", 4),
+        ("4294967295", 6),
+        ("01", 7),
+    ]
+    assert list(jsonio.parse_json('{"z": 1, "y": 2}')) == ["z", "y"]
+    with pytest.raises(ValueError, match="Unexpected token"):
+        jsonio.parse_json("[NaN]")
+
+
+def test_stringify_compact_is_json_stringify() -> None:
+    value = {"a": [1, 2.0, -0.0, 1e21, None, True, False], "é": {"s": "x\u2028"}, "n": 0.1}
+    assert jsonio.stringify_compact(value) == (
+        '{"a":[1,2,0,1e+21,null,true,false],"é":{"s":"x\u2028"},"n":0.1}'
+    )
+    with pytest.raises(TypeError, match="not JSON-serializable: object"):
+        jsonio.stringify_compact(object())
+
+
+def test_stringify_compact_has_no_spaces() -> None:
+    value = {"a": [1.0, 0.5, None, True, "\u00e9\n"], "b": {}, "c": [], "d": (2,)}
+    assert (
+        jsonio.stringify_compact(value)
+        == '{"a":[1,0.5,null,true,"\u00e9\\n"],"b":{},"c":[],"d":[2]}'
+    )
+    with pytest.raises(TypeError, match="not JSON-serializable: set"):
+        jsonio.stringify_compact({1, 2})
+
+
+def test_parse_json_is_json_parse() -> None:
+    assert jsonio.parse_json('{"a": 1, "a": 2}') == {"a": 2.0}
+    with pytest.raises(ValueError):
+        jsonio.parse_json("NaN")
+    with pytest.raises(ValueError):
+        jsonio.parse_json("\ufeff{}")
+
+
+ROUNDS = [0.49999999999999994, 2.0**52 + 1, -0.5, -2.5, 2.5, -0.49999999999999994, 1.5, -1.5]
+BIG_INTEGERS = [2**53, 2**53 + 2, 12345678901234567890, -(2**60), 10**400]
+
+
+def test_big_integers_rounding_and_parsing_follow_javascript() -> None:
+    assert [jsonio.format_number(n) for n in BIG_INTEGERS] == [
+        "9007199254740992",
+        "9007199254740994",
+        "12345678901234567000",
+        "-1152921504606847000",
+        "null",
+    ]
+    rounded = [jsonio.js_round(value) for value in ROUNDS]
+    assert rounded == [0.0, 4503599627370497.0, -0.0, -2.0, 3.0, -0.0, 2.0, -1.0]
+    assert math.copysign(1.0, rounded[2]) == -1.0
+    assert math.copysign(1.0, rounded[5]) == -1.0
+    assert jsonio.js_round(math.inf) == math.inf
+    assert math.isnan(jsonio.js_round(math.nan))
+    parsed = jsonio.parse_json("[9007199254740993, -0, 1e400, 1" + "0" * 400 + ", 7]")
+    assert parsed == [9007199254740992.0, 0.0, math.inf, math.inf, 7]
+    assert math.copysign(1.0, parsed[1]) == -1.0 and isinstance(parsed[4], int)
+
+
+@pytest.mark.skipif(node_missing, reason="node is not installed")
+def test_big_integers_and_rounding_match_node() -> None:
+    script = (
+        f"const r={json.dumps(ROUNDS)};"
+        f"const b=[{','.join(str(n) for n in BIG_INTEGERS[:-1])}];"
+        "console.log(JSON.stringify({r:r.map(Math.round).map((x)=>Object.is(x,-0)?'-0':x),"
+        "b:b.map(String)}))"
+    )
+    node = json.loads(_node(script))
+    rounded = [jsonio.js_round(value) for value in ROUNDS]
+    assert [
+        "-0" if value == 0 and math.copysign(1.0, value) < 0 else value for value in rounded
+    ] == node["r"]
+    assert [jsonio.format_number(n) for n in BIG_INTEGERS[:-1]] == node["b"]
+
+
+def test_undefined_members_and_lone_surrogates(tmp_path: Path) -> None:
+    payload = {"a": ["\ud800x", {"b": jsonio.MISSING, "c": 1}], "d": jsonio.MISSING}
+    assert jsonio.stringify(payload) == (
+        '{\n  "a": [\n    "\\ud800x",\n    {\n      "c": 1\n    }\n  ]\n}'
+    )
+    assert jsonio.stringify_compact([jsonio.MISSING]) == "[null]"
+    assert copy.deepcopy(jsonio.MISSING) is jsonio.MISSING
+    path = tmp_path / "x.json"
+    path.write_bytes(b'{"s": "a\xffb", "t": "\\r"}\r\n')
+    assert jsonio.read_json(path) == {"s": "a\ufffdb", "t": "\r"}
+    assert jsonio.read_text(path).endswith("\r\n")
