@@ -3,23 +3,46 @@
 
 Long-lived batch worker: emits a hello line with library versions, then reads
 one JSON task per stdin line ({"recordingId", "wavPath"}) and emits one JSON
-result line per task. It never reads corpus paths itself — the Node
-orchestrator hands it decoded temporary WAV paths — and it retains no audio.
+result line per task. It never reads corpus paths itself — the orchestrator
+(``cole_voice_lab.journey.features``) hands it decoded temporary WAV paths — and
+it retains no audio.
 
 All measurements are local DSP over the provided WAV. No network, no uploads.
+
+voice-journey's ``analysis/extract_features.py``, moved in as is (design §5.3): the
+algorithm and the stdin/stdout protocol are unchanged. It runs only in the isolated
+analysis runtime (``requirements/runtimes/journey-analysis.txt``; the orchestrator
+spawns that runtime's python, ``VOICE_JOURNEY_PYTHON``), never in the package's own
+environment. Without that runtime it still imports, and ``main`` refuses with exit
+code 2 and a message naming the runtime instead of a traceback. Changes from the
+original: type annotations, the guarded imports, ``main`` returning an exit code,
+``zip(..., strict=False)``, and Ruff's formatting.
 """
+
+from __future__ import annotations
 
 import json
 import math
 import sys
 import traceback
+from typing import TYPE_CHECKING, Any
 
-import librosa
-import numpy as np
-import parselmouth
-from parselmouth.praat import call
+try:
+    import librosa  # type: ignore[import-not-found]
+    import numpy as np
+    import parselmouth  # type: ignore[import-not-found]
+    from parselmouth.praat import call  # type: ignore[import-not-found]
+except ImportError as missing:
+    RUNTIME_MISSING: ImportError | None = missing
+else:
+    RUNTIME_MISSING = None
 
-CONFIG = {
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
+RUNTIME_REQUIREMENTS = "requirements/runtimes/journey-analysis.txt"
+
+CONFIG: dict[str, Any] = {
     "sampleRate": 22050,
     "f0": {
         "engine": "praat_ac",
@@ -36,7 +59,11 @@ CONFIG = {
         # single take spans three octaves of sung range; genuine whistle-
         # register content shows up as a high rejectedGlobalShare diagnostic
         # and flags the take for listening rather than silently passing).
-        "outlier": {"windowSeconds": 0.5, "maxDeviationCents": 600.0, "maxGlobalDeviationCents": 1800.0},
+        "outlier": {
+            "windowSeconds": 0.5,
+            "maxDeviationCents": 600.0,
+            "maxGlobalDeviationCents": 1800.0,
+        },
     },
     "vibrato": {
         "minSustainSeconds": 0.8,
@@ -46,13 +73,18 @@ CONFIG = {
         "detrendWindowSeconds": 0.5,
     },
     "tuning": {"referenceHz": 440.0, "inTuneCents": 25.0},
-    "spectral": {"nFft": 2048, "hopSeconds": 0.01, "singerFormantBandHz": [2800.0, 3400.0], "rolloffShare": 0.85},
+    "spectral": {
+        "nFft": 2048,
+        "hopSeconds": 0.01,
+        "singerFormantBandHz": [2800.0, 3400.0],
+        "rolloffShare": 0.85,
+    },
     "phrasing": {"minPauseSeconds": 0.3},
     "methodId": "voice-journey.feature-extract.v1",
 }
 
 
-def versions():
+def versions() -> dict[str, Any]:
     return {
         "python": sys.version.split()[0],
         "parselmouth": getattr(parselmouth, "__version__", None),
@@ -62,7 +94,7 @@ def versions():
     }
 
 
-def rnd(value, places=3):
+def rnd(value: float | None, places: int = 3) -> float | None:
     if value is None:
         return None
     value = float(value)
@@ -71,11 +103,13 @@ def rnd(value, places=3):
     return round(value, places)
 
 
-def hz_to_cents(freqs_hz, reference_hz):
+def hz_to_cents(freqs_hz: Any, reference_hz: float) -> Any:
     return 1200.0 * np.log2(freqs_hz / reference_hz)
 
 
-def suppress_f0_outliers(f0_hz, voiced_mask, config):
+def suppress_f0_outliers(
+    f0_hz: NDArray[Any], voiced_mask: NDArray[Any], config: dict[str, Any]
+) -> tuple[NDArray[Any], float, float]:
     """Reject voiced frames that deviate wildly from their local or global
     median pitch.
 
@@ -87,7 +121,7 @@ def suppress_f0_outliers(f0_hz, voiced_mask, config):
     """
     outlier = config["f0"]["outlier"]
     half_window = max(1, int(round(outlier["windowSeconds"] / config["f0"]["timeStepSeconds"])))
-    voiced_indexes = np.flatnonzero(voiced_mask)
+    voiced_indexes: Any = np.flatnonzero(voiced_mask)
     if voiced_indexes.size < 5:
         return voiced_mask, 0.0, 0.0
     cents = np.full(f0_hz.shape, np.nan)
@@ -108,16 +142,18 @@ def suppress_f0_outliers(f0_hz, voiced_mask, config):
     remaining = np.flatnonzero(cleaned)
     if remaining.size >= 5:
         global_median = float(np.median(cents[remaining]))
-        deviant = remaining[np.abs(cents[remaining] - global_median) > outlier["maxGlobalDeviationCents"]]
+        deviant = remaining[
+            np.abs(cents[remaining] - global_median) > outlier["maxGlobalDeviationCents"]
+        ]
         cleaned[deviant] = False
         global_rejected = int(deviant.size)
     return cleaned, local_rejected / voiced_indexes.size, global_rejected / voiced_indexes.size
 
 
-def voiced_runs(voiced_mask):
+def voiced_runs(voiced_mask: Any) -> list[tuple[int, int]]:
     """Yield (start_index, end_index_exclusive) for contiguous voiced runs."""
-    runs = []
-    start = None
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
     for i, voiced in enumerate(voiced_mask):
         if voiced and start is None:
             start = i
@@ -129,14 +165,16 @@ def voiced_runs(voiced_mask):
     return runs
 
 
-def tuning_stats(cents, config):
+def tuning_stats(cents: NDArray[Any], config: dict[str, Any]) -> dict[str, Any]:
     """Infer a tuning offset against the equal-tempered grid, then measure
     deviation from the nearest semitone. Handles a-cappella drift from A440
     honestly: the offset is the singer's own reference, not a fixed standard."""
     if cents.size < 10:
         return {"offsetCents": None, "medianAbsCentError": None, "within25CentsShare": None}
     angles = (cents % 100.0) * (2.0 * math.pi / 100.0)
-    offset = math.atan2(np.mean(np.sin(angles)), np.mean(np.cos(angles))) * (100.0 / (2.0 * math.pi))
+    offset = math.atan2(np.mean(np.sin(angles)), np.mean(np.cos(angles))) * (
+        100.0 / (2.0 * math.pi)
+    )
     deviation = ((cents - offset + 50.0) % 100.0) - 50.0
     within = float(np.mean(np.abs(deviation) <= config["tuning"]["inTuneCents"]))
     return {
@@ -146,13 +184,15 @@ def tuning_stats(cents, config):
     }
 
 
-def vibrato_stats(f0_hz, voiced_mask, config):
+def vibrato_stats(
+    f0_hz: NDArray[Any], voiced_mask: NDArray[Any], config: dict[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     vib = config["vibrato"]
     time_step = config["f0"]["timeStepSeconds"]
     min_frames = int(round(vib["minSustainSeconds"] / time_step))
     detrend_frames = max(3, int(round(vib["detrendWindowSeconds"] / time_step)) | 1)
     sustained_runs = [(a, b) for a, b in voiced_runs(voiced_mask) if b - a >= min_frames]
-    segments = []
+    segments: list[dict[str, Any]] = []
     vibrato_frames = 0
     sustained_frames = sum(b - a for a, b in sustained_runs)
     for a, b in sustained_runs:
@@ -176,7 +216,14 @@ def vibrato_stats(f0_hz, voiced_mask, config):
         present = extent >= vib["minExtentCents"] and band_share >= vib["minBandPowerShare"]
         if present:
             vibrato_frames += b - a
-            segments.append({"startSeconds": rnd(a * time_step, 2), "durationSeconds": rnd((b - a) * time_step, 2), "rateHz": rnd(rate, 2), "extentCents": rnd(extent, 1)})
+            segments.append(
+                {
+                    "startSeconds": rnd(a * time_step, 2),
+                    "durationSeconds": rnd((b - a) * time_step, 2),
+                    "rateHz": rnd(rate, 2),
+                    "extentCents": rnd(extent, 1),
+                }
+            )
     rates = [seg["rateHz"] for seg in segments]
     extents = [seg["extentCents"] for seg in segments]
     return {
@@ -188,15 +235,24 @@ def vibrato_stats(f0_hz, voiced_mask, config):
     }, segments
 
 
-def praat_quality(snd, config):
+def praat_quality(snd: Any, config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     floor = config["f0"]["floorHz"]
     ceiling = config["f0"]["ceilingHz"]
-    quality = {"jitterLocal": None, "shimmerLocal": None, "meanHnrDb": None, "cpps": None}
-    notes = []
+    quality: dict[str, Any] = {
+        "jitterLocal": None,
+        "shimmerLocal": None,
+        "meanHnrDb": None,
+        "cpps": None,
+    }
+    notes: list[str] = []
     try:
         point_process = call(snd, "To PointProcess (periodic, cc)", floor, ceiling)
-        quality["jitterLocal"] = rnd(call(point_process, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3), 5)
-        quality["shimmerLocal"] = rnd(call([snd, point_process], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6), 5)
+        quality["jitterLocal"] = rnd(
+            call(point_process, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3), 5
+        )
+        quality["shimmerLocal"] = rnd(
+            call([snd, point_process], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6), 5
+        )
     except Exception as error:  # noqa: BLE001 — record and continue
         notes.append(f"jitter_shimmer_unavailable: {error}")
     try:
@@ -207,7 +263,21 @@ def praat_quality(snd, config):
     try:
         cepstrogram = call(snd, "To PowerCepstrogram", 60, 0.002, 5000, 50)
         quality["cpps"] = rnd(
-            call(cepstrogram, "Get CPPS", False, 0.02, 0.0005, 60, 330, 0.05, "parabolic", 0.001, 0.05, "Straight", "Robust"),
+            call(
+                cepstrogram,
+                "Get CPPS",
+                False,
+                0.02,
+                0.0005,
+                60,
+                330,
+                0.05,
+                "parabolic",
+                0.001,
+                0.05,
+                "Straight",
+                "Robust",
+            ),
             2,
         )
     except Exception as error:  # noqa: BLE001
@@ -215,20 +285,42 @@ def praat_quality(snd, config):
     return quality, notes
 
 
-def spectral_stats(samples, sample_rate, frame_times, voiced_mask, config):
+def spectral_stats(
+    samples: Any,
+    sample_rate: float,
+    frame_times: Any,
+    voiced_mask: NDArray[Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
     spec = config["spectral"]
     hop = int(round(spec["hopSeconds"] * sample_rate))
     magnitude = np.abs(librosa.stft(samples, n_fft=spec["nFft"], hop_length=hop))
     if magnitude.shape[1] == 0:
-        return {"centroidHzMean": None, "centroidHzSd": None, "rolloffHzMean": None, "singerFormantRatio": None}
-    stft_times = librosa.frames_to_time(np.arange(magnitude.shape[1]), sr=sample_rate, hop_length=hop)
-    voiced_at = np.interp(stft_times, frame_times, voiced_mask.astype(float), left=0.0, right=0.0) >= 0.5
+        return {
+            "centroidHzMean": None,
+            "centroidHzSd": None,
+            "rolloffHzMean": None,
+            "singerFormantRatio": None,
+        }
+    stft_times = librosa.frames_to_time(
+        np.arange(magnitude.shape[1]), sr=sample_rate, hop_length=hop
+    )
+    voiced_at = (
+        np.interp(stft_times, frame_times, voiced_mask.astype(float), left=0.0, right=0.0) >= 0.5
+    )
     if not np.any(voiced_at):
-        return {"centroidHzMean": None, "centroidHzSd": None, "rolloffHzMean": None, "singerFormantRatio": None}
+        return {
+            "centroidHzMean": None,
+            "centroidHzSd": None,
+            "rolloffHzMean": None,
+            "singerFormantRatio": None,
+        }
     voiced_mag = magnitude[:, voiced_at]
     freqs = librosa.fft_frequencies(sr=sample_rate, n_fft=spec["nFft"])
     centroid = librosa.feature.spectral_centroid(S=voiced_mag, sr=sample_rate)[0]
-    rolloff = librosa.feature.spectral_rolloff(S=voiced_mag, sr=sample_rate, roll_percent=spec["rolloffShare"])[0]
+    rolloff = librosa.feature.spectral_rolloff(
+        S=voiced_mag, sr=sample_rate, roll_percent=spec["rolloffShare"]
+    )[0]
     power = voiced_mag**2
     band = (freqs >= spec["singerFormantBandHz"][0]) & (freqs <= spec["singerFormantBandHz"][1])
     total_power = float(power.sum())
@@ -241,14 +333,27 @@ def spectral_stats(samples, sample_rate, frame_times, voiced_mask, config):
     }
 
 
-def dynamics_stats(samples, sample_rate, frame_times, voiced_mask, config):
+def dynamics_stats(
+    samples: Any,
+    sample_rate: float,
+    frame_times: Any,
+    voiced_mask: NDArray[Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
     hop = int(round(config["spectral"]["hopSeconds"] * sample_rate))
     rms = librosa.feature.rms(y=samples, frame_length=config["spectral"]["nFft"], hop_length=hop)[0]
     rms_times = librosa.frames_to_time(np.arange(rms.size), sr=sample_rate, hop_length=hop)
-    voiced_at = np.interp(rms_times, frame_times, voiced_mask.astype(float), left=0.0, right=0.0) >= 0.5
+    voiced_at = (
+        np.interp(rms_times, frame_times, voiced_mask.astype(float), left=0.0, right=0.0) >= 0.5
+    )
     voiced_rms = rms[voiced_at]
     if voiced_rms.size == 0:
-        return {"voicedRmsDbP10": None, "voicedRmsDbP50": None, "voicedRmsDbP90": None, "dynamicSpreadDb": None}
+        return {
+            "voicedRmsDbP10": None,
+            "voicedRmsDbP50": None,
+            "voicedRmsDbP90": None,
+            "dynamicSpreadDb": None,
+        }
     db = 20.0 * np.log10(np.maximum(voiced_rms, 1e-5))
     p10, p50, p90 = (float(np.percentile(db, q)) for q in (10, 50, 90))
     return {
@@ -259,7 +364,9 @@ def dynamics_stats(samples, sample_rate, frame_times, voiced_mask, config):
     }
 
 
-def analyze_wav(wav_path, config=CONFIG):
+def analyze_wav(
+    wav_path: str, config: dict[str, Any] = CONFIG
+) -> tuple[dict[str, Any], dict[str, Any]]:
     snd = parselmouth.Sound(wav_path)
     if snd.n_channels > 1:
         snd = snd.convert_to_mono()
@@ -275,13 +382,19 @@ def analyze_wav(wav_path, config=CONFIG):
     f0_hz = pitch.selected_array["frequency"]
     frame_times = pitch.xs()
     raw_voiced_mask = f0_hz > 0
-    voiced_mask, rejected_local_share, rejected_global_share = suppress_f0_outliers(f0_hz, raw_voiced_mask, config)
+    voiced_mask, rejected_local_share, rejected_global_share = suppress_f0_outliers(
+        f0_hz, raw_voiced_mask, config
+    )
     voiced_f0 = f0_hz[voiced_mask]
     voiced_share = float(np.mean(voiced_mask)) if f0_hz.size else 0.0
 
     if voiced_f0.size >= 5:
-        percentiles = {f"p{q:02d}": rnd(float(np.percentile(voiced_f0, q)), 1) for q in (5, 25, 50, 75, 95)}
-        semitone_range = rnd(12.0 * math.log2(np.percentile(voiced_f0, 95) / np.percentile(voiced_f0, 5)), 2)
+        percentiles = {
+            f"p{q:02d}": rnd(float(np.percentile(voiced_f0, q)), 1) for q in (5, 25, 50, 75, 95)
+        }
+        semitone_range = rnd(
+            12.0 * math.log2(np.percentile(voiced_f0, 95) / np.percentile(voiced_f0, 5)), 2
+        )
         cents_all = hz_to_cents(voiced_f0, config["tuning"]["referenceHz"])
         median_hz = float(np.median(voiced_f0))
         mad_semitones = rnd(float(np.median(np.abs(12.0 * np.log2(voiced_f0 / median_hz)))), 3)
@@ -301,12 +414,14 @@ def analyze_wav(wav_path, config=CONFIG):
     runs = voiced_runs(voiced_mask)
     run_durations = [(b - a) * time_step for a, b in runs]
     gaps = 0
-    for (_, prev_end), (next_start, _) in zip(runs, runs[1:]):
+    for (_, prev_end), (next_start, _) in zip(runs, runs[1:], strict=False):
         if (next_start - prev_end) * time_step >= config["phrasing"]["minPauseSeconds"]:
             gaps += 1
     phrasing = {
         "longestSustainedSeconds": rnd(max(run_durations), 2) if run_durations else None,
-        "meanVoicedSegmentSeconds": rnd(float(np.mean(run_durations)), 2) if run_durations else None,
+        "meanVoicedSegmentSeconds": rnd(float(np.mean(run_durations)), 2)
+        if run_durations
+        else None,
         "pauseRatePerMinute": rnd(gaps / (duration / 60.0), 2) if duration > 0 else None,
     }
 
@@ -325,7 +440,11 @@ def analyze_wav(wav_path, config=CONFIG):
             "rejectedOutlierShare": rnd(rejected_local_share),
             "rejectedGlobalOutlierShare": rnd(rejected_global_share),
         },
-        "pitch": {"f0Hz": percentiles, "rangeSemitonesP05P95": semitone_range, "madSemitones": mad_semitones},
+        "pitch": {
+            "f0Hz": percentiles,
+            "rangeSemitonesP05P95": semitone_range,
+            "madSemitones": mad_semitones,
+        },
         "tuning": tuning,
         "vibrato": vibrato,
         "quality": quality,
@@ -343,8 +462,20 @@ def analyze_wav(wav_path, config=CONFIG):
     return summary, detail
 
 
-def main():
-    sys.stdout.write(json.dumps({"hello": {"versions": versions(), "methodId": CONFIG["methodId"], "config": CONFIG}}) + "\n")
+def main() -> int:
+    if RUNTIME_MISSING is not None:
+        sys.stderr.write(
+            "journey_extract_features: the isolated analysis runtime is missing "
+            f"({RUNTIME_MISSING}); provision it from {RUNTIME_REQUIREMENTS} and run this "
+            "worker with that runtime's python (VOICE_JOURNEY_PYTHON)\n"
+        )
+        return 2
+    sys.stdout.write(
+        json.dumps(
+            {"hello": {"versions": versions(), "methodId": CONFIG["methodId"], "config": CONFIG}}
+        )
+        + "\n"
+    )
     sys.stdout.flush()
     for line in sys.stdin:
         line = line.strip()
@@ -354,7 +485,12 @@ def main():
         recording_id = task.get("recordingId")
         try:
             summary, detail = analyze_wav(task["wavPath"])
-            result = {"recordingId": recording_id, "status": "completed", "summary": summary, "detail": detail}
+            result = {
+                "recordingId": recording_id,
+                "status": "completed",
+                "summary": summary,
+                "detail": detail,
+            }
         except Exception as error:  # noqa: BLE001 — a failed recording must not kill the batch
             result = {
                 "recordingId": recording_id,
@@ -364,7 +500,8 @@ def main():
             }
         sys.stdout.write(json.dumps(result) + "\n")
         sys.stdout.flush()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
