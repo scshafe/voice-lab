@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "JsonObject": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/{trends,journeys,coach,goals}``: a manifest-derived document.\n``available`` is false (and ``document`` says why) when its manifest is not\nloaded.",
+  "properties": {
+    "available": {
+      "title": "Available",
+      "type": "boolean"
+    },
+    "document": {
+      "$ref": "#/$defs/JsonObject"
+    },
+    "kind": {
+      "enum": [
+        "trends",
+        "journeys",
+        "coach",
+        "goals"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-document/v1",
+      "default": "cole-voice-lab.api.journey-document/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "available",
+    "document"
+  ],
+  "title": "JourneyDocument",
+  "type": "object"
+}

@@ -1,0 +1,62 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "RecordingId": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/recordings/{id}/features``: the local per-take feature detail.",
+  "properties": {
+    "bucket": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "captured_at": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "detail": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "filename": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "local_only": {
+      "const": true,
+      "default": true,
+      "title": "Local Only",
+      "type": "boolean"
+    },
+    "method_id": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "recording_id": {
+      "$ref": "#/$defs/RecordingId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-feature-detail/v1",
+      "default": "cole-voice-lab.api.journey-feature-detail/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "summary": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "year": {
+      "$ref": "#/$defs/JsonValue"
+    }
+  },
+  "required": [
+    "recording_id",
+    "filename",
+    "captured_at",
+    "year",
+    "bucket",
+    "method_id",
+    "summary",
+    "detail"
+  ],
+  "title": "JourneyFeatureDetail",
+  "type": "object"
+}

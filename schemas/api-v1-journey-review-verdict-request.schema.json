@@ -1,0 +1,77 @@
+{
+  "$defs": {
+    "RecordingId": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": "string"
+    },
+    "ShortText": {
+      "maxLength": 200,
+      "type": "string"
+    },
+    "Timestamp": {
+      "maxLength": 64,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``POST /api/v1/review/verdicts``: a spot-check verdict, kept in local state only\n(``merge-verdicts`` folds it into the results manifest later, on the host).",
+  "properties": {
+    "note": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    },
+    "recording_id": {
+      "$ref": "#/$defs/RecordingId"
+    },
+    "reviewed_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "reviewed_by": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ShortText"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "verdict": {
+      "enum": [
+        "clean_singing",
+        "noise_contaminated_singing",
+        "music_contaminated_singing",
+        "non_singing",
+        "still_uncertain"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    }
+  },
+  "required": [
+    "recording_id",
+    "verdict"
+  ],
+  "title": "ReviewVerdictRequest",
+  "type": "object"
+}

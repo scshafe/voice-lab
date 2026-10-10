@@ -675,3 +675,25 @@ def test_utf8_and_defined_follow_node() -> None:
     assert js.coalesce(js.MISSING, None, 3) == 3
     assert js.coalesce(js.MISSING, None) is None
     assert js.length({"length": 2}) == 2 and js.length(None) is js.MISSING
+
+
+PARSE_INT = ["12", "  12abc", "-3", "+7", "-0", "abc", "", "1e3", "0x10", " 42", "--1", "9" * 400]
+
+
+def test_parse_int_reads_a_leading_decimal_integer() -> None:
+    values = [js.parse_int(text) for text in PARSE_INT]
+    assert values[:4] == [12, 12, -3, 7]
+    assert math.copysign(1, values[4]) == -1
+    assert all(math.isnan(value) for value in (values[5], values[6], values[10]))
+    assert values[7:10] == [1, 0, 42] and values[11] == math.inf
+    assert js.parse_int(None) != js.parse_int(None)
+
+
+@pytest.mark.skipif(node_missing, reason="node is not installed")
+def test_parse_int_matches_node() -> None:
+    node = _node(
+        "const v=JSON.parse(require('fs').readFileSync(0,'utf8'));"
+        "console.log(JSON.stringify(v.map((x)=>String(parseInt(x,10)))))",
+        PARSE_INT,
+    )
+    assert [js.to_string(js.parse_int(text)) for text in PARSE_INT] == node

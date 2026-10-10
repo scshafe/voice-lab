@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "ShortText": {
+      "maxLength": 200,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``POST /api/v1/goals``: a pre-registered n=1 experiment (``goals.py`` rules).",
+  "properties": {
+    "cluster_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ShortText"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "direction": {
+      "enum": [
+        "at_least",
+        "at_most"
+      ],
+      "title": "Direction",
+      "type": "string"
+    },
+    "metric": {
+      "enum": [
+        "vibratoRateHz",
+        "vibratoExtentCents",
+        "cpps",
+        "longestSustainSeconds",
+        "pitchP95Hz",
+        "tuningMedianCentError"
+      ],
+      "title": "Metric",
+      "type": "string"
+    },
+    "takes_required": {
+      "default": 10,
+      "maximum": 50,
+      "minimum": 3,
+      "title": "Takes Required",
+      "type": "integer"
+    },
+    "target": {
+      "title": "Target",
+      "type": "number"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "maxLength": 500,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Title"
+    }
+  },
+  "required": [
+    "metric",
+    "direction",
+    "target"
+  ],
+  "title": "GoalRequest",
+  "type": "object"
+}

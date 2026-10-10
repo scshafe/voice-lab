@@ -1,0 +1,28 @@
+{
+  "$defs": {
+    "JsonObject": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "goal": {
+      "$ref": "#/$defs/JsonObject"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-goal/v1",
+      "default": "cole-voice-lab.api.journey-goal/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "goal"
+  ],
+  "title": "GoalCreated",
+  "type": "object"
+}

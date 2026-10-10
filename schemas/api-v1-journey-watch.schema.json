@@ -1,0 +1,53 @@
+{
+  "$defs": {
+    "JsonObject": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/watch``: the job runner's watcher, as its state file says.",
+  "properties": {
+    "enabled": {
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-watch/v1",
+      "default": "cole-voice-lab.api.journey-watch/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonObject"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "enabled"
+  ],
+  "title": "WatchStatus",
+  "type": "object"
+}

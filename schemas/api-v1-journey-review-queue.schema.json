@@ -1,0 +1,38 @@
+{
+  "$defs": {
+    "JsonObject": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/review/queue``: the selected rows in queue order.",
+  "properties": {
+    "rows": {
+      "items": {
+        "$ref": "#/$defs/JsonObject"
+      },
+      "title": "Rows",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-review-queue/v1",
+      "default": "cole-voice-lab.api.journey-review-queue/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "strategy": {
+      "title": "Strategy",
+      "type": "string"
+    }
+  },
+  "required": [
+    "strategy",
+    "rows"
+  ],
+  "title": "JourneyReviewQueue",
+  "type": "object"
+}

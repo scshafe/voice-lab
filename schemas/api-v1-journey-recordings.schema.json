@@ -1,0 +1,130 @@
+{
+  "$defs": {
+    "JsonObject": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "type": "object"
+    },
+    "JsonValue": {},
+    "RowTotals": {
+      "additionalProperties": false,
+      "description": "Counts over a set of rows (the filtered set, or the whole corpus).",
+      "properties": {
+        "buckets": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Buckets",
+          "type": "object"
+        },
+        "review_queue_selected": {
+          "minimum": 0,
+          "title": "Review Queue Selected",
+          "type": "integer"
+        },
+        "reviewed": {
+          "minimum": 0,
+          "title": "Reviewed",
+          "type": "integer"
+        },
+        "rows": {
+          "minimum": 0,
+          "title": "Rows",
+          "type": "integer"
+        },
+        "years": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Years",
+          "type": "object"
+        }
+      },
+      "required": [
+        "rows",
+        "buckets",
+        "years",
+        "review_queue_selected",
+        "reviewed"
+      ],
+      "title": "RowTotals",
+      "type": "object"
+    },
+    "RowsPage": {
+      "additionalProperties": false,
+      "description": "Which slice of the filtered, sorted rows a page holds.",
+      "properties": {
+        "limit": {
+          "maximum": 500,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "returned": {
+          "minimum": 0,
+          "title": "Returned",
+          "type": "integer"
+        },
+        "total_filtered": {
+          "minimum": 0,
+          "title": "Total Filtered",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "offset",
+        "limit",
+        "returned",
+        "total_filtered"
+      ],
+      "title": "RowsPage",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/recordings``: one page of rows (always paged: ``limit`` defaults to\n100, at most 500). Query: ``bucket``, ``year``, ``spotCheckStatus``,\n``transcriptStatus``, ``lyricMatchStatus``, ``reviewQueue=selected``, ``q``,\n``sort``, ``direction``, ``limit``, ``offset``, ``fields=list``.",
+  "properties": {
+    "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+    },
+    "page": {
+      "$ref": "#/$defs/RowsPage"
+    },
+    "rows": {
+      "items": {
+        "$ref": "#/$defs/JsonObject"
+      },
+      "title": "Rows",
+      "type": "array"
+    },
+    "rows_schema_version": {
+      "title": "Rows Schema Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-recordings/v1",
+      "default": "cole-voice-lab.api.journey-recordings/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "totals": {
+      "$ref": "#/$defs/RowTotals"
+    }
+  },
+  "required": [
+    "rows_schema_version",
+    "generated_at",
+    "page",
+    "totals",
+    "rows"
+  ],
+  "title": "JourneyRecordings",
+  "type": "object"
+}

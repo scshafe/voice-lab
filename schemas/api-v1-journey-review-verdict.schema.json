@@ -1,0 +1,127 @@
+{
+  "$defs": {
+    "RecordingId": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": "string"
+    },
+    "ReviewVerdict": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Note"
+        },
+        "recording_id": {
+          "$ref": "#/$defs/RecordingId"
+        },
+        "reviewed_at": {
+          "title": "Reviewed At",
+          "type": "string"
+        },
+        "reviewed_by": {
+          "title": "Reviewed By",
+          "type": "string"
+        },
+        "source": {
+          "const": "corpus-browser",
+          "default": "corpus-browser",
+          "title": "Source",
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "clean_singing",
+            "noise_contaminated_singing",
+            "music_contaminated_singing",
+            "non_singing",
+            "still_uncertain"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_id",
+        "verdict",
+        "note",
+        "reviewed_by",
+        "reviewed_at"
+      ],
+      "title": "ReviewVerdict",
+      "type": "object"
+    },
+    "RowTotals": {
+      "additionalProperties": false,
+      "description": "Counts over a set of rows (the filtered set, or the whole corpus).",
+      "properties": {
+        "buckets": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Buckets",
+          "type": "object"
+        },
+        "review_queue_selected": {
+          "minimum": 0,
+          "title": "Review Queue Selected",
+          "type": "integer"
+        },
+        "reviewed": {
+          "minimum": 0,
+          "title": "Reviewed",
+          "type": "integer"
+        },
+        "rows": {
+          "minimum": 0,
+          "title": "Rows",
+          "type": "integer"
+        },
+        "years": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Years",
+          "type": "object"
+        }
+      },
+      "required": [
+        "rows",
+        "buckets",
+        "years",
+        "review_queue_selected",
+        "reviewed"
+      ],
+      "title": "RowTotals",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "cole-voice-lab.api.journey-review-verdict/v1",
+      "default": "cole-voice-lab.api.journey-review-verdict/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "totals": {
+      "$ref": "#/$defs/RowTotals"
+    },
+    "verdict": {
+      "$ref": "#/$defs/ReviewVerdict"
+    }
+  },
+  "required": [
+    "verdict",
+    "totals"
+  ],
+  "title": "ReviewVerdictAnswer",
+  "type": "object"
+}
