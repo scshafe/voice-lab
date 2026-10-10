@@ -180,6 +180,24 @@ the owner says to cut over; infra `host/` changes stop at the owner's hash appro
   is launchd job `ai.voice-journey.mirror` (FDA launcher, `VOICE_JOURNEY_MIRROR_SSH_KEY`;
   the Node mirror also reads `VOICE_JOURNEY_MIRROR_DEST` and `_STATE`).
 
+- #24–#30 merged as one batch (`096d244`) after `scripts/verify` on its exact tree:
+  **6454 passed, 137 skipped**, coverage 94%; build, schema check, guard, `dev check .`
+  clean; the fixture parity (part of the suite here) 0 differences. Deploy run
+  38017725679 green (verify on the PC runner, deploy, health); `scshafe-deploy --verify
+  voice-lab 096d244` as `run-voice-lab`: live, containers, witness, tailnet-only ok. The lane
+  installed `voice-lab-jobs.timer` (active) and the service stays inert ("start condition
+  unmet: `/etc/voice-lab/journey.env`"). Through the door from the PC: `/healthz` 200,
+  `/view/` 302 to Pocket ID.
+- **Acceptance of the deployed image on synthetic data** (as phase 2 did: a throwaway
+  container of `voice-lab:096d244`, the production api's user, read-only root, no
+  capabilities, on `127.0.0.1:18932`; the phase-2 acceptance lab; the fixture parity run's
+  Python manifests and generated audio as the journey data root and drop; a throwaway
+  JWKS): `/view/`, `/view/recordings`, `/journeys`, `/trends`, `/goals`, `/report` all 200
+  for the allowed forwarded subject, none with a reference to audio, transcripts or a
+  script; another subject 403, no identity 401, POST 405; `/api/v1/summary` without a
+  token 401; the SPA route `/journey` 308 to `/view/`; `/api/intake/sessions` without a
+  token 401. Container and data removed afterwards.
+
 ## Open items and the owner's steps
 
 1. **Approve infra's host tree** `83464ecc…00d7` (infra#2), then runbook §A (stage, provision,
