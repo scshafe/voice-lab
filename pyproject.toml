@@ -57,7 +57,9 @@ cole_voice_lab = ["py.typed", "resources/*"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers -ra"
-testpaths = ["tests"]
+# apps/mirror/tests: the macOS mirror sender (a separate, stdlib-only package; its
+# conftest puts apps/mirror/src on sys.path, so it needs no install).
+testpaths = ["tests", "apps/mirror/tests"]
 # Port conformance suites are test modules too (tests/catalog_conformance.py, ...).
 python_files = ["test_*.py", "*_conformance.py"]
 

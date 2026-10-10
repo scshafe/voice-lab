@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.46.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-lab-mirror"
+version = "0.1.0"
+description = "The Voice Memos mirror sender for macOS: a write-only rsync push into the voice-lab drop."
+readme = "README.md"
+# Standard library only: it runs from launchd on a Mac, with no voice-lab install.
+requires-python = ">=3.12"
+authors = [{ name = "voice-lab contributors" }]
+license = "MIT"
+classifiers = ["Private :: Do Not Upload", "Operating System :: MacOS"]
+dependencies = []
+
+[project.scripts]
+voice-lab-mirror = "voice_lab_mirror.mirror:main"
+voice-lab-corpus = "voice_lab_mirror.host_access:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+voice_lab_mirror = ["py.typed"]
