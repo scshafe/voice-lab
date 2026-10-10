@@ -98,9 +98,18 @@ TAILSCALE_TAG_PATTERN: Final = r"^tag:[A-Za-z][A-Za-z0-9-]{0,123}$"
 # 256 bits ``secrets.token_bytes(32)`` returned. The server keeps only sha256(token) hex.
 VAULT_TOKEN_PREFIX: Final = "cvlv_"
 VAULT_TOKEN_PATTERN: Final = rf"^{VAULT_TOKEN_PREFIX}[A-Za-z0-9_-]{{43}}$"
-# The one tag a vault node may carry, and the longest a standing destination approval may
-# stand (Cole's rule is twelve months; a leap year is 366 days).
+# The tag of the first vault node (the laptop's, and the Mac's before it), which an approval
+# names unless it is given another, and the longest a standing destination approval may stand
+# (Cole's rule is twelve months; a leap year is 366 days). Every vault node carries a tag of
+# its own family: ``tag:voice-lab-vault`` or ``tag:voice-lab-vault-<suffix>`` (the Air's is
+# ``tag:voice-lab-vault-air``), so an approval can never name another service's tag, such as
+# the home host's ``tag:voice-lab`` (phase 3, D-036).
 VAULT_NODE_TAG: Final = "tag:voice-lab-vault"
+VAULT_NODE_TAG_PATTERN: Final = r"^tag:voice-lab-vault(?:-[a-z0-9]+)*$"
+# The prefix under which a copy carries the ``memos`` class: the phone's Voice Memos drop lives
+# outside the lab's asset root, so its files are named ``memos/<path below the drop>`` in a
+# manifest and restored under a root of their own, never into the lab (phase 3, D-036).
+MEMOS_PREFIX: Final = "memos"
 MAX_APPROVAL_DAYS: Final = 366
 # ``lib-<yyyymmdd>-<12 hex>``: the shape ``voice-lab vault init`` gives a fresh library.
 LIBRARY_ID_PREFIX: Final = "lib-"
@@ -451,13 +460,21 @@ type TailnetName = Annotated[
 type NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 type NodeStableId = Annotated[str, StringConstraints(pattern=NODE_STABLE_ID_PATTERN)]
 type TailscaleTag = Annotated[str, StringConstraints(pattern=TAILSCALE_TAG_PATTERN)]
+type VaultNodeTag = Annotated[
+    str, StringConstraints(pattern=VAULT_NODE_TAG_PATTERN, max_length=128)
+]
 type PinSource = Annotated[str, StringConstraints(pattern=PIN_SOURCE_PATTERN, max_length=256)]
 type StorageCounter = Annotated[int, Field(ge=0, le=MAX_STORAGE_COUNTER)]
 type PositiveStorageCounter = Annotated[int, Field(ge=1, le=MAX_STORAGE_COUNTER)]
 type StorageBackend = Literal["local-directory", "tailnet-vault"]
 # ``training`` (fine-tune runs under derived/finetune and datasets under derived/datasets) is
 # the separate opt-in class. Speak clips (derived/speech) have no class: they stay on the Mac.
-type FileClass = Literal["records", "prompt-database", "recordings", "derived-edits", "training"]
+# ``memos`` (the phone's Voice Memos drop, outside the asset root, named under MEMOS_PREFIX) is
+# opt-in too (design §4.3, D-023). Adding a class keeps every record that names none of it
+# valid, so the PC's ``v2`` bindings and approvals stand unchanged.
+type FileClass = Literal[
+    "records", "prompt-database", "recordings", "derived-edits", "training", "memos"
+]
 type FileClasses = Annotated[
     tuple[FileClass, ...], Field(min_length=1), AfterValidator(_sorted_unique_classes)
 ]
@@ -692,7 +709,10 @@ class VaultDestinationApproval(ContractModel):
     copying host gives this vault (``laptop``, ``air``); an approval kept or bound under
     another destination's name is refused. It binds the destination to a node, not to a name:
     the endpoint must be a name in
-    ``tailnet_suffix``, the node answering must have ``node_stable_id`` and carry ``tag``, and
+    ``tailnet_suffix``, the node answering must have ``node_stable_id`` and carry ``tag`` (a tag
+    of the vault family, ``tag:voice-lab-vault`` by default and ``tag:voice-lab-vault-air`` for
+    the Air; an approval written before the tag could be chosen names the default and stays
+    valid byte for byte), and
     the copy may hold only ``classes`` (``training`` — fine-tune runs and datasets — only when
     it is listed, which is the opt-in). It is effective from ``approved_at`` until
     ``expires_at``, which is at most ``MAX_APPROVAL_DAYS`` days later, so a standing approval
@@ -712,7 +732,7 @@ class VaultDestinationApproval(ContractModel):
     endpoint: Endpoint
     tailnet_suffix: TailnetName
     node_stable_id: NodeStableId
-    tag: Literal["tag:voice-lab-vault"] = VAULT_NODE_TAG
+    tag: VaultNodeTag = VAULT_NODE_TAG
     namespace: Namespace
     classes: FileClasses
     approved_at: UtcTimestamp
@@ -924,6 +944,74 @@ class LedgerEntry(ContractModel):
         return self
 
 
+class ResumeJournalEntry(ContractModel):
+    """One sealed chunk a push stored, as ``…/destinations/<d>/resume.jsonl`` records it.
+
+    A line is appended as soon as the chunk's ``put`` returned, before the next one is sealed,
+    so a push that stops part-way (the Air went to sleep) leaves the pieces it stored on the
+    record. ``file_sha256`` and ``file_size`` name the plaintext file the piece belongs to,
+    ``offset`` where in that file it starts, ``chunk_bytes`` the piece size the push cut with,
+    ``plaintext_sha256`` and ``plaintext_size`` the piece itself, and ``ref`` the sealed blob
+    that holds it (its ciphertext digest and size). ``destination_sha256`` is the
+    ``destination_digest`` of the vault the blob went to, so a destination bound again to
+    another vault ignores the journal. The journal is a hint, never evidence: the next push
+    reuses a piece only after reading the blob back, which proves its ciphertext digest and
+    authenticates it, and only when the decrypted bytes are the bytes at that offset of the
+    file it is sealing now. Kept on the copying host (``provenance/vault`` never leaves it).
+    """
+
+    schema_version: Literal["cole-voice-lab.replication-resume-entry/v1"] = (
+        "cole-voice-lab.replication-resume-entry/v1"
+    )
+    library_id: LibraryId
+    destination_sha256: Sha256
+    file_sha256: Sha256
+    file_size: PositiveStorageCounter
+    offset: StorageCounter
+    chunk_bytes: int = Field(ge=1, le=MAX_BLOB_BYTES)
+    plaintext_sha256: Sha256
+    plaintext_size: int = Field(ge=1, le=MAX_BLOB_BYTES)
+    ref: BlobRef
+    recorded_at: UtcTimestamp
+
+    @model_validator(mode="after")
+    def _the_piece_is_one_cut_of_its_file(self) -> Self:
+        if self.offset % self.chunk_bytes:
+            raise ValueError("a piece starts at a multiple of chunk_bytes")
+        if self.plaintext_size > self.chunk_bytes:
+            raise ValueError("a piece holds at most chunk_bytes bytes")
+        end = self.offset + self.plaintext_size
+        if end > self.file_size:
+            raise ValueError("a piece ends within its file")
+        if self.plaintext_size != self.chunk_bytes and end != self.file_size:
+            raise ValueError("only a file's last piece is shorter than chunk_bytes")
+        return self
+
+
+class ReplicationCheck(ContractModel):
+    """When one destination's newest generation was last found current, and last verified.
+
+    Kept as ``…/destinations/<d>/checked.json`` beside ``state.json``, and read only while it
+    names the generation and manifest ``state.json`` names (anything else is stale and
+    ignored). ``current_at`` is the last time a push found that generation holding the library
+    as it then was: the push that stored it, or a later one that found nothing to copy
+    (``up-to-date``). So the age of a destination's copy is ``now - current_at``: an unchanged
+    library is not reported stale, and a cadence that pushes only when the copy is a week old
+    does not re-read the whole library every hour once a week has passed. ``verified_at`` is
+    the last time ``vault verify`` downloaded, decrypted and re-hashed every entry of that
+    generation and found all of them (``null`` until then).
+    """
+
+    schema_version: Literal["cole-voice-lab.replication-check/v1"] = (
+        "cole-voice-lab.replication-check/v1"
+    )
+    library_id: LibraryId
+    generation: PositiveStorageCounter
+    manifest_sha256: Sha256
+    current_at: UtcTimestamp
+    verified_at: UtcTimestamp | None
+
+
 class VaultNamespaceConfig(ContractModel):
     """One namespace the vault server serves: its token hashes, its quota and its logins.
 
@@ -1084,6 +1172,8 @@ STORAGE_SCHEMA_MODELS: dict[str, type[ContractModel]] = {
     "storage-binding": StorageBinding,
     "replication-state": ReplicationState,
     "replication-ledger-entry": LedgerEntry,
+    "replication-resume-entry": ResumeJournalEntry,
+    "replication-check": ReplicationCheck,
     "vault-server-config": VaultServerConfig,
     "vault-access-record": VaultAccessRecord,
     "vault-request-record": VaultRequestRecord,

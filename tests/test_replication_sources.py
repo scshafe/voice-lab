@@ -79,6 +79,7 @@ from cole_voice_lab.library_replication import (
     CarriedPath,
     CorpusDatabaseSource,
     FineTuneRunSource,
+    MemosSource,
     OwnerResult,
     PassEntry,
     PassResult,
@@ -588,18 +589,36 @@ def test_the_database_entry_is_where_the_catalog_store_keeps_its_database(
         assert not classify(f"{CORPUS_DATABASE_PATH}{journal}").copied
 
 
-def test_every_fixture_path_is_classified_exactly_once(libraries: Libraries) -> None:
+def memos_drop(root: Path) -> Path:
+    """A synthetic phone memos drop: two memos, the metadata database, the mirror's manifest,
+    and an rsync transfer in progress (a hidden temporary and the partial directory)."""
+    for relative in (
+        "20261009 101500.m4a",
+        "20261009 101600.m4a",
+        "CloudRecordings.db",
+        "_mirror/latest.json",
+        ".20261009 101700.m4a.AbC123",
+        ".rsync-partial/20261009 101800.m4a",
+    ):
+        write_file(root, relative, f"memo {relative}\n".encode(), mode=0o640)
+    return root
+
+
+def test_every_fixture_path_is_classified_exactly_once(
+    libraries: Libraries, tmp_path: Path
+) -> None:
     legacy = libraries.legacy.root
     native = libraries.native.layout.root
     transient = (
         write_file(native, "provenance/recording-takes/.pending.json"),
         write_file(legacy, SPEECH_ACTIVE_MARKER),
     )
+    memos = [f"memos/{path}" for path in tree_paths(memos_drop(tmp_path / "phone"))]
     hit: set[str] = set()
     try:
         assert (legacy / f"{CORPUS_DATABASE_PATH}-shm").exists()
-        for layout in libraries.layouts:
-            for path in tree_paths(layout.root):
+        for paths in (*(tree_paths(layout.root) for layout in libraries.layouts), memos):
+            for path in paths:
                 rules = matching_rules(path)
                 assert rules, f"unclassified fixture path {path}"
                 first, *later = rules
@@ -3476,10 +3495,13 @@ def test_the_result_names_every_owner(libraries: Libraries) -> None:
     with pytest.raises(KeyError):
         result.owner("recording-takes")
     assert source_classes(TakeStoreSource()) == {"records", "recordings"}
-    assert {name for source in library_sources() for name in source.rules} == {
+    # Every copied rule has one source: the library's own, or the memos drop's (which needs its
+    # root, so library_sources() leaves it out).
+    sources = (*library_sources(), MemosSource(Path("/data/voice-lab/memos/phone")))
+    assert {name for source in sources for name in source.rules} == {
         rule.name for rule in CLASSIFICATION_RULES if rule.copied
     }
-    served = [name for source in library_sources() for name in source.rules]
+    served = [name for source in sources for name in source.rules]
     assert len(served) == len(set(served))
 
 

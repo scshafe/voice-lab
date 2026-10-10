@@ -11,7 +11,8 @@
         "prompt-database",
         "recordings",
         "derived-edits",
-        "training"
+        "training",
+        "memos"
       ],
       "type": "string"
     },
