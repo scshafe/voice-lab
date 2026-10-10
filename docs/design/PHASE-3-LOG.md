@@ -198,15 +198,54 @@ the owner says to cut over; infra `host/` changes stop at the owner's hash appro
   token 401; the SPA route `/journey` 308 to `/view/`; `/api/intake/sessions` without a
   token 401. Container and data removed afterwards.
 
+### 2026-10-10 (runbooks A–E, run by the owner's session)
+
+- **A** (the owner approved `83464ecc…00d7`): infra#2's branch was rebuilt without three
+  committed `__pycache__` files (outside `host/`; the manifest is unchanged) and landed on
+  infra `main` as `1370267`; staged as `/root/scshafe-m0`, its `M0.sha256` hashed to the
+  approved value; `layout` created `journey/` (four subdirectories, `voice-lab` 0700) and
+  `memos/` (`root:voice-lab` 0750) and changed nothing else; `~/infra` pulled; whisper-cpp
+  1.9.4 (Arch extra); the model's sha256 matched the pin; the analysis runtime's self-test
+  passed.
+- **B**: the PC's drop installed (`vj-mirror`, `rrsync -wo -no-del`, from the Mini's tailnet
+  address only); the PC's ed25519 host key pinned on the Mini after comparing fingerprints;
+  the Mini's `ai.voice-journey.mirror-pc` job (own log and state) pushed 2,433 recordings on
+  its first run; the drop's entry count equals the laptop's (2,437). The laptop job is
+  untouched.
+- **C**: voice-journey#5 merged (`ded8fb7`; deploy green; the laptop's container runs with
+  `VOICE_JOURNEY_WATCH=0`, healthy). The transfer manifest (7,021 files; 19 MB of
+  manifests, 90 MB of artifacts; no measurement sessions) hashed the same twice, then the
+  owner approved `b03c9a6d…ee88`. Copied, verified (no extra files), put in place and
+  verified again. No browser, goals or referee state existed on the laptop or the Mini.
+- **D**: parity on the real corpus passes: all seven stages ran on both sides and are
+  identical; 7,018 files compared, 0 differences at tolerance 0; 10 ignored differences, all
+  under the six declared rules (wall-clock `updatedAt` stamps and the filter's tool
+  self-description); 7,011 derived artifacts identical. Report sha256 `f57c9e15…58d1`. The
+  moved data root re-verified unchanged. Two setup refusals first (no Node for `voice-lab`;
+  the bare interpreter without pydantic), not differences.
+- **The transfer records stopped the vault** (fixed): runbook C put them in
+  `provenance/transfers/`, which no classification rule covered, so the nightly laptop vault
+  copy refused to run (STORAGE.PROTOCOL, exit 2). They were moved to
+  `/root/voice-lab-provenance/transfers/` and the copy re-run green. This PR adds the
+  `host-transfers` records class; once it is deployed, they move to
+  `provenance/host-transfers/`.
+- **E**: #23 merged (`e495cc3`), deploy green, `--verify` four of four; `/healthz` 200,
+  `/api/v1/summary` 401, `/view/` 302 to Pocket ID; the API container reads `journey/` and
+  `memos/` read-only, runs with `--journey`, no playback. The capture client is installed
+  on the PC and pointed at voice-lab (`--check-online`: keychain, issuer and server ok); the
+  Air has its `config.toml`. The PC's full `pacman -Syu` (owner's go-ahead, for
+  gnome-keyring) moved the kernel to 7.2.9: the UMIK-1 needs a reboot there first.
+- The runbook corrections these runs found are in §B–§E.
+
 ## Open items and the owner's steps
 
-1. **Approve infra's host tree** `83464ecc…00d7` (infra#2), then runbook §A (stage, provision,
-   merge infra#2, pull `~/infra`, whisper-cpp, the model, the analysis runtime).
-2. Runbook §B: the PC's drop with the Mini's key and a second Mini launchd job (dual feed).
-3. The go-ahead for §C (freeze: voice-journey#5; the transfer approval; the copy), then §D
-   (real-corpus parity, recorded here as digests and counts), §E (merge #23; the capture
-   client reconfigured; **one real UMIK-1 session**), §F (cutover: `journey.env`, the Mini's
-   laptop job off, voice-journey#4), §G is the rollback.
+1. Done 2026-10-10: §A–§D, and §E up to the real session.
+2. After this PR deploys: move the three transfer records from
+   `/root/voice-lab-provenance/transfers/` into `provenance/host-transfers/` (`voice-lab`,
+   0400), then run `voice-lab-vault-laptop.service` once to confirm.
+3. §E: open `/view/` in the owner's browser; **one real UMIK-1 session** (the PC after a
+   reboot, or the Air after `git pull` and uv); then draft #31. §F (cutover: `journey.env`,
+   the Mini's laptop job off, voice-journey#4), §G is the rollback.
 4. **The Air** (§H): the iCloud Voice Memos sync, the mirror sender, the vault (its install
    steps, the tailnet policy, then `HOST_EGRESS_TAILNET`), the sleep/resume and away-from-home
    drill.

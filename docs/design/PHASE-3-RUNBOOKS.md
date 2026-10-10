@@ -85,7 +85,7 @@ target with the Mini's existing launcher (its Full Disk Access grant is reused; 
    cd ~/infra
    sudo VJ_LAYOUT=pc replication/voice-journey-mirror/vj-mirror-drop install --dry-run --from-host elrics-mac-mini /tmp/vj-mirror.pub
    sudo VJ_LAYOUT=pc replication/voice-journey-mirror/vj-mirror-drop install --from-host elrics-mac-mini /tmp/vj-mirror.pub
-   VJ_LAYOUT=pc replication/voice-journey-mirror/vj-mirror-drop check
+   sudo VJ_LAYOUT=pc replication/voice-journey-mirror/vj-mirror-drop check   # memos/ is root:voice-lab 0750
    ```
 2. On the Mini, pin the PC's host key (the push runs with `StrictHostKeyChecking=yes`):
    `ssh-keyscan -t ed25519 cole-arch-pc >> ~/.ssh/known_hosts`, then compare the
@@ -99,10 +99,21 @@ target with the Mini's existing launcher (its Full Disk Access grant is reused; 
    state: the hash cache and lock are per target). Same launcher, same `mirror` argument,
    same key. `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.voice-journey.mirror-pc.plist`.
 4. Check after one period (15 minutes; the first full mirror is about 1.2 GB):
-   `ls /data/voice-lab/memos/phone | wc -l` as root (count only) and
-   `sudo -u voice-lab $VL journey index --dry-run` with the journey environment of F.2
-   (prints counts and scope only). The drop must hold the same number of recordings as the
-   laptop's (`ssh laptop-tailscale 'ls /srv/voice-journey/corpus/phone | wc -l'`).
+   `sudo sh -c 'ls /data/voice-lab/memos/phone | wc -l'` (count only) must equal the laptop's
+   (`ssh laptop-tailscale 'sudo ls /srv/voice-journey/corpus/phone | wc -l'`); both count the
+   recordings plus the Voice Memos database entries. Then the index dry run with F.1's settings
+   passed inline (`/etc/voice-lab/journey.env` stays unwritten until F, so the job runner stays
+   idle):
+
+   ```sh
+   cd / && sudo -u voice-lab env VOICE_JOURNEY_DATA=/data/voice-lab/journey \
+     VOICE_JOURNEY_CORPUS_ROOT=/data/voice-lab/memos/phone \
+     VOICE_JOURNEY_STATE_DIR=/data/voice-lab/state/journey \
+     VOICE_JOURNEY_MEASUREMENT_DIR=/data/voice-lab/lab/raw $VL journey index --dry-run
+   ```
+
+   It prints the read scope (directory entries and file metadata through the seam; no audio)
+   and the output path, not counts, and writes nothing.
 
 Rollback: `launchctl bootout gui/$(id -u)/ai.voice-journey.mirror-pc` on the Mini; the
 laptop's feed was never touched.
@@ -121,28 +132,37 @@ it).
    manifest's digest, AGENTS.md's rule for moves between Cole's hosts):
 
    ```sh
-   ssh laptop-tailscale 'cd /srv/voice-journey && find manifests artifacts -type f -print0 | sort -z | xargs -0 sha256sum' > /tmp/vj-transfer.sha256
+   ssh laptop-tailscale 'cd /srv/voice-journey && sudo find manifests artifacts -type f -print0 | sort -z | sudo xargs -0 sha256sum' > /tmp/vj-transfer.sha256
    sha256sum /tmp/vj-transfer.sha256        # the digest the owner approves
    wc -l < /tmp/vj-transfer.sha256          # file count
    ```
 
-   The owner records the approval (destination `cole-arch-pc`, the digest, the date) in
-   `/data/voice-lab/lab/provenance/transfers/voice-journey-<date>.txt` (root-written, never
-   in Git).
+   The approval (destination `cole-arch-pc`, the digest, the date, the owner's words) and the
+   manifest itself are kept in `/data/voice-lab/lab/provenance/host-transfers/` as
+   `voice-journey-<date>.txt` and `voice-journey-<date>.sha256` (never in Git), written
+   `voice-lab:voice-lab 0400` with `sudo install`. That directory is a vault `records` class
+   (`library_classification` rule `host-transfers`). **Never write under any other new
+   `provenance/` path:** a file no rule classifies stops every vault pass (STORAGE.PROTOCOL),
+   which is what `provenance/transfers/` did to the laptop copy on 2026-10-10.
 3. **Copy** into a private staging directory, then verify every file against the approved
    manifest before anything moves into place:
 
    ```sh
    sudo install -d -o voice-lab -g voice-lab -m 0700 /data/voice-lab/journey/import
-   sudo rsync -a --chown=voice-lab:voice-lab --chmod=D0700,F0600 -e 'ssh -F /home/cole/.ssh/config' \
+   # root writes here; the connection is cole's (his key and ssh config), the read is root's there
+   sudo rsync -a --chown=voice-lab:voice-lab --chmod=D0700,F0600 \
+     -e 'sudo -u cole ssh' --rsync-path='sudo rsync' \
      laptop-tailscale:/srv/voice-journey/manifests laptop-tailscale:/srv/voice-journey/artifacts \
      /data/voice-lab/journey/import/
-   cd /data/voice-lab/journey/import && sudo sha256sum -c --quiet /tmp/vj-transfer.sha256 && echo verified
+   sudo sh -c 'cd /data/voice-lab/journey/import &&
+     sha256sum -c --quiet /data/voice-lab/lab/provenance/host-transfers/voice-journey-<date>.sha256 &&
+     echo verified; find manifests artifacts -type f | wc -l'   # the manifest's line count, no extras
    ```
 4. **Into place:** generated manifests into `journey/manifests/`, artifacts into
    `journey/artifacts/`; the browser's state files (`corpus-browser-state.json`,
-   `goals-state.json`, `referee-state.json` from `artifacts/`) into
-   `/data/voice-lab/state/journey/` (the API's writable state); then remove `import/`.
+   `goals-state.json`, `referee-state.json` from `artifacts/`, if present: on 2026-10-10 none
+   existed, on the laptop or the Mini) into `/data/voice-lab/state/journey/` (the API's
+   writable state); then remove `import/`, and check the manifest again in place.
 
    ```sh
    sudo -u voice-lab sh -c 'set -e; J=/data/voice-lab/journey; S=/data/voice-lab/state/journey
@@ -161,13 +181,32 @@ it).
 
 Needs: A, B, C. Reads the moved copy read-only; prints only digests and counts.
 
+It runs as `voice-lab`, which cannot read `/home/cole`: give it a full clone (the script
+extracts the Node tree from the pinned commit `1f236b5`), a Node it can execute (the PC's
+Node is cole's fnm install; voice-journey's image runs Node 24) and the release environment's
+Python (the bare interpreter lacks the package's dependencies, pydantic among them). All of
+it lives in one private work directory that is removed at the end.
+
 ```sh
-cd ~/src/voice-lab && git fetch && git switch --detach origin/main
-env -u TMUX -u TMUX_PANE VOICE_JOURNEY_CORPUS_ROOT=/data/voice-lab/memos/phone \
-  FFMPEG_BIN=/usr/bin/ffmpeg WHISPER_CPP_BIN=/usr/bin/whisper-cli \
-  sudo -E -u voice-lab .venv/bin/python -I -B scripts/journey-parity \
-    --data-root /data/voice-lab/journey --approval "<the owner's approval text>" --out /tmp/parity-real.json
+SHA=$(git -C ~/src/voice-lab rev-parse origin/main)     # the deployed commit
+W=$(sudo -u voice-lab mktemp -d /tmp/vl-parity.XXXXXX)
+C=$(mktemp -d) && git clone -q --no-local ~/src/voice-lab "$C/repo" && git -C "$C/repo" checkout -q --detach "$SHA"
+sudo cp -a "$C/repo" "$W/repo" && sudo chown -R voice-lab:voice-lab "$W/repo" && rm -rf "$C"
+sudo install -o voice-lab -g voice-lab -m 0755 "$(readlink -f "$(command -v node)")" "$W/node"
+P=/opt/voice-lab/current/bin/python
+cd / && sudo -u voice-lab env -u TMUX -u TMUX_PANE VOICE_JOURNEY_CORPUS_ROOT=/data/voice-lab/memos/phone \
+  FFMPEG_BIN=/usr/bin/ffmpeg WHISPER_CPP_BIN=/usr/bin/whisper-cli HOME="$W" TMPDIR="$W" \
+  nice -n 10 "$P" -I -B "$W/repo/scripts/journey-parity" --data-root /data/voice-lab/journey \
+    --node "$W/node" --python "$P" --approval "<the owner's approval text>" --out "$W/parity-real.json"
+sudo install -o voice-lab -g voice-lab -m 0400 "$W/parity-real.json" \
+  /data/voice-lab/lab/provenance/host-transfers/voice-journey-<date>-parity.json
+sudo sh -c 'cd /data/voice-lab/journey && sha256sum -c --quiet /data/voice-lab/lab/provenance/host-transfers/voice-journey-<date>.sha256 && echo unchanged'
+sudo rm -rf "$W"
 ```
+
+The report carries only digests and counts (no values, file names or text), so it is kept
+beside the transfer records. A run whose every stage `failed` in seconds is a setup problem
+(stage error output is discarded): rerun one stage by hand as `voice-lab` to see it.
 
 Without `--fresh` the resumable stages (filter, stt, features) carry the moved rows over and
 compare the new rows and the full recomputations (lyric, reclassify, journeys); `--fresh`
@@ -182,7 +221,7 @@ the PC") adds to `deploy/stack/compose.yaml`'s `api` service:
 
 - read-only binds `/data/voice-lab/journey` and `/data/voice-lab/memos` (infra's
   `host.conf` grants them since infra PR #2; `create_host_path: false`);
-- `serve` arguments `--journey --playback-approval "<the playback approval text>"`;
+- the `serve` argument `--journey` (playback stays off: no `--playback-approval`, §4.2);
 - environment `VOICE_JOURNEY_CONTAINER=1`, `VOICE_JOURNEY_DATA=/data/voice-lab/journey`,
   `VOICE_JOURNEY_CORPUS_ROOT=/data/voice-lab/memos/phone`,
   `VOICE_JOURNEY_STATE_DIR=/data/voice-lab/state/journey`,
@@ -193,10 +232,20 @@ token; `/view/` 302 to Pocket ID without a session; with the owner's browser ses
 `https://voice-lab.$TN/view/` shows the summary, recordings, journeys, trends, goals and the
 report (no audio, no transcript, no lyric). `scshafe-deploy --verify` as `run-voice-lab`.
 
-The capture client (still `voice-journey-capture`) reaches the PC through the
-compatibility path once reconfigured: `VOICE_JOURNEY_CAPTURE_SERVER=https://voice-lab.$TN`,
-`VOICE_JOURNEY_CAPTURE_CLIENT_ID=voice-lab-desktop` (Pocket ID: the client's loopback
-redirect, including its fallback port 53683, on `voice-lab-desktop`), sign in again. The
+`scshafe-deploy --verify` runs as root through the runner's sudo rule:
+`cd / && sudo -u run-voice-lab sudo -n /usr/local/sbin/scshafe-deploy --verify voice-lab <sha40>`.
+
+The capture client (`apps/desktop`, still named `voice-journey-capture`) reaches the PC
+through the compatibility path once reconfigured: `server_url =
+"https://voice-lab.$TN"` and `client_id = "voice-lab-desktop"` in its `config.toml`
+(`~/.config/voice-journey-capture/` on Linux, `~/Library/Application
+Support/voice-journey-capture/` on macOS; or the `VOICE_JOURNEY_CAPTURE_SERVER` and
+`..._CLIENT_ID` overrides). Pocket ID's `voice-lab-desktop` allows `http://127.0.0.1:*/callback`,
+so the fallback port 53683 works too. Install with `cd apps/desktop && uv sync --frozen`
+(Python 3.14, uv 0.12.21), then `uv run voice-journey-capture --check-online`. On the PC
+the keychain is GNOME Keyring, started on demand through D-Bus (`pacman -S gnome-keyring`;
+no i3 change); the UMIK-1 needs `snd_usb_audio`, which cannot load after a kernel upgrade
+until the PC reboots. Then sign in again. The
 acceptance item: one real UMIK-1 session lands in `raw/` with a v2 receipt (owner, real
 recording). Known gap until phase 4: this client writes no D-021 ledger entry.
 
