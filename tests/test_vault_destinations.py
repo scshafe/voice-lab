@@ -302,6 +302,7 @@ def test_two_destinations_copy_verify_and_drill_from_systemd_credentials(
                 ".push.lock",
                 "approvals",
                 "binding.json",
+                "checked.json",
                 "ledger",
                 "manifests",
                 "requests",

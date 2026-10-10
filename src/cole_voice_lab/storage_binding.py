@@ -100,6 +100,7 @@ __all__ = [
     "UnexplainedAccess",
     "VAULT_TOKEN_ACCOUNTS",
     "VaultAuditReport",
+    "VaultProbe",
     "VaultRequestLog",
     "VaultStores",
     "VaultTokenScope",
@@ -125,6 +126,7 @@ __all__ = [
     "open_library_vault",
     "open_vault_for_restore",
     "prepare_local_destination",
+    "probe_library_vault",
     "read_access_records",
     "read_destination_approval",
     "read_library_identity",
@@ -1245,6 +1247,65 @@ def open_library_vault(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class VaultProbe:
+    """Whether a bound vault answered a probe; ``reason`` and ``code`` say why it did not."""
+
+    reachable: bool
+    reason: str | None = None
+    code: str | None = None
+
+
+def probe_library_vault(vault: LibraryVault) -> VaultProbe:
+    """Ask whether the vault can be copied to now, after the identity check every copy makes.
+
+    For a ``tailnet-vault``: the resolver names the node answering for the endpoint, and it
+    must be the approved one (``identity_problem``: its StableID, the approval's tag, its DNS
+    name and the tailnet suffix, exactly what the client checks before a byte is sent); a node
+    the tailnet reports offline (asleep, travelling with its lid closed) is unreachable without
+    a connection attempt. Then, as for a ``local-directory``, the library's head ref is read
+    once through the vault's own stores. Only a failure that may pass by itself
+    (``STORAGE.UNAVAILABLE``, ``STORAGE.TIMEOUT``) counts as unreachable; anything else is
+    raised, so a node that is not the approved one is never mistaken for one that is asleep.
+    Params: ``vault``, an opened ``LibraryVault``.
+    Returns: the ``VaultProbe``.
+    Raises: ``StorageIntegrityError`` (``STORAGE.IDENTITY_MISMATCH``) when another node
+    answers; every other non-retryable ``StorageError`` of the resolver or the stores.
+    """
+    from .storage_ports import library_head_ref
+    from .tailnet import ExpectedIdentity, identity_problem
+
+    approval = vault.approval
+    try:
+        if approval is not None:
+            endpoint = vault.binding.endpoint
+            peer = tailnet_resolver(approval.tailnet_suffix).resolve(endpoint)
+            problem = identity_problem(
+                endpoint,
+                ExpectedIdentity(
+                    node_stable_id=approval.node_stable_id,
+                    tag=approval.tag,
+                    tailnet_suffix=approval.tailnet_suffix,
+                ),
+                peer,
+            )
+            if problem is not None:
+                raise storage_error(
+                    "STORAGE.IDENTITY_MISMATCH",
+                    f"the node answering for {endpoint} is not the approved vault: {problem}",
+                )
+            if peer.online is False:
+                return VaultProbe(
+                    False, f"the tailnet reports {endpoint} offline", "STORAGE.UNAVAILABLE"
+                )
+        vault.ref_store.read(library_head_ref(vault.library_id))
+    except StorageError as error:
+        if not error.retryable:
+            raise
+        return VaultProbe(False, str(error), error.code)
+    return VaultProbe(True)
+
+
 def _state_present(layout: AssetLayout, destination: str) -> bool:
     from .library_generations import STATE_NAME
 
@@ -1333,6 +1394,7 @@ def open_vault_for_restore(
     node_stable_id: str | None = None,
     tailnet_suffix: str | None = None,
     destination: str = DEFAULT_VAULT_DESTINATION,
+    tag: str | None = None,
 ) -> VaultStores:
     """Open a vault by hand, to restore a library onto a host that has no binding yet.
 
@@ -1344,7 +1406,8 @@ def open_vault_for_restore(
     ``tailnet-vault`` (a ``local-directory`` endpoint is its own namespace and ignores it);
     ``node_stable_id`` and ``tailnet_suffix``, required for ``tailnet-vault`` and refused for
     ``local-directory``; ``destination``, whose read token item to use (and whose request
-    log records the requests).
+    log records the requests); ``tag``, the vault node's tag (default ``VAULT_NODE_TAG``; the
+    Air's node carries ``tag:voice-lab-vault-air``), refused for ``local-directory``.
     Returns: the ``VaultStores``, whose token is the read one.
     Raises: ``StorageError`` (``STORAGE.NOT_BOUND``) without a library record, for a local
     endpoint this Mac refuses, or for a missing key or read-token item;
@@ -1356,11 +1419,13 @@ def open_vault_for_restore(
 
     library_id = require_library_identity(layout).library_id
     tailnet = backend == "tailnet-vault"
-    if tailnet != (node_stable_id is not None and tailnet_suffix is not None):
+    if tailnet != (node_stable_id is not None and tailnet_suffix is not None) or (
+        tag is not None and not tailnet
+    ):
         raise storage_error(
             "STORAGE.PROTOCOL",
             "a tailnet-vault restore needs --node-stable-id and --tailnet-suffix, and a "
-            "local-directory restore takes neither",
+            "local-directory restore takes neither (nor --tag)",
         )
     # Without this the namespace would reach the client as ``None`` and break it there, after
     # the Keychain had already been read; a missing name is an operator's mistake, not a fault.
@@ -1374,7 +1439,9 @@ def open_vault_for_restore(
         None
         if node_stable_id is None or tailnet_suffix is None
         else ExpectedIdentity(
-            node_stable_id=node_stable_id, tag=VAULT_NODE_TAG, tailnet_suffix=tailnet_suffix
+            node_stable_id=node_stable_id,
+            tag=VAULT_NODE_TAG if tag is None else tag,
+            tailnet_suffix=tailnet_suffix,
         )
     )
     return _open_stores(

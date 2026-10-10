@@ -258,6 +258,8 @@ def approval_arguments(approval: VaultDestinationApproval) -> list[str]:
         approval.tailnet_suffix,
         "--node-stable-id",
         approval.node_stable_id,
+        "--tag",
+        approval.tag,
         "--namespace",
         approval.namespace,
         "--classes",

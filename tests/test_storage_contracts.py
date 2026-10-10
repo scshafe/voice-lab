@@ -39,7 +39,10 @@ from cole_voice_lab.storage_contracts import (
     MANIFEST_PAYLOAD_DOMAIN,
     MAX_MANIFEST_BYTES,
     MAX_STORAGE_COUNTER,
+    MEMOS_PREFIX,
     STORAGE_SCHEMA_MODELS,
+    VAULT_NODE_TAG,
+    VAULT_NODE_TAG_PATTERN,
     LedgerDestination,
     LedgerEntry,
     LibraryIdentity,
@@ -48,7 +51,9 @@ from cole_voice_lab.storage_contracts import (
     ManifestEnvelope,
     ManifestPlan,
     PlannedManifestEntry,
+    ReplicationCheck,
     ReplicationState,
+    ResumeJournalEntry,
     StorageBinding,
     UtcTimestamp,
     VaultAccessRecord,
@@ -805,6 +810,33 @@ def completed_entry() -> Payload:
     }
 
 
+def resume_entry() -> Payload:
+    return {
+        "schema_version": "cole-voice-lab.replication-resume-entry/v1",
+        "library_id": LIBRARY,
+        "destination_sha256": "d" * 64,
+        "file_sha256": "e" * 64,
+        "file_size": 10,
+        "offset": 4,
+        "chunk_bytes": 4,
+        "plaintext_sha256": "f" * 64,
+        "plaintext_size": 4,
+        "ref": blob_ref(),
+        "recorded_at": TIME,
+    }
+
+
+def replication_check() -> Payload:
+    return {
+        "schema_version": "cole-voice-lab.replication-check/v1",
+        "library_id": LIBRARY,
+        "generation": 3,
+        "manifest_sha256": "f" * 64,
+        "current_at": TIME,
+        "verified_at": None,
+    }
+
+
 def local_started_entry() -> Payload:
     return started_entry() | {"destination": local_destination(), "approval_sha256": None}
 
@@ -875,6 +907,8 @@ SYNTHETIC: dict[str, Build] = {
     "storage-binding": tailnet_binding,
     "replication-state": pushed_state,
     "replication-ledger-entry": completed_entry,
+    "replication-resume-entry": resume_entry,
+    "replication-check": replication_check,
     "vault-server-config": server_config,
     "vault-access-record": access_record,
     "vault-request-record": request_record,
@@ -897,6 +931,8 @@ TIMESTAMP_FIELDS = [
     (StorageBinding, "created_at"),
     (ReplicationState, "updated_at"),
     (LedgerEntry, "recorded_at"),
+    (ResumeJournalEntry, "recorded_at"),
+    (ReplicationCheck, "current_at"),
     (VaultAccessRecord, "time"),
     (VaultRequestRecord, "time"),
 ]
@@ -1830,7 +1866,10 @@ def test_an_approval_is_effective_only_between_its_two_instants() -> None:
     [
         (destination_approval, {"approved": False}, "Input should be True"),
         (destination_approval, {"backend": "local-directory"}, "Input should be 'tailnet-vault'"),
-        (destination_approval, {"tag": "tag:other"}, "Input should be 'tag:voice-lab-vault'"),
+        (destination_approval, {"tag": "tag:other"}, PATTERN),
+        (destination_approval, {"tag": "tag:voice-lab"}, PATTERN),
+        (destination_approval, {"tag": "tag:voice-lab-vault-"}, PATTERN),
+        (destination_approval, {"tag": "tag:voice-lab-vault-Air"}, PATTERN),
         (destination_approval, {"approval_id": "Vault"}, PATTERN),
         (destination_approval, {"library_id": "Cole"}, PATTERN),
         (destination_approval, {"namespace": "Cole"}, PATTERN),
@@ -2245,3 +2284,71 @@ def test_an_invalid_request_record_is_refused(
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         validate(model, build() | changes)
+
+
+# -- phase 3: the Air's tag, the memos class, the resume journal and the check record -------
+
+
+def test_an_approval_names_its_vault_nodes_tag_and_an_old_one_keeps_its_bytes() -> None:
+    """The tag is chosen at approval time within the vault family; a ``v2`` approval written
+    when the tag was fixed (the PC's laptop approval) parses to the same canonical bytes, so
+    the digest its binding pins is unchanged."""
+    laptop = destination_approval() | {"destination": "laptop"}
+    written = canonical_json_bytes(validate(VaultDestinationApproval, laptop)) + b"\n"
+    reread = validate(VaultDestinationApproval, json.loads(written))
+    assert canonical_json_bytes(reread) + b"\n" == written
+    assert reread.tag == "tag:voice-lab-vault"
+    air = validate(
+        VaultDestinationApproval,
+        destination_approval()
+        | {
+            "destination": "air",
+            "endpoint": f"voice-lab-vault-air.{TAILNET_SUFFIX}",
+            "tag": "tag:voice-lab-vault-air",
+            "classes": ["memos", "prompt-database", "recordings", "records"],
+        },
+    )
+    assert (air.tag, air.classes[0]) == ("tag:voice-lab-vault-air", "memos")
+    assert re.fullmatch(VAULT_NODE_TAG_PATTERN, VAULT_NODE_TAG)
+
+
+def test_the_memos_class_is_one_more_class_of_every_record_that_lists_classes() -> None:
+    binding = validate(
+        StorageBinding,
+        tailnet_binding() | {"classes": ["memos", "records"]},
+    )
+    assert binding.classes == ("memos", "records")
+    entry = validate(
+        PlannedManifestEntry, planned_file_entry() | {"path": "memos/a.m4a", "file_class": "memos"}
+    )
+    assert entry.file_class == "memos" and MEMOS_PREFIX == "memos"
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"offset": 3}, "a piece starts at a multiple of chunk_bytes"),
+        ({"plaintext_size": 5, "chunk_bytes": 4}, "less than or equal|at most chunk_bytes"),
+        ({"offset": 8, "plaintext_size": 4}, "a piece ends within its file"),
+        ({"offset": 0, "plaintext_size": 3}, "only a file's last piece"),
+        ({"file_size": 0}, "greater than or equal to 1"),
+        ({"plaintext_size": 0}, "greater than or equal to 1"),
+        ({"chunk_bytes": MAX_BLOB_BYTES + 1}, "less than or equal"),
+        ({"ref": {"sha256": "a" * 64, "size": 0}}, "the empty SHA-256"),
+    ],
+)
+def test_a_resume_entry_is_one_cut_of_its_file(changes: Payload, message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        validate(ResumeJournalEntry, resume_entry() | changes)
+
+
+def test_a_resume_entry_may_end_its_file_short() -> None:
+    last = validate(ResumeJournalEntry, resume_entry() | {"offset": 8, "plaintext_size": 2})
+    assert last.offset + last.plaintext_size == last.file_size
+
+
+def test_a_check_record_names_a_pushed_generation() -> None:
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        validate(ReplicationCheck, replication_check() | {"generation": 0})
+    checked = validate(ReplicationCheck, replication_check() | {"verified_at": TIME})
+    assert checked.verified_at == FIXED

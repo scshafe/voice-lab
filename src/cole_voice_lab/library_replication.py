@@ -70,8 +70,8 @@ from .library_classification import (
     subtree_stays_on_mac,
 )
 from .models import CaptureManifest
-from .paths import AssetLayout
-from .storage_contracts import MAX_BLOB_BYTES, FileClass, PlannedManifestEntry
+from .paths import AssetLayout, validate_absolute_path
+from .storage_contracts import MAX_BLOB_BYTES, MEMOS_PREFIX, FileClass, PlannedManifestEntry
 from .storage_ports import storage_error
 
 if TYPE_CHECKING:
@@ -88,6 +88,7 @@ __all__ = [
     "CorpusDatabaseSource",
     "FileIdentity",
     "FineTuneRunSource",
+    "MemosSource",
     "OwnerResult",
     "PassEntry",
     "PassResult",
@@ -106,6 +107,7 @@ __all__ = [
     "backup_database",
     "collect_pass",
     "library_sources",
+    "memos_source_path",
     "require_classified_tree",
     "source_classes",
 ]
@@ -250,7 +252,9 @@ class ReplicationItem:
     are read, relative to ``root`` (it differs from ``path`` only for the prompt database,
     whose bytes come from a private backup). ``expected_sha256`` and ``expected_size`` are
     what the file's seal or record names (``None`` when the file is itself the record);
-    ``private`` requires no group or other permission bits. A ``pin`` item is not read: its
+    ``private`` requires no group or other permission bits, and ``owned`` requires the file to
+    be this user's (the phone's memos drop is written by another account and only readable
+    through a group, so its items set both to ``False``). A ``pin`` item is not read: its
     digest is the pin a record names (``pin_source``) and its size the pinned file's.
     Raises (on construction): ``ValueError`` when a pin lacks its digest, size or source, or a
     file names a pin source.
@@ -266,6 +270,7 @@ class ReplicationItem:
     source: str
     private: bool = True
     pin_source: str | None = None
+    owned: bool = True
 
     def __post_init__(self) -> None:
         pinned = (self.expected_sha256, self.expected_size, self.pin_source)
@@ -337,7 +342,7 @@ class ReplicationReader:
         problem: tuple[SourceProblem, str] | None = None
         if not stat.S_ISREG(metadata.st_mode):
             problem = ("unsafe", "is not a regular file")
-        elif metadata.st_uid != os.getuid():
+        elif item.owned and metadata.st_uid != os.getuid():
             problem = ("unsafe", "is not owned by this user")
         elif item.private and stat.S_IMODE(metadata.st_mode) & 0o077:
             problem = ("unsafe", "is readable or writable by other users")
@@ -713,13 +718,19 @@ def require_classified_tree(layout: AssetLayout) -> int:
     files and never followed.
     Params: ``layout``, a validated asset root.
     Returns: how many paths were classified.
-    Raises: ``StorageError`` (``STORAGE.PROTOCOL``) naming the first path no rule covers;
-    ``SourceChangedError`` when a directory turns into something the walk cannot enter
+    Raises: ``StorageError`` (``STORAGE.PROTOCOL``) naming the first path no rule covers, or a
+    path under ``memos/``: the ``memos`` class is read from its own root, never from the asset
+    root; ``SourceChangedError`` when a directory turns into something the walk cannot enter
     while it runs (retry the pass).
     """
     count = 0
     for path, _ in _scan_directory(os.open(layout.root, _DIRECTORY_FLAGS), ""):
-        classify(path)
+        if classify(path).rule.disposition == "memos":
+            raise storage_error(
+                "STORAGE.PROTOCOL",
+                f"the asset root holds {path}, but memos live outside it and are copied from "
+                "their own root (--memos-root); move it out of the asset root",
+            )
         count += 1
     return count
 
@@ -1912,6 +1923,81 @@ class CorpusDatabaseSource:
             scratch.remove()
 
 
+def memos_source_path(path: str) -> str:
+    """Where the manifest path ``memos/<path>`` is read below the memos root: ``<path>``.
+
+    Raises: ``ValueError`` for a path that is not below ``memos/``.
+    """
+    prefix = f"{MEMOS_PREFIX}/"
+    if not path.startswith(prefix) or path == prefix:
+        raise ValueError(f"{path!r:.120} is not below {prefix}")
+    return path.removeprefix(prefix)
+
+
+def _open_absolute_directory(root: Path, label: str) -> int:
+    """Open an absolute directory from ``/``, one component at a time, never following a link.
+
+    Raises: ``SourceChangedError`` about ``label``: ``missing`` when a component is gone,
+    ``unsafe`` when one is a symbolic link, not a directory or cannot be opened.
+    """
+    descriptor = os.open("/", _DIRECTORY_FLAGS)
+    try:
+        for part in root.parts[1:]:
+            child = os.open(part, _CHILD_DIRECTORY_FLAGS, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+    except OSError as error:
+        os.close(descriptor)
+        raise _open_failure(label, error) from error
+    return descriptor
+
+
+@dataclass(frozen=True, slots=True)
+class MemosSource:
+    """The phone's Voice Memos drop: every file below ``root``, named ``memos/<path>``.
+
+    The drop (``/data/voice-lab/memos/phone`` on the PC, design §4.1) lies outside the asset
+    root, so it is its own source with its own root (design §4.3: the ``memos`` class, opt-in
+    per destination like ``training``). The mirror's account (``vj-mirror``) writes it and the
+    copier reads it through its group, so its items are neither ``private`` nor ``owned``;
+    every other check holds: the root and every component below it are opened without
+    following a link, and a file must be a regular file with one link that holds still while
+    it is read, so a symbolic link or a special file anywhere in the drop refuses the owner (the
+    vault keeps its previous memos entries). rsync's temporaries and its ``.rsync-partial``
+    directory (hidden names, ``memos-mirror-temporaries``) stay behind. No record binds a memo
+    and a memo names no other owner's files, so each file is copied as it is. A missing root
+    makes the owner ``changed`` (retryable), like any vanished source.
+    Raises (on construction): ``ValueError`` for a root that is not absolute and normalized.
+    """
+
+    root: Path
+    name: str = "memos"
+    rules: frozenset[str] = frozenset({"memos"})
+    referents: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        validate_absolute_path(str(self.root))
+
+    def items(self, layout: AssetLayout) -> Generator[SourceEntry, None, None]:
+        descriptor = _open_absolute_directory(self.root, MEMOS_PREFIX)
+        for path, _ in _scan_directory(descriptor, MEMOS_PREFIX):
+            rule = classify(path).rule
+            if rule.name not in self.rules:
+                continue
+            yield ReplicationItem(
+                path=path,
+                file_class="memos",
+                kind="file",
+                mode=rule.mode,
+                expected_sha256=None,
+                expected_size=None,
+                root=self.root,
+                source=memos_source_path(path),
+                private=False,
+                owned=False,
+            )
+
+
 def library_sources() -> tuple[ReplicationSource, ...]:
     """One source per owner, each before every owner its files name (its referents).
 
@@ -2048,10 +2134,13 @@ def _require_offered(source: ReplicationSource, entry: SourceEntry) -> None:
     elif isinstance(entry, CarriedPath):
         agrees = (entry.kind == "pin") == (rule.transfer == "pin") and entry.mode == rule.mode
     else:
+        # A memos file is read below its own root, at its path without the prefix; a backup is
+        # read from its scratch copy; every other file is read at its own path.
+        expected = memos_source_path(entry.path) if rule.disposition == "memos" else entry.path
         agrees = (
             (entry.kind == "pin") == (rule.transfer == "pin")
             and entry.mode == rule.mode
-            and (entry.source == entry.path) == (rule.transfer != "sqlite-backup")
+            and (entry.source == expected) == (rule.transfer != "sqlite-backup")
         )
     if rule.name not in source.rules or entry.file_class != rule.disposition or not agrees:
         raise storage_error(

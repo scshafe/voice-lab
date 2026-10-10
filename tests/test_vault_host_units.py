@@ -155,3 +155,48 @@ def test_the_timer_is_nightly_and_catches_up() -> None:
     assert values(TIMER, "Timer", "Persistent") == ["true"]
     assert not values(TIMER, "Timer", "Unit")
     assert values(TIMER, "Install", "WantedBy") == ["timers.target"]
+
+
+# -- the Air's pair (phase 3) ------------------------------------------------------------------
+
+AIR_SERVICE = MANUAL / "voice-lab-vault-air.service"
+AIR_TIMER = MANUAL / "voice-lab-vault-air.timer"
+MEMOS = "/data/voice-lab/memos/phone"
+
+
+def test_the_air_copier_pushes_weekly_when_reachable_and_verifies_once() -> None:
+    assert values(AIR_SERVICE, "Service", "ExecStart") == [
+        f"{BINARY} vault push --asset-root {LAB} --destination air --memos-root {MEMOS} "
+        "--if-older-than 7d --skip-unreachable",
+        f"{BINARY} vault verify --asset-root {LAB} --destination air --if-unverified "
+        "--skip-unreachable",
+    ]
+    # The memos drop is read, never written: only the lab is writable.
+    assert values(AIR_SERVICE, "Service", "ReadWritePaths") == [LAB]
+    assert values(AIR_SERVICE, "Service", "ProtectSystem") == ["strict"]
+
+
+def test_the_air_copier_imports_the_key_and_only_the_airs_tokens() -> None:
+    imports = values(AIR_SERVICE, "Service", "ImportCredential")
+    assert imports == [f"{KEYCHAIN_ITEM_PREFIX}*", f"{VAULT_TOKEN_ITEM_PREFIX}air.*"]
+
+    def imported(item: str) -> bool:
+        return any(item.startswith(glob[:-1]) for glob in imports)
+
+    laptop = keychain_item_names("lib-20261006-0123456789ab", "laptop")
+    air = keychain_item_names("lib-20261006-0123456789ab", "air")
+    assert all(imported(item) for item in air)
+    assert not any(imported(item) for item in (laptop.token, laptop.read_token))
+
+
+def test_the_air_copier_is_the_laptops_but_for_what_it_runs_and_imports() -> None:
+    differs = {"ExecStart", "ImportCredential", "Description"}
+    laptop = [entry for entry in settings(SERVICE) if entry[1] not in differs]
+    assert [entry for entry in settings(AIR_SERVICE) if entry[1] not in differs] == laptop
+
+
+def test_the_air_timer_probes_hourly_and_catches_up() -> None:
+    assert values(AIR_TIMER, "Timer", "OnCalendar") == ["hourly"]
+    assert values(AIR_TIMER, "Timer", "Persistent") == ["true"]
+    assert not values(AIR_TIMER, "Timer", "Unit")
+    assert values(AIR_TIMER, "Install", "WantedBy") == ["timers.target"]

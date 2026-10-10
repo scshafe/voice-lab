@@ -1585,6 +1585,22 @@ def cli_resolver(answers: list[Any], **changes: Any) -> tuple[TailscaleCliResolv
     return TailscaleCliResolver(**fields), runner
 
 
+@pytest.mark.parametrize(("online", "expected"), [(True, True), (False, False), ("yes", None)])
+def test_the_resolver_says_whether_the_tailnet_sees_the_node_online(
+    online: object, expected: bool | None
+) -> None:
+    """A vault that sleeps (the Air's) is reported offline from ``status``; a value that is not
+    a boolean says nothing, and the identity is checked the same way either way."""
+    status = tailnet_status()
+    status["Peer"]["nodekey:bbb"]["Online"] = online
+    resolver, _ = cli_resolver([completed(status), completed(whois_answer())])
+
+    found = resolver.resolve(ENDPOINT)
+
+    assert found.online is expected
+    assert (found.node_stable_id, found.tags) == (NODE_ID, (TAG,))
+
+
 def test_the_resolver_reads_the_node_out_of_two_recorded_answers() -> None:
     resolver, runner = cli_resolver([completed(tailnet_status()), completed(whois_answer())])
 
