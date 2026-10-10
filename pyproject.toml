@@ -35,6 +35,9 @@ dev = [
   "ruff>=0.11,<1",
   "PySide6-Essentials==6.11.2",
   "cryptography==50.0.1",
+  # The sealing closure exactly as locked (tests/test_storage_sealing.py checks it).
+  "cffi==2.1.1",
+  "pycparser==3.0",
 ]
 
 [project.scripts]
