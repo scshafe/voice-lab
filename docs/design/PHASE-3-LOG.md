@@ -16,12 +16,12 @@ the owner says to cut over; infra `host/` changes stop at the owner's hash appro
 | Step | What | Where | State |
 | --- | --- | --- | --- |
 | 1 | Guard rules for voice-journey's private shapes; import voice-journey into `legacy/voice-journey/` | voice-lab | done, #17 |
-| 2 | Import voice-journey-capture into `apps/desktop/` | voice-lab | in progress |
-| 3 | Port, leaves: paths, lyrics, reclassify, goals, coach | voice-lab | open |
-| 4 | Port, pipeline: index, filter, stt, features, journeys | voice-lab | open |
-| 5 | Port: mirror sender + host access + launcher (`apps/mirror/`) | voice-lab | open |
+| 2 | Import voice-journey-capture into `apps/desktop/` | voice-lab | done, #18 |
+| 3 | Port, leaves: paths, lyrics, reclassify, goals, coach | voice-lab | done, #20 |
+| 4 | Port, pipeline: index, filter, stt, features, journeys | voice-lab | done, #21 |
+| 5 | Port: mirror sender + host access + launcher (`apps/mirror/`) | voice-lab | done, #22 |
 | 6 | Port: watchd (`jobs/`), evidence report, the HTTP surface (`/api/v1`, old paths, `/view/`) | voice-lab | open |
-| 7 | Parity harness (fixture corpus), Node vs Python | voice-lab | open |
+| 7 | Parity harness (fixture corpus), Node vs Python | voice-lab | fixture done (#21); real corpus: owner step |
 | 8 | Serving from the PC (stack, host units, infra) | voice-lab, infra | open |
 | 9 | Runbooks: corpus move, mirror drop move, redirect, Air vault | voice-lab | open |
 | 10 | voice-journey PR #1 carried as a draft branch | voice-lab | open |
@@ -67,3 +67,59 @@ the owner says to cut over; infra `host/` changes stop at the owner's hash appro
 - #17 merged (`ceb9785`). A fresh verify environment resolved pydantic 2.14.0, under which
   strict mypy fails in untouched modules; #17 pins `pydantic==2.13.5` in the dev extra
   (every lock already pins it).
+- #18 (capture import) and #19 (dev pins) merged together (`6839306`). The push run of #17
+  (38008631241) had failed verify on a second drift of the same kind (a fresh environment
+  resolved pycparser 3.11; `test_the_installed_sealing_closure_is_the_locked_one`), so
+  nothing was deployed then; #19 pins `cffi==2.1.1`, `pycparser==3.0` in the dev extra. Run
+  38010353315: verify, deploy, health green; `scshafe-deploy --verify voice-lab 6839306`
+  as `run-voice-lab`: live, containers, witness, tailnet-only all ok.
+- **The port, wave 1** (one agent per module group, each in its own worktree, every JS test
+  translated case for case, the JS module and its tests deleted in the same commit):
+  - `journey/paths.py` (paths.mjs; the chain registry ships in the package as
+    `resources/journey-chains.json`, without `calFile`, §5.4), `journey/jsonio.py` (the
+    Node pipeline's JSON and number rules: `JSON.stringify(p, null, 2)`, `toFixed`,
+    `Math.round`, `String(n)`, checked against node) and `journey/jscompat.py` (every other
+    JavaScript value rule: `Number()`, `String()`, truthiness, `localeCompare` as an ICU
+    key for ASCII, `Date.parse` with V8's local-time rule, V8's `log2`/`log10`, Node's path
+    helpers), consolidated from the ports in one pass;
+  - leaves: `lyrics`, `reclassify`, `coach`, `goals` (24 JS cases);
+  - pipeline: `index` + `corpus` (the server-side drop listing of `host-access.mjs`),
+    `filter`, `stt` (+ the whisper-threads cases), `features` (the extractor moved in as
+    `resources/journey_extract_features.py`, algorithm unchanged, its runtime pins in
+    `requirements/runtimes/journey-analysis.txt`, not hash-locked yet), `journeys`
+    (mulberry32 seeded bootstrap ported bit-exactly);
+  - the mirror sender: `apps/mirror/` (stdlib-only package `voice_lab_mirror`, the C
+    launcher with a fixed interpreter compiled in and only the `mirror` mode, a launchd
+    template, `VOICE_LAB_MIRROR_*` configuration so the drop target (the laptop today, the
+    PC later; the Mini today, the Air later) is a plist change, not a rebuild). Its tests
+    are in pytest's `testpaths`; `scripts/verify` type-checks `apps/mirror/src`.
+  - **Exactness, not tolerance:** `filter`'s frame analysis uses NumPy (the `journey`
+    extra, `numpy==2.5.3`, hash-locked in `requirements/home-host-linux.txt`) with int64
+    sums, which are exact, so every frame value equals the JS bit for bit (0.54 s against
+    Node's 1.67 s for a 5-minute memo); `Math.log10`/`Math.log2` are V8's algorithms
+    (the C library differs in the last bit for about 6% of values); means are summed in
+    JS order (Python's `sum` is compensated). The design expected a float tolerance for
+    the filter (§5.3); none is needed.
+  - Python differs from the JS only in documented corners (each module's docstring):
+    OS error texts, atomic manifest writes, non-ASCII sort order, legacy non-ISO date
+    strings, and malformed inputs where the JS crashed.
+- **Parity harness** (`scripts/journey-parity`, `tests/test_journey_parity.py`): the pinned
+  Node tree (`1f236b5`) and the Python pipeline over one synthetic corpus (41 generated
+  m4a memos, a mirror manifest, a measurement session; real ffmpeg; deterministic fake
+  whisper-cli and analysis worker), every stage twice (fresh and resumed): **14/14 stage
+  runs identical, 124 files compared, 0 differences at tolerance 0**; 20 differences
+  excluded by named rule (wall-clock `updatedAt` stamps no flag pins, and the filter's
+  tool-choice entry, which names the Python implementation). The test skips on the PC
+  runner's shallow checkout (no `1f236b5`); it ran here. The real-corpus mode is the
+  owner's step (runbook).
+- Integration tip verified on the PC: 6166 passed, 137 skipped; 4 failures were the
+  worktree's environment (a venv made before the pins, and without `pip`), all passing
+  after fixing it; build, schema check, guard, `dev check .` clean. Coverage 93% overall,
+  `cole_voice_lab.journey` 99.7%.
+- infra branch `voice-lab-phase3` (draft PR scshafe/infra#2): the provisioning of
+  `journey/` and `memos/`, the drop tool's `pc` layout, the host.conf binds, the Air
+  vault's tailnet tag. **Host tree re-signed: `M0.sha256` =
+  `83464eccd610362c48ffd2c9c65796bf85eba2e77d32c5ebd764698da3c700d7`, waiting for the
+  owner's approval; not installed.**
+- voice-journey: the cutover redirect is draft PR scshafe/voice-journey#4 (do not merge
+  before the go-ahead; hosted CI green).
