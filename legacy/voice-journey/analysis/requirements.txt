@@ -1,0 +1,8 @@
+# Arc 2 feature-extraction stack — pinned for analysis/.venv (Python 3.12).
+# All open-source; see docs/arc-2-feature-stack-proposal.md for rationale
+# and swap candidates. torchcrepe is deliberately deferred (see proposal).
+numpy==2.2.6
+scipy==1.15.3
+librosa==0.11.0
+praat-parselmouth==0.4.5
+soundfile==0.13.1

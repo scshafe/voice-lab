@@ -1,0 +1,31 @@
+node_modules/
+coverage/
+.npm/
+analysis/.venv/
+__pycache__/
+
+# Personal recordings and derived audio must never be committed.
+*.m4a
+*.mp3
+*.wav
+*.aiff
+*.flac
+*.aac
+*.ogg
+*.opus
+*.caf
+audio/
+recordings/
+samples/
+tmp-audio/
+scratch/
+local-artifacts/
+
+# Web SPA build output + deps (the host builds on deploy; repo stays code + manifests)
+web/node_modules/
+web/dist/
+
+# Generated manifests live in the data root ($VOICE_JOURNEY_DATA/manifests) on the
+# server; a local run must not re-add them. Only manifests/chains.json is tracked.
+manifests/*
+!manifests/chains.json

@@ -24,6 +24,8 @@ vault = [
   "cryptography==50.0.1",
 ]
 dev = [
+  # The locks pin 2.13.5; pydantic 2.14 changes TypeAdapter typing under strict mypy.
+  "pydantic==2.13.5",
   "build>=1.2,<2",
   "setuptools==80.9.0",
   "wheel==0.46.3",
@@ -69,6 +71,9 @@ packages = ["cole_voice_lab"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# legacy/voice-journey/ is the imported Node tree being ported (design §5.2, phase 3);
+# its one Python file moves into the package, under these rules, when it is ported.
+extend-exclude = ["legacy"]
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "UP"]
