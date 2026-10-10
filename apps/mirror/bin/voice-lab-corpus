@@ -1,0 +1,8 @@
+#!/bin/sh
+# The read-only corpus seam (describe, list, metadata, read-handle) from this checkout.
+# Reading the Voice Memos container needs a Full Disk Access grant for the terminal
+# that runs it. Needs Python 3.12 or newer (VOICE_LAB_MIRROR_PYTHON, default python3).
+set -eu
+
+here=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+PYTHONPATH="$here/src" exec "${VOICE_LAB_MIRROR_PYTHON:-python3}" -m voice_lab_mirror.host_access "$@"

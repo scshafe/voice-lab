@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs the mirror from this checkout without installing it: manual runs and dry runs.
+# launchd does not use this script: the launcher spawns the installed venv's Python
+# directly (README.md, "Install on a Mac"). Needs Python 3.12 or newer
+# (VOICE_LAB_MIRROR_PYTHON, default python3).
+set -eu
+
+here=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+PYTHONPATH="$here/src" exec "${VOICE_LAB_MIRROR_PYTHON:-python3}" -m voice_lab_mirror "$@"

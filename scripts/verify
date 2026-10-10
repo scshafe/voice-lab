@@ -13,6 +13,8 @@ cd "$repo_dir"
 .venv/bin/ruff format --check .
 .venv/bin/ruff check .
 .venv/bin/mypy src/cole_voice_lab
+# The macOS mirror sender is its own stdlib-only package (apps/mirror, design §5.2).
+.venv/bin/mypy apps/mirror/src
 # The native app (Swift, Core Audio, launchd) builds and runs only on macOS. On
 # another host (the Arch PC) everything else runs, and the tests that need macOS
 # itself skip with the reason named (tests/macos_only.py; pytest -ra lists them).

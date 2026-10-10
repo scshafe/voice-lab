@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.scshafe.voice-lab.mirror: pushes the Voice Memos corpus into the voice-lab drop
+  every 15 minutes (design VOICE-PLATFORM.md 5.5). Template: install per
+  apps/mirror/README.md, which fills the @...@ placeholders. It runs the
+  Full-Disk-Access-granted launcher in `mirror` mode.
+
+  The target, key, rsync binary and state directory are configuration: the
+  launcher passes this environment on to the mirror, so pointing the mirror at
+  another drop (the laptop today, the PC after the cutover) is an edit here and a
+  reload, with no rebuild and no new grant. Logs carry counts only; exit 3 means
+  the drop was locked and the next period retries.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.scshafe.voice-lab.mirror</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@LAUNCHER@</string>
+    <string>mirror</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>VOICE_LAB_MIRROR_DEST</key>
+    <string>@DEST@</string>
+    <key>VOICE_LAB_MIRROR_SSH_KEY</key>
+    <string>@SSH_KEY@</string>
+    <key>VOICE_LAB_MIRROR_RSYNC</key>
+    <string>@RSYNC@</string>
+    <key>VOICE_LAB_MIRROR_STATE</key>
+    <string>@STATE_DIR@</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>@LOG@</string>
+  <key>StandardErrorPath</key>
+  <string>@LOG@</string>
+</dict>
+</plist>
