@@ -882,6 +882,22 @@ phase (docs/design/PHASE-3-LOG.md).
   PC serves the read-only web view of §6.5 (summaries only, no audio, D-025) from phase
   3; the SPA stays on the laptop until the cutover and is not imported. The acceptance
   item "the four SPA views work from the PC" reads "`/view/` works from the PC".
+- **The job runner has no network, so no ntfy.** voice-journey's watcher posted
+  notifications to ntfy from inside the server; on the PC it is a network-less host unit
+  (§3.2), so notifications are files in an outbox (`state/journey/notify-outbox/`) for a
+  sender with tailnet egress, which phase 3 does not build. ntfy remains possible where a
+  URL is configured.
+- **One state directory for the journey.** The API's verdicts, goals and referee state and
+  the watcher's state live in `/data/voice-lab/state/journey/` (the API's only writable
+  mount besides `incoming/`); measurement sessions are read from the lab's `raw/`
+  (`VOICE_JOURNEY_MEASUREMENT_DIR`), not from a `corpus/measurement/` copy.
+- **The capture client's compatibility path** maps a voice-journey measurement session
+  onto a capture package the unchanged validator accepts (suite
+  `voice-journey-measurement`, subject `cole-self`, the `room-silence` segment as room
+  tone). The separate client writes no D-021 ledger entry; that closes in phase 4.
+- **No float tolerance.** §5.3 expected one for the filter's features; the port is
+  bit-identical (exact integer sums, V8's `log2`/`log10`, sums in JavaScript's order), and
+  the fixture parity has 0 differences at tolerance 0.
 
 ## D-036 — The Air vault as built
 

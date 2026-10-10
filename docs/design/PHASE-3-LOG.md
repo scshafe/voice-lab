@@ -20,11 +20,11 @@ the owner says to cut over; infra `host/` changes stop at the owner's hash appro
 | 3 | Port, leaves: paths, lyrics, reclassify, goals, coach | voice-lab | done, #20 |
 | 4 | Port, pipeline: index, filter, stt, features, journeys | voice-lab | done, #21 |
 | 5 | Port: mirror sender + host access + launcher (`apps/mirror/`) | voice-lab | done, #22 |
-| 6 | Port: watchd (`jobs/`), evidence report, the HTTP surface (`/api/v1`, old paths, `/view/`) | voice-lab | open |
+| 6 | Port: watchd (`jobs/`), evidence report, the HTTP surface (`/api/v1`, old paths, `/view/`), the intake compatibility path | voice-lab | done, #24, #25, #27, #28; JS tree emptied #29 (but `capture.mjs`, gated) |
 | 7 | Parity harness (fixture corpus), Node vs Python | voice-lab | fixture done (#21); real corpus: owner step |
-| 8 | Serving from the PC (stack, host units, infra) | voice-lab, infra | open |
-| 9 | Runbooks: corpus move, mirror drop move, redirect, Air vault | voice-lab | open |
-| 10 | voice-journey PR #1 carried as a draft branch | voice-lab | open |
+| 8 | Serving from the PC (stack, host units, infra) | voice-lab, infra | code deployed; journey binds wait for infra#2 (owner hash approval); draft #23 |
+| 9 | Runbooks: corpus move, mirror drop move, redirect, Air vault | voice-lab | done, `PHASE-3-RUNBOOKS.md`; Air vault code #26 |
+| 10 | voice-journey PR #1 carried as a draft branch | voice-lab | draft PR (gated on a real UMIK-1 session) |
 
 ## Entries
 
@@ -123,3 +123,78 @@ the owner says to cut over; infra `host/` changes stop at the owner's hash appro
   owner's approval; not installed.**
 - voice-journey: the cutover redirect is draft PR scshafe/voice-journey#4 (do not merge
   before the go-ahead; hosted CI green).
+- #20–#22 merged (`8e65585`), deployed: run 38013628095 green (verify on the PC runner,
+  deploy, health); `--verify` all ok; the sealed release (`61d70e25…`) carries numpy 2.5.3.
+  The stacked PRs #21/#22 were merged locally; GitHub marks them merged after their base
+  branches were fast-forwarded (lesson: open each PR against `main` and merge in order).
+- **Wave 2** (each agent in its own worktree; all JS cases translated):
+  - `jobs/watch.py` (watchd, 9 cases): the job runner. A one-shot tick for a systemd timer
+    (the two-agreeing-scans rule persists across runs in the watch state), stages run as
+    `python -m cole_voice_lab.journey.<stage>`, `voice-lab journey watch|<stage>`; the
+    runner has no network, so notifications go to a file outbox
+    (`state/journey/notify-outbox/`, `voice-lab.journey-notification.v1`) for a sender that
+    does not exist yet (ntfy stays possible where a URL is configured). Units
+    `deploy/host/voice-lab-jobs.{service,timer}` (no network, every 5 minutes, inert until
+    `/data/voice-lab/journey/manifests` and the owner's `/etc/voice-lab/journey.env`
+    exist); infra's validator (`validate_units` of the installed `scshafe-host-release`)
+    accepts the set.
+  - `api/journey_intake.py` (intake.mjs, 14 cases): voice-journey's `/api/intake/...` as a
+    compatibility path. Staged under `incoming/`, re-verified on finalize, converted into a
+    capture package the **unchanged** validator accepts (suite
+    `voice-journey-measurement`, subject `cole-self`, `room-silence` as room tone, the rest
+    `calibration`), published into `raw/` by the intake publisher with a v2 receipt; the
+    imported client's own upload code was run against it (cut off, resumed, accepted,
+    idempotent). The index lists measurement sessions from `raw/`.
+    Open: the session's measurement metadata (input level, distance, segment labels) stays
+    in `incoming/.journey-uploads/<id>/session.json`, not in `raw/` or the vault classes.
+  - `journey/browser.py` + `api/journey_routes.py` (corpus-browser, 34 + 2 cases): the
+    `/api/v1` resources of §3.4 and voice-journey's unversioned paths (same bytes as the JS
+    on 18 paths × 4 fixtures), bearer-checked, schemas generated; SPA routes 308 to `/view/`.
+  - `view/` (§6.5) and `view/report.py` (evidence-report, 4 cases, byte-identical to the
+    JS): summary, recordings, journeys, trends, goals, report; no scripts, no audio,
+    transcript or lyric; the forwarded identity must be the allowed subject (or a bearer).
+  - The Air vault (D-036): the resume journal, `--if-older-than`/`--skip-unreachable`,
+    `vault staleness`, the `memos` class, the per-destination tag, the Air's units and
+    launchd server templates. Tested with synthetic interruptions only.
+  - `legacy/voice-journey/` emptied (#29) but for `capture.mjs` and its test, which
+    voice-journey's draft #1 retires; voice-journey's design docs moved to `docs/journey/`.
+- Verified on the PC, the batch's combined tree (`da4613d`, before #28/#29): `scripts/verify`
+  6427 passed, 137 skipped, exit 0.
+- Prepared, not merged (each needs the owner):
+  - scshafe/infra#2 (draft): the provisioning of `journey/` and `memos/`, the drop's `pc`
+    layout, `host.conf` binds, `tag:voice-lab-vault-air`; **host tree `M0.sha256` =
+    `83464eccd610362c48ffd2c9c65796bf85eba2e77d32c5ebd764698da3c700d7`**;
+  - voice-lab #23 (draft): the stack serves journey and `/view/` (binds, `serve --journey`);
+    infra's validator refuses it until infra#2's `host.conf` is on the PC;
+  - scshafe/voice-journey#5 (draft): freeze the laptop's watcher (cutover step 1);
+  - scshafe/voice-journey#4 (draft): the laptop stack becomes a 308 redirect to
+    `voice-lab.<tailnet>` (the door stays with every route skipping auth, because the
+    laptop's `host.conf` says `DOOR=pocket-id`; no infra change needed);
+  - voice-lab draft: voice-journey #1 carried (`GET /api/v1/chains`, the capture module's
+    removal, the end of `legacy/`), gated on a real UMIK-1 session.
+- Runbooks: [PHASE-3-RUNBOOKS.md](PHASE-3-RUNBOOKS.md) (host preparation, the mirror drop
+  fed in parallel from the Mini, the data move, real-corpus parity, serving, cutover,
+  rollback, the Air as sender and vault, the 14- and 90-day removals). Facts used, read
+  only: the laptop's `/srv/voice-journey` holds 19 MB of manifests, 90 MB of artifacts,
+  no measurement sessions, the 1.2 GB phone drop and the 1.5 GB model; the Mini's sender
+  is launchd job `ai.voice-journey.mirror` (FDA launcher, `VOICE_JOURNEY_MIRROR_SSH_KEY`;
+  the Node mirror also reads `VOICE_JOURNEY_MIRROR_DEST` and `_STATE`).
+
+## Open items and the owner's steps
+
+1. **Approve infra's host tree** `83464ecc…00d7` (infra#2), then runbook §A (stage, provision,
+   merge infra#2, pull `~/infra`, whisper-cpp, the model, the analysis runtime).
+2. Runbook §B: the PC's drop with the Mini's key and a second Mini launchd job (dual feed).
+3. The go-ahead for §C (freeze: voice-journey#5; the transfer approval; the copy), then §D
+   (real-corpus parity, recorded here as digests and counts), §E (merge #23; the capture
+   client reconfigured; **one real UMIK-1 session**), §F (cutover: `journey.env`, the Mini's
+   laptop job off, voice-journey#4), §G is the rollback.
+4. **The Air** (§H): the iCloud Voice Memos sync, the mirror sender, the vault (its install
+   steps, the tailnet policy, then `HOST_EGRESS_TAILNET`), the sleep/resume and away-from-home
+   drill.
+5. Still open from phase 2: the real pilot session from the Air; the recovery sheet.
+6. Follow-ups (not blocking): a sender for the notification outbox; the capture session's
+   measurement metadata into `raw/`/provenance; `/data/voice-lab/journey` and
+   `state/journey` (verdicts, goals: human judgements) are not in a snapshot or a vault
+   class yet; hash-lock `requirements/runtimes/journey-analysis.txt`; Q-4's separate view
+   stack.
