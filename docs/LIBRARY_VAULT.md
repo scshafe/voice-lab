@@ -140,14 +140,14 @@ Keychain item and the sheet are lost, what is in the vault is lost.**
 
 ## What is copied, and what stays on the Mac
 
-`library_classification.py` holds the one table that decides, as data: 74 ordered rules, each
+`library_classification.py` holds the one table that decides, as data: 78 ordered rules, each
 with a pattern, a disposition, the owner that writes those files, a reason and an example the
 rule must classify. The first matching rule wins, and a rule may shadow a later one only where
 it says so. A path no rule covers refuses the whole pass with `STORAGE.PROTOCOL` naming the
 path — a new writer's files must be classified before anything can be copied. A test proves
 every path in the fixture libraries is classified exactly once and every rule is reachable.
 
-Five copied classes:
+Six copied classes:
 
 | Class | What it holds |
 | --- | --- |
@@ -156,9 +156,23 @@ Five copied classes:
 | `recordings` | native sealed originals, capture sessions once READY, rejected takes, `raw/**` and `references/**` |
 | `derived-edits` | rendered edits under `derived/recording-edits/**` |
 | `training` | `derived/datasets/**` and finished `derived/finetune/<run>/**`, including its archive records |
+| `memos` | the phone's Voice Memos drop (on the PC `/data/voice-lab/memos/phone/`, outside the asset root), named `memos/<path below the drop>`; rsync's hidden temporaries and `.rsync-partial/` stay behind |
 
 `training` is the separate opt-in: a binding copies it only when it lists the class, and a
-tailnet destination's approval must cover it too. The run's hard-linked
+tailnet destination's approval must cover it too. `memos` is opted in the same way (design
+§4.3, D-023: iCloud is not a backup). The drop is not part of the asset root, so a push of a
+destination that copies `memos` is given the drop with `--memos-root` (and refuses to run
+without it, or with it for a destination that does not copy memos); `MemosSource` reads it
+like any other owner — every component opened without following a link, every file a regular
+file with one link that holds still while read — except that the files belong to the
+mirror's account and are readable through the `voice-lab` group, so they need not be this
+user's or private. A symbolic link or special file in the drop refuses the owner, and the
+generation keeps the memos of the one before. A `memos/` path inside the asset root is
+refused (`STORAGE.PROTOCOL`). A restore never writes a memo into the library: `--memos-target`
+names an empty root of its own (apart from `--target`), where `memos/<path>` is written as
+`<path>` (0600, directories 0700), published after the library; without it the memos are
+not restored (`skipped_memos`), and a drill without it fails, because every memo is then
+missing. The run's hard-linked
 `checkpoints/pretrained_*.safetensors` is never uploaded; it is recorded as a `pin` entry
 naming the run's `runtime.pretrained_sha256`, and a restore re-links it from a runtime.
 
@@ -543,11 +557,16 @@ voice-lab vault approve --reviewed-approval-sha256 D --i-approve-this-destinatio
 voice-lab vault bind --backend … --endpoint … --namespace … --classes … [--replace --reset-state]
 voice-lab vault show [--json]                   # binding, approval, key/token presence, state
 voice-lab vault status [--json]                 # one line for the terminal; runs no pass
-voice-lab vault push [--dry-run] [--full]       # copy the current files as the next generation
+voice-lab vault staleness [--json] [--check] [--stale-after DEST=DURATION …]
+voice-lab vault push [--dry-run] [--full] [--memos-root DIR]
+                     [--if-older-than DURATION] [--skip-unreachable]
 voice-lab vault verify [--generation N] [--path P …] [--class C …]
+                       [--if-unverified] [--skip-unreachable]
+voice-lab vault approve … [--tag tag:voice-lab-vault[-SUFFIX]]
 voice-lab vault restore --target DIR (--accept-latest | --generation N --manifest-sha256 D)
-                                     [--runtime-root P]
+                                     [--runtime-root P] [--memos-target DIR] [--tag T]
 voice-lab vault drill --target DIR (--accept-latest | --generation N --manifest-sha256 D)
+                                   [--memos-target DIR]
 voice-lab vault audit --access-log FILE [--namespace N]
 voice-lab finetune archive --run R [--remove-local-copy]
 voice-lab finetune restore-run --run R [--runtime-root P]
@@ -570,7 +589,29 @@ voice-lab finetune restore-run --run R [--runtime-root P]
   route can restore that pair only while it matches the current head. Historical
   selection needs the bound-library route and the required local manifest chain;
   a first-push pair alone cannot recover an older generation after the head advances.
-- `verify` exits 1 on any missing or mismatched entry, or an unknown requested path.
+- `verify` exits 1 on any missing or mismatched entry, or an unknown requested path. A
+  verify of the whole head (no generation, path or class named) that finds every entry is
+  recorded in `checked.json`; `--if-unverified` then skips a generation already verified.
+- `push --if-older-than 7d` does nothing (exit 0, `"outcome": "skipped"`, `"skipped":
+  "fresh"`) while the destination's copy was found current less than that long ago; it reads
+  only this host's records. `--skip-unreachable` (push and verify) first runs the node
+  identity check every copy makes — the answering node's StableID, the approval's tag, its
+  DNS name and the tailnet suffix, exactly as the client checks them — and then, if the
+  tailnet reports the node offline or the head cannot be read for a reason that may pass
+  (`STORAGE.UNAVAILABLE`, `STORAGE.TIMEOUT`), does nothing and exits 0 with `"skipped":
+  "unreachable"`. A node that is not the approved one is never skipped: that is
+  `STORAGE.IDENTITY_MISMATCH`, exit 2. Without the flag an unreachable vault fails as before,
+  so `vault push --destination air` by hand pushes at once or says why it cannot.
+- `staleness` reads only local records and prints, per destination, the newest complete
+  generation, when it was created, when a push last found it current (`current_at`: the push
+  that stored it, or a later one that found nothing to copy), when it was last verified, its
+  age and whether it is stale. `air` is stale after 14 days, and any destination after its
+  `--stale-after` (`laptop=3d`); a destination with a threshold that was never copied is
+  stale. Exit 0, or 1 with `--check` when one is stale (the health check). Durations are a
+  whole number and one of `s`, `m`, `h`, `d`.
+- `approve --tag` names the vault node's tag: `tag:voice-lab-vault` (the default, the
+  laptop's) or `tag:voice-lab-vault-<suffix>` (the Air's is `tag:voice-lab-vault-air`); no
+  other tag is accepted. `restore --tag` does the same for a restore by endpoint.
 - `drill` is the restore drill (design §4.3) in one command: a `restore` through the bound
   destination into an empty target, then every restored file read back from disk and
   re-hashed against the authenticated manifest (size, SHA-256 and mode). It prints the
@@ -606,6 +647,8 @@ everything else is one destination's, under `destinations/<destination>/` (D-034
 | `destinations/<d>/manifests-superseded-<n>/` | 0700 | manifest copies `bind --reset-state` moved aside |
 | `destinations/<d>/requests/<UTC date>.jsonl` | 0600 | one `VaultRequestRecord` per request attempt; no token |
 | `destinations/<d>/.push.lock` | 0600 | held by one push to `<d>` at a time; no lab writer takes it |
+| `destinations/<d>/resume.jsonl` | 0600 | `ResumeJournalEntry` lines: the sealed pieces of the push in progress; removed when a generation is stored |
+| `destinations/<d>/checked.json` | 0600 | `ReplicationCheck`: when the newest generation was last found current, and last verified; replaced atomically |
 
 Each destination's chain is D-020's, unchanged: its own generation numbers, head, rollback
 and fork checks. Generation 5 of the laptop and generation 5 of the Air are unrelated.
@@ -647,7 +690,7 @@ unit's credential directory while it runs.
 **The copier unit.** `deploy/host-manual/voice-lab-vault-laptop.service` runs
 `vault push --destination laptop`, then `vault verify --destination laptop`, as `voice-lab`.
 Each destination has a fixed-name pair (infra's host-unit validator refuses template units
-for now); the Air's, `voice-lab-vault-air.*`, comes with phase 3. The validator also refuses
+for now); the Air's is `voice-lab-vault-air.*` ("The Air" below). The validator also refuses
 `ImportCredential=`, so the runner lane does not install the pair: it is installed by hand
 (`deploy/host-manual/README.md`) until infra has a rule for credentials. It
 imports `private.cole.voice-lab.vault.*` (the key) and
@@ -660,6 +703,59 @@ A scratch directory lives under `tmp/.vault-<hex>/` — a pass makes one for the
 database's backup, a push for its spooled copy — and is removed once consumed. Making one
 first sweeps the scratch directories a crash left behind, which are the ones whose
 `.scratch.lock` no process still holds.
+
+## The Air: resume, cadence and staleness (phase 3)
+
+The MacBook Air keeps the offsite copy (design §4.3, D-023). It sleeps and travels, so its
+copy is built for intermittent reach; everything here applies to every destination, and is
+harmless for the laptop, whose nightly push simply never needs it.
+
+**Resume.** As each sealed piece of a file is stored, `push` appends a line to
+`destinations/<d>/resume.jsonl` (the design wrote `provenance/vault/air/resume.jsonl`; as
+built it sits with the destination's other records, D-034): the plaintext file's SHA-256 and
+size, the piece's offset, the chunk size it was cut with, the piece's own SHA-256 and size,
+and the sealed blob's ref (ciphertext SHA-256 and size), with the vault's destination digest.
+The line is flushed to disk before the next piece is sealed. The next push — even one whose
+plan has grown — reads the journal and, for every new file whose digest and size are
+unchanged, reuses a journalled piece only after reading its blob back through the sealed
+store (which checks the ciphertext digest and size and authenticates it) and finding that it
+decrypts to exactly the bytes at that offset of the file being sealed now. A piece whose blob
+is gone or does not open, a piece of a file that changed, or one cut with another chunk size
+is sealed and sent again; a vault that cannot answer the read-back stops the push, as any
+store failure does. `--full` reuses nothing. The head still moves only once the whole
+generation is stored, so an interrupted push leaves the previous generation intact and
+current, and `verify` still proves presence by download and decryption. A push that stores a
+generation, or finds the library unchanged, removes the journal. The journal is a hint, not
+evidence: a torn last line (a crash mid-write) or lines for another library or vault are
+dropped, and the journal rewritten without them, before anything is appended; an unsafe
+journal (a link, not private) is refused like every record here.
+
+**Cadence.** `voice-lab-vault-air.timer` starts `voice-lab-vault-air.service` hourly
+(`Persistent=true`). Its push runs with `--if-older-than 7d --skip-unreachable --memos-root
+/data/voice-lab/memos/phone`: under a week since the copy was last found current, nothing at
+all happens; otherwise the probe checks the node's identity and, when the Air is asleep or
+away and offline, the run ends successfully having sent nothing. When it answers, the newest
+state is pushed (or found current); an interrupted push resumes in the next hourly run. Its
+verify runs with `--if-unverified --skip-unreachable`, so each generation is downloaded and
+re-hashed once. The operator can push at once with `vault push --destination air
+--memos-root …`. The first, full seeding is a one-off by hand at home with the Air awake
+(`deploy/vault/macos/README.md`, step 11).
+
+**Staleness.** A copy is as old as the last time a push found it holding the library
+(`checked.json`'s `current_at`; a destination pushed before that record existed counts from
+`state.json`'s `updated_at`), so an unchanged library neither ages its copy nor makes the
+hourly run re-read the whole library once a week has passed. `vault staleness --json` reports
+every destination and flags the Air's copy after 14 days, for the health check.
+
+**The Air's tag.** The Air's vault is its own node, `voice-lab-vault-air`, with
+`tag:voice-lab-vault-air`; its approval names that tag (`vault approve --tag
+tag:voice-lab-vault-air`), and the copier checks it with the StableID and DNS name before
+every session. The approval's `tag` accepts only the vault family (`tag:voice-lab-vault` and
+`tag:voice-lab-vault-<suffix>`); the schema stays `v2`, and an approval written before the
+tag could be chosen (the laptop's on the PC) parses to the same bytes, so the digest its
+binding pins is unchanged. The server side on the Air (a LaunchDaemon from a sealed install,
+under a dedicated non-admin account, behind a second userspace `tailscaled`) and the owner's
+install steps are in `deploy/vault/macos/README.md`.
 
 ## How to try it locally
 
@@ -703,6 +799,11 @@ Steps 12–14 provide the sidebar line and archived Speak blocker, the synthetic
 verifier, D-020 and the Mac operator procedures. Container verification uses a local
 loopback test namespace only; it starts no Tailscale sidecar and proves no real peer,
 Keychain or deployment behavior.
+
+Phase 3 adds the Air (D-036): the account, sealed install, LaunchDaemons and node on the
+Air, the Air's tokens and policy grant, its approval with `tag:voice-lab-vault-air` and its
+binding with `memos`, the first seeding at home, the copier pair installed by hand on the PC,
+and the drill fetched while the Air is away (`deploy/vault/macos/README.md`).
 
 Phase 2 (D-023, D-034) still requires Cole: the laptop vault stack (the `deploy/vault/`
 templates on the laptop), the library key with its recovery sheet and the laptop's tokens

@@ -39,3 +39,29 @@ grant overrides it. Check the admin console's policy preview/tests for:
 Confirm those cases against the live policy before the first upload. Changing
 the Mac's tailnet address requires updating the host alias. Tagged node ownership
 is bound to this dedicated tag, not to a reusable shared `tag:container` key.
+
+## The Air's vault (phase 3)
+
+The Air's vault is its own node, `voice-lab-vault-air`, with its own tag, so the PC's grant
+to it is separate from the laptop's and either can be removed alone. In infra's
+`tailnet/policy.hujson` (the live policy since phase 3 of the toolshed split), with the
+PC's node as the source the laptop vault's grant already uses:
+
+```jsonc
+"tagOwners": {
+  "tag:voice-lab-vault-air": ["<cole's tailnet login>"],
+},
+"grants": [
+  {
+    "src": ["<the PC's node or tag, as in the laptop vault's grant>"],
+    "dst": ["tag:voice-lab-vault-air"],
+    "ip": ["tcp:443"],
+  },
+],
+```
+
+The same rules and checks as above hold, for the Air's tag: no grant has it as its source,
+no SSH, no subnet route, exit node or Funnel; the PC reaches TCP 443 and nothing else; an
+ordinary peer is denied. The Air's own node and its user's grants are unchanged. The
+approval for the Air names `tag:voice-lab-vault-air` (`vault approve --tag`), and the PC's
+copier checks it with the node's StableID and DNS name before every session.
