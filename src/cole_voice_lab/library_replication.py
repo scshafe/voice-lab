@@ -2074,6 +2074,12 @@ def library_sources() -> tuple[ReplicationSource, ...]:
             private=False,
         ),
         RecordTreeSource(
+            "host-transfers",
+            frozenset({"host-transfers"}),
+            (ScanRoot("provenance/host-transfers"),),
+            private=False,
+        ),
+        RecordTreeSource(
             "lab-approvals",
             frozenset(
                 {

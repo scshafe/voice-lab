@@ -307,7 +307,7 @@ a requested path names no entry.
 - **Modes.** All ten asset directories are created. Files are written 0600, fsynced, checked
   against their digest, then given the entry's mode (0400 or 0600); directories under a
   read-only tree (`raw/`, `references/`, `derived/datasets/`, `derived/transfer-plans/`,
-  `provenance/pilot-gates/`) become 0500, all others 0700.
+  `provenance/pilot-gates/`, `provenance/host-transfers/`) become 0500, all others 0700.
 - **Pins.** A pin entry is hard-linked (or copied) from `--runtime-root` only when the file
   there has the pinned digest; otherwise it is reported missing and the rest is still restored.
 - **`provenance/vault/**` is never written.**
