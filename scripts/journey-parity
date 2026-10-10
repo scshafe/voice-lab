@@ -1,0 +1,1657 @@
+#!/usr/bin/env python3
+"""Parity harness: the pinned Node journey pipeline against its Python port (design §5.3).
+
+Runs every pipeline stage (index, filter, stt, lyric, reclassify, features, journeys:
+``buildStages`` of voice-journey's ``src/watchd.mjs``) twice over two identical copies of
+one data root (the ``VOICE_JOURNEY_DATA`` layout): once with Node and the voice-journey
+tree at the pinned import commit (``git archive 1f236b5 legacy/voice-journey``), once with
+``python -m cole_voice_lab.journey.<stage>``. Both runs use the same tool binaries
+(``FFMPEG_BIN``, ``WHISPER_CPP_BIN``, ``WHISPER_CPP_MODEL``, ``VOICE_JOURNEY_PYTHON``, the
+feature worker), the same approval text and the same pinned timestamps
+(``--generated-at``, ``--reclassified-at``, ``--analyzed-at``). The two runs use the same
+absolute data-root path one after the other, so every path a manifest records is the same.
+
+After each stage the generated manifests that stage changed are compared, and at the end
+every derived artifact (transcripts, feature detail): byte equality first; if the bytes
+differ, a structural JSON comparison (key sets, key order, array lengths, types, values;
+numbers within the absolute ``--float-tolerance``, by default 0, i.e. exact). A few paths
+are known not to be comparable (wall-clock fields no flag pins, the filter's
+self-description); they are listed in the report with the reason and counted apart.
+
+The report is JSON on standard output (or ``--out``): per stage the exit codes and
+timings, per file the two SHA-256 digests and the count of differences by JSON path. It
+never carries content: no values, no transcript text, no recording file names. Array
+indices are written ``[*]``, object keys that are not schema keys (keys that do not occur
+in the Node or Python source) are written ``<key>``, and derived-artifact file names are
+replaced by a hash of the name.
+
+Modes:
+
+``--fixture`` (the default) builds a synthetic corpus in a temporary directory: ffmpeg
+``lavfi`` audio only (melodies with vibrato, chords, noise, speech-like bursts, silence),
+AAC in ``.m4a`` like Voice Memos with ``YYYYMMDD HHMMSS-<8 hex>.m4a`` names over several
+years, a mirror manifest, a measurement session, and two rounds (a second sync adds takes
+and drops one from the mirror listing). ffmpeg is real; ``whisper-cli`` and the analysis
+worker are deterministic fakes written into the temporary directory (the report says so).
+``--show-values`` adds concrete paths and both values of the first differences (synthetic
+data only).
+
+``--data-root PATH --approval TEXT`` (owner-run, real corpus): reads the data root read
+only. The phone drop and the measurement sessions are referenced in place
+(``VOICE_JOURNEY_CORPUS_ROOT``, ``VOICE_JOURNEY_MEASUREMENT_DIR``, else
+``PATH/corpus/phone`` and ``PATH/corpus/measurement``); only the generated manifests and
+the transcript and feature stores are copied, into a private (0700) temporary directory
+that is removed at the end, also on failure (``--fresh`` copies nothing and recomputes
+everything). The tools come from the environment (the model defaults to
+``PATH/models/ggml-medium.bin``, the analysis python to
+``PATH/runtimes/analysis/bin/python``, the worker is the package's). Only the report is
+printed; stage error output is discarded.
+
+Exit codes: 0 parity (no unexpected difference, every stage ran on both sides), 1
+differences or a failed stage, 2 a refused invocation.
+"""
+
+from __future__ import annotations
+
+import argparse
+import calendar
+import contextlib
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from types import FrameType
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PINNED_COMMIT = "1f236b5"
+NODE_TREE = "legacy/voice-journey"
+REPORT_SCHEMA = "voice-lab.journey-parity-report.v1"
+DEFAULT_TIMESTAMP = "2026-01-01T00:00:00.000Z"
+FIXTURE_APPROVAL = "journey-parity fixture: synthetic audio only"
+GENERATED_MANIFESTS = (
+    "recording-index.json",
+    "filtering-sample.json",
+    "filter-results.json",
+    "full-corpus-filter-results.json",
+    "local-stt-transcripts.json",
+    "local-lyric-indicators.json",
+    "local-voice-features.json",
+    "song-journeys.json",
+)
+ARTIFACT_DIRS = ("stt-transcripts", "voice-features")
+MAX_EXAMPLES = 40
+SIDES = ("node", "python")
+
+
+class ParityError(Exception):
+    """A refused invocation or an environment the harness cannot run in."""
+
+
+# --------------------------------------------------------------------------- stages
+
+
+@dataclass(frozen=True)
+class Stage:
+    key: str
+    node_script: str
+    python_module: str
+    args: tuple[str, ...]
+
+
+def build_stages(
+    *, corpus_root: str, measurement_root: str, approval: str, timestamp: str, worker: str
+) -> tuple[Stage, ...]:
+    """watchd.mjs ``buildStages`` with the timestamps pinned and the worker named."""
+    audio = ("--corpus-root", corpus_root, "--approval", approval, "--generated-at", timestamp)
+    return (
+        Stage(
+            "index",
+            "index-recordings.mjs",
+            "index",
+            (
+                "--corpus-root",
+                corpus_root,
+                "--measurement-root",
+                measurement_root,
+                "--generated-at",
+                timestamp,
+            ),
+        ),
+        Stage("filter", "filter-proof.mjs", "filter", ("analyze-index", *audio)),
+        Stage("stt", "local-stt.mjs", "stt", ("transcribe-index", *audio)),
+        Stage("lyric", "lyric-indicators.mjs", "lyrics", ("analyze", "--generated-at", timestamp)),
+        Stage(
+            "reclassify", "reclassify.mjs", "reclassify", ("apply", "--reclassified-at", timestamp)
+        ),
+        Stage(
+            "features", "features.mjs", "features", ("extract-index", *audio, "--worker", worker)
+        ),
+        Stage("journeys", "journeys.mjs", "journeys", ("analyze", "--analyzed-at", timestamp)),
+    )
+
+
+def stage_command(side: str, stage: Stage, *, node: str, tree: Path, python: str) -> list[str]:
+    if side == "node":
+        return [node, str(tree / "src" / stage.node_script), *stage.args]
+    return [python, "-B", "-m", f"cole_voice_lab.journey.{stage.python_module}", *stage.args]
+
+
+# ------------------------------------------------------------------- comparison
+
+
+@dataclass(frozen=True)
+class IgnoreRule:
+    file: str
+    path: str
+    reason: str
+
+    def matches(self, file: str, general: str) -> bool:
+        return file == self.file and re.fullmatch(self.path + r"(?:[.\[].*)?", general) is not None
+
+
+IGNORE_RULES = (
+    IgnoreRule(
+        "manifests/full-corpus-filter-results.json",
+        r"\$\.updatedAt",
+        "wall clock: filter-proof.mjs sets updatedAt to the current time; no flag pins it",
+    ),
+    IgnoreRule(
+        "manifests/local-stt-transcripts.json",
+        r"\$\.updatedAt",
+        "wall clock: local-stt.mjs sets updatedAt to the current time; no flag pins it",
+    ),
+    IgnoreRule(
+        "manifests/local-lyric-indicators.json",
+        r"\$\.sourceTranscripts\.updatedAt",
+        "copy of the transcript manifest's wall-clock updatedAt",
+    ),
+    IgnoreRule(
+        "manifests/full-corpus-filter-results.json",
+        r"\$\.reclassification\.sources\.results\.updatedAt",
+        "reclassify.mjs records the filter results' wall-clock updatedAt",
+    ),
+    IgnoreRule(
+        "manifests/local-voice-features.json",
+        r"\$\.sourceResults\.updatedAt",
+        "copy of the filter results' wall-clock updatedAt",
+    ),
+    IgnoreRule(
+        "manifests/full-corpus-filter-results.json",
+        r"\$\.toolChoices\[\*\]\.(?:name|version|notes)",
+        "deliberate (filter.py docstring): the DSP tool choice names the Python implementation",
+    ),
+)
+
+
+@dataclass
+class Difference:
+    general: str
+    concrete: str
+    kind: str
+    node: Any = None
+    python: Any = None
+
+
+@dataclass
+class Comparison:
+    differences: list[Difference] = field(default_factory=list)
+    tolerated: int = 0
+
+
+_SAFE_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_YEAR_KEY = re.compile(r"(?:19|20)\d\d(?:-Q[1-4])?|unknown")
+_SOURCE_TOKENS = (
+    re.compile(r"""["'`]([A-Za-z_][A-Za-z0-9_]*)["'`]"""),
+    re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*:"),
+    re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)\b"),
+)
+
+
+def schema_keys(sources: Sequence[Path]) -> frozenset[str]:
+    """Identifiers in key positions (quoted, before a colon, after a dot) of the code."""
+    keys: set[str] = set()
+    for source in sources:
+        text = source.read_text(encoding="utf-8")
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+        lines = [re.sub(r"(?:^|\s)(?://|#).*$", "", line) for line in text.splitlines()]
+        for pattern in _SOURCE_TOKENS:
+            for line in lines:
+                keys.update(pattern.findall(line))
+    return frozenset(keys)
+
+
+def general_path(segments: Sequence[str | int], allowed: frozenset[str] | None) -> str:
+    """The content-free form of a JSON path: ``[*]`` for indices, ``<key>`` for non-schema
+    keys (every key is kept when ``allowed`` is None)."""
+    out = "$"
+    for segment in segments:
+        if isinstance(segment, int):
+            out += "[*]"
+        elif allowed is None or (
+            (_SAFE_KEY.fullmatch(segment) and segment in allowed) or _YEAR_KEY.fullmatch(segment)
+        ):
+            out += f".{segment}"
+        else:
+            out += ".<key>"
+    return out
+
+
+def concrete_path(segments: Sequence[str | int]) -> str:
+    out = "$"
+    for segment in segments:
+        if isinstance(segment, int):
+            out += f"[{segment}]"
+        elif _SAFE_KEY.fullmatch(segment):
+            out += f".{segment}"
+        else:
+            out += f"[{json.dumps(segment)}]"
+    return out
+
+
+def _kind_of(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int | float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    return "object"
+
+
+def compare_json(
+    node: Any,
+    python: Any,
+    *,
+    tolerance: float = 0.0,
+    allowed: frozenset[str] | None = None,
+) -> Comparison:
+    """Structural comparison of two parsed JSON documents."""
+    result = Comparison()
+
+    def add(segments: list[str | int], kind: str, left: Any, right: Any) -> None:
+        result.differences.append(
+            Difference(general_path(segments, allowed), concrete_path(segments), kind, left, right)
+        )
+
+    def walk(left: Any, right: Any, segments: list[str | int]) -> None:
+        left_kind, right_kind = _kind_of(left), _kind_of(right)
+        if left_kind != right_kind:
+            add(segments, "type", left, right)
+        elif left_kind == "object":
+            left_keys, right_keys = list(left), list(right)
+            for key in left_keys:
+                if key not in right:
+                    add([*segments, key], "missingInPython", left[key], None)
+            for key in right_keys:
+                if key not in left:
+                    add([*segments, key], "extraInPython", None, right[key])
+            common_left = [key for key in left_keys if key in right]
+            common_right = [key for key in right_keys if key in left]
+            if common_left != common_right:
+                add(segments, "keyOrder", common_left, common_right)
+            for key in common_left:
+                walk(left[key], right[key], [*segments, key])
+        elif left_kind == "array":
+            if len(left) != len(right):
+                add(segments, "length", len(left), len(right))
+            for index in range(min(len(left), len(right))):
+                walk(left[index], right[index], [*segments, index])
+        elif left_kind == "number":
+            if left != right:
+                if tolerance > 0 and abs(float(left) - float(right)) <= tolerance:
+                    result.tolerated += 1
+                else:
+                    add(segments, "value", left, right)
+        elif left != right:
+            add(segments, "value", left, right)
+
+    walk(node, python, [])
+    return result
+
+
+def _sha256(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _load_json(path: Path) -> tuple[bool, Any]:
+    def refuse(token: str) -> Any:
+        raise ValueError(token)
+
+    try:
+        return True, json.loads(path.read_text(encoding="utf-8"), parse_constant=refuse)
+    except (UnicodeDecodeError, ValueError):
+        return False, None
+
+
+def compare_file(
+    label: str,
+    node_path: Path | None,
+    python_path: Path | None,
+    *,
+    tolerance: float,
+    allowed: frozenset[str] | None,
+    rules: Sequence[IgnoreRule] = IGNORE_RULES,
+    show_values: bool = False,
+) -> dict[str, Any]:
+    """One file's report entry: digests, byte equality and differences by general path."""
+    node_digest, python_digest = _sha256(node_path), _sha256(python_path)
+    entry: dict[str, Any] = {
+        "file": label,
+        "nodeSha256": node_digest,
+        "pythonSha256": python_digest,
+        "byteIdentical": node_digest is not None and node_digest == python_digest,
+    }
+    differences: list[Difference] = []
+    tolerated = 0
+    if entry["byteIdentical"]:
+        pass
+    elif node_digest is None or python_digest is None:
+        side = "missingInNode" if node_digest is None else "missingInPython"
+        differences.append(Difference("$", "$", side))
+    else:
+        assert node_path is not None and python_path is not None
+        node_ok, node_doc = _load_json(node_path)
+        python_ok, python_doc = _load_json(python_path)
+        if node_ok and python_ok:
+            comparison = compare_json(node_doc, python_doc, tolerance=tolerance, allowed=allowed)
+            differences, tolerated = comparison.differences, comparison.tolerated
+            if not differences and not tolerated:
+                differences.append(Difference("$", "$", "formatting"))
+        else:
+            differences.append(Difference("$", "$", "bytes"))
+    by_path: dict[str, dict[str, Any]] = {}
+    ignored: dict[str, dict[str, Any]] = {}
+    unexpected: list[Difference] = []
+    for difference in differences:
+        rule = next((r for r in rules if r.matches(label, difference.general)), None)
+        bucket = by_path if rule is None else ignored
+        slot = bucket.setdefault(difference.general, {"count": 0, "kinds": {}})
+        slot["count"] += 1
+        slot["kinds"][difference.kind] = slot["kinds"].get(difference.kind, 0) + 1
+        if rule is None:
+            unexpected.append(difference)
+        else:
+            slot["reason"] = rule.reason
+    entry["differences"] = len(unexpected)
+    entry["ignoredDifferences"] = sum(slot["count"] for slot in ignored.values())
+    entry["toleratedDifferences"] = tolerated
+    entry["byPath"] = dict(sorted(by_path.items()))
+    if ignored:
+        entry["ignoredByPath"] = dict(sorted(ignored.items()))
+    if show_values and unexpected:
+        entry["examples"] = [
+            {"path": d.concrete, "kind": d.kind, "node": d.node, "python": d.python}
+            for d in unexpected[:MAX_EXAMPLES]
+        ]
+    return entry
+
+
+def artifact_label(relative: Path, *, reveal: bool) -> str:
+    """``artifacts/<store>/#<hash><ext>``: no recording names unless ``reveal``."""
+    parts = relative.parts
+    if reveal:
+        return "artifacts/" + "/".join(parts)
+    store = parts[0] if len(parts) > 1 and parts[0] in ARTIFACT_DIRS else None
+    name = "/".join(parts[1:] if store else parts)
+    hashed = "#" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+    suffix = Path(name).suffix if re.fullmatch(r"\.[a-z]{1,5}", Path(name).suffix) else ""
+    return f"artifacts/{store}/{hashed}{suffix}" if store else f"artifacts/{hashed}{suffix}"
+
+
+def manifest_label(name: str) -> str:
+    if name in GENERATED_MANIFESTS:
+        return f"manifests/{name}"
+    return "manifests/#" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------- the two runs
+
+
+@dataclass
+class StageRun:
+    exit_code: int | None = None
+    seconds: float = 0.0
+    stderr_tail: str = ""
+
+
+@dataclass
+class Plan:
+    """What the runs need: where the corpus is, the template data root, the tools."""
+
+    template: Path
+    corpus_root: Path
+    measurement_root: Path
+    env: dict[str, str]
+    worker: Path
+    approval: str
+    rounds: list[Callable[[], None]]
+    tools: dict[str, str]
+    corpus: dict[str, Any] = field(default_factory=dict)
+
+
+def _tree_files(root: Path) -> dict[str, str]:
+    if not root.is_dir():
+        return {}
+    return {
+        path.relative_to(root).as_posix(): _sha256(path) or ""
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def run_side(
+    side: str,
+    plan: Plan,
+    stages: Sequence[Stage],
+    *,
+    work: Path,
+    node: str,
+    tree: Path,
+    python: str,
+) -> list[list[StageRun]]:
+    """Run every round of every stage for one side at ``work/run``; snapshot the manifests
+    after each stage into ``work/snap/<side>/<round>-<index>``; move the result to
+    ``work/out/<side>``."""
+    run_root = work / "run"
+    if run_root.exists():
+        shutil.rmtree(run_root)
+    shutil.copytree(plan.template, run_root, symlinks=True)
+    cwd = work / "cwd"
+    cwd.mkdir(exist_ok=True)
+    env = dict(plan.env)
+    env["VOICE_JOURNEY_DATA"] = str(run_root)
+    if side == "python":
+        source = str(REPO_ROOT / "src")
+        env["PYTHONPATH"] = source + (
+            os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+        )
+    runs: list[list[StageRun]] = []
+    failed = False
+    for round_index, prepare in enumerate(plan.rounds):
+        prepare()
+        round_runs: list[StageRun] = []
+        for stage_index, stage in enumerate(stages):
+            record = StageRun()
+            if not failed:
+                command = stage_command(side, stage, node=node, tree=tree, python=python)
+                started = time.monotonic()
+                completed = subprocess.run(
+                    command,
+                    cwd=cwd,
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                record.seconds = round(time.monotonic() - started, 3)
+                record.exit_code = completed.returncode
+                record.stderr_tail = completed.stderr.decode("utf-8", "replace")[-2000:]
+                failed = completed.returncode != 0
+                snapshot = work / "snap" / side / f"{round_index}-{stage_index}"
+                shutil.copytree(run_root / "manifests", snapshot, dirs_exist_ok=True)
+            round_runs.append(record)
+        runs.append(round_runs)
+    out = work / "out" / side
+    out.parent.mkdir(parents=True, exist_ok=True)
+    run_root.rename(out)
+    return runs
+
+
+def compare_runs(
+    plan: Plan,
+    stages: Sequence[Stage],
+    runs: Mapping[str, list[list[StageRun]]],
+    *,
+    work: Path,
+    tolerance: float,
+    allowed: frozenset[str] | None,
+    show_values: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Per stage, the manifests it changed on either side; then every derived artifact."""
+    stage_reports: list[dict[str, Any]] = []
+    previous = {side: _tree_files(plan.template / "manifests") for side in SIDES}
+    for round_index in range(len(plan.rounds)):
+        for stage_index, stage in enumerate(stages):
+            snaps = {side: work / "snap" / side / f"{round_index}-{stage_index}" for side in SIDES}
+            current = {side: _tree_files(snaps[side]) for side in SIDES}
+            changed = sorted(
+                {
+                    name
+                    for side in SIDES
+                    for name, digest in current[side].items()
+                    if previous[side].get(name) != digest
+                }
+            )
+            files = [
+                compare_file(
+                    manifest_label(name),
+                    snaps["node"] / name if name in current["node"] else None,
+                    snaps["python"] / name if name in current["python"] else None,
+                    tolerance=tolerance,
+                    allowed=allowed,
+                    show_values=show_values,
+                )
+                for name in changed
+            ]
+            sides: dict[str, Any] = {}
+            for side in SIDES:
+                record = runs[side][round_index][stage_index]
+                sides[side] = {"exitCode": record.exit_code, "seconds": record.seconds}
+                if show_values and record.exit_code:
+                    sides[side]["stderrTail"] = record.stderr_tail
+            ran = all(sides[side]["exitCode"] == 0 for side in SIDES)
+            differences = sum(entry["differences"] for entry in files)
+            stage_reports.append(
+                {
+                    "round": round_index + 1,
+                    "stage": stage.key,
+                    "result": (
+                        "failed" if not ran else "identical" if not differences else "differences"
+                    ),
+                    **sides,
+                    "files": files,
+                }
+            )
+            previous = {side: current[side] or previous[side] for side in SIDES}
+    artifacts: list[dict[str, Any]] = []
+    roots = {side: work / "out" / side / "artifacts" for side in SIDES}
+    names = sorted(
+        {
+            path.relative_to(roots[side])
+            for side in SIDES
+            if roots[side].is_dir()
+            for path in roots[side].rglob("*")
+            if path.is_file()
+        }
+    )
+    for relative in names:
+        node_file, python_file = roots["node"] / relative, roots["python"] / relative
+        artifacts.append(
+            compare_file(
+                artifact_label(relative, reveal=show_values),
+                node_file if node_file.is_file() else None,
+                python_file if python_file.is_file() else None,
+                tolerance=tolerance,
+                allowed=allowed,
+                show_values=show_values,
+            )
+        )
+    return stage_reports, artifacts
+
+
+# ------------------------------------------------------------------- the Node tree
+
+
+def commit_available(commit: str = PINNED_COMMIT, repo: Path = REPO_ROOT) -> bool:
+    if shutil.which("git") is None:
+        return False
+    probe = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-e", f"{commit}^{{commit}}"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+def extract_node_tree(destination: Path, commit: str) -> Path:
+    if not commit_available(commit):
+        raise ParityError(f"commit {commit} is not available in {REPO_ROOT} (shallow clone?)")
+    archive = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "archive", "--format=tar", commit, NODE_TREE],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=True,
+    )
+    with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as bundle:
+        bundle.extractall(destination, filter="data")
+    tree = destination / NODE_TREE
+    if not (tree / "src" / "watchd.mjs").is_file():
+        raise ParityError(f"{NODE_TREE} at {commit} has no src/watchd.mjs")
+    return tree
+
+
+# --------------------------------------------------------------------- real corpus
+
+
+def _inside(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def real_plan(args: argparse.Namespace, work: Path) -> Plan:
+    if not args.approval:
+        raise ParityError("--data-root requires --approval TEXT (the stages read audio)")
+    data_root = Path(args.data_root).resolve()
+    repo = REPO_ROOT.resolve()
+    if _inside(data_root, repo) or _inside(repo, data_root):
+        raise ParityError("refusing a data root inside the repository (or containing it)")
+    if not data_root.is_dir():
+        raise ParityError("the data root is not a directory")
+    environ = os.environ
+    corpus_root = Path(
+        args.corpus_root
+        or environ.get("VOICE_JOURNEY_CORPUS_ROOT")
+        or data_root / "corpus" / "phone"
+    ).resolve()
+    measurement_root = Path(
+        environ.get("VOICE_JOURNEY_MEASUREMENT_DIR") or data_root / "corpus" / "measurement"
+    ).resolve()
+    for name, path in (("corpus root", corpus_root), ("measurement root", measurement_root)):
+        if _inside(path, repo):
+            raise ParityError(f"refusing a {name} inside the repository")
+    if not corpus_root.is_dir():
+        raise ParityError("the corpus root is not a directory")
+    template = work / "template"
+    (template / "manifests").mkdir(parents=True)
+    (template / "artifacts").mkdir()
+    if not args.fresh:
+        for name in GENERATED_MANIFESTS:
+            source = data_root / "manifests" / name
+            if source.is_file():
+                shutil.copy2(source, template / "manifests" / name)
+        for store in ARTIFACT_DIRS:
+            source = data_root / "artifacts" / store
+            if source.is_dir():
+                shutil.copytree(source, template / "artifacts" / store, symlinks=True)
+    worker = REPO_ROOT / "src" / "cole_voice_lab" / "resources" / "journey_extract_features.py"
+    env = _base_env(work)
+    env.update(
+        FFMPEG_BIN=environ.get("FFMPEG_BIN", "ffmpeg"),
+        WHISPER_CPP_BIN=environ.get("WHISPER_CPP_BIN", "whisper-cli"),
+        WHISPER_CPP_MODEL=environ.get(
+            "WHISPER_CPP_MODEL", str(data_root / "models" / "ggml-medium.bin")
+        ),
+        VOICE_JOURNEY_PYTHON=environ.get(
+            "VOICE_JOURNEY_PYTHON", str(data_root / "runtimes" / "analysis" / "bin" / "python")
+        ),
+    )
+    if environ.get("WHISPER_CPP_THREADS"):
+        env["WHISPER_CPP_THREADS"] = environ["WHISPER_CPP_THREADS"]
+    return Plan(
+        template=template,
+        corpus_root=corpus_root,
+        measurement_root=measurement_root,
+        env=env,
+        worker=worker,
+        approval=args.approval,
+        rounds=[lambda: None],
+        tools={
+            "ffmpeg": "environment (FFMPEG_BIN)",
+            "whisperCli": "environment (WHISPER_CPP_BIN, WHISPER_CPP_MODEL)",
+            "analysisWorker": "package resources/journey_extract_features.py in "
+            "VOICE_JOURNEY_PYTHON",
+        },
+        corpus={"fresh": bool(args.fresh)},
+    )
+
+
+def _base_env(work: Path) -> dict[str, str]:
+    """The inherited environment minus every pipeline variable, with a private TMPDIR."""
+    prefixes = ("VOICE_JOURNEY_", "WHISPER_CPP_", "FFMPEG_BIN")
+    env = {key: value for key, value in os.environ.items() if not key.startswith(prefixes)}
+    env.pop("PYTHONPATH", None)
+    tmp = work / "tmp"
+    tmp.mkdir(exist_ok=True)
+    env.update(TMPDIR=str(tmp), TZ="UTC", LC_ALL="C.UTF-8", PYTHONDONTWRITEBYTECODE="1")
+    return env
+
+
+# ------------------------------------------------------------------------- fixture
+
+
+@dataclass(frozen=True)
+class Song:
+    pattern: tuple[int, ...]
+    note_seconds: float
+    lines: tuple[str, ...]
+
+
+SONGS: dict[str, Song] = {
+    "A": Song(
+        (0, 2, 4, 5, 7, 5, 4, 2),
+        0.45,
+        (
+            "the river keeps a lantern for the quiet stones tonight",
+            "and every window opens when the harbor bells are low",
+            "i carry borrowed summer in a pocket full of light",
+            "so wait for me by water where the willow branches grow",
+            "the river keeps a lantern for the quiet stones tonight",
+            "and every window opens when the harbor bells are low",
+        ),
+    ),
+    "B": Song(
+        (0, 4, 7, 9, 7, 4),
+        1.1,
+        (
+            "paper birds are falling over chimneys in the snow",
+            "count the miles by candle and the morning comes along",
+            "tell the northern weather that i never let it go",
+            "hum it in the doorway till the doorway learns the song",
+            "paper birds are falling over chimneys in the snow",
+        ),
+    ),
+    "C": Song(
+        (0, 3, 5, 7, 8, 7, 5, 3),
+        1.0,
+        (
+            "copper leaves are turning on the road to santa fe",
+            "nobody waits for trains that never leave the yard",
+            "keep a little silver for the price of yesterday",
+            "the evening folds its shoulders like a tired playing card",
+            "copper leaves are turning on the road to santa fe",
+        ),
+    ),
+    "D": Song(
+        (0, 5, 7, 5, 2, 0),
+        0.6,
+        (
+            "small hours on the stairwell and the radio is warm",
+            "turn the dial to static and pretend it is the sea",
+            "every little station has a weather and a storm",
+        ),
+    ),
+}
+
+SPEECH_LINES = (
+    "okay so this is the take from the car we should redo the bridge tomorrow",
+    "testing testing one two this is just to check the levels before practice",
+    "remember to send the new chords to sam and ask about the thursday slot",
+)
+
+# Each kind is (the audio synthesized, the text the fake whisper-cli returns).
+FIXTURE_KINDS: dict[str, tuple[str, str]] = {
+    "melody": ("melody", "song"),
+    "vocalise": ("melody", "vocalise"),
+    "chord": ("chord", "song"),
+    "noise": ("noise", "noise"),
+    "silence": ("silence", "noise"),
+    "speech": ("speech", "speech"),
+    "mixed": ("mixed", "song"),
+    "mixedvocalise": ("mixed", "vocalise"),
+    "mixedrepeat": ("mixed", "repeat"),
+    "speechsong": ("speech", "song"),
+}
+REPEAT_LINE = "hold the door my darling hold the door my darling hold the door tonight"
+
+# (stamp, kind, song, seconds, base Hz, detune cents, vibrato Hz, round)
+FIXTURE_TAKES: tuple[tuple[str, str, str, float, float, float, float, int], ...] = (
+    ("20170614 201500", "melody", "B", 6.0, 175.0, 38.0, 4.1, 1),
+    ("20170909 090909", "noise", "", 3.0, 0.0, 0.0, 0.0, 1),
+    ("20171224 223000", "melody", "B", 5.0, 180.0, 34.0, 4.4, 1),
+    ("20180302 181500", "melody", "A", 4.0, 196.0, 42.0, 4.0, 1),
+    ("20180505 120000", "vocalise", "A", 3.5, 220.0, 20.0, 5.2, 1),
+    ("20180704 160000", "melody", "B", 6.5, 170.0, 30.0, 4.7, 1),
+    ("20180915 193000", "melody", "A", 4.5, 190.0, 37.0, 4.3, 1),
+    ("20181231 235959", "silence", "", 2.5, 0.0, 0.0, 0.0, 1),
+    ("20190115 081500", "melody", "C", 5.0, 165.0, 40.0, 4.2, 1),
+    ("20190202 101010", "speech", "", 4.0, 0.0, 0.0, 0.0, 1),
+    ("20190308 211500", "melody", "B", 5.5, 178.0, 26.0, 5.0, 1),
+    ("20190415 120000", "melody", "D", 3.0, 200.0, 25.0, 5.0, 1),
+    ("20190415 120000", "melody", "D", 3.2, 205.0, 22.0, 5.1, 1),
+    ("20190420 174500", "melody", "A", 5.0, 200.0, 31.0, 4.6, 1),
+    ("20190520 090000", "mixed", "C", 6.0, 170.0, 30.0, 4.8, 1),
+    ("20190601 140000", "chord", "B", 4.0, 165.0, 0.0, 0.0, 1),
+    ("20190808 200000", "melody", "C", 5.5, 170.0, 34.0, 4.6, 1),
+    ("20191031 213000", "melody", "B", 6.0, 182.0, 22.0, 5.2, 1),
+    ("20191201 090000", "melody", "A", 4.0, 205.0, 27.0, 4.9, 1),
+    ("20200110 191500", "melody", "D", 3.5, 198.0, 20.0, 5.3, 1),
+    ("20200229 120000", "melody", "C", 6.0, 168.0, 29.0, 5.0, 1),
+    ("20200505 220000", "melody", "B", 20.0, 176.0, 18.0, 5.4, 1),
+    ("20200611 183000", "melody", "A", 4.5, 210.0, 22.0, 5.2, 1),
+    ("20200720 200000", "mixedvocalise", "A", 6.0, 205.0, 20.0, 5.0, 1),
+    ("20200919 161500", "melody", "B", 5.0, 179.0, 15.0, 5.5, 1),
+    ("20201111 111111", "melody", "C", 5.0, 172.0, 24.0, 5.3, 1),
+    ("20201212 121212", "noise", "", 3.0, 0.0, 0.0, 0.0, 1),
+    ("20210214 200000", "melody", "A", 5.0, 208.0, 17.0, 5.4, 1),
+    ("20210303 070000", "melody", "D", 2.2, 200.0, 20.0, 5.0, 1),
+    ("20210420 120000", "mixedrepeat", "D", 6.0, 200.0, 20.0, 5.0, 1),
+    ("20210707 210000", "melody", "C", 5.5, 174.0, 18.0, 5.5, 1),
+    ("20210909 090000", "vocalise", "C", 3.0, 230.0, 15.0, 5.5, 1),
+    ("20211010 101000", "speechsong", "B", 4.0, 0.0, 0.0, 0.0, 1),
+    ("20211130 221500", "melody", "A", 4.0, 212.0, 12.0, 5.6, 1),
+    ("20220101 000100", "speech", "", 3.5, 0.0, 0.0, 0.0, 1),
+    ("20220520 190000", "melody", "C", 6.0, 176.0, 14.0, 5.6, 2),
+    ("20220601 120000", "melody", "A", 4.0, 215.0, 10.0, 5.5, 2),
+    ("20220715 180000", "melody", "D", 3.0, 201.0, 18.0, 5.4, 2),
+    ("20220801 101500", "chord", "A", 3.5, 190.0, 0.0, 0.0, 2),
+    ("20220909 190000", "mixed", "A", 6.0, 212.0, 15.0, 5.5, 2),
+)
+FIXTURE_HELD_BACK = ("20221010 101010", "melody", "A", 3.0, 210.0, 12.0, 5.5, 1)
+FIXTURE_SAMPLE_RATE = 44100
+
+
+def _suffix(stamp: str, index: int) -> str:
+    return hashlib.sha256(f"{stamp}#{index}".encode()).hexdigest()[:8].upper()
+
+
+def _chain(variable: str, values: Sequence[float]) -> str:
+    expression = repr(float(values[-1]))
+    for index in range(len(values) - 2, -1, -1):
+        expression = f"if(eq({variable},{index}),{float(values[index])!r},{expression})"
+    return expression
+
+
+def _melody_expression(song: Song, base: float, detune: float, vibrato: float) -> str:
+    note = song.note_seconds
+    pitch = _chain("ld(2)", [float(step) for step in song.pattern])
+    cents = _chain("ld(3)", [detune * factor for factor in (1.0, -1.0, 0.5, -0.5, 0.0)])
+    frequency = f"{base!r}*pow(2,(ld(1)+30/100*sin(2*PI*{vibrato!r}*t))/12)"
+    gate = f"if(lt(mod(t,{note!r}),{note * 0.85!r}),1,0)"
+    return (
+        f"st(2,mod(floor(t/{note!r}),{len(song.pattern)}));st(3,mod(floor(t/{note!r}),5));"
+        f"st(1,{pitch}+{cents}/100);st(0,ld(0)+2*PI*{frequency}/{FIXTURE_SAMPLE_RATE});"
+        f"0.45*{gate}*(sin(ld(0))+0.25*sin(2*ld(0)))"
+    )
+
+
+def _source_args(
+    kind: str, song: str, seconds: float, base: float, detune: float, rate: float, seed: int
+) -> list[str]:
+    sr = FIXTURE_SAMPLE_RATE
+    kind = FIXTURE_KINDS[kind][0]
+    if kind in ("melody", "mixed"):
+        expression = _melody_expression(SONGS[song], base, detune, rate)
+        if kind == "mixed":
+            cut = round(seconds * 0.35, 3)
+            expression = f"if(lt(t,{cut!r}),({expression}),0.08*(2*random(4)-1))"
+        return ["-f", "lavfi", "-i", f"aevalsrc=exprs='{expression}':s={sr}:d={seconds!r}"]
+    if kind == "chord":
+        chord = (
+            f"0.2*(sin(2*PI*{base!r}*t)+sin(2*PI*{base * 1.25!r}*t)+sin(2*PI*{base * 1.5!r}*t))"
+            "*(0.8+0.2*sin(2*PI*0.5*t))"
+        )
+        return ["-f", "lavfi", "-i", f"aevalsrc=exprs='{chord}':s={sr}:d={seconds!r}"]
+    if kind in ("noise", "speech"):
+        color = "white" if kind == "noise" else "pink"
+        source = f"anoisesrc=d={seconds!r}:c={color}:r={sr}:a=0.25:seed={seed}"
+        if kind == "speech":
+            source += ",volume='if(lt(mod(t,0.37),0.21),1,0.04)':eval=frame"
+        return ["-f", "lavfi", "-i", source]
+    return ["-f", "lavfi", "-i", f"anullsrc=r={sr}:cl=mono", "-t", repr(seconds)]
+
+
+def _encode(ffmpeg: str, source: list[str], out: Path) -> None:
+    command = [
+        ffmpeg, "-hide_banner", "-nostdin", "-v", "error", "-y", *source,
+        "-ac", "1", "-c:a", "aac", "-b:a", "96k", "-map_metadata", "-1",
+        "-fflags", "+bitexact", "-flags:a", "+bitexact", str(out),
+    ]  # fmt: skip
+    subprocess.run(command, check=True, stdin=subprocess.DEVNULL, capture_output=True)
+
+
+def _recording_id(filename: str) -> str:
+    return hashlib.sha256(filename.encode("utf-8")).hexdigest()[:16]
+
+
+def _mirror_manifest(
+    directory: Path, names: Sequence[str], run_id: str, sizes: Mapping[str, int]
+) -> None:
+    files = []
+    for name in names:
+        files.append(
+            {
+                "path": name,
+                "sizeBytes": sizes.get(name, (directory / name).stat().st_size),
+                "sha256": _sha256(directory / name),
+            }
+        )
+    manifest = {
+        "schema": "voice-journey-mirror-manifest/1",
+        "runId": run_id,
+        "generatedAt": DEFAULT_TIMESTAMP,
+        "files": files,
+    }
+    mirror = directory / "_mirror"
+    mirror.mkdir(exist_ok=True)
+    (mirror / "latest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+def fixture_plan(work: Path, *, ffmpeg: str) -> Plan:
+    """Synthesize the corpus, the fakes and the empty template data root."""
+    fixture = work / "fixture"
+    audio = fixture / "audio"
+    audio.mkdir(parents=True)
+    takes: dict[str, dict[str, Any]] = {}
+    files: list[tuple[str, int, int]] = []  # (name, round, mtime ns)
+    specs = [*((take, False) for take in FIXTURE_TAKES), (FIXTURE_HELD_BACK, True)]
+    for index, ((stamp, kind, song, seconds, base, detune, rate, round_no), held) in enumerate(
+        specs
+    ):
+        name = f"{stamp}-{_suffix(stamp, index)}.m4a"
+        _encode(
+            ffmpeg, _source_args(kind, song, seconds, base, detune, rate, index + 1), audio / name
+        )
+        mtime_ns = (
+            calendar.timegm(time.strptime(stamp, "%Y%m%d %H%M%S")) + int(seconds) + 1
+        ) * 10**9
+        mtime_ns += 123_456_789 + index * 1_000_501
+        files.append((name, round_no, mtime_ns))
+        text = FIXTURE_KINDS[kind][1]
+        language = "la" if text == "vocalise" else "en"
+        takes[_recording_id(name)] = {"text": text, "song": song, "language": language}
+        if held:
+            held_name = name
+    corpus = fixture / "data" / "corpus"
+    phone = corpus / "phone"
+    measurement = corpus / "measurement"
+    session = measurement / "fixture-session-2021"
+    session.mkdir(parents=True)
+    subprocess.run(
+        [ffmpeg, "-hide_banner", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
+         "sine=frequency=220:sample_rate=48000:duration=1", "-c:a", "pcm_s16le",
+         "-fflags", "+bitexact", "-flags:a", "+bitexact", str(session / "seg-01.wav")],
+        check=True, stdin=subprocess.DEVNULL, capture_output=True,
+    )  # fmt: skip
+    (session / "session.json").write_text(
+        json.dumps(
+            {
+                "chainId": "umik1",
+                "startedAt": "2021-05-01T10:00:00.000Z",
+                "files": [{"name": "seg-01.wav"}, {"name": "seg-02.wav"}],
+                "segments": [{"file": "seg-01.wav", "key": "sustain-a"}],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(session / "seg-01.wav", ns=(1_619_863_200_500_000_000,) * 2)
+    round_one = [name for name, round_no, _ in files if round_no == 1]
+    newest_round_one = max(round_one)
+    dropped = sorted(round_one)[5]
+
+    def populate(round_no: int) -> None:
+        if phone.exists():
+            shutil.rmtree(phone)
+        phone.mkdir(parents=True)
+        for name, file_round, mtime_ns in files:
+            if file_round <= round_no:
+                shutil.copyfile(audio / name, phone / name)
+                os.utime(phone / name, ns=(mtime_ns, mtime_ns))
+        (phone / f".{round_one[0]}.Xy12Ab").write_bytes(b"partial")
+        (phone / ".rsync-partial").mkdir()
+        (phone / "notes.txt").write_text("not a recording\n", encoding="utf-8")
+        present = sorted(name for name, file_round, _ in files if file_round <= round_no)
+        if round_no == 1:
+            listed = [name for name in present if name != newest_round_one]
+        else:
+            listed = [name for name in present if name != dropped]
+        sizes = {held_name: (phone / held_name).stat().st_size + 1}
+        _mirror_manifest(phone, listed, f"fixture-round-{round_no}", sizes)
+
+    bin_dir = fixture / "bin"
+    bin_dir.mkdir()
+    plan_path = fixture / "whisper-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "songs": {key: list(song.lines) for key, song in SONGS.items()},
+                "speech": list(SPEECH_LINES),
+                "repeat": REPEAT_LINE,
+                "takes": takes,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    whisper_source = fixture / "fake_whisper.py"
+    whisper_source.write_text(
+        FAKE_WHISPER.replace("@PLAN@", json.dumps(str(plan_path))), encoding="utf-8"
+    )
+    whisper = bin_dir / "whisper-cli"
+    whisper.write_text(
+        f'#!/bin/sh\nexec "{sys.executable}" -B "{whisper_source}" "$@"\n', encoding="utf-8"
+    )
+    whisper.chmod(0o755)
+    worker = fixture / "fake_extract_features.py"
+    worker.write_text(FAKE_WORKER, encoding="utf-8")
+    model = fixture / "models" / "ggml-fixture.bin"
+    model.parent.mkdir()
+    model.write_bytes(b"not a model: the fixture whisper-cli only checks that it exists\n")
+    template = fixture / "template"
+    (template / "manifests").mkdir(parents=True)
+    (template / "artifacts").mkdir()
+    env = _base_env(work)
+    env.update(
+        FFMPEG_BIN=ffmpeg,
+        WHISPER_CPP_BIN=str(whisper),
+        WHISPER_CPP_MODEL=str(model),
+        VOICE_JOURNEY_PYTHON=sys.executable,
+    )
+    version = (
+        subprocess.run(
+            [ffmpeg, "-version"], capture_output=True, check=True, stdin=subprocess.DEVNULL
+        )
+        .stdout.decode("utf-8", "replace")
+        .splitlines()[0]
+    )
+    return Plan(
+        template=template,
+        corpus_root=phone,
+        measurement_root=measurement,
+        env=env,
+        worker=worker,
+        approval=FIXTURE_APPROVAL,
+        rounds=[lambda: populate(1), lambda: populate(2)],
+        tools={
+            "ffmpeg": f"real: {version}",
+            "whisperCli": "fake: deterministic fixture whisper-cli (text from a per-take plan "
+            "of lyric lines, segment times from the decoded wav)",
+            "analysisWorker": "fake: deterministic stdlib worker on the extractor's protocol "
+            "(zero-crossing f0 contour; hashed quality and spectral numbers)",
+        },
+        corpus={
+            "recordings": len(files),
+            "rounds": 2,
+            "years": sorted({stamp[:4] for stamp, *_ in FIXTURE_TAKES}),
+            "kinds": sorted({kind for _, kind, *_ in FIXTURE_TAKES}),
+            "measurementSessions": 1,
+        },
+    )
+
+
+FAKE_WHISPER = r'''
+"""Fixture whisper-cli: deterministic outputs shaped like whisper.cpp's -otxt/-oj."""
+
+import array
+import hashlib
+import json
+import math
+import os
+import sys
+import wave
+
+PLAN = @PLAN@
+
+
+def stamp(ms):
+    hours, rest = divmod(ms, 3_600_000)
+    minutes, rest = divmod(rest, 60_000)
+    seconds, millis = divmod(rest, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
+def main(argv):
+    if "--version" in argv:
+        print("whisper-cli fixture 1.7.6 (voice-lab journey parity fake)")
+        return 0
+    options, flags, index = {}, set(), 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg in ("-m", "-f", "-l", "-of", "-t"):
+            options[arg] = argv[index + 1]
+            index += 2
+        elif arg in ("-otxt", "-oj"):
+            flags.add(arg)
+            index += 1
+        else:
+            sys.stderr.write(f"error: unknown argument: {arg}\n")
+            return 2
+    if not os.path.isfile(options.get("-m", "")):
+        sys.stderr.write("error: failed to load model\n")
+        return 3
+    with wave.open(options["-f"], "rb") as handle:
+        rate = handle.getframerate()
+        data = handle.readframes(handle.getnframes())
+    samples = array.array("h")
+    samples.frombytes(data)
+    if sys.byteorder == "big":
+        samples.byteswap()
+    duration_ms = int(len(samples) * 1000 / rate)
+    energy = math.sqrt(sum(s * s for s in samples) / max(1, len(samples))) / 32768
+    digest = hashlib.sha256(data).digest()
+    base = options["-of"]
+    with open(PLAN, encoding="utf-8") as handle:
+        plan = json.load(handle)
+    take = plan["takes"].get(
+        os.path.basename(base), {"text": "speech", "song": "", "language": "en"}
+    )
+    language = take["language"] if options.get("-l", "auto") == "auto" else options["-l"]
+    lines = []
+    if energy < 0.003:
+        lines = []
+    elif take["text"] == "vocalise":
+        lines = ["Ah, ah, ooh, ah.", "Ooh, ah, ah."][: 1 + digest[0] % 2]
+    elif take["text"] == "speech":
+        lines = [plan["speech"][digest[1] % len(plan["speech"])]]
+    elif take["text"] == "repeat":
+        lines = [plan["repeat"], plan["repeat"]]
+    elif take["text"] == "song":
+        song = plan["songs"][take["song"]]
+        count = max(2, min(len(song), round(duration_ms / 1500)))
+        lines = list(song[:count])
+        if digest[2] % 3 == 0:
+            words = lines[-1].split()
+            lines[-1] = " ".join(words[:-1])
+    else:
+        lines = ["[noise]"] if digest[3] % 2 else []
+    segments = []
+    for number, line in enumerate(lines):
+        start = number * duration_ms // max(1, len(lines))
+        end = (number + 1) * duration_ms // max(1, len(lines))
+        segments.append(
+            {
+                "timestamps": {"from": stamp(start), "to": stamp(end)},
+                "offsets": {"from": start, "to": end},
+                "text": " " + line,
+            }
+        )
+    payload = {
+        "systeminfo": "AVX = 1 | AVX2 = 1 | FMA = 1 | fixture",
+        "model": {"type": "medium", "multilingual": True, "vocab": 51865, "ftype": 1},
+        "params": {"model": options["-m"], "language": language, "translate": False},
+        "result": {"language": language},
+        "transcription": segments,
+    }
+    if "-oj" in flags:
+        with open(base + ".json", "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent="\t", ensure_ascii=False) + "\n")
+    if "-otxt" in flags:
+        with open(base + ".txt", "w", encoding="utf-8") as handle:
+            handle.write("".join(segment["text"] + "\n" for segment in segments))
+    return 0
+
+
+sys.exit(main(sys.argv[1:]))
+'''
+
+FAKE_WORKER = r'''
+"""Fixture feature worker: the extractor's stdin/stdout protocol, stdlib only."""
+
+import array
+import hashlib
+import json
+import math
+import sys
+import wave
+from bisect import bisect_left, bisect_right
+
+CONFIG = {
+    "sampleRate": 22050,
+    "f0": {
+        "engine": "praat_ac",
+        "floorHz": 75.0,
+        "ceilingHz": 1200.0,
+        "timeStepSeconds": 0.01,
+        "outlier": {
+            "windowSeconds": 0.5,
+            "maxDeviationCents": 600.0,
+            "maxGlobalDeviationCents": 1800.0,
+        },
+    },
+    "vibrato": {
+        "minSustainSeconds": 0.8,
+        "bandHz": [3.5, 8.5],
+        "minExtentCents": 15.0,
+        "minBandPowerShare": 0.2,
+        "detrendWindowSeconds": 0.5,
+    },
+    "tuning": {"referenceHz": 440.0, "inTuneCents": 25.0},
+    "spectral": {
+        "nFft": 2048,
+        "hopSeconds": 0.01,
+        "singerFormantBandHz": [2800.0, 3400.0],
+        "rolloffShare": 0.85,
+    },
+    "phrasing": {"minPauseSeconds": 0.3},
+    "methodId": "voice-journey.feature-extract.v1",
+}
+VERSIONS = {
+    "python": "fixture",
+    "parselmouth": None,
+    "praat": None,
+    "librosa": None,
+    "numpy": "fixture-worker-1",
+}
+
+
+def rnd(value, places=3):
+    if value is None:
+        return None
+    value = float(value)
+    if math.isnan(value) or math.isinf(value):
+        return None
+    return round(value, places)
+
+
+def percentile(ordered, q):
+    position = (len(ordered) - 1) * q / 100.0
+    low = math.floor(position)
+    high = min(low + 1, len(ordered) - 1)
+    return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+
+def median(values):
+    return percentile(sorted(values), 50)
+
+
+def cents(hz):
+    return 1200.0 * math.log2(hz / 440.0)
+
+
+def runs_of(mask):
+    runs, start = [], None
+    for index, flag in enumerate(mask):
+        if flag and start is None:
+            start = index
+        elif not flag and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, len(mask)))
+    return runs
+
+
+def analyze(path):
+    with wave.open(path, "rb") as handle:
+        rate = handle.getframerate()
+        data = handle.readframes(handle.getnframes())
+    samples = array.array("h")
+    samples.frombytes(data)
+    if sys.byteorder == "big":
+        samples.byteswap()
+    count = len(samples)
+    duration = count / rate
+    if duration < 2.5:
+        raise ValueError(f"fixture worker refuses takes shorter than 2.5 s ({duration:.2f} s)")
+    digest = hashlib.sha256(data).digest()
+    unit = [byte / 255.0 for byte in digest]
+    squares = [0.0]
+    total = 0.0
+    for sample in samples:
+        total += sample * sample
+        squares.append(total)
+    crossings = []
+    for index in range(1, count):
+        before, after = samples[index - 1], samples[index]
+        if before < 0 <= after and max(map(abs, samples[index : index + 66])) > 1600:
+            crossings.append((index - 1 + (-before) / (after - before)) / rate)
+    step = CONFIG["f0"]["timeStepSeconds"]
+    half = 0.025
+    frames = int(duration / step)
+    times, f0, levels = [], [], []
+    for frame in range(frames):
+        t = (frame + 0.5) * step
+        low, high = max(0, int((t - 0.005) * rate)), min(count, int((t + 0.005) * rate))
+        level = math.sqrt((squares[high] - squares[low]) / max(1, high - low)) / 32768.0
+        first, last = bisect_left(crossings, t - half), bisect_right(crossings, t + half)
+        hz = 0.0
+        if level > 0.02 and last - first >= 3:
+            span = crossings[last - 1] - crossings[first]
+            hz = (last - first - 1) / span if span > 0 else 0.0
+            if not 75.0 <= hz <= 1200.0:
+                hz = 0.0
+        times.append(t)
+        f0.append(hz)
+        levels.append(level)
+    raw = [hz > 0 for hz in f0]
+    voiced_count = sum(raw)
+    mask = list(raw)
+    local_rejected = global_rejected = 0
+    if voiced_count >= 5:
+        window = 50
+        for index, flag in enumerate(raw):
+            if not flag:
+                continue
+            around = [
+                cents(f0[j])
+                for j in range(max(0, index - window), min(frames, index + window + 1))
+                if raw[j]
+            ]
+            if len(around) >= 3 and abs(cents(f0[index]) - median(around)) > 600.0:
+                mask[index] = False
+                local_rejected += 1
+        remaining = [cents(f0[i]) for i in range(frames) if mask[i]]
+        if len(remaining) >= 5:
+            center = median(remaining)
+            for index in range(frames):
+                if mask[index] and abs(cents(f0[index]) - center) > 1800.0:
+                    mask[index] = False
+                    global_rejected += 1
+    voiced = [f0[i] for i in range(frames) if mask[i]]
+    if len(voiced) >= 5:
+        ordered = sorted(voiced)
+        pitch = {f"p{q:02d}": rnd(percentile(ordered, q), 1) for q in (5, 25, 50, 75, 95)}
+        span = rnd(12.0 * math.log2(percentile(ordered, 95) / percentile(ordered, 5)), 2)
+        middle = median(voiced)
+        mad = rnd(median([abs(12.0 * math.log2(hz / middle)) for hz in voiced]), 3)
+        values = [cents(hz) for hz in voiced]
+        if len(values) >= 10:
+            angles = [(value % 100.0) * 2.0 * math.pi / 100.0 for value in values]
+            offset = (
+                math.atan2(
+                    sum(map(math.sin, angles)) / len(angles),
+                    sum(map(math.cos, angles)) / len(angles),
+                )
+                * 100.0
+                / (2.0 * math.pi)
+            )
+            deviation = [((value - offset + 50.0) % 100.0) - 50.0 for value in values]
+            tuning = {
+                "offsetCents": rnd(offset, 1),
+                "medianAbsCentError": rnd(median([abs(d) for d in deviation]), 1),
+                "within25CentsShare": rnd(sum(abs(d) <= 25.0 for d in deviation) / len(deviation)),
+            }
+        else:
+            tuning = {"offsetCents": None, "medianAbsCentError": None, "within25CentsShare": None}
+    else:
+        pitch = {f"p{q:02d}": None for q in (5, 25, 50, 75, 95)}
+        span = mad = None
+        tuning = {"offsetCents": None, "medianAbsCentError": None, "within25CentsShare": None}
+    runs = runs_of(mask)
+    sustained = [(a, b) for a, b in runs if b - a >= 80]
+    segments = []
+    vibrato_frames = 0
+    for a, b in sustained:
+        values = [cents(f0[i]) for i in range(a, b)]
+        trend = [
+            sum(values[max(0, i - 25) : i + 26]) / len(values[max(0, i - 25) : i + 26])
+            for i in range(len(values))
+        ]
+        residual = [value - smooth for value, smooth in zip(values, trend)]
+        changes = sum(1 for x, y in zip(residual, residual[1:]) if (x < 0) != (y < 0))
+        rate_hz = changes / 2.0 / ((b - a) * step)
+        extent = max(abs(r) for r in residual) * 0.7
+        if 3.5 <= rate_hz <= 8.5 and extent >= 15.0:
+            vibrato_frames += b - a
+            segments.append(
+                {
+                    "startSeconds": rnd(a * step, 2),
+                    "durationSeconds": rnd((b - a) * step, 2),
+                    "rateHz": rnd(rate_hz, 2),
+                    "extentCents": rnd(extent, 1),
+                }
+            )
+    sustained_frames = sum(b - a for a, b in sustained)
+    rates = [segment["rateHz"] for segment in segments]
+    extents = [segment["extentCents"] for segment in segments]
+    voiced_share = sum(mask) / frames if frames else 0.0
+    loud = sorted(20.0 * math.log10(max(levels[i], 1e-5)) for i in range(frames) if mask[i])
+    durations = [(b - a) * step for a, b in runs]
+    gaps = sum(1 for (_, end), (start, _) in zip(runs, runs[1:]) if (start - end) * step >= 0.3)
+    summary = {
+        "durationSeconds": rnd(duration),
+        "voicing": {
+            "voicedShare": rnd(voiced_share),
+            "frameCount": frames,
+            "rejectedOutlierShare": rnd(local_rejected / voiced_count if voiced_count else 0.0),
+            "rejectedGlobalOutlierShare": rnd(
+                global_rejected / voiced_count if voiced_count else 0.0
+            ),
+        },
+        "pitch": {"f0Hz": pitch, "rangeSemitonesP05P95": span, "madSemitones": mad},
+        "tuning": tuning,
+        "vibrato": {
+            "sustainedSegmentCount": len(sustained),
+            "vibratoSegmentCount": len(segments),
+            "meanRateHz": rnd(sum(rates) / len(rates), 2) if rates else None,
+            "meanExtentCents": rnd(sum(extents) / len(extents), 1) if extents else None,
+            "vibratoTimeShare": rnd(vibrato_frames / sustained_frames)
+            if sustained_frames
+            else None,
+        },
+        "quality": {
+            "jitterLocal": rnd(0.002 + unit[0] * 0.01, 5),
+            "shimmerLocal": rnd(0.02 + unit[1] * 0.06, 5),
+            "meanHnrDb": rnd(8.0 + 12.0 * voiced_share + unit[2] * 2.0, 2),
+            "cpps": rnd(9.0 + 7.0 * voiced_share - (mad or 0.0) + unit[3] * 3.0, 2),
+        },
+        "spectral": {
+            "centroidHzMean": rnd(900.0 + unit[4] * 900.0, 1),
+            "centroidHzSd": rnd(80.0 + unit[5] * 200.0, 1),
+            "rolloffHzMean": rnd(2400.0 + unit[6] * 1800.0, 1),
+            "singerFormantRatio": rnd(0.001 + unit[7] * 0.05, 4),
+        },
+        "dynamics": {
+            "voicedRmsDbP10": rnd(percentile(loud, 10), 1) if loud else None,
+            "voicedRmsDbP50": rnd(percentile(loud, 50), 1) if loud else None,
+            "voicedRmsDbP90": rnd(percentile(loud, 90), 1) if loud else None,
+            "dynamicSpreadDb": rnd(percentile(loud, 90) - percentile(loud, 10), 1)
+            if loud
+            else None,
+        },
+        "phrasing": {
+            "longestSustainedSeconds": rnd(max(durations), 2) if durations else None,
+            "meanVoicedSegmentSeconds": rnd(sum(durations) / len(durations), 2)
+            if durations
+            else None,
+            "pauseRatePerMinute": rnd(gaps / (duration / 60.0), 2),
+        },
+    }
+    contour = [[rnd(times[i], 2), rnd(f0[i], 1)] for i in range(0, frames, 5) if mask[i]]
+    detail = {
+        "methodId": CONFIG["methodId"],
+        "f0ContourVoiced50ms": contour,
+        "vibratoSegments": segments,
+        "qualityNotes": [],
+        "config": CONFIG,
+    }
+    return summary, detail
+
+
+def main():
+    sys.stdout.write(
+        json.dumps(
+            {"hello": {"versions": VERSIONS, "methodId": CONFIG["methodId"], "config": CONFIG}}
+        )
+        + "\n"
+    )
+    sys.stdout.flush()
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        task = json.loads(line)
+        try:
+            summary, detail = analyze(task["wavPath"])
+            result = {
+                "recordingId": task.get("recordingId"),
+                "status": "completed",
+                "summary": summary,
+                "detail": detail,
+            }
+        except Exception as error:
+            result = {
+                "recordingId": task.get("recordingId"),
+                "status": "failed",
+                "error": f"{type(error).__name__}: {error}",
+                "trace": "fixture",
+            }
+        sys.stdout.write(json.dumps(result) + "\n")
+        sys.stdout.flush()
+
+
+main()
+'''
+
+
+# ---------------------------------------------------------------------------- main
+
+
+def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="journey-parity",
+        description="Compare the pinned Node journey pipeline with the Python port.",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--fixture", action="store_true", help="synthetic corpus (the default)")
+    mode.add_argument("--data-root", help="a real VOICE_JOURNEY_DATA root, read only")
+    parser.add_argument("--approval", help="operator approval text (required with --data-root)")
+    parser.add_argument("--corpus-root", help="the phone drop (default: see the docstring)")
+    parser.add_argument("--fresh", action="store_true", help="--data-root: copy no manifests")
+    parser.add_argument("--float-tolerance", type=float, default=0.0)
+    parser.add_argument("--timestamp", default=DEFAULT_TIMESTAMP, help="the pinned timestamps")
+    parser.add_argument("--commit", default=PINNED_COMMIT, help="the pinned Node tree commit")
+    parser.add_argument("--node-tree", help="an extracted legacy/voice-journey tree instead")
+    parser.add_argument("--node", default="node")
+    parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--out", help="write the report here instead of standard output")
+    parser.add_argument("--show-values", action="store_true", help="--fixture only")
+    parser.add_argument("--keep-workdir", action="store_true", help="--fixture only")
+    args = parser.parse_args(argv)
+    if args.float_tolerance < 0:
+        parser.error("--float-tolerance must not be negative")
+    if args.data_root and (args.show_values or args.keep_workdir):
+        parser.error("--show-values and --keep-workdir are for --fixture only")
+    if not args.data_root and (args.approval or args.corpus_root or args.fresh):
+        parser.error("--approval, --corpus-root and --fresh need --data-root")
+    return args
+
+
+def _terminate(signum: int, _frame: FrameType | None) -> None:
+    raise SystemExit(128 + signum)
+
+
+@contextlib.contextmanager
+def private_workdir(keep: bool) -> Iterator[Path]:
+    work = Path(tempfile.mkdtemp(prefix="journey-parity-")).resolve()
+    work.chmod(0o700)
+    previous = {sig: signal.signal(sig, _terminate) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        if _inside(work, REPO_ROOT.resolve()):
+            raise ParityError("refusing a temporary directory inside the repository")
+        yield work
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        if keep:
+            sys.stderr.write(f"journey-parity: kept {work}\n")
+        else:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+def build_report(args: argparse.Namespace, work: Path) -> dict[str, Any]:
+    started = time.monotonic()
+    fixture = not args.data_root
+    plan = None if fixture else real_plan(args, work)
+    node = shutil.which(args.node)
+    if node is None:
+        raise ParityError(f"node not found: {args.node}")
+    if plan is None:
+        ffmpeg = shutil.which(os.environ.get("FFMPEG_BIN", "ffmpeg"))
+        if ffmpeg is None:
+            raise ParityError("ffmpeg not found (FFMPEG_BIN or PATH)")
+        plan = fixture_plan(work, ffmpeg=ffmpeg)
+    tree = (
+        Path(args.node_tree).resolve()
+        if args.node_tree
+        else extract_node_tree(work / "pinned", args.commit)
+    )
+    stages = build_stages(
+        corpus_root=str(plan.corpus_root),
+        measurement_root=str(plan.measurement_root),
+        approval=plan.approval,
+        timestamp=args.timestamp,
+        worker=str(plan.worker),
+    )
+    sources = [*sorted((tree / "src").glob("*.mjs"))]
+    sources += sorted((REPO_ROOT / "src" / "cole_voice_lab" / "journey").glob("*.py"))
+    allowed = None if args.show_values else schema_keys(sources)
+    node_version = (
+        subprocess.run(
+            [node, "--version"], capture_output=True, check=True, stdin=subprocess.DEVNULL
+        )
+        .stdout.decode()
+        .strip()
+    )
+    runs = {
+        side: run_side(side, plan, stages, work=work, node=node, tree=tree, python=args.python)
+        for side in SIDES
+    }
+    stage_reports, artifacts = compare_runs(
+        plan,
+        stages,
+        runs,
+        work=work,
+        tolerance=args.float_tolerance,
+        allowed=allowed,
+        show_values=args.show_values,
+    )
+    entries = [entry for report in stage_reports for entry in report["files"]] + artifacts
+    differences = sum(entry["differences"] for entry in entries)
+    failed = [f"{r['round']}:{r['stage']}" for r in stage_reports if r["result"] == "failed"]
+    artifact_differences = sum(entry["differences"] for entry in artifacts)
+    return {
+        "schema": REPORT_SCHEMA,
+        "mode": "fixture" if fixture else "data-root",
+        "ok": differences == 0 and not failed,
+        "pinnedNodeTree": {"commit": args.commit if not args.node_tree else "external tree"},
+        "runtimes": {
+            "node": node_version,
+            "python": sys.version.split()[0],
+        },
+        "tools": plan.tools,
+        "corpus": plan.corpus,
+        "floatTolerance": args.float_tolerance,
+        "pinnedTimestamp": args.timestamp,
+        "summary": {
+            "stages": {f"{r['round']}:{r['stage']}": r["result"] for r in stage_reports},
+            "files": len(entries),
+            "byteIdentical": sum(1 for entry in entries if entry["byteIdentical"]),
+            "filesWithDifferences": sum(1 for entry in entries if entry["differences"]),
+            "differences": differences,
+            "ignoredDifferences": sum(entry["ignoredDifferences"] for entry in entries),
+            "toleratedDifferences": sum(entry["toleratedDifferences"] for entry in entries),
+            "artifacts": len(artifacts),
+            "artifactDifferences": artifact_differences,
+            "failedStages": failed,
+            "seconds": {
+                side: round(sum(run.seconds for rnd in runs[side] for run in rnd), 3)
+                for side in SIDES
+            },
+            "totalSeconds": round(time.monotonic() - started, 3),
+        },
+        "ignoreRules": [
+            {"file": rule.file, "path": rule.path, "reason": rule.reason} for rule in IGNORE_RULES
+        ],
+        "stages": stage_reports,
+        "artifacts": artifacts,
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        with private_workdir(args.keep_workdir) as work:
+            report = build_report(args, work)
+    except ParityError as error:
+        sys.stderr.write(f"journey-parity: {error}\n")
+        return 2
+    except subprocess.CalledProcessError as error:
+        # Never echo the command line or its output: they can name private files.
+        sys.stderr.write(f"journey-parity: a setup command failed (exit {error.returncode})\n")
+        return 2
+    text = json.dumps(report, indent=2) + "\n"
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+    return 0 if report["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
