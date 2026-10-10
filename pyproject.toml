@@ -23,6 +23,11 @@ desktop = [
 vault = [
   "cryptography==50.0.1",
 ]
+# The journey pipeline's frame analysis (design §5.3, phase 3); hash-locked for the home
+# host in requirements/home-host-linux.txt. Only the job runner's modules import it.
+journey = [
+  "numpy==2.5.3",
+]
 dev = [
   # The locks pin 2.13.5; pydantic 2.14 changes TypeAdapter typing under strict mypy.
   "pydantic==2.13.5",
@@ -38,6 +43,7 @@ dev = [
   # The sealing closure exactly as locked (tests/test_storage_sealing.py checks it).
   "cffi==2.1.1",
   "pycparser==3.0",
+  "numpy==2.5.3",
 ]
 
 [project.scripts]
