@@ -1,0 +1,14 @@
+# The journey job runner's tick (design §5.3): the mirror pushes every 15 minutes, and a
+# change counts once two consecutive scans agree, so a tick every 5 minutes runs the
+# pipeline within one mirror period of a new memo. Inert until the service's conditions
+# hold (voice-lab-jobs.service).
+[Unit]
+Description=voice-lab journey job runner: watch tick every 5 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=5min
+Unit=voice-lab-jobs.service
+
+[Install]
+WantedBy=timers.target

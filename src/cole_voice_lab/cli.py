@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -3929,6 +3930,22 @@ def _vault_token_import(options: argparse.Namespace) -> int:
     return 0
 
 
+JOURNEY_COMMANDS = {
+    "watch": "cole_voice_lab.jobs.watch",
+    **{
+        stage: f"cole_voice_lab.journey.{stage}"
+        for stage in ("index", "filter", "stt", "lyrics", "reclassify", "features", "journeys")
+    },
+}
+
+
+def _journey(options: argparse.Namespace) -> int:
+    """``voice-lab journey <command> ARGS``: the module's own command line, ARGS as given."""
+
+    module = importlib.import_module(JOURNEY_COMMANDS[options.journey_command])
+    return cast(Callable[[list[str]], int], module.main)(list(options.arguments))
+
+
 def _add_consent_scope_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--subject-id", default="cole-self")
     parser.add_argument("--consent-id", default="cole-self-v1")
@@ -4895,6 +4912,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vault_token_import.add_argument("--scope", required=True, choices=("write", "read"))
     vault_token_import.set_defaults(handler=_vault_token_import)
+
+    journey = commands.add_parser("journey", help="the voice-journey pipeline and its watcher")
+    journey_commands = journey.add_subparsers(dest="journey_command", required=True)
+    for name, module in JOURNEY_COMMANDS.items():
+        # Every argument goes to the module's own parser: no option is parsed here.
+        forward = journey_commands.add_parser(
+            name, help=f"python -m {module}", add_help=False, prefix_chars="\0"
+        )
+        forward.add_argument("arguments", nargs=argparse.REMAINDER)
+        forward.set_defaults(handler=_journey)
 
     return parser
 
