@@ -11,7 +11,9 @@ tailnet sidecar and the Pocket ID door. Phase 2 serves:
 - phase 3's compatibility path: voice-journey's ``/api/intake/…``, answered by
   ``journey_intake.JourneyIntake`` in voice-journey's shapes (it checks the bearer itself).
 - whatever its ``routes`` answer (``api/routing.py``): the journey routes
-  (``journey_routes.py``, ``serve --journey``), after the bearer check for ``/api/``.
+  (``journey_routes.py``, ``serve --journey``), after the bearer check for ``/api/``,
+  and the read-only web view under ``/view/`` (``view/routes.py``), which checks the
+  door's forwarded identity or a bearer token itself.
 
 Every ``/api/`` request needs a bearer token that ``TokenVerifier`` accepts. Bodies are
 bounded; JSON is validated as its contract; every refusal is ``ApiRefusal`` with a stable
@@ -38,6 +40,7 @@ from pydantic import BaseModel, Field, ValidationError
 from ..canonical import canonical_json_bytes
 from ..models import ContractModel
 from ..paths import AssetLayout
+from ..view.routes import ViewRoutes
 from .auth import AuthError, AuthPolicy, TokenVerifier, TrustedIssuer
 from .contracts import (
     ApiErrorCode,
@@ -444,10 +447,12 @@ def build_server(
     *,
     log: bool = True,
     routes: Sequence[Route] = (),
+    verifier: TokenVerifier | None = None,
 ) -> ApiServer:
-    """The server for ``config``, bound to ``address`` but not yet serving."""
+    """The server for ``config``, bound to ``address`` but not yet serving; ``verifier``
+    (default: one for ``config.auth``) is shared with routes that check tokens."""
     layout = AssetLayout.validate(Path(config.asset_root))
-    verifier = TokenVerifier(config.auth)
+    verifier = verifier or TokenVerifier(config.auth)
     return ApiServer(
         address,
         staging=IntakeStaging(layout),
@@ -503,7 +508,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError) as error:
         sys.stderr.write(f"error: {error}\n")
         return 1
-    server = build_server(config, (options.host, options.port), routes=(journey,))
+    verifier = TokenVerifier(config.auth)
+    view = ViewRoutes(journey.store, verifier)
+    server = build_server(
+        config, (options.host, options.port), routes=(journey, view), verifier=verifier
+    )
     sys.stderr.write(f"api serving on {options.host}:{server.server_address[1]}\n")
     summary = journey.describe()
     if summary is not None:
