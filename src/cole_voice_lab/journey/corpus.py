@@ -8,6 +8,18 @@ The indexer (``journey/index.py``) and, later, the watcher use them. The macOS r
 (the ``voice-journey-corpus`` command line, read handles, the metadata database) is not
 here: it moves with the mirror to ``apps/mirror/``.
 
+Measurement sessions have two sources (design §5.4). voice-journey's own
+``<root>/<sessionId>/session.json`` directories, as before; and, after the merge, the lab's
+content-addressed ``raw/<manifest sha256>/`` packages that the API's compatibility intake
+(``api/journey_intake.py``) converted and the intake publisher accepted. A ``raw/``
+package counts when its intake receipt names it and its manifest is a measurement
+session's (prompt suite ``voice-journey-measurement``, session ``vj-<sessionId>``, device
+``voice-journey-chain:<chainId>``); its entries are the ones the old source gave for the
+same session (same ``recordingId``, ``filename`` and ``source``), with ``hostPath`` in
+``raw/``, ``capturedAt`` the manifest's ``captured_at`` as ``toISOString`` (what the
+capture client sends) and the segment key read from the file's directory in the package.
+Pointing ``--measurement-root`` at the lab's ``raw/`` lists them.
+
 The listing reads directory entries, file stat metadata and two small JSON files (the
 drop's ``_mirror/latest.json`` and each session's ``session.json``); never audio bytes,
 and it writes nothing. Drop rules, as in the JS: only regular ``.m4a`` files directly in
@@ -42,8 +54,14 @@ import posixpath
 import re
 import stat
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
+from ..canonical import open_regular_no_follow
+from ..capture import MANIFEST_NAME
+from ..errors import SecurityError
+from ..intake import RECEIPT_NAME, IntakeReceipt
+from ..models import CaptureManifest
 from . import jscompat as js
 from .jsonio import js_round, read_json
 
@@ -60,6 +78,14 @@ _FILENAME_STEM = re.compile(
     r"(?P<date>[0-9]{8}) (?P<time>[0-9]{6})-(?P<suffix>[^\n\r\u2028\u2029]+)\Z"
 )
 _SESSION_DIR = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{5,63}\Z")
+_RAW_PACKAGE = re.compile(r"[0-9a-f]{64}\Z")
+_MAX_CONTROL_BYTES = 1024 * 1024
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+# How a measurement session is named in a voice-lab capture package (api/journey_intake.py).
+MEASUREMENT_SUITE_ID = "voice-journey-measurement"
+MEASUREMENT_SESSION_PREFIX = "vj-"
+MEASUREMENT_DEVICE_PREFIX = "voice-journey-chain:"
 
 
 class HostAccessError(Exception):
@@ -270,7 +296,11 @@ def list_measurement_entries(root: str | os.PathLike[str]) -> list[Entry]:
     files). The intake publishes a session directory with one atomic rename, so a
     directory that has a ``session.json`` is whole. Each segment file is one entry,
     tagged with its source so the pipeline can tell the chains apart. A missing directory
-    is an empty list, not an error. Entries keep their ``hostPath``."""
+    is an empty list, not an error. Entries keep their ``hostPath``.
+
+    ``root`` may also be (or hold) the lab's ``raw/``: an accepted package named by its
+    manifest digest that holds a measurement session lists as that session (see the module
+    docstring)."""
 
     directory = os.fspath(root)
     try:
@@ -283,6 +313,10 @@ def list_measurement_entries(root: str | os.PathLike[str]) -> list[Entry]:
             continue
         try:
             session = read_json(js.path_join(directory, name, "session.json"))
+        except FileNotFoundError:
+            if _RAW_PACKAGE.match(name):
+                entries.extend(_raw_measurement_entries(directory, name))
+            continue
         except (OSError, ValueError, RecursionError):
             continue
         if session is None:
@@ -316,8 +350,69 @@ def list_measurement_entries(root: str | os.PathLike[str]) -> list[Entry]:
     return entries
 
 
+def _raw_measurement_entries(directory: str, name: str) -> list[Entry]:
+    """The entries of one accepted ``raw/`` package that holds a measurement session; none
+    for any other package, or one whose manifest or receipt cannot be read."""
+
+    package = js.path_join(directory, name)
+    try:
+        receipt = IntakeReceipt.model_validate_json(_read_bounded(package, RECEIPT_NAME))
+        manifest = CaptureManifest.model_validate_json(_read_bounded(package, MANIFEST_NAME))
+    except (OSError, ValueError, SecurityError):
+        return []
+    device = manifest.capture_device.device_id
+    if (
+        receipt.manifest_sha256 != name
+        or receipt.session_id != manifest.session_id
+        or manifest.prompt_suite_id != MEASUREMENT_SUITE_ID
+        or not manifest.session_id.startswith(MEASUREMENT_SESSION_PREFIX)
+        or not device.startswith(MEASUREMENT_DEVICE_PREFIX)
+    ):
+        return []
+    session_id = manifest.session_id.removeprefix(MEASUREMENT_SESSION_PREFIX)
+    entries: list[Entry] = []
+    for evidence in manifest.files:
+        segment, _, file_name = evidence.path.rpartition("/")
+        host_path = js.path_join(package, evidence.path)
+        try:
+            stats = os.stat(host_path)
+        except OSError:
+            continue
+        filename = f"{session_id}/{file_name}"
+        entries.append(
+            {
+                "recordingId": recording_id(f"measurement/{filename}"),
+                "filename": filename,
+                "hostPath": host_path,
+                "capturedAt": js.iso_from_ms(
+                    (manifest.captured_at - _EPOCH) // timedelta(milliseconds=1)
+                ),
+                "sizeBytes": stats.st_size,
+                "modifiedAt": mtime_iso(stats),
+                "source": {
+                    "type": "measurement",
+                    "chainId": device.removeprefix(MEASUREMENT_DEVICE_PREFIX),
+                    "sessionId": session_id,
+                    "segmentKey": segment or None,
+                },
+            }
+        )
+    return entries
+
+
+def _read_bounded(package: str, member: str) -> bytes:
+    with open_regular_no_follow(Path(package) / member) as stream:
+        data = stream.read(_MAX_CONTROL_BYTES + 1)
+    if len(data) > _MAX_CONTROL_BYTES:
+        raise ValueError(f"{member} is too large")
+    return data
+
+
 __all__ = [
     "ALLOWED_EXTENSIONS",
+    "MEASUREMENT_DEVICE_PREFIX",
+    "MEASUREMENT_SESSION_PREFIX",
+    "MEASUREMENT_SUITE_ID",
     "MIRROR_MANIFEST_PATH",
     "Entry",
     "HostAccessError",

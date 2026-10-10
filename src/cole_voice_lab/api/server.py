@@ -7,7 +7,9 @@ tailnet sidecar and the Pocket ID door. Phase 2 serves:
 - ``GET /api/v1/meta``;
 - ``POST /api/v1/intake/sessions``, ``GET …/{id}``, ``PUT …/{id}/files/{path}`` (the path
   percent-encoded as one segment, with ``Content-Range``), ``POST …/{id}/finalize``,
-  ``GET …/{id}/receipt``.
+  ``GET …/{id}/receipt``;
+- phase 3's compatibility path: voice-journey's ``/api/intake/…``, answered by
+  ``journey_intake.JourneyIntake`` in voice-journey's shapes (it checks the bearer itself).
 
 Every ``/api/`` request needs a bearer token that ``TokenVerifier`` accepts. Bodies are
 bounded; JSON is validated as its contract; every refusal is ``ApiRefusal`` with a stable
@@ -42,6 +44,8 @@ from .contracts import (
     IntakeSessionRequest,
     validate_package_path,
 )
+from .journey_intake import PATH_PREFIX as JOURNEY_INTAKE_PREFIX
+from .journey_intake import JourneyIntake
 from .staging import IntakeStaging, StagingError
 
 MAX_JSON_BODY_BYTES: Final = 1024 * 1024
@@ -78,8 +82,10 @@ class ApiServer(ThreadingHTTPServer):
         verifier: TokenVerifier,
         meta: ApiMeta,
         log: bool = True,
+        journey_intake: JourneyIntake | None = None,
     ) -> None:
         self.staging = staging
+        self.journey_intake = journey_intake
         self.verifier = verifier
         self.meta = meta
         self.log = log
@@ -243,6 +249,9 @@ class _ApiHandler(BaseHTTPRequestHandler):
             return
         if not path.startswith("/api/"):
             raise _Refusal(404, "not_found", "no such route")
+        if path.startswith(JOURNEY_INTAKE_PREFIX) and self.server.journey_intake is not None:
+            self._journey_intake(self.server.journey_intake, path)
+            return
         self._authorize()
         if path == "/api/v1/meta":
             self._route = "meta"
@@ -283,6 +292,23 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._put(session_id, member)
         else:
             raise _Refusal(404, "not_found", "no such route")
+
+    def _journey_intake(self, intake: JourneyIntake, path: str) -> None:
+        """Hand a ``/api/intake/…`` request to voice-journey's protocol and send its answer."""
+        self._route = "journey.intake"
+        status, body = intake.handle(self.command, path, self.headers, _Body(self))
+        if self._unread > MAX_CHUNK_BYTES:
+            self.close_connection = True
+        else:
+            self._discard_body()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+        self._access_log(status)
 
     def _only(self, *methods: str) -> None:
         if self.command not in methods:
@@ -334,15 +360,17 @@ def build_server(
 ) -> ApiServer:
     """The server for ``config``, bound to ``address`` but not yet serving."""
     layout = AssetLayout.validate(Path(config.asset_root))
+    verifier = TokenVerifier(config.auth)
     return ApiServer(
         address,
         staging=IntakeStaging(layout),
-        verifier=TokenVerifier(config.auth),
+        verifier=verifier,
         meta=ApiMeta(
             server_build=config.server_build,
             minimum_client_version=config.minimum_client_version,
         ),
         log=log,
+        journey_intake=JourneyIntake(layout, verifier=verifier),
     )
 
 
