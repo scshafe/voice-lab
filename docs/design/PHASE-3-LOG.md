@@ -15,7 +15,7 @@ the owner says to cut over; infra `host/` changes stop at the owner's hash appro
 
 | Step | What | Where | State |
 | --- | --- | --- | --- |
-| 1 | Guard rules for voice-journey's private shapes; import voice-journey into `legacy/voice-journey/` | voice-lab | in progress |
+| 1 | Guard rules for voice-journey's private shapes; import voice-journey into `legacy/voice-journey/` | voice-lab | done, #17 |
 | 2 | Import voice-journey-capture into `apps/desktop/` | voice-lab | in progress |
 | 3 | Port, leaves: paths, lyrics, reclassify, goals, coach | voice-lab | open |
 | 4 | Port, pipeline: index, filter, stt, features, journeys | voice-lab | open |
@@ -62,3 +62,8 @@ the owner says to cut over; infra `host/` changes stop at the owner's hash appro
   `CLAUDE.md`) is not carried; Ruff excludes `apps/desktop/` until phase 4. Its own suite
   passes there (`uv run --frozen pytest`: 139 passed, 2 skipped: the end-to-end intake
   tests that need a voice-journey checkout).
+- The guard (with the phase-3 rules) over every commit of the merged history (voice-lab,
+  both imports): 127 commits, 0 failing.
+- #17 merged (`ceb9785`). A fresh verify environment resolved pydantic 2.14.0, under which
+  strict mypy fails in untouched modules; #17 pins `pydantic==2.13.5` in the dev extra
+  (every lock already pins it).
