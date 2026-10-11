@@ -5,7 +5,8 @@
 //
 // SuiChart: a layered chart of one or more panels stacked on a shared x axis.
 // Everything is in data coordinates; the chart owns the pixels. `spec`:
-//   { label, xMin, xMax, xTicks: [{ value, label }], padLeft, padRight,
+//   { label, xMin, xMax, xTicks: [{ value, label }], xTitle, padLeft, padRight,
+//     compact: bool (no room for titles or the x axis: a sparkline),
 //     panels: [{ height, title, yMin, yMax, yScale: "linear" | "log2",
 //                yTicks: [{ value, label }], yTicksRight: [...], grid: bool,
 //                layers: [layer, ...] }] }
@@ -38,9 +39,10 @@ Item {
     readonly property var panels: spec && spec.panels ? spec.panels : []
     readonly property real padLeft: spec && spec.padLeft !== undefined ? spec.padLeft : 52
     readonly property real padRight: spec && spec.padRight !== undefined ? spec.padRight : 16
-    readonly property int titleHeight: 18
-    readonly property int panelGap: 14
-    readonly property int axisHeight: 20
+    readonly property bool compact: !!(spec && spec.compact)
+    readonly property int titleHeight: compact ? 0 : 18
+    readonly property int panelGap: compact ? 0 : 14
+    readonly property int axisHeight: compact ? 0 : (spec && spec.xTitle ? 34 : 20)
 
     signal activated(string id)
 
@@ -184,9 +186,11 @@ Item {
                     ctx.fillStyle = chart._color("muted", 1)
                     ctx.fillText(t.label, right + 6, y + 3)
                 }
-                ctx.strokeStyle = chart._color("line", 1)
-                ctx.lineWidth = 1
-                ctx.beginPath(); ctx.moveTo(left, top + h); ctx.lineTo(right, top + h); ctx.stroke()
+                if (!chart.compact) {
+                    ctx.strokeStyle = chart._color("line", 1)
+                    ctx.lineWidth = 1
+                    ctx.beginPath(); ctx.moveTo(left, top + h); ctx.lineTo(right, top + h); ctx.stroke()
+                }
                 for (const layer of panel.layers || [])
                     chart._paintLayer(ctx, layer, panel, top, h, left, right)
             }
@@ -197,6 +201,8 @@ Item {
             ctx.textAlign = "center"
             for (const t of chart.spec.xTicks || [])
                 ctx.fillText(t.label, chart._x(t.value), bottom + 14)
+            if (chart.spec.xTitle)
+                ctx.fillText(chart.spec.xTitle, (chart.padLeft + chart.width - chart.padRight) / 2, bottom + 28)
         }
     }
 
@@ -299,6 +305,7 @@ Item {
     }
 
     MouseArea {
+        objectName: "chartPointer"
         anchors.fill: parent
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton
