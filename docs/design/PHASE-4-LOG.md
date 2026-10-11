@@ -17,7 +17,7 @@ touched; phases 5 and 6 are out of scope.
 | --- | --- | --- | --- |
 | 4a | `voice-journey-capture` becomes `voice-lab-desktop` (Python 3.12, scshafe-qt 0.2); sign-in and status, Uploads, Corpus, Journey, Practice, Referee on `/api/v1`; the checklist | #34 | merged `f440436` |
 | view | Tests: every `/view` route refuses non-GET; none serves audio | #35 | merged `5036dba` |
-| 4b | The UMIK-1 ritual in the app; `/api/v1/intake` with the D-021 ledger | — | built on `phase4/4b-measurement`; after the view PR |
+| 4b | The UMIK-1 ritual in the app; `/api/v1/intake` with the D-021 ledger | #36 | open, after #35 |
 | 4c | Prompted capture; the S-1 harness; Linux packaging; the macOS bundle script and install page | — | not started |
 | removal | Remove the SPA's routes and voice-journey's unversioned paths | draft | gated: checklist sign-off, cutover (F) |
 
