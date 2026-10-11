@@ -21,7 +21,7 @@ touched; phases 5 and 6 are out of scope.
 | 4c | Prompted capture; the S-1 harness; Linux packaging; the macOS bundle script and install page | #38 | merged `0063dcc` |
 | fix | Record → Prompts' model stays C++-owned (QML's collector could delete it) | #39 | merged `1bc053e` |
 | chains | The Measurement screen reads `GET /api/v1/chains` (stacked on #31) | #37 | draft, gated like #31 |
-| removal | Remove voice-journey's unversioned paths and the compatibility intake (the SPA's page routes stay as 308s) | (draft) | gated: checklist sign-off, cutover (F), 4b acceptance, runbook E done |
+| removal | Remove voice-journey's unversioned paths and the compatibility intake (the SPA's page routes stay as 308s) | #40 (draft) | gated: checklist sign-off, cutover (F), 4b acceptance, runbook E done |
 
 ## Entries
 
