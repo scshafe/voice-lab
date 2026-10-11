@@ -17,14 +17,10 @@ from voice_lab_desktop.auth import SignInRequired
 from voice_lab_desktop.measurement import home_host
 from voice_lab_desktop.measurement.package import read_session_json
 
-from cole_voice_lab.api import journey_intake
-from cole_voice_lab.canonical import canonical_json_bytes
 from cole_voice_lab.home_host import HomeHostLedger
 from cole_voice_lab.intake import RECEIPT_NAME, IntakeReceipt, validate_capture_package
 from cole_voice_lab.intake_client import HomeHostClient, UploadError
 from cole_voice_lab.journey import measurement_package as package
-from cole_voice_lab.journey.jsonio import read_json
-from cole_voice_lab.journey.paths import packaged_chains
 from cole_voice_lab.models import CaptureManifest
 
 
@@ -58,20 +54,6 @@ def test_a_session_becomes_the_measurement_package(
     before = (built / "manifest.json").read_bytes()
     assert home_host.build_package(local, tmp_path / "packages") == built
     assert (built / "manifest.json").read_bytes() == before
-    # The server's compatibility path maps the same session to the same package (only
-    # who built it differs): it normalizes the manifest first, the app does not.
-    normalized = journey_intake.validate_manifest(session_json, read_json(packaged_chains()))
-    located = {f["name"]: local.path / f["name"] for f in session_json["files"]}
-    (tmp_path / "server").mkdir()
-    server_side, _ = package.write_package(
-        normalized,
-        located,
-        tmp_path / "server",
-        subject_id="cole-self",
-        capture_host="voice-lab-desktop",
-        move=False,
-    )
-    assert canonical_json_bytes(server_side) == canonical_json_bytes(capture)
 
 
 def test_a_damaged_or_changed_session_is_never_sent(

@@ -190,7 +190,7 @@ def test_no_path_climbs_out_of_view_to_audio(served: Any) -> None:
     port = api.server.server_address[1]
     memo_id = recording_id(MEMO)
     measurement = recording_id(f"measurement/{SESSION}/01-room-silence.wav")
-    for target in (f"api/v1/recordings/{memo_id}/audio", f"api/audio/{memo_id}"):
+    for target in (f"api/v1/recordings/{memo_id}/audio",):
         for climb in ("../", "%2e%2e/", "%2E%2E/", "..%2f", "./../", "recordings/../../", "/"):
             path = f"/view/{climb}{target}"
             status, answer, body = raw_request(port, "GET", path, FORWARDED)
@@ -212,7 +212,6 @@ def test_the_view_imports_nothing_of_the_audio_seam() -> None:
         "_audio_response",
         "_open_audio",
         "_v1_audio",
-        "_alias_audio",
     }
     for path in sorted(VIEW_PACKAGE.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))

@@ -3,12 +3,10 @@
 @canonical journey.measurement_package -- the one mapping from a measurement session
 (voice-journey's ``session.json``: its chain, its segments, its WAV files) to the capture
 package the unchanged strict validator accepts and the intake publisher publishes into
-``raw/``. Two callers build packages with it and must agree byte for byte:
-
-- the API's compatibility path (``api/journey_intake.py``), for the separate capture
-  client during phase 3;
-- the desktop app (phase 4b), which builds the package itself and sends it through
-  ``/api/v1/intake`` with the D-021 ledger entry (``intake_client.upload_session``).
+``raw/``. The desktop app (phase 4b) builds the package with it and sends it through
+``/api/v1/intake`` with the D-021 ledger entry (``intake_client.upload_session``). During
+phase 3 the API's compatibility path (voice-journey's ``/api/intake/…``, removed in phase 4)
+built the same package, so a session sent either way has the same manifest.
 
 The package: ``session_id`` ``vj-<sessionId>``; ``prompt_suite_id``
 ``voice-journey-measurement`` (no prompt catalog); ``subject_id`` the configured subject;
@@ -248,28 +246,22 @@ def write_package(
     *,
     subject_id: str,
     capture_host: str,
-    move: bool,
 ) -> tuple[CaptureManifest, str]:
     """Write the capture package of a verified session into ``directory``.
 
-    ``located`` names each WAV's file now; it is renamed (``move``) or copied (never through
-    a symlink, never over an existing file) into its place in the package, then
-    ``manifest.json``, ``qc.json`` and ``READY`` are written last.
+    ``located`` names each WAV's file now; it is copied (never through a symlink, never over
+    an existing file) into its place in the package, then ``manifest.json``, ``qc.json`` and
+    ``READY`` are written last.
     Returns the capture manifest and its file's digest.
     Raises: ``PackageRefusal`` for audio that is not canonical (nothing is placed)."""
 
     inspections = inspect_session(located)
     for name, member, _ in package_layout(manifest):
         target = directory / member
-        if located[name] == target:
-            continue
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if move:
-            os.rename(located[name], target)
-        else:
-            with open_regular_no_follow(located[name]) as source, open(target, "xb") as sink:
-                shutil.copyfileobj(source, sink, 1024 * 1024)
-            os.chmod(target, 0o600)
+        with open_regular_no_follow(located[name]) as source, open(target, "xb") as sink:
+            shutil.copyfileobj(source, sink, 1024 * 1024)
+        os.chmod(target, 0o600)
     capture = capture_manifest(
         manifest, inspections, subject_id=subject_id, capture_host=capture_host
     )

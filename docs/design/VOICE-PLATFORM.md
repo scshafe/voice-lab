@@ -299,7 +299,9 @@ remain CLI commands on the PC with their existing explicit flags and digests.
 
 During phase 3 the API also answers voice-journey's unversioned paths (`/api/rows`,
 `/api/intake/…`) so the React SPA and the current capture client keep working; they
-are removed in phase 4 once nothing calls them.
+are removed in phase 4 once nothing calls them. (Removed by phase 4's removal PR, after
+the checklist sign-off and the cutover: see PHASE-4-LOG.md. The SPA's page routes stay as
+`308` redirects to `/view/` while the cutover's bookmark redirect lives.)
 
 The HTTP server follows `storage_server.py`'s precedent: the standard library's
 `ThreadingHTTPServer`, strict Pydantic request and response models, JSON refusals

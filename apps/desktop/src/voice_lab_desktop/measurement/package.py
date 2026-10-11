@@ -1,14 +1,14 @@
 """The session package: ``session.json`` plus SHA-256 and size for every WAV.
 
 ``session.json`` carries everything ``capture.mjs`` wrote (chain id, input
-level, distance, cal-file hash, the segment map) plus ``files[]``, so the same
-document is the manifest ``POST /api/intake/sessions`` takes. It is written
-once, when the session completes, and sent byte-for-byte the same on every
-retry (the server answers a different manifest for the same id with 409).
+level, distance, cal-file hash, the segment map) plus ``files[]``: the
+document voice-journey's intake took, and the one ``home_host.py`` turns into
+the lab's capture package (``journey.measurement_package``). It is written once,
+when the session completes, and never rewritten, so the package built from it is
+the same on every retry.
 
-``validate_manifest`` mirrors the intake's rules (voice-journey
-``src/intake.mjs`` ``validateManifest``) so a bad package fails here, before
-any upload.
+``validate_manifest`` keeps voice-journey's intake rules (``src/intake.mjs``
+``validateManifest``) so a bad session fails here, before any package is built.
 """
 
 from __future__ import annotations

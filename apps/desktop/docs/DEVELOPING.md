@@ -49,9 +49,9 @@ Nothing needs a microphone, a speaker, the network or the real server:
   fails a test (`qt_log_level_fail`).
 - **The audio device** is `RecordingOutput` (conftest): it keeps what would have played, so
   tests check the decoded samples, the referee's gain and its low-pass.
-- **The measurement capture** keeps voice-journey-capture's fakes: a simulated UMIK-1 and
-  level, a fake Pocket ID, and voice-journey's intake behind a fake door with injectable
-  faults; its end-to-end tests upload to voice-lab's own API and its intake publisher.
+- **The measurement capture** keeps voice-journey-capture's fakes, a simulated UMIK-1 and
+  level and a fake Pocket ID; its uploads go to the backend's real `/api/v1/intake` and its
+  intake publisher over a synthetic lab (`tests/home_rig.py`).
 - **Prompted capture.** The capture worker runs as a real process over a simulated UMIK-1
   whose ADC times can jump, stall or carry an overflow (`capture/backends.py`), so the tests
   exercise its protocol, its continuity rule and the parent's validation; the S-1 harness runs

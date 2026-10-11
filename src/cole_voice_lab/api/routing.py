@@ -7,7 +7,7 @@ answers. For a path under ``/api/`` the server has already verified the bearer t
 reaches the routes unauthenticated, so a route that serves one (the web view) checks
 identity itself. A route returns ``None`` for a path that is not its own, raises
 :class:`RouteRefusal` for a refusal in the server's ``ApiRefusal`` shape, or answers
-with its own body (the journey routes' voice-journey aliases answer the JS's JSON).
+with its own body (the web view's HTML).
 """
 
 from __future__ import annotations
