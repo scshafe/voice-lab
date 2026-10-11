@@ -14,7 +14,7 @@ First time? See [docs/FIRST-RUN.md](docs/FIRST-RUN.md).
 | Screen | What |
 | --- | --- |
 | **Status** | Sign-in, the settings, the server (build, API versions, the minimum client version), its gates (playback, transcript text, feature detail), the job runner, the local spool, the evidence report (opens the web view's in the browser) |
-| **Uploads** | Each local session: waiting, uploading (with progress), accepted (when and where), refused (why, with Retry); an interrupted upload resumes where the server stopped |
+| **Uploads** | Each local session: waiting, uploading (with progress), accepted (when, where, the receipt's digests), refused (why, with Retry); an interrupted upload resumes where the server stopped. Sessions go through `/api/v1/intake` under this machine's standing home-host approval, each in its ledger (D-021) |
 | **Corpus** | Every recording: search and filters, a sortable table that pages as you scroll, the row detail, playback, the local transcript on request, spot-check verdicts |
 | **Journey** | The longitudinal analysis: the verdict, the range river, cause and effect, the vibrato story, what not to trust, song scorecards, repertoire threads, the take inspector |
 | **Practice** | The coach (songs due for a take, the frontier) and pre-registered goals |
@@ -34,9 +34,12 @@ detail need their local stores there. Status shows each gate.
 Python 3.12 and [uv](https://docs.astral.sh/uv/). From a checkout of this repository:
 
 ```sh
-uv tool install --python 3.12 ./apps/desktop   # the command voice-lab-desktop
+uv tool install --python 3.12 --with-executables-from cole-voice-lab ./apps/desktop
 voice-lab-desktop
 ```
+
+This installs `voice-lab-desktop` and the lab's own `voice-lab` command, which approves the
+home host once on this machine (docs/FIRST-RUN.md, "Approve the home host").
 
 or, to work on it, `cd apps/desktop && uv sync --frozen && uv run voice-lab-desktop`. The app
 uses the backend's contracts from the same checkout (installed editable), so keep the
@@ -81,7 +84,7 @@ voice-lab-desktop --devices             # inputs, the UMIK-1, its level against 
 voice-lab-desktop --pin-level           # pin the level (a re-pin is a chain era event)
 voice-lab-desktop --import-cal PATH     # miniDSP's per-serial cal file
 voice-lab-desktop --sessions            # local measurement sessions and their upload state
-voice-lab-desktop --upload              # upload every pending session
+voice-lab-desktop --upload              # upload every pending session (/api/v1/intake)
 voice-lab-desktop --retry-failed        # refused sessions back to pending
 voice-lab-desktop --prune-accepted      # delete local copies the server has accepted
 voice-lab-desktop --import-capture-data [DIR]   # copy voice-journey-capture's pin, cal file, sessions
