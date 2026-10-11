@@ -203,7 +203,7 @@ class Player(QObject):
         self._started = 0  # counts output starts: a stopped stream's late "done" is ignored
         self._timer = QTimer(self)
         self._timer.setInterval(POSITION_MS)
-        self._timer.timeout.connect(self.positionChanged.emit)
+        self._timer.timeout.connect(self.positionChanged)
 
     # -- properties -------------------------------------------------------------------------
 

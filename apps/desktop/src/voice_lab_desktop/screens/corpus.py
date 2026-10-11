@@ -401,6 +401,7 @@ class CorpusModel(ViewModel):
         self._pending_search = value
         self._search_timer.start()
 
+    @Slot()
     def _apply_search(self) -> None:
         self.setFilter("q", self._pending_search)
 
@@ -504,6 +505,7 @@ class CorpusModel(ViewModel):
         state = self._play_state if key == self._play_key else "idle"
         return table_row(row, playback=self._v["playbackEnabled"], play_state=state)
 
+    @Slot()
     def _player_changed(self) -> None:
         player = self.context.player
         key, state = str(player.property("activeKey")), str(player.property("state"))

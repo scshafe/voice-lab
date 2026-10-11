@@ -19,7 +19,8 @@ touched; phases 5 and 6 are out of scope.
 | view | Tests: every `/view` route refuses non-GET; none serves audio | #35 | merged `5036dba` |
 | 4b | The UMIK-1 ritual in the app; `/api/v1/intake` with the D-021 ledger | #36 | merged `f09a951` |
 | 4c | Prompted capture; the S-1 harness; Linux packaging; the macOS bundle script and install page | #38 | merged `0063dcc` |
-| fix | Record → Prompts' model stays C++-owned (QML's collector could delete it) | #39 | merged `1bc053e` |
+| fix | Record → Prompts' model stays C++-owned (QML's collector could delete it) | #39 | merged `1bc053e`; its deploy failed verify on the flake below |
+| fix | Declared slots: every model QML reads keeps its class's metaobject (the app suite's flake) | #41 | merged |
 | chains | The Measurement screen reads `GET /api/v1/chains` (stacked on #31) | #37 | draft, gated like #31 |
 | removal | Remove voice-journey's unversioned paths and the compatibility intake (the SPA's page routes stay as 308s) | #40 (draft) | gated: checklist sign-off, cutover (F), 4b acceptance, runbook E done |
 
@@ -201,13 +202,24 @@ Deviations and open items:
 
 - **#38 (4c) merged** (`0063dcc`); its deploy run 38131925979 passed verify, deploy and
   health.
-- **A 4c defect, fixed in its own PR.** `PromptsScreen.qml` reads its model through
-  `AppModel.promptsModel`, a property returning a parentless `QObject`; QML's JavaScript
-  collector could delete it under the running screen ("Unable to assign [undefined]"). The
-  removal draft's tree made it fail one journey or referee test per run (4 of 4 runs; 0 of 6
-  with the fix); `main` passed only by the collector's timing. The app now sets
-  `CppOwnership` on it. In the app this would have been a crash or a dead screen at a random
-  moment.
+- **A 4c defect, fixed in its own PR (#39).** `PromptsScreen.qml` reads its model through
+  `AppModel.promptsModel`, a property returning a parentless `QObject`, which QML's
+  ownership heuristics may hand to its JavaScript collector; the app now sets
+  `CppOwnership` on it. #39 took this for the cause of flaky "Unable to assign [undefined]"
+  failures in the app suite; it was not the whole cause, and #39's own deploy run failed
+  verify on one of them (`test_journey_threads`), so `1bc053e` was not deployed.
+- **The flake's cause** (this PR). Signals connected to Python methods that were not declared
+  `@Slot` (`refresh_spool`, `_refresh_sidebar`, the screen models' timer and settings
+  handlers, and the player's timer connected to a signal's `emit`) made PySide add dynamic
+  slots to the receivers, so the Corpus, Prompts, Referee, Status, Measurement models and the
+  app model each had a metaobject of their own per instance. QML caches what it knows about
+  a type by the metaobject's address, process-wide: once a test's models died and a later
+  model's metaobject was allocated at the same address, a new window saw the old type's
+  signals and properties. Reproduced locally (the prompts suite, then Corpus, Journey and
+  Referee: 2 of 3 runs failed without #39's change, 2 of 4 with it, 0 of 6 with every
+  receiver a declared slot). In the app (one app model for the process) the same
+  per-instance metaobjects were fragile, not yet broken. `test_qml_metaobjects.py` checks that
+  two app models share every exposed model's metaobject: it fails without the fix.
 
 ### Removal (draft)
 
