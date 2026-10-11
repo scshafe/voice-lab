@@ -7,7 +7,6 @@ import struct
 import wave
 
 import pytest
-
 from voice_lab_desktop.measurement.simulated import tone_block
 from voice_lab_desktop.measurement.wav import BlockStats, WavWriter, int32_to_s24le, meter_fraction
 
@@ -18,7 +17,9 @@ def int32s(*values: int) -> bytes:
 
 def test_int32_to_s24le_keeps_the_top_24_bits():
     raw = int32s(0x12345600, -256, 0x7FFFFF00, -(2**31))
-    assert int32_to_s24le(raw) == bytes([0x56, 0x34, 0x12, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x00, 0x00, 0x80])
+    assert int32_to_s24le(raw) == bytes(
+        [0x56, 0x34, 0x12, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x00, 0x00, 0x80]
+    )
     with pytest.raises(ValueError):
         int32_to_s24le(b"\x00\x01\x02")
 
@@ -31,9 +32,14 @@ def test_wav_header_and_samples_read_back(tmp_path):
     size = writer.close()
     assert size == path.stat().st_size == 44 + 6 * 3
     with wave.open(str(path)) as w:
-        assert (w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()) == (1, 3, 48000, 6)
+        assert (w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()) == (
+            1,
+            3,
+            48000,
+            6,
+        )
         frames = w.readframes(6)
-    got = [int.from_bytes(frames[i:i + 3], "little", signed=True) for i in range(0, 18, 3)]
+    got = [int.from_bytes(frames[i : i + 3], "little", signed=True) for i in range(0, 18, 3)]
     assert got == [s >> 8 for s in samples]
 
 
@@ -63,5 +69,7 @@ def test_clipping_and_digital_silence():
 
 def test_meter_fraction():
     assert meter_fraction(None) == 0.0
-    assert meter_fraction(0.0) == 1.0 and meter_fraction(-72.0) == 0.0 and meter_fraction(-36.0) == 0.5
+    assert (
+        meter_fraction(0.0) == 1.0 and meter_fraction(-72.0) == 0.0 and meter_fraction(-36.0) == 0.5
+    )
     assert meter_fraction(-200.0) == 0.0

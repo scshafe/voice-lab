@@ -16,19 +16,33 @@ from dataclasses import dataclass, field
 from .devices import BlockCallback, DeviceError, InputDevice
 from .levels import InputLevel, LevelUnreadable
 
-UMIK = InputDevice(index=3, name="Umik-1  Gain: 18dB", host_api="Core Audio", channels=1, default_rate=48000.0)
-BUILT_IN = InputDevice(index=1, name="MacBook Air Microphone", host_api="Core Audio", channels=1, default_rate=48000.0)
+UMIK = InputDevice(
+    index=3, name="Umik-1  Gain: 18dB", host_api="Core Audio", channels=1, default_rate=48000.0
+)
+BUILT_IN = InputDevice(
+    index=1, name="MacBook Air Microphone", host_api="Core Audio", channels=1, default_rate=48000.0
+)
 
 
-def tone_block(start_frame: int, frames: int, rate: int, dbfs: float = -24.0, hz: float = 220.0, noise_dbfs: float = -90.0,
-               rng: random.Random | None = None) -> bytes:
-    """A sine plus a little noise, as 24-bit samples in the top bits of int32 (what a 24-bit device delivers)."""
+def tone_block(
+    start_frame: int,
+    frames: int,
+    rate: int,
+    dbfs: float = -24.0,
+    hz: float = 220.0,
+    noise_dbfs: float = -90.0,
+    rng: random.Random | None = None,
+) -> bytes:
+    """A sine plus a little noise, as 24-bit samples in the top bits of int32 (what a 24-bit
+    device delivers)."""
     amp = 10 ** (dbfs / 20) * (2**23 - 1)
     noise = 10 ** (noise_dbfs / 20) * (2**23 - 1)
     rng = rng or random.Random(start_frame)
     out = bytearray(frames * 4)
     for i in range(frames):
-        value = int(amp * math.sin(2 * math.pi * hz * (start_frame + i) / rate) + rng.gauss(0, noise))
+        value = int(
+            amp * math.sin(2 * math.pi * hz * (start_frame + i) / rate) + rng.gauss(0, noise)
+        )
         value = max(-(2**23), min(2**23 - 1, value))
         struct.pack_into("<i", out, i * 4, value << 8)
     return bytes(out)
@@ -55,7 +69,10 @@ class SimulatedStream:
         silence = bytes(block * 4)
         while not self._stop.is_set():
             data = silence if backend.zeros else tone
-            overflow = backend.overflow_every > 0 and (frame // block) % backend.overflow_every == backend.overflow_every - 1
+            overflow = (
+                backend.overflow_every > 0
+                and (frame // block) % backend.overflow_every == backend.overflow_every - 1
+            )
             self.callback(data, block, overflow)
             frame += block
             backend.frames_delivered += block
@@ -86,7 +103,9 @@ class SimulatedBackend:
     def list_inputs(self) -> list[InputDevice]:
         return list(self.devices)
 
-    def open_input(self, device: InputDevice, sample_rate: int, callback: BlockCallback) -> SimulatedStream:
+    def open_input(
+        self, device: InputDevice, sample_rate: int, callback: BlockCallback
+    ) -> SimulatedStream:
         if self.fail_open:
             raise DeviceError(self.fail_open)
         if device not in self.devices:
@@ -97,7 +116,11 @@ class SimulatedBackend:
 
 @dataclass
 class SimulatedLevelReader:
-    level: InputLevel = field(default_factory=lambda: InputLevel(63, (0.63,), False, "coreaudio", "VolumeScalar input element 0"))
+    level: InputLevel = field(
+        default_factory=lambda: InputLevel(
+            63, (0.63,), False, "coreaudio", "VolumeScalar input element 0"
+        )
+    )
     unreadable: str | None = None
     reads: int = 0
 
@@ -108,4 +131,10 @@ class SimulatedLevelReader:
         return self.level
 
     def move_to(self, volume: int) -> None:
-        self.level = InputLevel(volume, (round(volume / 100, 6),), self.level.muted, self.level.source, self.level.control)
+        self.level = InputLevel(
+            volume,
+            (round(volume / 100, 6),),
+            self.level.muted,
+            self.level.source,
+            self.level.control,
+        )

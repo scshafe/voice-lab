@@ -47,7 +47,7 @@ class SegmentRecording:
         self.overflows = 0
         self.error: BaseException | None = None
         self.finished = threading.Event()
-        self._queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._queue: queue.SimpleQueue[bytes | None] = queue.SimpleQueue()
         self._stopping = False
         self._result: SegmentResult | None = None
         self._writer = WavWriter(self.path, sample_rate)
@@ -138,8 +138,15 @@ class SegmentRecording:
         self.path.unlink(missing_ok=True)
 
 
-def probe(backend: AudioBackend, device: InputDevice, sample_rate: int, seconds: float = 0.5, timeout: float = 5.0) -> BlockStats:
-    """Open the device at the chain's rate and listen briefly: proves the stream works and the signal is not digital zeros."""
+def probe(
+    backend: AudioBackend,
+    device: InputDevice,
+    sample_rate: int,
+    seconds: float = 0.5,
+    timeout: float = 5.0,
+) -> BlockStats:
+    """Open the device at the chain's rate and listen briefly: proves the stream works and the
+    signal is not digital zeros."""
     stats = BlockStats()
     lock = threading.Lock()
     target = int(seconds * sample_rate)

@@ -19,7 +19,8 @@ BIT_DEPTH = 24
 CHANNELS = 1
 #: The registry's default mouth-to-capsule distance for this chain.
 DEFAULT_DISTANCE_CM = 35
-#: miniDSP's USB vendor id and the UMIK-1's product id (as Linux shows them in /proc/asound/cardN/usbid).
+#: miniDSP's USB vendor id and the UMIK-1's product id (as Linux shows them in
+#: /proc/asound/cardN/usbid).
 USB_ID = "2752:0007"
 LABEL = "miniDSP UMIK-1 (chain umik1, 48 kHz / 24-bit)"
 

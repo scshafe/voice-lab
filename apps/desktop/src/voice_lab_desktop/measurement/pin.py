@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from . import chain
 from .levels import InputLevel
@@ -45,12 +46,19 @@ class Pin:
     device_name: str
     pinned_at: str
 
-    def to_json(self) -> dict:
-        return {"chainId": chain.CHAIN_ID, "level": self.level.to_json(), "deviceName": self.device_name, "pinnedAt": self.pinned_at}
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "chainId": chain.CHAIN_ID,
+            "level": self.level.to_json(),
+            "deviceName": self.device_name,
+            "pinnedAt": self.pinned_at,
+        }
 
     @classmethod
-    def from_json(cls, data: dict) -> Pin:
-        return cls(InputLevel.from_json(data["level"]), str(data["deviceName"]), str(data["pinnedAt"]))
+    def from_json(cls, data: dict[str, Any]) -> Pin:
+        return cls(
+            InputLevel.from_json(data["level"]), str(data["deviceName"]), str(data["pinnedAt"])
+        )
 
 
 @dataclass(frozen=True)
@@ -71,14 +79,16 @@ def guard(pin: Pin | None, level: InputLevel) -> None:
         raise LevelMuted(f"the UMIK-1 input is muted ({level.control}); unmute it")
     if pin is None:
         raise NotPinned(
-            f"the input level is not pinned yet. Set the UMIK-1's input level deliberately once "
-            f"(now {level.volume}%), then press Pin level. Re-pinning later is a logged chain era event."
+            "the input level is not pinned yet. Set the UMIK-1's input level deliberately once "
+            f"(now {level.volume}%), then press Pin level. Re-pinning later is a logged chain "
+            "era event."
         )
     if not pin.level.same_setting(level):
         raise LevelMoved(
-            f"the input level is {level.volume}% ({level.source}) but chain {chain.CHAIN_ID} is pinned at "
-            f"{pin.level.volume}% ({pin.level.source}, {pin.pinned_at}). A moved slider invalidates the SPL "
-            "reference: restore it, or re-pin deliberately (a logged era event)."
+            f"the input level is {level.volume}% ({level.source}) but chain {chain.CHAIN_ID} "
+            f"is pinned at {pin.level.volume}% ({pin.level.source}, {pin.pinned_at}). A moved "
+            "slider invalidates the SPL reference: restore it, or re-pin deliberately (a logged "
+            "era event)."
         )
 
 
@@ -89,16 +99,19 @@ class StateStore:
         self.log_path = self.data_dir / "level-pins.jsonl"
         self.cal_dir = self.data_dir / "calibration"
 
-    def _read(self) -> dict:
+    def _read(self) -> dict[str, Any]:
         try:
             data = json.loads(self.state_path.read_text())
         except FileNotFoundError:
             return {}
         except (OSError, ValueError) as exc:
-            raise GuardError(f"the app state file {self.state_path} is damaged ({type(exc).__name__}); fix or remove it") from exc
+            raise GuardError(
+                f"the app state file {self.state_path} is damaged ({type(exc).__name__}); "
+                "fix or remove it"
+            ) from exc
         return data if isinstance(data, dict) else {}
 
-    def _write(self, data: dict) -> None:
+    def _write(self, data: dict[str, Any]) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n")
@@ -120,7 +133,9 @@ class StateStore:
         self._write(state)
         event = {
             "at": new.pinned_at,
-            "event": "re-pin (chain era event)" if previous and not previous.level.same_setting(level) else "pin",
+            "event": "re-pin (chain era event)"
+            if previous and not previous.level.same_setting(level)
+            else "pin",
             "chainId": chain.CHAIN_ID,
             "deviceName": device_name,
             "level": level.to_json(),
@@ -130,11 +145,24 @@ class StateStore:
             log.write(json.dumps(event) + "\n")
         return previous, new
 
-    def log_check(self, kind: str, level: InputLevel | None, ok: bool, session_id: str | None = None) -> None:
+    def log_check(
+        self, kind: str, level: InputLevel | None, ok: bool, session_id: str | None = None
+    ) -> None:
         """Level reads around a session are logged too (counts and levels only)."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a") as log:
-            log.write(json.dumps({"at": now_iso(), "event": kind, "ok": ok, "sessionId": session_id, "level": level.to_json() if level else None}) + "\n")
+            log.write(
+                json.dumps(
+                    {
+                        "at": now_iso(),
+                        "event": kind,
+                        "ok": ok,
+                        "sessionId": session_id,
+                        "level": level.to_json() if level else None,
+                    }
+                )
+                + "\n"
+            )
 
     # --- the cal file ---------------------------------------------------------------
     def cal_file(self) -> CalFile | None:
@@ -144,7 +172,8 @@ class StateStore:
         return CalFile(raw["name"], raw["sha256"], raw.get("serial"), self.cal_dir / raw["name"])
 
     def import_cal_file(self, source: Path) -> CalFile:
-        """Copy miniDSP's per-serial cal file into the data dir (the hash is taken from the copy)."""
+        """Copy miniDSP's per-serial cal file into the data dir (the hash is taken from the
+        copy)."""
         data = read_cal_file(Path(source))
         self.cal_dir.mkdir(parents=True, exist_ok=True)
         name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(source).name)[:96] or "umik1-cal.txt"
@@ -154,7 +183,12 @@ class StateStore:
         tmp.replace(dest)
         cal = CalFile(name, hashlib.sha256(data).hexdigest(), cal_serial(data), dest)
         state = self._read()
-        state["calFile"] = {"name": cal.name, "sha256": cal.sha256, "serial": cal.serial, "importedAt": now_iso()}
+        state["calFile"] = {
+            "name": cal.name,
+            "sha256": cal.sha256,
+            "serial": cal.serial,
+            "importedAt": now_iso(),
+        }
         self._write(state)
         return cal
 
@@ -166,13 +200,19 @@ class StateStore:
         try:
             digest = hashlib.sha256(cal.path.read_bytes()).hexdigest()
         except OSError as exc:
-            raise CalFileError(f"the imported cal file {cal.path} cannot be read; import it again") from exc
+            raise CalFileError(
+                f"the imported cal file {cal.path} cannot be read; import it again"
+            ) from exc
         if digest != cal.sha256:
-            raise CalFileError(f"the imported cal file {cal.path} changed since it was imported; import it again")
+            raise CalFileError(
+                f"the imported cal file {cal.path} changed since it was imported; import it again"
+            )
         return cal, digest
 
 
-_NUMBERS = re.compile(r"^\s*[-+]?\d+(\.\d+)?([eE][-+]?\d+)?[\s,;]+[-+]?\d+(\.\d+)?([eE][-+]?\d+)?(\s|$)")
+_NUMBERS = re.compile(
+    r"^\s*[-+]?\d+(\.\d+)?([eE][-+]?\d+)?[\s,;]+[-+]?\d+(\.\d+)?([eE][-+]?\d+)?(\s|$)"
+)
 
 
 def read_cal_file(path: Path) -> bytes:
@@ -189,7 +229,9 @@ def read_cal_file(path: Path) -> bytes:
         text = data.decode("latin-1")
     rows = sum(1 for line in text.splitlines() if _NUMBERS.match(line))
     if rows < 10:
-        raise CalFileError("that does not look like a UMIK-1 calibration file (expected frequency / dB lines)")
+        raise CalFileError(
+            "that does not look like a UMIK-1 calibration file (expected frequency / dB lines)"
+        )
     return data
 
 

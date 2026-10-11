@@ -36,11 +36,26 @@ def int32_to_s24le(raw: bytes) -> bytes:
 
 def header(sample_rate: int, channels: int, data_bytes: int) -> bytes:
     block_align = channels * BYTES_PER_SAMPLE
-    return b"".join([
-        b"RIFF", struct.pack("<I", 36 + data_bytes), b"WAVE",
-        b"fmt ", struct.pack("<IHHIIHH", 16, 1, channels, sample_rate, sample_rate * block_align, block_align, 8 * BYTES_PER_SAMPLE),
-        b"data", struct.pack("<I", data_bytes),
-    ])
+    return b"".join(
+        [
+            b"RIFF",
+            struct.pack("<I", 36 + data_bytes),
+            b"WAVE",
+            b"fmt ",
+            struct.pack(
+                "<IHHIIHH",
+                16,
+                1,
+                channels,
+                sample_rate,
+                sample_rate * block_align,
+                block_align,
+                8 * BYTES_PER_SAMPLE,
+            ),
+            b"data",
+            struct.pack("<I", data_bytes),
+        ]
+    )
 
 
 class WavWriter:
@@ -107,7 +122,8 @@ class BlockStats:
 
     @property
     def digital_silence(self) -> bool:
-        """Every sample exactly zero: a real capsule never does this (macOS sends zeros when mic access is denied)."""
+        """Every sample exactly zero: a real capsule never does this (macOS sends zeros when
+        mic access is denied)."""
         return self.frames > 0 and self.nonzero == 0
 
 

@@ -1,197 +1,250 @@
-"""End to end against the real voice-journey intake (src/intake.mjs inside src/corpus-browser.mjs).
+"""End to end against voice-lab's own intake: the compatibility path into raw/.
 
-Runs when a voice-journey checkout is found (``$VOICE_JOURNEY_CHECKOUT``, else
-``../voice-journey`` next to this repository) and ``node`` >= 22 is on PATH;
-skipped otherwise. The checkout is only read: the server runs with a temporary
-``VOICE_JOURNEY_DATA``, and the test checks the checkout's git status is
-unchanged. A small fake door in front of it does what oauth2-proxy does for a
-bearer token: checks it, drops client-sent identity headers and sets
-``X-Forwarded-User`` / ``X-Forwarded-Email``.
+A session recorded by the ritual (the simulated UMIK-1) is uploaded with the capture
+client's own code (``upload_pending``) to voice-lab's ``ApiServer``, whose ``JourneyIntake``
+answers voice-journey's ``/api/intake/…`` protocol (design §3.4, D-035), converts the
+session into a capture package in ``incoming/`` and waits for the intake publisher, which
+validates it with the unchanged strict validator and publishes it into ``raw/`` with a v2
+receipt. The publisher's pass runs where the intake waits for it (its ``sleep``), as on the
+PC its host unit does between the client's polls. The token is the backend's test key's,
+verified by the API itself (``api/auth.py``). Synthetic lab, synthetic audio; nothing real.
 """
 
 from __future__ import annotations
 
-import http.client
 import json
-import os
-import shutil
-import socket
-import subprocess
 import threading
-import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 from helpers import record_session
-
+from home_host_fixtures import ISSUER, jwks, mint, policy
 from voice_lab_desktop.auth import Session
-from voice_lab_desktop.measurement.upload import IntakeClient, upload_pending
+from voice_lab_desktop.config import Config
+from voice_lab_desktop.measurement.ritual import Ritual
+from voice_lab_desktop.measurement.store import SessionStore
+from voice_lab_desktop.measurement.upload import IntakeClient, upload_pending, upload_session
+from voice_lab_desktop.tokens import MemoryStore, Tokens
 
-REPO = Path(__file__).resolve().parents[1]
+from cole_voice_lab.api.auth import TokenVerifier
+from cole_voice_lab.api.contracts import ApiMeta
+from cole_voice_lab.api.journey_intake import JourneyIntake
+from cole_voice_lab.api.server import ApiServer
+from cole_voice_lab.api.staging import IntakeStaging
+from cole_voice_lab.intake import RECEIPT_NAME, IntakeReceipt, validate_capture_package
+from cole_voice_lab.intake_publisher import publish_pending
+from cole_voice_lab.paths import AssetLayout
 
-
-def checkout() -> Path | None:
-    candidates = [os.environ.get("VOICE_JOURNEY_CHECKOUT"), str(REPO.parent / "voice-journey")]
-    for c in candidates:
-        if c and (Path(c) / "src" / "intake.mjs").is_file() and (Path(c) / "manifests" / "chains.json").is_file():
-            return Path(c)
-    return None
-
-
-def node_ok() -> bool:
-    node = shutil.which("node")
-    if not node:
-        return False
-    out = subprocess.run([node, "--version"], capture_output=True, text=True).stdout.strip()
-    return out.startswith("v") and int(out[1:].split(".")[0]) >= 22
+CHUNK = 300_000  # several PUTs a file, so a cut can fall inside one
 
 
-CHECKOUT = checkout()
-pytestmark = pytest.mark.skipif(CHECKOUT is None or not node_ok(), reason="no voice-journey checkout (VOICE_JOURNEY_CHECKOUT) or node >= 22")
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def git_status(path: Path) -> str | None:
-    if not (path / ".git").exists() or not shutil.which("git"):
-        return None
-    return subprocess.run(["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True).stdout
-
-
-class FakeDoor:
-    def __init__(self, upstream_port: int, valid_tokens: set[str]) -> None:
-        self.upstream_port = upstream_port
-        self.valid_tokens = valid_tokens
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self.server.daemon_threads = True
-        threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.05), daemon=True).start()
+@dataclass
+class Lab:
+    layout: AssetLayout
+    server: ApiServer
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.server.server_address[1]}"
 
-    def stop(self) -> None:
-        self.server.shutdown()
-        self.server.server_close()
+    @property
+    def raw(self) -> Path:
+        return self.layout.directory("raw")
 
-    def _handler(self):
-        door = self
-
-        class Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def log_message(self, *args: Any) -> None:
-                return
-
-            def _proxy(self) -> None:
-                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-                auth = self.headers.get("Authorization", "")
-                if not auth.startswith("Bearer ") or auth[7:] not in door.valid_tokens:
-                    raw = b'{"error":"unauthorized"}'
-                    self.send_response(401)
-                    self.send_header("Content-Length", str(len(raw)))
-                    self.end_headers()
-                    self.wfile.write(raw)
-                    return
-                headers = {k: v for k, v in self.headers.items()
-                           if k.lower() in ("content-type", "content-range", "content-length", "accept")}
-                headers["X-Forwarded-User"] = "owner"
-                headers["X-Forwarded-Email"] = "owner@example.test"
-                conn = http.client.HTTPConnection("127.0.0.1", door.upstream_port, timeout=60)
-                conn.request(self.command, self.path, body=body, headers=headers)
-                answer = conn.getresponse()
-                data = answer.read()
-                self.send_response(answer.status)
-                self.send_header("Content-Type", answer.getheader("Content-Type", "application/json"))
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-                conn.close()
-
-            do_GET = do_POST = do_PUT = _proxy  # noqa: N815
-
-        return Handler
+    def packages(self) -> list[Path]:
+        return sorted(path for path in self.raw.iterdir() if path.is_dir())
 
 
 @pytest.fixture
-def server(tmp_path, issuer, intake):
-    before = git_status(CHECKOUT)
-    data = tmp_path / "vj-data"
-    port = free_port()
-    env = {**os.environ, "VOICE_JOURNEY_DATA": str(data), "VOICE_JOURNEY_CHAINS": str(CHECKOUT / "manifests" / "chains.json")}
-    for var in ("VOICE_JOURNEY_CONTAINER", "VOICE_JOURNEY_WATCH", "VOICE_JOURNEY_NTFY", "VOICE_JOURNEY_PLAYBACK_APPROVAL"):
-        env.pop(var, None)
-    proc = subprocess.Popen(["node", "src/corpus-browser.mjs", "--host", "127.0.0.1", "--port", str(port)], cwd=CHECKOUT, env=env,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+def lab(tmp_path: Path) -> Iterator[Lab]:
+    """voice-lab's API with the compatibility intake over a synthetic lab."""
+    layout = AssetLayout.initialize(tmp_path / "voice-lab" / "lab")
+    jwks_path = tmp_path / "jwks.json"
+    jwks_path.write_text(json.dumps(jwks()), encoding="utf-8")
+    verifier = TokenVerifier(policy(jwks_path))
+    intake = JourneyIntake(
+        layout,
+        verifier=verifier,
+        log=lambda line: None,
+        # The publisher host unit's pass, where the intake waits for it.
+        sleep=lambda _seconds: publish_pending(layout, min_free_bytes=0),
+        publish_wait_seconds=30.0,
+    )
+    server = ApiServer(
+        ("127.0.0.1", 0),
+        staging=IntakeStaging(layout, min_free_bytes=0),
+        verifier=verifier,
+        meta=ApiMeta(server_build="test-build", minimum_client_version="0.1.0"),
+        log=False,
+        journey_intake=intake,
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        deadline = time.monotonic() + 30
-        while True:
-            try:
-                if httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=2).status_code == 200:
-                    break
-            except httpx.HTTPError:
-                pass
-            if proc.poll() is not None or time.monotonic() > deadline:
-                pytest.fail(f"voice-journey did not start: {proc.stderr.read() if proc.stderr else ''}")
-            time.sleep(0.1)
-        door = FakeDoor(port, intake.valid_tokens)  # the issuer's tokens, as the door's JWT check would accept
-        yield door, port, data
-        door.stop()
+        yield Lab(layout, server)
     finally:
-        proc.terminate()
-        proc.wait(timeout=10)
-    assert git_status(CHECKOUT) == before, "the voice-journey checkout changed"
+        server.shutdown()
+        server.server_close()
 
 
-def test_the_real_intake_accepts_a_recorded_session(server, config, signed_in, backend, levels, pinned, sessions):
-    door, port, data = server
-    ritual = record_session(backend, levels, pinned, sessions, skip_free=True)
-    with httpx.Client(follow_redirects=False, timeout=60) as http:
-        client = IntakeClient(door.url, Session(config, signed_in, http), http, chunk_bytes=300_000)
-        summary = upload_pending(client, sessions, door.url)
-        assert (summary.accepted, summary.failed, summary.pending) == (1, 0, 0), summary.last_error
-        assert client.status(ritual.session_id).body["state"] == "accepted"
-    published = data / "corpus" / "measurement" / ritual.session_id
-    record = json.loads((published / "session.json").read_text())
-    assert record["schemaVersion"] == "voice-journey.intake-session.v1" and record["chainId"] == "umik1"
-    assert record["intake"]["acceptedBy"] == "owner"
-    assert record["capture"]["inputVolume"] == 63 and record["capture"]["sampleRate"] == 48000
-    assert [s["key"] for s in record["segments"]] == [s["key"] for s in ritual.manifest["segments"]]
+@dataclass
+class Wire:
+    """Every request the client sent, and an optional cut after ``cut_after`` PUTs."""
+
+    requests: list[httpx.Request]
+    cut_after: int | None = None
+
+    def puts(self) -> list[httpx.Request]:
+        return [r for r in self.requests if r.method == "PUT"]
+
+    def hook(self, request: httpx.Request) -> None:
+        self.requests.append(request)
+        if self.cut_after is not None and len(self.puts()) > self.cut_after:
+            self.cut_after = None
+            raise httpx.ReadError("the connection dropped", request=request)
+
+
+def client_for(lab: Lab, tmp_path: Path, wire: Wire) -> tuple[IntakeClient, httpx.Client]:
+    config = Config(
+        server_url=lab.url,
+        issuer=ISSUER,
+        client_id="voice-lab-desktop",
+        data_dir=tmp_path / "client",
+        file=tmp_path / "client.toml",
+    ).validated()
+    token = mint({"exp": 4_102_444_800})  # 2100: no refresh during the test
+    tokens = Tokens(token, token, 4_102_444_800.0)
+    http = httpx.Client(follow_redirects=False, timeout=60, event_hooks={"request": [wire.hook]})
+    return IntakeClient(lab.url, Session(config, MemoryStore(tokens), http), http, CHUNK), http
+
+
+def content_start(request: httpx.Request) -> int:
+    return int(request.headers["content-range"].split()[1].split("-")[0])
+
+
+def assert_published(lab: Lab, ritual: Ritual) -> None:
+    """The session is one package in raw/, with a v2 receipt naming it, byte for byte."""
+    [package] = lab.packages()
+    validated = validate_capture_package(package, allow_intake_receipt=True)
+    manifest = validated.manifest
+    receipt = IntakeReceipt.model_validate_json((package / RECEIPT_NAME).read_bytes())
+    assert manifest.session_id == receipt.session_id == f"vj-{ritual.session_id}"
+    assert receipt.manifest_sha256 == validated.manifest_sha256
+    assert manifest.prompt_suite_id == "voice-journey-measurement"
+    assert manifest.capture_device.device_id == "voice-journey-chain:umik1"
+    assert ritual.manifest is not None and ritual.session_dir is not None
+    keys = {segment["file"]: segment["key"] for segment in ritual.manifest["segments"]}
     for entry in ritual.manifest["files"]:
-        assert (published / entry["name"]).read_bytes() == (ritual.session_dir / entry["name"]).read_bytes()
-    assert sessions.sessions()[0].upload_state == "accepted"
+        published = package / keys[entry["name"]] / entry["name"]
+        assert published.read_bytes() == (ritual.session_dir / entry["name"]).read_bytes()
+    kinds = {entry.path.split("/")[0]: entry.kind for entry in manifest.files}
+    assert kinds["room-silence"] == "room-tone"
+    assert {kind for key, kind in kinds.items() if key != "room-silence"} == {"calibration"}
 
 
-def test_the_real_intake_is_fail_closed(server, config, signed_in, backend, levels, pinned, sessions):
-    door, port, data = server
+def test_a_recorded_session_lands_in_raw_with_a_receipt(
+    lab: Lab,
+    tmp_path: Path,
+    backend: Any,
+    levels: Any,
+    pinned: Any,
+    sessions: SessionStore,
+) -> None:
     ritual = record_session(backend, levels, pinned, sessions, skip_free=True)
+    wire = Wire([])
+    client, http = client_for(lab, tmp_path, wire)
+    with http:
+        summary = upload_pending(client, sessions, lab.url)
+        assert (summary.accepted, summary.pending, summary.failed) == (1, 0, 0), summary.last_error
+        assert client.status(ritual.session_id).body["state"] == "accepted"
+        assert_published(lab, ritual)
+        [local] = sessions.sessions()
+        assert local.upload_state == "accepted" and local.upload["server"] == lab.url
+
+        # Again: the server already holds it; nothing is sent twice, nothing is published twice.
+        sent = len(wire.puts())
+        assert upload_session(client, local) == "accepted"
+        assert len(wire.puts()) == sent
+        assert len(lab.packages()) == 1
+
+
+def test_a_cut_upload_resumes_from_the_bytes_the_server_holds(
+    lab: Lab,
+    tmp_path: Path,
+    backend: Any,
+    levels: Any,
+    pinned: Any,
+    sessions: SessionStore,
+) -> None:
+    ritual = record_session(backend, levels, pinned, sessions, skip_free=True)
+    wire = Wire([], cut_after=2)  # the third PUT never reaches the server
+    client, http = client_for(lab, tmp_path, wire)
+    with http:
+        first = upload_pending(client, sessions, lab.url)
+        assert (first.accepted, first.pending) == (0, 1)
+        assert "did not answer" in (first.last_error or "")
+        assert sessions.pending()[0].upload["attempts"] == 1
+        assert lab.packages() == []
+        held = {f["name"]: f for f in client.status(ritual.session_id).body["files"]}
+        assert ritual.manifest is not None
+        first_file = ritual.manifest["files"][0]["name"]
+        assert held[first_file]["receivedBytes"] == 2 * CHUNK and not held[first_file]["complete"]
+
+        before = len(wire.puts())
+        second = upload_pending(client, sessions, lab.url)
+        assert second.accepted == 1, second.last_error
+        resumed = wire.puts()[before:]
+        assert content_start(resumed[0]) == 2 * CHUNK  # not from zero
+        assert_published(lab, ritual)
+
+
+def test_the_compatibility_path_is_fail_closed(
+    lab: Lab,
+    tmp_path: Path,
+    backend: Any,
+    levels: Any,
+    pinned: Any,
+    sessions: SessionStore,
+) -> None:
+    ritual = record_session(backend, levels, pinned, sessions, skip_free=True)
+    assert ritual.session_dir is not None and ritual.manifest is not None
     manifest_bytes = (ritual.session_dir / "session.json").read_bytes()
     first = ritual.manifest["files"][0]
-    with httpx.Client(follow_redirects=False, timeout=60) as http:
-        assert http.post(f"http://127.0.0.1:{port}/api/intake/sessions", content=manifest_bytes).json()["error"] == "identity_required"
-        assert http.post(f"{door.url}/api/intake/sessions", content=manifest_bytes).status_code == 401
-        client = IntakeClient(door.url, Session(config, signed_in, http), http)
+    wire = Wire([])
+    client, http = client_for(lab, tmp_path, wire)
+    with http:
+        anonymous = httpx.post(f"{lab.url}/api/intake/sessions", content=manifest_bytes)
+        assert (anonymous.status_code, anonymous.json()["error"]) == (401, "identity_required")
         opened = client.open(manifest_bytes)
         assert opened.status == 201 and opened.body["state"] == "open"
         bad = bytearray((ritual.session_dir / first["name"]).read_bytes())
         bad[-1] ^= 0xFF
-        answer = client._send("PUT", f"{client.base}/{ritual.session_id}/files/{first['name']}", content=bytes(bad),
-                              headers={"Content-Range": f"bytes 0-{len(bad) - 1}/{len(bad)}", "Content-Type": "application/octet-stream"})
+        answer = client._send(
+            "PUT",
+            f"{client.base}/{ritual.session_id}/files/{first['name']}",
+            content=bytes(bad),
+            headers={
+                "Content-Range": f"bytes 0-{len(bad) - 1}/{len(bad)}",
+                "Content-Type": "application/octet-stream",
+            },
+        )
         assert (answer.status, answer.body["error"]) == (422, "checksum_mismatch")
         final = client.finalize(ritual.session_id)
         assert (final.status, final.body["error"]) == (409, "incomplete")
-        assert not (data / "corpus" / "measurement" / ritual.session_id).exists()
-        # A different manifest for the same session is a conflict; the client's normal path then completes it.
+        assert lab.packages() == []
+        # A different manifest for the same session is a conflict; the client's normal path
+        # then completes the session it opened.
         other = json.loads(manifest_bytes)
         other["capture"]["distanceCm"] = 36
-        conflict = client._send("POST", client.base, content=json.dumps(other).encode(), headers={"Content-Type": "application/json"})
+        conflict = client._send(
+            "POST",
+            client.base,
+            content=json.dumps(other).encode(),
+            headers={"Content-Type": "application/json"},
+        )
         assert (conflict.status, conflict.body["error"]) == (409, "session_manifest_conflict")
-        assert upload_pending(client, sessions, door.url).accepted == 1
-    assert (data / "corpus" / "measurement" / ritual.session_id / first["name"]).exists()
+        assert upload_pending(client, sessions, lab.url).accepted == 1
+        assert_published(lab, ritual)

@@ -19,6 +19,7 @@ import math
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 from . import chain
 
@@ -45,7 +46,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def file_entries(session_dir: Path, names: list[str]) -> list[dict]:
+def file_entries(session_dir: Path, names: list[str]) -> list[dict[str, Any]]:
     out = []
     for name in names:
         path = session_dir / name
@@ -53,14 +54,17 @@ def file_entries(session_dir: Path, names: list[str]) -> list[dict]:
     return out
 
 
-def validate_manifest(manifest: dict) -> None:
+def validate_manifest(manifest: dict[str, Any]) -> None:
     """The intake's rules, client side. Raises PackageError naming the first defect."""
+
     def bad(code: str) -> PackageError:
         return PackageError(code)
 
     if not isinstance(manifest, dict):
         raise bad("manifest_not_object")
-    if not isinstance(manifest.get("sessionId"), str) or not SESSION_ID_RE.match(manifest["sessionId"]):
+    if not isinstance(manifest.get("sessionId"), str) or not SESSION_ID_RE.match(
+        manifest["sessionId"]
+    ):
         raise bad("invalid_session_id")
     if manifest.get("chainId") != chain.CHAIN_ID:
         raise bad("unknown_chain")
@@ -71,10 +75,19 @@ def validate_manifest(manifest: dict) -> None:
     if not isinstance(capture, dict):
         raise bad("capture_required")
     volume = capture.get("inputVolume")
-    if isinstance(volume, bool) or not isinstance(volume, (int, float)) or not math.isfinite(volume):
+    if (
+        isinstance(volume, bool)
+        or not isinstance(volume, (int, float))
+        or not math.isfinite(volume)
+    ):
         raise bad("input_level_required")
     distance = capture.get("distanceCm")
-    if isinstance(distance, bool) or not isinstance(distance, (int, float)) or not math.isfinite(distance) or distance <= 0:
+    if (
+        isinstance(distance, bool)
+        or not isinstance(distance, (int, float))
+        or not math.isfinite(distance)
+        or distance <= 0
+    ):
         raise bad("distance_required")
     cal = capture.get("calFileSha256")
     if cal is not None and not (isinstance(cal, str) and SHA256_RE.match(cal)):
@@ -107,7 +120,11 @@ def validate_manifest(manifest: dict) -> None:
     if not isinstance(segments, list) or not segments:
         raise bad("segment_map_required")
     for segment in segments:
-        if not isinstance(segment, dict) or not isinstance(segment.get("key"), str) or not isinstance(segment.get("file"), str):
+        if (
+            not isinstance(segment, dict)
+            or not isinstance(segment.get("key"), str)
+            or not isinstance(segment.get("file"), str)
+        ):
             raise bad("invalid_segment")
         if segment["file"] not in names:
             raise bad("segment_file_not_listed")
@@ -115,11 +132,11 @@ def validate_manifest(manifest: dict) -> None:
         raise bad("manifest_too_large")
 
 
-def encode(manifest: dict) -> bytes:
+def encode(manifest: dict[str, Any]) -> bytes:
     return (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def write_session_json(session_dir: Path, manifest: dict) -> Path:
+def write_session_json(session_dir: Path, manifest: dict[str, Any]) -> Path:
     path = session_dir / SESSION_FILE
     tmp = session_dir / (SESSION_FILE + ".tmp")
     with open(tmp, "wb") as fh:
@@ -130,14 +147,17 @@ def write_session_json(session_dir: Path, manifest: dict) -> Path:
     return path
 
 
-def read_session_json(session_dir: Path) -> dict:
+def read_session_json(session_dir: Path) -> dict[str, Any]:
     try:
-        return json.loads((session_dir / SESSION_FILE).read_text())
+        data = json.loads((session_dir / SESSION_FILE).read_text())
     except (OSError, ValueError) as exc:
         raise PackageError(f"{session_dir.name}: session.json is missing or damaged") from exc
+    if not isinstance(data, dict):  # valid JSON, but not a session document
+        raise PackageError(f"{session_dir.name}: session.json is missing or damaged")
+    return data
 
 
-def verify_files(session_dir: Path, manifest: dict) -> list[str]:
+def verify_files(session_dir: Path, manifest: dict[str, Any]) -> list[str]:
     """Names whose bytes on disk no longer match the manifest (size or sha256)."""
     bad = []
     for entry in manifest.get("files", []):

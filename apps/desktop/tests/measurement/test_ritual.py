@@ -1,4 +1,5 @@
-"""The ritual: capture.mjs's segments, 48 kHz / 24-bit WAVs, session.json, and the level guard around everything."""
+"""The ritual: capture.mjs's segments, 48 kHz / 24-bit WAVs, session.json, and the level guard
+around everything."""
 
 from __future__ import annotations
 
@@ -10,8 +11,7 @@ from datetime import datetime
 
 import pytest
 from helpers import new_ritual, record_segment, record_session
-
-from voice_lab_desktop import package
+from voice_lab_desktop.measurement import package
 from voice_lab_desktop.measurement.ritual import RitualError, plan_segments, session_id_for
 from voice_lab_desktop.measurement.simulated import UMIK, SimulatedBackend
 
@@ -27,9 +27,15 @@ CAPTURE_MJS = [
 ]
 
 
-@pytest.mark.parametrize("cal_tone,skip_free", [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize(
+    "cal_tone,skip_free", [(False, False), (True, False), (False, True), (True, True)]
+)
 def test_plan_matches_capture_mjs(cal_tone, skip_free):
-    expected = [s for s in CAPTURE_MJS if (s[0] != "cal-tone" or cal_tone) and (s[0] != "free-practice" or not skip_free)]
+    expected = [
+        s
+        for s in CAPTURE_MJS
+        if (s[0] != "cal-tone" or cal_tone) and (s[0] != "free-practice" or not skip_free)
+    ]
     plan = plan_segments(cal_tone, skip_free)
     assert [(p.key, p.label, p.mode, p.seconds) for p in plan] == expected
     assert [p.file for p in plan] == [f"{i + 1:02d}-{s[0]}.wav" for i, s in enumerate(expected)]
@@ -49,8 +55,19 @@ def test_a_whole_session(backend, levels, pinned, sessions):
     cap = m["capture"]
     assert (cap["sampleRate"], cap["bitDepth"], cap["channels"]) == (48000, 24, 1)
     assert cap["inputVolume"] == 63 and cap["distanceCm"] == 35 and cap["calFileSha256"] is None
-    assert cap["levelPinnedAt"] and cap["inputLevel"]["source"] == "coreaudio" and cap["device"]["name"] == UMIK.name
-    assert [s["key"] for s in m["segments"]] == ["room-silence", "vowel-soft", "vowel-loud", "glide", "anchor-song", "free-practice"]
+    assert (
+        cap["levelPinnedAt"]
+        and cap["inputLevel"]["source"] == "coreaudio"
+        and cap["device"]["name"] == UMIK.name
+    )
+    assert [s["key"] for s in m["segments"]] == [
+        "room-silence",
+        "vowel-soft",
+        "vowel-loud",
+        "glide",
+        "anchor-song",
+        "free-practice",
+    ]
     assert [f["name"] for f in m["files"]] == [s["file"] for s in m["segments"]]
     for seg, entry in zip(m["segments"], m["files"], strict=True):
         path = ritual.session_dir / entry["name"]
@@ -62,7 +79,9 @@ def test_a_whole_session(backend, levels, pinned, sessions):
         assert seg["peakDbfs"] == pytest.approx(-24.0, abs=0.1) and seg["clippedSamples"] == 0
         assert re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$", seg["startedAt"])
     silence = m["segments"][0]
-    assert silence["frames"] == 480000 and silence["durationSeconds"] == 10.0  # exactly 10 s, not wall-clock
+    assert (
+        silence["frames"] == 480000 and silence["durationSeconds"] == 10.0
+    )  # exactly 10 s, not wall-clock
     package.validate_manifest(m)
     on_disk = json.loads((ritual.session_dir / "session.json").read_text())
     assert on_disk == m
@@ -71,7 +90,10 @@ def test_a_whole_session(backend, levels, pinned, sessions):
 
 def test_cal_tone_option_and_cal_file(backend, levels, pinned, sessions, tmp_path):
     cal = tmp_path / "7012345.txt"
-    cal.write_text('"Sens Factor =-1.378dB, SERNO: 7012345"\n' + "".join(f"{20 + i * 10}.0\t{-0.1 * i:.2f}\n" for i in range(40)))
+    cal.write_text(
+        '"Sens Factor =-1.378dB, SERNO: 7012345"\n'
+        + "".join(f"{20 + i * 10}.0\t{-0.1 * i:.2f}\n" for i in range(40))
+    )
     pinned.import_cal_file(cal)
     ritual = record_session(backend, levels, pinned, sessions, cal_tone=True, skip_free=True)
     cap = ritual.manifest["capture"]
@@ -102,7 +124,11 @@ def test_refused_when_the_level_moved_before_the_session(backend, levels, pinned
         new_ritual(backend, levels, pinned, sessions).begin()
     assert sessions.sessions() == []
     log = [json.loads(line) for line in pinned.log_path.read_text().splitlines()]
-    assert log[-1]["event"] == "session-start" and log[-1]["ok"] is False and log[-1]["level"]["volume"] == 70
+    assert (
+        log[-1]["event"] == "session-start"
+        and log[-1]["ok"] is False
+        and log[-1]["level"]["volume"] == 70
+    )
 
 
 def test_refused_when_the_level_cannot_be_read(backend, levels, pinned, sessions):
@@ -128,7 +154,9 @@ def test_digital_silence_is_refused(levels, pinned, sessions):
 
 def test_a_device_that_will_not_open_is_refused(levels, pinned, sessions):
     with pytest.raises(RitualError, match="cannot open"):
-        new_ritual(SimulatedBackend(fail_open="cannot open at 48000 Hz"), levels, pinned, sessions).begin()
+        new_ritual(
+            SimulatedBackend(fail_open="cannot open at 48000 Hz"), levels, pinned, sessions
+        ).begin()
 
 
 def test_level_moved_between_segments_aborts(backend, levels, pinned, sessions):
@@ -195,4 +223,3 @@ def test_input_overflows_are_counted(levels, pinned, sessions):
     backend = SimulatedBackend(speed=200, block_frames=4800, overflow_every=5)
     ritual = record_session(backend, levels, pinned, sessions, skip_free=True)
     assert ritual.manifest["segments"][0]["inputOverflows"] > 0
-

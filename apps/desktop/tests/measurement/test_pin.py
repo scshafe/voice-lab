@@ -6,9 +6,16 @@ import hashlib
 import json
 
 import pytest
-
 from voice_lab_desktop.measurement.levels import InputLevel
-from voice_lab_desktop.measurement.pin import CalFileError, GuardError, LevelMoved, LevelMuted, NotPinned, StateStore, guard
+from voice_lab_desktop.measurement.pin import (
+    CalFileError,
+    GuardError,
+    LevelMoved,
+    LevelMuted,
+    NotPinned,
+    StateStore,
+    guard,
+)
 
 LEVEL = InputLevel(63, (0.63,), False, "coreaudio", "VolumeScalar input element 0")
 
@@ -48,7 +55,9 @@ def test_a_damaged_state_file_is_an_error_not_a_reset(tmp_path):
 
 
 def cal_text(serial="7012345", rows=40) -> str:
-    return f'"Sens Factor =-1.378dB, SERNO: {serial}"\n' + "".join(f"{10 + i * 25:.3f}\t{-0.05 * i:.3f}\n" for i in range(rows))
+    return f'"Sens Factor =-1.378dB, SERNO: {serial}"\n' + "".join(
+        f"{10 + i * 25:.3f}\t{-0.05 * i:.3f}\n" for i in range(rows)
+    )
 
 
 def test_import_cal_file(tmp_path):
@@ -57,17 +66,23 @@ def test_import_cal_file(tmp_path):
     store = StateStore(tmp_path / "data")
     cal = store.import_cal_file(source)
     assert cal.serial == "7012345" and cal.sha256 == hashlib.sha256(source.read_bytes()).hexdigest()
-    assert cal.path.read_bytes() == source.read_bytes() and cal.path.parent == tmp_path / "data" / "calibration"
+    assert (
+        cal.path.read_bytes() == source.read_bytes()
+        and cal.path.parent == tmp_path / "data" / "calibration"
+    )
     assert store.current_cal_sha256() == (cal, cal.sha256)
     source.unlink()  # the copy is what counts
     assert store.current_cal_sha256()[1] == cal.sha256
 
 
-@pytest.mark.parametrize("content,match", [
-    ("hello\nworld\n", "does not look like"),
-    (cal_text(rows=5), "does not look like"),
-    ("x" * (1024 * 1024 + 1), "too large"),
-])
+@pytest.mark.parametrize(
+    "content,match",
+    [
+        ("hello\nworld\n", "does not look like"),
+        (cal_text(rows=5), "does not look like"),
+        ("x" * (1024 * 1024 + 1), "too large"),
+    ],
+)
 def test_import_cal_file_refuses_non_cal_files(tmp_path, content, match):
     source = tmp_path / "bad.txt"
     source.write_text(content)

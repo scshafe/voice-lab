@@ -26,8 +26,9 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Any, Protocol
 
 from . import chain
 from .devices import InputDevice
@@ -51,12 +52,24 @@ class InputLevel:
     def describe(self) -> str:
         return f"{self.volume}%{' (muted)' if self.muted else ''} [{self.source}: {self.control}]"
 
-    def to_json(self) -> dict:
-        return {"volume": self.volume, "raw": list(self.raw), "muted": self.muted, "source": self.source, "control": self.control}
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "volume": self.volume,
+            "raw": list(self.raw),
+            "muted": self.muted,
+            "source": self.source,
+            "control": self.control,
+        }
 
     @classmethod
-    def from_json(cls, data: dict) -> InputLevel:
-        return cls(int(data["volume"]), tuple(float(v) for v in data["raw"]), bool(data["muted"]), str(data["source"]), str(data["control"]))
+    def from_json(cls, data: dict[str, Any]) -> InputLevel:
+        return cls(
+            int(data["volume"]),
+            tuple(float(v) for v in data["raw"]),
+            bool(data["muted"]),
+            str(data["source"]),
+            str(data["control"]),
+        )
 
 
 class LevelReader(Protocol):
@@ -85,14 +98,22 @@ _CONTROL = re.compile(r"^Simple mixer control '([^']*)',(\d+)")
 _CAPTURE = re.compile(r"Capture (-?\d+) \[(\d+)%\](?: \[(-?[\d.]+)dB\])?(?: \[(on|off)\])?")
 
 
-def parse_amixer(text: str) -> list[dict]:
-    """``amixer -c N scontents`` → the simple controls with a capture volume (name, values, percents, switches)."""
-    controls: list[dict] = []
-    current: dict | None = None
+def parse_amixer(text: str) -> list[dict[str, Any]]:
+    """``amixer -c N scontents`` → the simple controls with a capture volume (name, values,
+    percents, switches)."""
+    controls: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
     for line in text.splitlines():
         head = _CONTROL.match(line)
         if head:
-            current = {"name": head.group(1), "index": int(head.group(2)), "caps": "", "values": [], "percents": [], "switches": []}
+            current = {
+                "name": head.group(1),
+                "index": int(head.group(2)),
+                "caps": "",
+                "values": [],
+                "percents": [],
+                "switches": [],
+            }
             controls.append(current)
             continue
         if current is None:
@@ -100,7 +121,8 @@ def parse_amixer(text: str) -> list[dict]:
         stripped = line.strip()
         if stripped.startswith("Capabilities:"):
             current["caps"] = stripped.split(":", 1)[1]
-        else:  # channel lines ("Mono: Capture 16 [70%] [12.00dB] [on]"); Limits lines carry no [..%]
+        # channel lines ("Mono: Capture 16 [70%] [12.00dB] [on]"); Limits lines carry no [..%]
+        else:
             for match in _CAPTURE.finditer(stripped):
                 current["values"].append(float(match.group(1)))
                 current["percents"].append(int(match.group(2)))
@@ -119,10 +141,15 @@ class AlsaLevelReader:
             raise LevelUnreadable(f"{device.name!r} is not an ALSA hw: device")
         controls = parse_amixer(self.run(["amixer", "-c", str(card), "scontents"]))
         if not controls:
-            raise LevelUnreadable(f"ALSA card {card} has no capture volume control, so its level cannot be pinned")
+            raise LevelUnreadable(
+                f"ALSA card {card} has no capture volume control, so its level cannot be pinned"
+            )
         if len(controls) > 1:
             names = ", ".join(c["name"] for c in controls)
-            raise LevelUnreadable(f"ALSA card {card} has several capture volume controls ({names}); refusing to guess which one is the gain stage")
+            raise LevelUnreadable(
+                f"ALSA card {card} has several capture volume controls ({names}); "
+                "refusing to guess which one is the gain stage"
+            )
         c = controls[0]
         return InputLevel(
             volume=c["percents"][0],
@@ -145,15 +172,24 @@ def parse_pw_dump(text: str, device_name: str) -> InputLevel:
     for obj in objects if isinstance(objects, list) else []:
         info = obj.get("info") or {}
         props = info.get("props") or {}
-        if obj.get("type") != "PipeWire:Interface:Node" or props.get("media.class") != "Audio/Source":
+        if (
+            obj.get("type") != "PipeWire:Interface:Node"
+            or props.get("media.class") != "Audio/Source"
+        ):
             continue
         names = [str(props.get(k, "")) for k in ("node.description", "node.nick", "node.name")]
         if any(chain.is_umik1(n) for n in names) or device_name in names:
-            sources.append((obj.get("id"), names[0] or names[2], (info.get("params") or {}).get("Props") or []))
+            sources.append(
+                (obj.get("id"), names[0] or names[2], (info.get("params") or {}).get("Props") or [])
+            )
     if not sources:
-        raise LevelUnreadable("PipeWire has no UMIK-1 source node (is it plugged in and not disabled?)")
+        raise LevelUnreadable(
+            "PipeWire has no UMIK-1 source node (is it plugged in and not disabled?)"
+        )
     if len(sources) > 1:
-        raise LevelUnreadable(f"PipeWire has {len(sources)} UMIK-1 source nodes; refusing to guess which one records")
+        raise LevelUnreadable(
+            f"PipeWire has {len(sources)} UMIK-1 source nodes; refusing to guess which one records"
+        )
     node_id, label, params = sources[0]
     props = next((p for p in params if isinstance(p, dict) and "channelVolumes" in p), None)
     if props is None or not props["channelVolumes"]:
@@ -183,7 +219,9 @@ class PipeWireLevelReader:
 
 
 class CoreAudioHal(Protocol):
-    def input_devices(self) -> list[tuple[int, str, int]]: ...  # (AudioObjectID, name, input channels)
+    def input_devices(
+        self,
+    ) -> list[tuple[int, str, int]]: ...  # (AudioObjectID, name, input channels)
     def input_volume(self, device_id: int, element: int) -> float | None: ...
     def input_mute(self, device_id: int) -> bool | None: ...
 
@@ -205,7 +243,9 @@ class CoreAudioLevelReader:
         if not found:
             raise LevelUnreadable("CoreAudio lists no UMIK-1 input device")
         if len(found) > 1:
-            raise LevelUnreadable(f"CoreAudio lists {len(found)} UMIK-1 input devices; unplug the others")
+            raise LevelUnreadable(
+                f"CoreAudio lists {len(found)} UMIK-1 input devices; unplug the others"
+            )
         device_id, name, channels = found[0]
         values: list[float] = []
         elements: list[int] = []
@@ -219,7 +259,9 @@ class CoreAudioLevelReader:
                     values.append(value)
                     elements.append(element)
         if not values:
-            raise LevelUnreadable(f"CoreAudio exposes no input volume for {name!r}, so its level cannot be pinned")
+            raise LevelUnreadable(
+                f"CoreAudio exposes no input volume for {name!r}, so its level cannot be pinned"
+            )
         mute = self.hal.input_mute(device_id)
         return InputLevel(
             volume=round(values[0] * 100),
@@ -235,7 +277,8 @@ def _fourcc(code: str) -> int:
 
 
 class CtypesCoreAudio:
-    """The few HAL calls the reader needs (macOS only). Untested without a Mac: keep it this small."""
+    """The few HAL calls the reader needs (macOS only). Untested without a Mac: keep it this
+    small."""
 
     def __init__(self) -> None:
         import ctypes
@@ -248,27 +291,51 @@ class CtypesCoreAudio:
         self.cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
 
         class Address(ctypes.Structure):
-            _fields_ = [("selector", ctypes.c_uint32), ("scope", ctypes.c_uint32), ("element", ctypes.c_uint32)]
+            _fields_ = [
+                ("selector", ctypes.c_uint32),
+                ("scope", ctypes.c_uint32),
+                ("element", ctypes.c_uint32),
+            ]
 
         self.Address = Address
-        self.ca.AudioObjectGetPropertyDataSize.argtypes = [ctypes.c_uint32, ctypes.POINTER(Address), ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-        self.ca.AudioObjectGetPropertyData.argtypes = [ctypes.c_uint32, ctypes.POINTER(Address), ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+        self.ca.AudioObjectGetPropertyDataSize.argtypes = [
+            ctypes.c_uint32,
+            ctypes.POINTER(Address),
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        self.ca.AudioObjectGetPropertyData.argtypes = [
+            ctypes.c_uint32,
+            ctypes.POINTER(Address),
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_void_p,
+        ]
         self.ca.AudioObjectHasProperty.argtypes = [ctypes.c_uint32, ctypes.POINTER(Address)]
         self.ca.AudioObjectHasProperty.restype = ctypes.c_ubyte
-        self.cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+        self.cf.CFStringGetCString.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_long,
+            ctypes.c_uint32,
+        ]
         self.cf.CFStringGetCString.restype = ctypes.c_ubyte
         self.cf.CFRelease.argtypes = [ctypes.c_void_p]
 
-    def _address(self, selector: str, scope: str, element: int = 0):
+    def _address(self, selector: str, scope: str, element: int = 0) -> Any:
         return self.Address(_fourcc(selector), _fourcc(scope), element)
 
-    def _get(self, obj: int, address, out, size: int) -> None:
+    def _get(self, obj: int, address: Any, out: Any, size: int) -> None:
         io = self.ct.c_uint32(size)
-        status = self.ca.AudioObjectGetPropertyData(obj, self.ct.byref(address), 0, None, self.ct.byref(io), self.ct.byref(out))
+        status = self.ca.AudioObjectGetPropertyData(
+            obj, self.ct.byref(address), 0, None, self.ct.byref(io), self.ct.byref(out)
+        )
         if status != 0:
             raise LevelUnreadable(f"CoreAudio error {status}")
 
-    def _has(self, obj: int, address) -> bool:
+    def _has(self, obj: int, address: Any) -> bool:
         return bool(self.ca.AudioObjectHasProperty(obj, self.ct.byref(address)))
 
     def input_devices(self) -> list[tuple[int, str, int]]:
@@ -276,7 +343,12 @@ class CtypesCoreAudio:
         system = 1  # kAudioObjectSystemObject
         address = self._address("dev#", "glob")
         size = ct.c_uint32(0)
-        if self.ca.AudioObjectGetPropertyDataSize(system, ct.byref(address), 0, None, ct.byref(size)) != 0:
+        if (
+            self.ca.AudioObjectGetPropertyDataSize(
+                system, ct.byref(address), 0, None, ct.byref(size)
+            )
+            != 0
+        ):
             raise LevelUnreadable("CoreAudio did not list devices")
         ids = (ct.c_uint32 * (size.value // 4))()
         self._get(system, address, ids, size.value)
@@ -300,16 +372,23 @@ class CtypesCoreAudio:
         ct = self.ct
         address = self._address("slay", "inpt")  # kAudioDevicePropertyStreamConfiguration
         size = ct.c_uint32(0)
-        if self.ca.AudioObjectGetPropertyDataSize(device_id, ct.byref(address), 0, None, ct.byref(size)) != 0 or size.value < 8:
+        if (
+            self.ca.AudioObjectGetPropertyDataSize(
+                device_id, ct.byref(address), 0, None, ct.byref(size)
+            )
+            != 0
+            or size.value < 8
+        ):
             return 0
         raw = (ct.c_ubyte * size.value)()
         self._get(device_id, address, raw, size.value)
-        # AudioBufferList: UInt32 mNumberBuffers, then {UInt32 channels, UInt32 size, void* data} each (16 bytes on 64-bit).
+        # AudioBufferList: UInt32 mNumberBuffers, then {UInt32 channels, UInt32 size,
+        # void* data} each (16 bytes on 64-bit).
         count = int.from_bytes(bytes(raw[0:4]), "little")
         total = 0
         for i in range(count):
             offset = 8 + i * 16
-            total += int.from_bytes(bytes(raw[offset:offset + 4]), "little")
+            total += int.from_bytes(bytes(raw[offset : offset + 4]), "little")
         return total
 
     def input_volume(self, device_id: int, element: int) -> float | None:
@@ -335,7 +414,9 @@ class CtypesCoreAudio:
 class PlatformLevelReader:
     """CoreAudio on macOS; on Linux ALSA for a ``hw:`` device, else PipeWire."""
 
-    def __init__(self, platform: str = sys.platform, run: Runner = run_tool, hal: CoreAudioHal | None = None) -> None:
+    def __init__(
+        self, platform: str = sys.platform, run: Runner = run_tool, hal: CoreAudioHal | None = None
+    ) -> None:
         self.platform = platform
         self.coreaudio = CoreAudioLevelReader(hal)
         self.alsa = AlsaLevelReader(run)
