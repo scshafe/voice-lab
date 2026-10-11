@@ -1230,6 +1230,12 @@ class TakeEngine:
         _require_stable_id(subject_id, "subject ID")
         if "umik-1" not in device.display_name.casefold():
             raise ContractError("production capture requires the selected UMIK-1 microphone")
+        if device.backend == "portaudio":
+            raise ContractError(
+                "the capture engine records through FFmpeg or Audio Queue; a portaudio device "
+                "is voice-lab-desktop's capture worker (D-039)"
+            )
+        self._backend: Literal["avfoundation", "coreaudio"] = device.backend
         self._lock = threading.RLock()
         self.layout = layout
         self._borrowed_capture_ownership = capture_ownership_descriptor
@@ -1569,7 +1575,7 @@ class TakeEngine:
                 raise ContractError(f"cannot start a take while capture is {state.status}")
             index = state.index
             diagnostics_path = None
-            if self.device.backend == "coreaudio":
+            if self._backend == "coreaudio":
                 diagnostic_root = ensure_private_directory(
                     confined_path(self.layout.root, "provenance/capture-continuity")
                 )
@@ -1587,7 +1593,7 @@ class TakeEngine:
                     device_id=self.device.device_id,
                     ffmpeg=self.ffmpeg,
                     process_factory=self.process_factory,
-                    backend=self.device.backend,
+                    backend=self._backend,
                     diagnostics_path=diagnostics_path,
                 )
             except BaseException:

@@ -42,7 +42,15 @@ voice-lab-desktop = "voice_lab_desktop.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-voice_lab_desktop = ["py.typed", "qml/*.qml", "qml/*/*.qml", "qml/*/*/*.qml", "qml/*/*/qmldir"]
+voice_lab_desktop = [
+    "py.typed",
+    "qml/*.qml",
+    "qml/*/*.qml",
+    "qml/*/*/*.qml",
+    "qml/*/*/qmldir",
+    # The window's and the Linux desktop entry's icon (desktop_entry.py).
+    "resources/*.png",
+]
 
 [tool.uv]
 required-version = ">=0.12.21"

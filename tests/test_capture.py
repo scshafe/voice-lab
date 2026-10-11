@@ -453,6 +453,25 @@ def test_legacy_capture_engines_refuse_v2_suites_before_any_session_write(
     assert not any(layout.directory("tmp").iterdir())
 
 
+def test_the_capture_engine_refuses_a_portaudio_device(tmp_path: Path) -> None:
+    # "portaudio" labels voice-lab-desktop's packages (D-039); this engine never records one.
+    layout = AssetLayout.initialize(tmp_path / "private" / "voice-assets")
+    device = _device().model_copy(update={"backend": "portaudio"})
+    with pytest.raises(ContractError, match="voice-lab-desktop's capture worker"):
+        TakeEngine(
+            layout=layout,
+            prompt_suite=_suite(),
+            subject_id="cole",
+            device=device,
+            session_id="pilot-001",
+            ffmpeg="/test/ffmpeg",
+            process_factory=lambda _: pytest.fail("a portaudio device must not start FFmpeg"),
+            clock=lambda: NOW,
+            timer_factory=_ManualTimerFactory(),
+        )
+    assert not any(layout.directory("tmp").iterdir())
+
+
 def test_finalize_binds_suite_purpose_prefix_native_v2_and_refuses_procedures(
     tmp_path: Path,
 ) -> None:

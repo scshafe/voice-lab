@@ -31,7 +31,7 @@ from typing import Final
 from urllib.parse import urlsplit
 
 from cole_voice_lab.errors import ContractError, SecurityError
-from cole_voice_lab.home_host import HomeHostApproval, load_approval
+from cole_voice_lab.home_host import HomeHostApproval, HomeHostClass, load_approval
 from cole_voice_lab.intake import validate_capture_package
 from cole_voice_lab.intake_client import (
     HomeHostClient,
@@ -84,8 +84,16 @@ def tailnet_client(approval: HomeHostApproval, bearer: Callable[[], str]) -> Hom
     return HomeHostClient(endpoint=approval.endpoint, resolver=resolver, bearer=bearer)
 
 
-def approval_for(layout: AssetLayout, server_url: str, *, now: datetime) -> HomeHostApproval:
-    """The bound approval, when it stands and names the configured server.
+#: What each package class is, as the messages name it.
+CLASS_NOUNS: Final[dict[str, str]] = {
+    "measurement": "measurement sessions",
+    "capture": "prompted sessions (capture packages)",
+}
+
+
+def standing_approval(layout: AssetLayout, server_url: str, *, now: datetime) -> HomeHostApproval:
+    """The bound approval, when it stands and names the configured server (whatever
+    classes it covers).
 
     Raises: ``HomeHostNotReady`` saying what is missing."""
     try:
@@ -97,16 +105,37 @@ def approval_for(layout: AssetLayout, server_url: str, *, now: datetime) -> Home
         ) from exc
     except SecurityError as exc:
         raise HomeHostNotReady(str(exc)) from exc
-    if "measurement" not in approval.classes:
-        raise HomeHostNotReady(
-            f"the home-host approval {approval.approval_id} does not cover measurement "
-            "sessions; approve the home host again with the class measurement"
-        )
     if urlsplit(server_url).hostname != approval.endpoint:
         raise HomeHostNotReady(
             f"the settings name {server_url}, but the approved home host is "
             f"https://{approval.endpoint}"
         )
+    return approval
+
+
+def require_class(approval: HomeHostApproval, package_class: HomeHostClass) -> None:
+    """Raises: ``HomeHostNotReady`` when ``approval`` does not cover ``package_class``."""
+    if package_class not in approval.classes:
+        raise HomeHostNotReady(
+            f"the home-host approval {approval.approval_id} does not cover "
+            f"{CLASS_NOUNS.get(package_class, package_class)}; approve the home host again "
+            f"with the class {package_class}"
+        )
+
+
+def approval_for(
+    layout: AssetLayout,
+    server_url: str,
+    *,
+    now: datetime,
+    package_class: HomeHostClass = "measurement",
+) -> HomeHostApproval:
+    """The bound approval, when it stands, names the configured server and covers
+    ``package_class``.
+
+    Raises: ``HomeHostNotReady`` saying what is missing."""
+    approval = standing_approval(layout, server_url, now=now)
+    require_class(approval, package_class)
     return approval
 
 

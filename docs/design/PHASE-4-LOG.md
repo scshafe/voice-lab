@@ -17,8 +17,9 @@ touched; phases 5 and 6 are out of scope.
 | --- | --- | --- | --- |
 | 4a | `voice-journey-capture` becomes `voice-lab-desktop` (Python 3.12, scshafe-qt 0.2); sign-in and status, Uploads, Corpus, Journey, Practice, Referee on `/api/v1`; the checklist | #34 | merged `f440436` |
 | view | Tests: every `/view` route refuses non-GET; none serves audio | #35 | merged `5036dba` |
-| 4b | The UMIK-1 ritual in the app; `/api/v1/intake` with the D-021 ledger | #36 | open, after #35 |
-| 4c | Prompted capture; the S-1 harness; Linux packaging; the macOS bundle script and install page | — | not started |
+| 4b | The UMIK-1 ritual in the app; `/api/v1/intake` with the D-021 ledger | #36 | merged `f09a951` |
+| 4c | Prompted capture; the S-1 harness; Linux packaging; the macOS bundle script and install page | (this PR) | open, after #36 |
+| chains | The Measurement screen reads `GET /api/v1/chains` (stacked on #31) | #37 | draft, gated like #31 |
 | removal | Remove the SPA's routes and voice-journey's unversioned paths | draft | gated: checklist sign-off, cutover (F) |
 
 ## Entries
@@ -120,6 +121,81 @@ touched; phases 5 and 6 are out of scope.
   `GET /api/v1/chains` needs #31's route and its `ChainRegistryView`; it follows #31 as a
   small draft stacked on it (gated like #31).
 
+### 2026-10-11, 4c
+
+- **#36 (4b) merged** (`f09a951`); its deploy run 38125585955 passed verify, deploy and
+  health.
+- **Draft #37, stacked on #31** (not redoing it): the Measurement screen compares the chain
+  fixed in `measurement/chain.py` with the registry the server serves (`GET /api/v1/chains`,
+  #31's route): a registry that describes `umik1` differently refuses a new session; one that
+  cannot be read (signed out, offline, a server without the route) leaves the fixed chain in
+  use. Its branch is #31's head plus a merge of `main`; after #31 merges its diff is one
+  commit. Verified locally (`scripts/verify` exit 0).
+- **Groundwork.** `CaptureDevice.backend` gains `"portaudio"` (an added enum value; schemas
+  regenerated; native recording groups still require `"coreaudio"`), and a test sends a
+  `portaudio`-labelled package through `/api/v1/intake` into `raw/`. `capture/types.py` is the
+  one interface between the screen and the recorder (`TakeRecorder`, `RunningTake`,
+  `CapturedTake`, `CaptureFailed`). The three parts below were built in parallel on it.
+- **The PortAudio capture worker and the S-1 harness** (`capture/`, D-039, D-040). One worker
+  process per take (`voice-lab-desktop --capture-worker`), modelled on the Swift app's Audio
+  Queue worker: UMIK-1 only, 48 kHz 24-bit mono in blocks of 1,024 frames, a bounded queue
+  (full fails, never drops), the WAV written off the callback, progress per written block.
+  The continuity rule: every block has a finite, positive `inputBufferAdcTime`, each follows
+  the previous one by its frames within ±64 frames, and there is no overflow or underflow;
+  the first failure stops the take, keeps the partial and inserts nothing. Its evidence,
+  `voice-lab-desktop.portaudio-continuity/v1`, is private, bound to the WAV, and checked by
+  the parent before `original.wav` exists. `scripts/s1-portaudio` runs cold, warm, long and
+  maximum-duration takes, re-validates each from disk, writes a benchmark report computed
+  by the existing benchmark's rules, a verification root, the acceptance matrix and
+  `s1-report.md` (apps/desktop/docs/S-1.md). Everything is tested on a simulated UMIK-1 whose
+  ADC times can jump or stall; a simulated run is only ever "simulated: harness check only".
+- **Record → Prompts** (`screens/prompts.py`, `PromptsScreen.qml`, `prompted/`, D-042). A
+  session records a pilot catalog's chosen prompts plus every room tone (D-010), one take per
+  private directory; a take exists only once the recorder validated it, and failed or damaged
+  take directories are shown, never used. The script, or a "Do not speak" card for silent
+  prompts (D-013); R, Space and Return on this screen only, never while typing, with a
+  modifier or on auto-repeat (D-011); elapsed time from confirmed frames (D-014); take
+  history with every decision, removal undoable; the waveform with trim handles, its preview
+  playing exactly the trimmed frames, a trim being a recipe bound to the original's digest
+  (D-012); Save & next to the next prompt without a kept take, in catalog order, wrapping.
+  Finish builds the capture package: one kept, untrimmed original per prompt, labelled
+  `portaudio`, validated, rebuilt to the same bytes and never overwritten. Uploads and Status
+  list prompted packages beside measurement sessions, held on the machine until
+  `prompted_uploads` is on; then they go as `capture` packages with the D-021 ledger (a test
+  lands one in the PC's `raw/`). Two tests drive the screen over the real worker process on
+  the simulated device.
+- **Packaging** (S-7, D-041). Linux: `voice-lab-desktop --install-desktop-entry` adds the uv
+  tool to the desktop's menu (a `.desktop` file and a 256 px icon under `$XDG_DATA_HOME`,
+  checked with `desktop-file-validate`); the app names its desktop file and sets its window
+  icon. macOS: `scripts/build-desktop-bundle` builds `voice-lab.app` with PyInstaller from
+  hash-checked wheels (`requirements/desktop-bundle-macos.txt`), signs it ad-hoc with the
+  hardened runtime, verifies, lints, zips and records it; preview by default, `--execute` on
+  macOS only. The install page is `apps/desktop/docs/INSTALL-MACOS.md`. Nothing macOS-side has
+  run.
+
+Deviations and open items:
+
+- **No `GET /api/v1/catalog`.** The design's catalog route (§3.4) is not built, so the screen
+  records the built-in pilot catalogs or a prompt-suite file; the corpus catalog (D-017) and
+  its pilot gate wait for the route.
+- **Trims stay local** (D-012, as the lab's packages always did): the PC receives untrimmed
+  takes. Fine-tuning on the PC with trims needs a contract that carries edit decisions.
+- **One process per take.** On the simulated device, record-to-first-frames p95 was about
+  228 ms against the benchmark's 250 ms, mostly process start. If real hardware misses it, the
+  fix is one worker per session (S-1's report will say).
+- **The worker starts as `python -I -B -c <bootstrap> <package root>`** (or the frozen app's
+  own executable with `--capture-worker`): the repository's `.venv` does not install the app,
+  and `-I` ignores `PYTHONPATH`.
+- **Settings.** `catalog_file` and `prompted_uploads` are `config.toml` keys only (README
+  "Settings"); the Settings dialog does not show them. `--upload` sends measurement sessions
+  only; prompted ones go from Uploads.
+- **Measurement packages keep the default `avfoundation` device label.** Phase 3's mapping
+  (`journey/measurement_package.py`, shared with the compatibility path) never set
+  `CaptureDevice.backend`, so UMIK-1 measurement packages say `avfoundation` although the
+  capture is PortAudio. Changing it changes the package bytes of sessions the compatibility
+  path already built; it belongs with the removal PR, or a decision of the owner's.
+- **New stand-in:** `SuiWaveform` (its API is in the scshafe-qt asks below).
+
 ## scshafe-qt asks
 
 What voice-lab-desktop needs from scshafe-qt (design §6.4), as the API its stand-ins in
@@ -138,7 +214,7 @@ instant under reduced motion.
 | `SuiTable` (sortable, virtualised) | yes | Corpus (about 7,000 rows), data tables | waiting |
 | `SuiChart` (line, band, scatter, bars) | yes | Journey, Referee | waiting |
 | `SuiLevelMeter` | yes (4b) | Record: measurement | waiting |
-| `SuiWaveform` with trim | 4c | Record: prompts | — |
+| `SuiWaveform` with trim | yes (4c) | Record: prompts | waiting |
 | `SuiSwitch`, `SuiRadio` | no | not needed by phase 4 | — |
 
 ### SuiText
@@ -252,11 +328,28 @@ A level meter for live input.
 - Implicit 200 × 14 px horizontal, 14 × 120 px vertical. Updated about 20 times a second (a
   50 ms timer), with no animation, so it is never late. Accessible as a progress bar.
 
+### SuiWaveform
+
+A take's waveform with trim handles (the reference is `cole_voice_lab/desktop_waveform.py`'s
+`WaveformView`). Controlled: it never assigns the trim itself.
+
+- `bins`: a flat list `[min0, max0, min1, max1, …]` in [-1, 1]; about 2,048 pairs (4,096
+  numbers) per take whatever its length, computed with NumPy off the GUI thread.
+- `frameCount`, `sampleRate` (48,000), `trimStart` and `trimEnd` (frames, `[start, end)`),
+  `playhead` (a frame, or -1), `editable`, `label`; read-only `shownStart`, `shownEnd`.
+- Signals: `seekRequested(int frame)` on a click or a key; `trimChanged(int start, int end)`
+  when a handle is released; `playRequested(int frame)` on a double-click.
+- Keys: Left/Right move 0.1 s from the playhead (or the trim's start); Home/End go to the
+  trim's edges; ignored with a modifier.
+- Implicit 600 × 120 px; handles 10 px; outside the trim shaded; drawn on a Canvas that
+  repaints when the bins or the size change. Accessible as a slider ("kept X to Y of Z
+  seconds").
+
 ## Stand-ins waiting on scshafe-qt
 
 Every file in `apps/desktop/src/voice_lab_desktop/qml/VoiceLab/StandIn/` (see the table
 above): `SuiText`, `SuiCheckbox`, `SuiSelect`, `SuiSlider`, `SuiProgress`, `SuiTable`,
-`SuiChart`, `SuiLevelMeter`.
+`SuiChart`, `SuiLevelMeter`, `SuiWaveform`.
 
 ## Owner's steps
 
@@ -283,7 +376,8 @@ or the owner's judgement.
 
    ```sh
    cd ~/src/voice-lab && git pull --ff-only
-   uv tool install --python 3.12 ./apps/desktop
+   uv tool install --python 3.12 --with-executables-from cole-voice-lab ./apps/desktop
+   voice-lab-desktop --install-desktop-entry   # Linux: the app in the desktop's menu
    voice-lab-desktop      # Status → Settings…: https://voice-lab.<tailnet>.ts.net, https://id.<tailnet>.ts.net
    voice-lab-desktop --import-capture-data   # once: the old client's level pin, cal file, sessions
    ```
@@ -308,3 +402,38 @@ or the owner's judgement.
    home-host show --asset-root <library>` shows its two ledger entries, and the session
    appears in the Corpus after the job runner's next pass. Until this is done, the standalone
    client (step 1) stays the rollback.
+8. **S-1 on the Air (macOS, Core Audio).** In a separate clone, so the Swift app's checkout
+   and `.venv` stay untouched; Terminal needs microphone access, and the UMIK-1 must run at
+   48 kHz in Audio MIDI Setup ([S-1.md](../../apps/desktop/docs/S-1.md)):
+
+   ```sh
+   git clone https://github.com/scshafe/voice-lab ~/src/voice-lab-s1
+   cd ~/src/voice-lab-s1 && /opt/homebrew/bin/python3.12 -m venv .venv && .venv/bin/pip install -e '.[dev]'
+   OUT=~/s1-macos-$(date -u +%Y%m%dT%H%M%SZ) && mkdir -m 700 "$OUT" && scripts/s1-portaudio --output "$OUT" && open "$OUT/s1-report.md"
+   ```
+9. **S-1 on the PC (Linux, ALSA `hw:`).** From a checkout whose `.venv` has the `dev` extra,
+   with PortAudio installed (`sudo pacman -S portaudio`). If PipeWire holds the UMIK-1's
+   `hw:` device, stop it for the run (`systemctl --user stop pipewire.socket pipewire
+   pipewire-pulse wireplumber`, then `start` the same units):
+
+   ```sh
+   OUT=~/s1-linux-$(date -u +%Y%m%dT%H%M%SZ) && mkdir -m 700 "$OUT" && scripts/s1-portaudio --output "$OUT"
+   ```
+10. Record each platform's S-1 verdict in DECISIONS.md (D-040: the report's continuity block
+    and the commit, never audio), then delete the run's output directory. On a platform where
+    S-1 passed, and on each machine there: approve the home host with `--classes capture
+    measurement` (step 6) and set `prompted_uploads = true` in the app's `config.toml`.
+11. **The macOS bundle, on the Air** ([INSTALL-MACOS.md](../../apps/desktop/docs/INSTALL-MACOS.md)):
+    `brew install python@3.12 uv` and `xcode-select --install` once; then, from the checkout
+    with its `.venv`, `scripts/build-desktop-bundle` (the preview), `scripts/build-desktop-bundle
+    --execute --allow-network`, `ditto apps/desktop/dist/macos/dist/voice-lab.app
+    /Applications/voice-lab.app` and `open /Applications/voice-lab.app`; allow the microphone
+    at the first take. If it will not start: `--execute --allow-network --replace
+    --no-hardened-runtime`. A copied build: check the zip's SHA-256 against the build's
+    record, then the page's Gatekeeper steps.
+12. **4c acceptance:** `scripts/recording_acceptance_matrix.py` passing with the app's capture
+    worker on macOS and Linux with the UMIK-1 (steps 8 and 9: the rows the harness answers
+    pass, and you judge the physical-gate rows), and your headphone review of a test batch
+    recorded in Record → Prompts ([FIRST-RUN.md](../../apps/desktop/docs/FIRST-RUN.md) §7).
+    Then freeze the Swift app with a tag. Until then the Swift app stays the macOS
+    prompted-capture path (D-025).

@@ -271,8 +271,11 @@ class AudioFileEvidence(ContractModel):
 
 
 class CaptureDevice(ContractModel):
-    # Preserve historical evidence defaults; native capture opts in explicitly.
-    backend: Literal["avfoundation", "coreaudio"] = "avfoundation"
+    # Preserve historical evidence defaults; native capture opts in explicitly. "portaudio"
+    # is the desktop app's capture worker (voice-lab-desktop, D-039): its continuity evidence
+    # is its own contract, never D-015's Audio Queue evidence, and native groups still
+    # require "coreaudio".
+    backend: Literal["avfoundation", "coreaudio", "portaudio"] = "avfoundation"
     device_id: str = Field(min_length=1, max_length=500)
     display_name: str = Field(min_length=1, max_length=500)
     microphone_serial: str | None = Field(default=None, min_length=1, max_length=500)

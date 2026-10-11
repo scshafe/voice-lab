@@ -167,8 +167,9 @@ class Ritual:
             raise RitualError(str(exc)) from exc
         if stats.digital_silence:
             hint = (
-                " On macOS, allow microphone access for the app that runs this one "
-                "(System Settings → Privacy & Security → Microphone)."
+                " On macOS, allow microphone access for voice-lab (the app bundle), or for "
+                "the terminal that started it (System Settings → Privacy & Security → "
+                "Microphone)."
                 if sys.platform == "darwin"
                 else ""
             )

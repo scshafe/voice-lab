@@ -78,6 +78,7 @@ def build_synthetic_session(
     seconds: float = 2.0,
     capture_host: str = "synthetic-host",
     now: datetime | None = None,
+    device: CaptureDevice | None = None,
 ) -> Path:
     """Write a finalized synthetic package into the new directory ``directory``."""
     suite = synthetic_suite(prompts)
@@ -91,7 +92,8 @@ def build_synthetic_session(
         session_id=session_id,
         subject_id=SYNTHETIC_SUBJECT,
         prompt_suite=suite,
-        device=CaptureDevice(device_id="synthetic", display_name="synthetic UMIK-1 (generated)"),
+        device=device
+        or CaptureDevice(device_id="synthetic", display_name="synthetic UMIK-1 (generated)"),
         captured_at=moment,
         finalized_at=moment,
         capture_host=capture_host,
