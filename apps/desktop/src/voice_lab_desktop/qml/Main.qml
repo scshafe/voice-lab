@@ -1,6 +1,7 @@
 // voice-lab-desktop: the main window. Every state and action lives in the Python
 // models (app.py): `app` (account, settings, navigation) and one model per screen
-// (`status`, `uploads`, `measurement`, `corpus`, `journey`, `practice`, `referee`, `player`).
+// (`status`, `uploads`, `measurement`, `corpus`, `journey`, `practice`, `referee`, `player`;
+// Record: prompts reads its model as `app.promptsModel`).
 // This file lays out scshafe-qt's shell around them.
 import QtQuick
 import QtQuick.Layouts
@@ -68,6 +69,7 @@ Window {
             currentIndex: app.screenIndex
             StatusScreen {}
             UploadsScreen {}
+            PromptsScreen {}
             MeasurementScreen {}
             CorpusScreen {}
             JourneyScreen {}
