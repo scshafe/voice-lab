@@ -43,6 +43,8 @@
         "invalid_goal",
         "goal_not_found",
         "pair_not_found",
+        "chain_registry_unavailable",
+        "chain_registry_invalid",
         "internal_error"
       ],
       "type": "string"

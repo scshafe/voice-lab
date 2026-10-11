@@ -72,7 +72,10 @@ waiting. A level pinned in the old client stays the same pin (not a new chain er
 ## 6. A measurement session
 
 The **Measurement** screen (or `voice-lab-desktop --measure`, which opens on it). The steps
-are voice-journey-capture's, unchanged; the mouth distance is in **Status → Settings**:
+are voice-journey-capture's, unchanged; the mouth distance is in **Status → Settings**. When
+signed in, the screen also compares its chain (UMIK-1, 48 kHz, 24-bit) with the server's
+chain registry (`GET /api/v1/chains`) and refuses a new session if the registry describes it
+differently; offline it uses its own:
 
 1. Plug in the UMIK-1. Any other microphone is refused. On macOS set its format to 48,000 Hz
    in Audio MIDI Setup; on Linux the app opens it through ALSA `hw:` when PortAudio lists it,

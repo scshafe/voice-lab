@@ -24,7 +24,7 @@ the owner says to cut over; infra `host/` changes stop at the owner's hash appro
 | 7 | Parity harness (fixture corpus), Node vs Python | voice-lab | fixture done (#21); real corpus: owner step |
 | 8 | Serving from the PC (stack, host units, infra) | voice-lab, infra | code deployed; journey binds wait for infra#2 (owner hash approval); draft #23 |
 | 9 | Runbooks: corpus move, mirror drop move, redirect, Air vault | voice-lab | done, `PHASE-3-RUNBOOKS.md`; Air vault code #26 |
-| 10 | voice-journey PR #1 carried as a draft branch | voice-lab | draft PR (gated on a real UMIK-1 session) |
+| 10 | voice-journey PR #1 carried as a draft branch | voice-lab | draft #31, `phase3/chains-retire-capture` (gated on a real UMIK-1 session; it deletes `legacy/`) |
 
 ## Entries
 

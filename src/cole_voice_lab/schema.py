@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from .api.chains import ChainRegistryView
 from .api.contracts import (
     ApiMeta,
     ApiRefusal,
@@ -114,6 +115,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "recording-discovery-legacy-group": LegacyProjectionGroup,
     "recording-discovery-legacy-unknown": LegacyProjectionUnknown,
     "recording-legacy-continuation": RecordingLegacyContinuation,
+    "api-v1-chains": ChainRegistryView,
     "api-v1-chunk-answer": ChunkAnswer,
     "api-v1-intake-session": IntakeSessionRequest,
     "api-v1-intake-session-status": IntakeSessionStatus,

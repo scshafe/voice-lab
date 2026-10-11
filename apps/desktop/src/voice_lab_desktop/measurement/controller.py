@@ -16,6 +16,11 @@ The device scan and the level polls before a session run only while the screen i
 shown: its guards (the level polls that abort on a moved level, the timed segments' stops)
 live here, not in the screen, and the keyboard only acts on the measurement screen. PortAudio
 is loaded the first time the screen is shown; when it cannot be, the screen says why.
+
+When the screen is shown the model also reads the server's chain registry
+(``GET /api/v1/chains``) and compares it with the chain fixed in ``chain.py``: a registry that
+describes the chain differently blocks a new session; a registry that cannot be read (signed
+out, offline, a server without the route) leaves the fixed chain in use and says so.
 """
 
 from __future__ import annotations
@@ -26,6 +31,9 @@ from typing import Any
 
 from PySide6.QtCore import QTimer, Signal, Slot
 
+from ..api import ApiError, ApiRefused
+from ..auth import AuthError, SignInRequired
+from ..config import ConfigError
 from ..viewmodel import AppContext, ViewModel, qproperty
 from . import chain
 from .devices import AudioBackend, DeviceError, InputDevice, choose_umik
@@ -63,6 +71,8 @@ class Controller(ViewModel):
     pinnedText = qproperty(str, "pinnedText", setupChanged)
     calOk = qproperty(bool, "calOk", setupChanged)
     calText = qproperty(str, "calText", setupChanged)
+    chainState = qproperty(str, "chainState", setupChanged)
+    chainText = qproperty(str, "chainText", setupChanged)
     canStart = qproperty(bool, "canStart", setupChanged)
     startBlocker = qproperty(str, "startBlocker", setupChanged)
     busy = qproperty(bool, "busy", setupChanged)
@@ -109,6 +119,8 @@ class Controller(ViewModel):
                 "pinnedText": "",
                 "calOk": False,
                 "calText": "",
+                "chainState": "unchecked",
+                "chainText": "",
                 "canStart": False,
                 "startBlocker": "",
                 "busy": False,
@@ -182,6 +194,8 @@ class Controller(ViewModel):
     def activate(self) -> None:
         """The screen is shown: find the UMIK-1 and watch its level (never during a take)."""
         self.shown = True
+        if self._v["chainState"] in ("unchecked", "unavailable"):
+            self.checkChainRegistry()
         if self.backend is None and not self._load_backend():
             return
         self._setup_poll.start()
@@ -211,7 +225,44 @@ class Controller(ViewModel):
         for timer in (self._meter, self._level_poll, self._setup_poll):
             timer.stop()
 
-    # --- setup: device, level, cal file ----------------------------------------------------
+    # --- setup: the chain registry, device, level, cal file ---------------------------------
+    @Slot()
+    def checkChainRegistry(self) -> None:  # noqa: N802 (QML name)
+        """Compare the server's chain registry with this app's chain (off the GUI thread)."""
+        fixed = f"this app's chain ({chain.LABEL}) is used; the intake still checks each session"
+        if not self.context.session.signed_in or not self.context.config.server_url:
+            self._chain("unavailable", f"Not checked against the server (signed out): {fixed}.")
+            return
+        context = self.context
+
+        def done(chains: Any, error: BaseException | None) -> None:
+            if error is not None:
+                if isinstance(error, ApiRefused) and error.status == 404:
+                    reason = "the server does not serve the chain registry yet"
+                elif isinstance(error, SignInRequired):
+                    reason = "sign in again on the Status screen"
+                elif isinstance(error, (ApiError, AuthError, ConfigError)):
+                    reason = str(error)
+                else:
+                    raise error
+                self._chain(
+                    "unavailable", f"The chain registry could not be read ({reason}): {fixed}."
+                )
+                return
+            disagreement = chain.registry_disagreement(chains.chains)
+            if disagreement is None:
+                self._chain(
+                    "agrees", f"Chain {chain.CHAIN_ID} matches the server's chain registry."
+                )
+            else:
+                self._chain("differs", disagreement[0].upper() + disagreement[1:])
+
+        self._submit(lambda: context.api().chains(), done)
+
+    def _chain(self, state: str, text: str) -> None:
+        self._set(self.setupChanged, chainState=state, chainText=text)
+        self._update_can_start()
+
     @Slot()
     def refreshDevices(self) -> None:  # noqa: N802 (QML name)
         if self._v["phase"] not in IDLE_PHASES or self._v["busy"]:
@@ -321,7 +372,9 @@ class Controller(ViewModel):
 
     def _update_can_start(self) -> None:
         blocker = ""
-        if not self._v["deviceOk"]:
+        if self._v["chainState"] == "differs":
+            blocker = self._v["chainText"]
+        elif not self._v["deviceOk"]:
             blocker = "Plug in the UMIK-1 (see Microphone)."
         elif self._v["levelState"] != "ok":
             blocker = {

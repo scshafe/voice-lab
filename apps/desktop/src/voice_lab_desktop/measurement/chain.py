@@ -1,15 +1,21 @@
 """The one capture chain supported at launch: the miniDSP UMIK-1 measurement chain.
 
-voice-journey's chain registry (``manifests/chains.json``) is not served over
-its API, so the chain's identity is fixed here and must match the registry's
-``umik1`` entry exactly: the intake accepts only ``measurement`` chains whose
-``deviceName`` is a UMIK, and checks ``sampleRate`` against the registry.
-Other chains (later eras) are a reviewed change here and in the registry.
+The chain's identity is fixed here and must match the chain registry's ``umik1`` entry:
+the intake accepts only ``measurement`` chains whose ``deviceName`` is a UMIK, and checks
+``sampleRate`` against the registry. The server serves the registry's client projection
+(``GET /api/v1/chains``, voice-journey PR #1 in voice-lab #31); the Measurement screen reads
+it and refuses to start a session when the registry describes this chain differently
+(:func:`registry_disagreement`). Without the server (offline, or a server without the
+route) the chain fixed here is used, and the intake still checks every session. Other
+chains (later eras) are a reviewed change here and in the registry.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
+
+from cole_voice_lab.api.chains import ClientChain
 
 CHAIN_ID = "umik1"
 CHAIN_KIND = "measurement"
@@ -39,3 +45,31 @@ def is_umik1(name: str, usb_id: str | None = None) -> bool:
 def is_other_umik(name: str) -> bool:
     """A miniDSP UMIK that is not a UMIK-1 (e.g. a UMIK-2): refused at launch."""
     return bool(_ANY_UMIK.search(name or "")) and not is_umik1(name)
+
+
+def registry_disagreement(chains: Sequence[ClientChain]) -> str | None:
+    """How the server's chain registry describes this chain differently from this app, or
+    ``None`` when it agrees: its kind, USB id, sample rate and bit depth, where the registry
+    states them (a value it leaves out contradicts nothing)."""
+    entry = next((candidate for candidate in chains if candidate.id == CHAIN_ID), None)
+    if entry is None:
+        return f"the server's chain registry has no chain {CHAIN_ID}"
+    usb = entry.device.usb if entry.device is not None else None
+    found = {
+        "kind": (entry.kind, CHAIN_KIND),
+        "USB id": (usb.lower() if usb else usb, USB_ID),
+        "sample rate": (entry.sample_rate, SAMPLE_RATE),
+        "bit depth": (entry.bit_depth, BIT_DEPTH),
+    }
+    differences = [
+        f"{name} {theirs!r} (this app: {ours!r})"
+        for name, (theirs, ours) in found.items()
+        if theirs is not None and theirs != ours
+    ]
+    if not differences:
+        return None
+    return (
+        f"the server's chain registry describes {CHAIN_ID} differently: "
+        + "; ".join(differences)
+        + ". Recording is refused until the app or the registry is changed (a reviewed change)."
+    )

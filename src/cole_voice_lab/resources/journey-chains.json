@@ -14,16 +14,18 @@
     {
       "chainId": "umik1",
       "kind": "measurement",
-      "label": "miniDSP UMIK-1 → CoreAudio → vj-capture WAV 48k/24",
+      "label": "miniDSP UMIK-1 → USB → voice-journey-capture WAV 48k/24",
       "controlled": true,
       "era": {
         "start": null
       },
       "deviceName": "umik",
+      "usbId": "2752:0007",
       "sampleRate": 48000,
+      "bitDepth": 24,
       "distanceCm": 35,
       "pinnedInputVolume": null,
-      "notes": "era.start is set by the first real session. The per-serial calibration file stays outside Git; its path is configuration on the host, never in this registry."
+      "notes": "era.start is set by the first real session. Before first capture: download the per-serial calibration file from miniDSP (it stays outside Git; its path is configuration on the host, never in this registry), set the UMIK as the input device and the input-volume slider once; voice-journey-capture records the pinned level with each session. Re-pinning later is a logged era event, not a casual act."
     }
   ]
 }

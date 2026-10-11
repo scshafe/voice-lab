@@ -99,9 +99,6 @@ ignore_missing_imports = true
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# legacy/voice-journey/ is the imported Node tree being ported (design §5.2, phase 3);
-# its one Python file moves into the package, under these rules, when it is ported.
-extend-exclude = ["legacy"]
 # Extensionless Python scripts Ruff would otherwise skip.
 extend-include = ["scripts/journey-parity"]
 

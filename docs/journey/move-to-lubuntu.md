@@ -125,8 +125,8 @@ module, and packaging follows scshafe-qt (wheels or a `uv` tool install).
 - **Server address:** the client asks the server where to send takes (`arch` or
   `lubuntu` in general; `https://voice-journey.<tailnet>` after this move).
 
-`capture.mjs` stays until the client has recorded a real session end to end.
-After that, its AVFoundation path is retired.
+`capture.mjs` stayed until the client had recorded a real session end to end.
+After that, its AVFoundation path was retired (phase 6).
 
 ## Phases
 
@@ -137,7 +137,16 @@ After that, its AVFoundation path is retired.
 | 3 | Corpus mirror: `vj-mirror` and the launcher's `mirror` mode on the Mini; the dedicated `vj-mirror` drop account with its restricted `rrsync -wo` key on Lubuntu (no tailnet grant needed) | voice-journey, infra, Mini | A new Voice Memo appears in the server's index within one mirror period plus one watcher scan |
 | 4 | Cutover: copy `local-artifacts/` and the generated manifests from the Mini to the data root; move the `voice-journey` node name to the sidecar; stop the Mini's browser and door jobs (the mirror stays) | Mini, Lubuntu | The browser on Lubuntu shows the full corpus and journeys; the Mini serves nothing |
 | 5 | Capture client: new repo (native kind), devices and levels, ritual, packaging, OIDC sign-in, upload | new repo | A real UMIK-1 session recorded on a client is accepted by the server and processed |
-| 6 | Retire `capture.mjs`'s AVFoundation path; update AGENTS.md and README; infra PLACEMENT and ONBOARDING (no longer a TCC exception) | voice-journey, infra | Docs match; `dev check` is clean everywhere |
+| 6 | Retire `capture.mjs`'s AVFoundation path; update AGENTS.md and README; `GET /api/chains` for the client; infra PLACEMENT and ONBOARDING (no longer a TCC exception) | voice-journey, infra | Docs match; `dev check` is clean everywhere. Done when the voice-journey PR merges, after the first real UMIK-1 session from `voice-journey-capture` is accepted and processed on the server |
+
+**Phase 6 status (2026-10-09): carried into voice-lab.** voice-journey's draft PR #1
+(`phase6/retire-avfoundation-capture`) lands in voice-lab as the draft branch
+`phase3/chains-retire-capture`: `GET /api/v1/chains` (and the phase-3 alias
+`GET /api/chains`, `api/chains.py`) serves the chain registry, the registry's `umik1`
+gains its USB id and bit depth, and `capture.mjs` with its test and the rest of
+`legacy/voice-journey/` are deleted. Gate unchanged: not merged until the first real
+UMIK-1 session from `voice-journey-capture` is accepted into the PC's `raw/` and
+processed. Remaining after that: infra PLACEMENT and ONBOARDING (owner session).
 
 **Phase 3 status (2026-10-03): voice-journey side done** (PR on
 `phase3/corpus-mirror`): `npm run mirror`, the launcher's `mirror` mode, the

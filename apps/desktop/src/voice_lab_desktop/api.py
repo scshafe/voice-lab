@@ -21,6 +21,7 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from cole_voice_lab.api.chains import ChainRegistryView
 from cole_voice_lab.api.contracts import ApiMeta, ApiRefusal
 from cole_voice_lab.api.journey_contracts import (
     GoalAbandoned,
@@ -165,6 +166,9 @@ class ApiClient:
 
     def summary(self) -> JourneySummary:
         return self._get(JourneySummary, "/api/v1/summary")
+
+    def chains(self) -> ChainRegistryView:
+        return self._get(ChainRegistryView, "/api/v1/chains")
 
     def watch(self) -> WatchStatus:
         return self._get(WatchStatus, "/api/v1/watch")
