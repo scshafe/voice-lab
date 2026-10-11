@@ -6,8 +6,12 @@
 // - `options`: [{ value: string, label: string }]; `value`: the chosen value
 //   (one of the options' values; "" is a normal value, e.g. "All");
 // - `label`: the visible caption above the control (also its accessible name);
-// - `valueSelected(value)` fires on a user choice (mouse, Enter, Space, arrows);
-//   `value` follows it. The popup lists the labels; Escape closes it.
+// - `valueSelected(value)` fires on a user choice (mouse, Enter, Space, arrows).
+//   A controlled component: it never assigns `value` itself. The owner updates
+//   its model on `valueSelected`, and its binding on `value` carries the choice
+//   back; a choice the owner does not take leaves the shown value unchanged.
+//   `currentIndex` and `currentLabel` always follow `value`. `select(value)`
+//   makes the same choice from code. The popup lists the labels; Escape closes it.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Templates as T
@@ -32,7 +36,6 @@ ColumnLayout {
     }
     function select(v) {
         if (_indexOf(v) < 0 || v === value) return
-        value = v
         valueSelected(v)
     }
 
@@ -69,7 +72,11 @@ ColumnLayout {
         Accessible.name: root.label
         Accessible.description: root.currentLabel
 
-        onActivated: (index) => root.select(root.options[index].value)
+        onActivated: (index) => {
+            // The combo box moved its own index: give it back to `value` (controlled).
+            currentIndex = Qt.binding(() => root.currentIndex)
+            root.select(root.options[index].value)
+        }
 
         contentItem: Text {
             textFormat: Text.PlainText
