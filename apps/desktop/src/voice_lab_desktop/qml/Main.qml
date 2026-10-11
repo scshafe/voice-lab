@@ -56,9 +56,9 @@ Window {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     label: "Screens"
-                    model: app.sidebar
+                    model: app.sidebarModel
                     selectedIndex: app.screenIndex
-                    onActivated: (index) => app.navigate(app.sidebar[index].key)
+                    onActivated: (index) => app.navigateIndex(index)
                 }
             }
         }

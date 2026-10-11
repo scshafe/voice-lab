@@ -17,7 +17,7 @@ from collections.abc import Callable
 from typing import Any, Final
 
 import httpx
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from . import __version__
 from .auth import AuthError, Session, sign_in
@@ -33,6 +33,7 @@ from .screens.practice import PracticeModel
 from .screens.referee import RefereeModel
 from .screens.status import StatusModel
 from .screens.uploads import UploadsModel
+from .tablemodel import RoleRows
 from .tasks import Tasks
 from .tokens import KeyringStore, NoKeychainError, TokenStore, jwt_claims
 from .viewmodel import AppContext, ViewModel, qproperty
@@ -48,6 +49,7 @@ SCREENS: Final = (
     ("referee", "Referee", "Referee", "check"),
 )
 SCREEN_KEYS: Final = tuple(key for key, *_ in SCREENS)
+SIDEBAR_ROLES: Final = ("key", "section", "text", "iconName", "count", "status")
 
 
 class AppModel(ViewModel):
@@ -72,6 +74,12 @@ class AppModel(ViewModel):
     screen = qproperty(str, "screen", navigationChanged)
     screenIndex = qproperty(int, "screenIndex", navigationChanged)
     sidebar = qproperty("QVariantList", "sidebar", sidebarChanged)
+
+    def _get_sidebar_model(self) -> RoleRows:
+        return self._sidebar_rows
+
+    # What SuiSidebarList shows: rows changed in place, never a new model (see above).
+    sidebarModel = Property(QObject, _get_sidebar_model, constant=True)
 
     def __init__(
         self,
@@ -142,6 +150,7 @@ class AppModel(ViewModel):
             version=__version__,
         )
         self._apply_config(config)
+        self._sidebar_rows = RoleRows(SIDEBAR_ROLES, self)
         self._refresh_sidebar()
 
     @property
@@ -166,6 +175,11 @@ class AppModel(ViewModel):
         self.context.tasks.close()
 
     # -- navigation -------------------------------------------------------------------------
+
+    @Slot(int)
+    def navigateIndex(self, index: int) -> None:  # noqa: N802 (QML name)
+        if 0 <= index < len(SCREEN_KEYS):
+            self.navigate(SCREEN_KEYS[index])
 
     @Slot(str)
     def navigate(self, key: str) -> None:
@@ -213,6 +227,7 @@ class AppModel(ViewModel):
                 entry["status"] = "none"
             rows.append(entry)
         self._set(self.sidebarChanged, sidebar=rows)
+        self._sidebar_rows.update(rows)
 
     # -- account ----------------------------------------------------------------------------
 
