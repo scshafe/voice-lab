@@ -250,6 +250,7 @@ class PromptsModel(ViewModel):
 
     # -- the catalog and the batch ----------------------------------------------------------
 
+    @Slot()
     def _load_catalog(self) -> None:
         config = self.context.config
         options = catalog.choices(config.catalog_file or None)
@@ -647,6 +648,7 @@ class PromptsModel(ViewModel):
         if self._running is not None:
             self._running.stop()
 
+    @Slot()
     def _on_poll(self) -> None:
         running = self._running
         if running is None:

@@ -236,6 +236,7 @@ class AppModel(ViewModel):
         if self.session.signed_in and self.context.config.configured:
             self.uploads.uploadAll()
 
+    @Slot()
     def _prompted_packaged(self) -> None:
         """A prompted session became a package: Uploads shows it (and sends it when
         prompted uploads are on, D-042)."""
@@ -244,6 +245,7 @@ class AppModel(ViewModel):
         if config.prompted_uploads and self.session.signed_in and config.configured:
             self.uploads.uploadAll()
 
+    @Slot()
     def _refresh_sidebar(self) -> None:
         pending = self.uploads.pending_count
         failed = self.uploads.failed_count
@@ -334,6 +336,7 @@ class AppModel(ViewModel):
             if forget is not None:
                 forget()
 
+    @Slot(str)
     def _signed_out_elsewhere(self, _reason: str) -> None:
         self._set(self.accountChanged, signedIn=self.session.signed_in)
         if not self.session.signed_in:

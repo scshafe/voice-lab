@@ -438,6 +438,7 @@ class RefereeModel(ViewModel):
 
     # -- playback ---------------------------------------------------------------------------
 
+    @Slot(str, str)
     def _player_failed(self, key: str, message: str) -> None:
         pair = self._v["pairId"]
         if key not in PLAYER_KEYS or not pair or self._error_pair == pair:
