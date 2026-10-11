@@ -160,11 +160,11 @@ whole of 4a is in one place.
 
 | Id | Screen: field | Source | `/api/v1` | Ticked by | ✓ |
 | --- | --- | --- | --- | --- | --- |
-| S-01 | Sign-in and status: Pocket ID sign-in (PKCE, loopback), the account, sign-out | voice-journey-capture's sign-in | — | `test_status_sign_in_and_out` | ☐ |
-| S-02 | The server: its address, build, API versions served, the minimum client version (and a refusal when the app is older) | design §3.4 `meta` | `meta` | `test_status_shows_the_server` | ☐ |
-| S-03 | The server's gates: playback, transcript text, feature detail; the job runner's watch | — | `summary`, `watch` | `test_status_shows_the_server` | ☐ |
+| S-01 | Sign-in and status: Pocket ID sign-in (PKCE, loopback), the account, sign-out | voice-journey-capture's sign-in | — | `test_status_sign_in_and_out`, `test_sign_in_needs_the_settings` | ☐ |
+| S-02 | The server: its address, build, API versions served, the minimum client version (and a refusal when the app is older) | design §3.4 `meta` | `meta` | `test_status_shows_the_server`, `test_an_older_app_is_told_to_update` | ☐ |
+| S-03 | The server's gates: playback, transcript text, feature detail; the job runner's watch | — | `summary`, `watch` | `test_status_shows_the_server`, `test_watch_lines_summarize_the_job_runner` | ☐ |
 | S-04 | The spool: sessions waiting for a receipt | design §6.1 | — | `test_status_shows_the_spool` | ☐ |
-| S-05 | Settings: server and issuer (no default in the code), client id; refused when invalid | publication screen §5 | — | `test_status_settings` | ☐ |
+| S-05 | Settings: server and issuer (no default in the code), client id; refused when invalid | publication screen §5 | — | `test_status_settings`, `test_nothing_in_the_code_names_a_server` | ☐ |
 | U-01 | Uploads: each local session with its state (waiting, uploading, accepted, refused, not uploadable) and its last error | voice-journey-capture's `--sessions` | — | `test_uploads_lists_sessions` | ☐ |
 | U-02 | Per-session progress while uploading (file and bytes) | voice-journey-capture's upload text | intake | `test_uploads_progress_and_receipt` | ☐ |
 | U-03 | Resume: an interrupted upload continues from the server's byte count; retry refused sessions | `upload.py`, `--retry-failed` | intake | `test_uploads_resume_and_retry` | ☐ |
