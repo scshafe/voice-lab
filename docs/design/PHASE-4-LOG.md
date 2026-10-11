@@ -16,7 +16,7 @@ touched; phases 5 and 6 are out of scope.
 | Step | What | PR | State |
 | --- | --- | --- | --- |
 | 4a | `voice-journey-capture` becomes `voice-lab-desktop` (Python 3.12, scshafe-qt 0.2); sign-in and status, Uploads, Corpus, Journey, Practice, Referee on `/api/v1`; the checklist | #34 | merged `f440436` |
-| view | Tests: every `/view` route refuses non-GET; none serves audio | — | ready on `phase4/view-tests`, after 4a |
+| view | Tests: every `/view` route refuses non-GET; none serves audio | #35 | merged `5036dba` |
 | 4b | The UMIK-1 ritual in the app; `/api/v1/intake` with the D-021 ledger | — | built on `phase4/4b-measurement`; after the view PR |
 | 4c | Prompted capture; the S-1 harness; Linux packaging; the macOS bundle script and install page | — | not started |
 | removal | Remove the SPA's routes and voice-journey's unversioned paths | draft | gated: checklist sign-off, cutover (F) |
@@ -91,7 +91,8 @@ touched; phases 5 and 6 are out of scope.
 
 ### 2026-10-11, 4b
 
-- **#34 (4a) merged** (`f440436`); its deploy run is 38122257558.
+- **#34 (4a) merged** (`f440436`); its deploy run 38122257558 passed verify, deploy and
+  health. **#35 (the view tests) merged** (`5036dba`) after it.
 - **One mapping for measurement packages.** The mapping from a UMIK-1 session to the capture
   package moves out of the API's compatibility path into
   `journey/measurement_package.py`, used by both: the server (unchanged behaviour, its tests
