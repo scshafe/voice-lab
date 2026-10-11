@@ -19,17 +19,11 @@ play the take as ``corpus:<id>``, so starting another take stops the one playing
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any, Final, cast
 
 from PySide6.QtCore import (
     Property,
-    QAbstractListModel,
-    QByteArray,
-    QModelIndex,
     QObject,
-    QPersistentModelIndex,
-    Qt,
     QTimer,
     Signal,
     Slot,
@@ -54,6 +48,7 @@ from ..formatting import (
     labelize,
     text,
 )
+from ..tablemodel import TableRows
 from ..viewmodel import AppContext, ViewModel, qproperty
 
 Json = dict[str, Any]
@@ -194,72 +189,6 @@ def detail_entries(row: Json) -> list[Json]:
     return [{"label": label, "value": value} for label, value in entries if _present(value)]
 
 
-class RowsModel(QAbstractListModel):
-    """The table's rows (SuiTable's model): raw ``fields=list`` rows, formatted on read."""
-
-    ROW_ROLE: Final = int(Qt.ItemDataRole.UserRole) + 1
-
-    def __init__(self, formatter: Callable[[Json], Json]) -> None:
-        super().__init__()
-        self._rows: list[Json] = []
-        self._format = formatter
-
-    def rowCount(  # noqa: N802 (Qt's name)
-        self,
-        parent: QModelIndex | QPersistentModelIndex = QModelIndex(),  # noqa: B008
-    ) -> int:
-        return 0 if parent.isValid() else len(self._rows)
-
-    def data(
-        self,
-        index: QModelIndex | QPersistentModelIndex,
-        role: int = int(Qt.ItemDataRole.DisplayRole),
-    ) -> Any:
-        if not index.isValid() or not 0 <= index.row() < len(self._rows):
-            return None
-        if role == self.ROW_ROLE:
-            return self._format(self._rows[index.row()])
-        return None
-
-    def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802
-        return {self.ROW_ROLE: QByteArray(b"row")}
-
-    @property
-    def rows(self) -> list[Json]:
-        return self._rows
-
-    def reset(self, rows: list[Json]) -> None:
-        self.beginResetModel()
-        self._rows = list(rows)
-        self.endResetModel()
-
-    def append(self, rows: list[Json]) -> None:
-        if not rows:
-            return
-        first = len(self._rows)
-        self.beginInsertRows(QModelIndex(), first, first + len(rows) - 1)
-        self._rows.extend(rows)
-        self.endInsertRows()
-
-    def index_of(self, recording_id: str) -> int:
-        for position, row in enumerate(self._rows):
-            if row.get("recordingId") == recording_id:
-                return position
-        return -1
-
-    def update(self, position: int, changes: Json) -> None:
-        self._rows[position] = {**self._rows[position], **changes}
-        self.refresh(position)
-
-    def refresh(self, position: int | None = None) -> None:
-        """Re-read one row (or all) after something its cells show changed."""
-        if not self._rows:
-            return
-        first = 0 if position is None else position
-        last = len(self._rows) - 1 if position is None else position
-        self.dataChanged.emit(self.index(first), self.index(last), [self.ROW_ROLE])
-
-
 class CorpusModel(ViewModel):
     changed = Signal()
     filtersChanged = Signal()
@@ -337,7 +266,7 @@ class CorpusModel(ViewModel):
         self._detail_row: Json | None = None
         self._play_key = ""
         self._play_state = "idle"
-        self._rows = RowsModel(self._format_row)
+        self._rows = TableRows(self._format_row, self)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(SEARCH_DELAY_MS)
@@ -364,7 +293,7 @@ class CorpusModel(ViewModel):
     verdictChoices = Property(list, _get_verdicts, constant=True)
 
     @property
-    def rows(self) -> RowsModel:
+    def rows(self) -> TableRows:
         return self._rows
 
     @property
@@ -384,7 +313,7 @@ class CorpusModel(ViewModel):
         self._detail_generation += 1
         self._summary = None
         self._detail_row = None
-        self._rows.reset([])
+        self._rows.replace([])
         self._set(
             self.changed,
             state="idle",
@@ -520,7 +449,7 @@ class CorpusModel(ViewModel):
 
     def _reload(self) -> None:
         self._generation += 1
-        self._rows.reset([])
+        self._rows.replace([])
         self._set(self.pageChanged, hasMore=False, totalFiltered=-1, loading=False)
         self._fetch_page()
 
@@ -584,7 +513,7 @@ class CorpusModel(ViewModel):
         self._play_key, self._play_state = key, state
         for changed in {before, key}:
             if changed.startswith("corpus:"):
-                position = self._rows.index_of(changed.removeprefix("corpus:"))
+                position = self._rows.index_of("recordingId", changed.removeprefix("corpus:"))
                 if position >= 0:
                     self._rows.refresh(position)
 
@@ -777,7 +706,7 @@ class CorpusModel(ViewModel):
                 return
             recorded = answer.verdict
             changes = {"spotCheckStatus": "reviewed", "humanVerdict": recorded.verdict}
-            position = self._rows.index_of(recording)
+            position = self._rows.index_of("recordingId", recording)
             if position >= 0:
                 self._rows.update(position, changes)
             if self._detail_row is not None and self._v["detailId"] == recording:

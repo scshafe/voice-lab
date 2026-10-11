@@ -12,6 +12,7 @@ import pytest
 from conftest import AppRig, Window, make_rig, open_window
 from synthetic import audio_root, config_for, tone_m4a
 from voice_lab_desktop.api import ApiClient, ApiRefused
+from voice_lab_desktop.formatting import text as js_text
 from voice_lab_desktop.playback import REFEREE_LOWPASS_HZ, decode, shape
 from voice_lab_desktop.screens.referee import (
     REVEAL_ADVANCE_MS,
@@ -19,7 +20,6 @@ from voice_lab_desktop.screens.referee import (
     choices_text,
     flags_text,
     gate_text,
-    js_number,
     year_rows,
 )
 
@@ -271,7 +271,7 @@ def test_referee_results(qtbot: Any, window: Window) -> None:
         assert point["r"] == pytest.approx(max(3, min(7, 2 + math.sqrt(row["trials"]))))
     for label, row in zip(text["items"], years, strict=True):
         sign = "+" if row["strengthLog2"] >= 0 else ""
-        assert label["text"] == f"{sign}{js_number(row['strengthLog2'])}"
+        assert label["text"] == f"{sign}{js_text(row['strengthLog2'])}"
         assert label["y"] > row["strengthLog2"]  # over its dot
     values = [row["strengthLog2"] for row in years]
     assert panel["yMin"] < min(*values, 0) and panel["yMax"] > max(*values, 0)
@@ -303,7 +303,7 @@ def test_results_helpers_follow_the_spa() -> None:
     assert bradley_terry_spec([]) == {} and bradley_terry_spec([{"year": "2019"}]) == {}
     assert flags_text([]) == ""
     assert choices_text({}) == "choices: A 0 · B 0 · too close 0 · not same song 0 · skip 0"
-    assert [js_number(v) for v in (2.0, 0.125, 3, None, True)] == ["2", "0.125", "3", "", "true"]
+    assert [js_text(v) for v in (2.0, 0.125, 3, None, True)] == ["2", "0.125", "3", "", "true"]
     rows = year_rows([{"year": "2020", "strengthLog2": 0, "wins": 1, "losses": 0}])
     assert rows == [
         {

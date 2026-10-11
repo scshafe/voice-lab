@@ -854,7 +854,7 @@ def test_journey_model_edges(
 ) -> None:
     model = journey_window.model.journey
     from voice_lab_desktop.api import ApiClient, ApiUnavailable
-    from voice_lab_desktop.screens.journey import RowsModel
+    from voice_lab_desktop.tablemodel import TableRows
 
     # A failing journeys document leaves the trends (the SPA's slices failed on their own).
     real = ApiClient.document
@@ -882,8 +882,8 @@ def test_journey_model_edges(
     model.refresh()
     assert model.state == "idle"
 
-    rows = RowsModel()
-    rows.set_rows([{"a": 1}])
+    rows = TableRows()
+    rows.replace([{"a": 1}])
     from PySide6.QtCore import QModelIndex, Qt
 
     assert rows.rowCount() == 1 and rows.rowCount(rows.index(0)) == 0

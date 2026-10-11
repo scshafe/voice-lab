@@ -26,13 +26,13 @@ from voice_lab_desktop.formatting import (
 from voice_lab_desktop.screens.corpus import (
     NO_PLAYBACK,
     PLAY_TOOLTIP,
-    RowsModel,
     detail_entries,
     play_label,
     table_row,
 )
+from voice_lab_desktop.tablemodel import TableRows
 
-ROW = RowsModel.ROW_ROLE
+ROW = TableRows.ROW_ROLE
 
 
 # ---- helpers ------------------------------------------------------------------------------
@@ -817,12 +817,12 @@ def test_table_row_without_optional_fields() -> None:
     row = table_row({"recordingId": "r", "spotCheckStatus": "reviewed"}, playback=True)
     assert row["queue"] == "" and row["cluster"] == "" and row["transcript"]["secondary"] == ""
     assert row["spotCheck"] == {"primary": "reviewed", "secondary": "", "muted": False}
-    model = RowsModel(lambda r: r)
+    model = TableRows(lambda r: r)
     assert model.data(model.index(0), ROW) is None
     model.append([])
     model.refresh()  # empty: nothing to re-read
     model.append([{"recordingId": "r"}])
     assert model.data(model.index(0), ROW) == {"recordingId": "r"}
     assert model.data(model.index(0), int(Qt.ItemDataRole.DisplayRole)) is None
-    assert model.index_of("missing") == -1
+    assert model.index_of("recordingId", "missing") == -1
     assert audio_root is not None

@@ -23,6 +23,7 @@ from PySide6.QtCore import Signal, Slot
 from cole_voice_lab.api.journey_contracts import GoalRequest, JourneyDocument
 from cole_voice_lab.journey import jscompat as js
 
+from ..formatting import text
 from ..viewmodel import AppContext, ViewModel, qproperty
 
 RULE_LABELS: Final = {
@@ -48,13 +49,6 @@ EMPTY_FORM: Final = {
     "title": "",
 }
 CREATED: Final = "Goal pre-registered — the next qualifying takes decide it."
-
-
-def text(value: Any) -> str:
-    """``String(value)`` for a JSON value (``null`` and absent as ``""``)."""
-    if value is None or value is js.MISSING:
-        return ""
-    return js.to_string(value)
 
 
 def _list(document: Mapping[str, Any], key: str) -> list[Any]:

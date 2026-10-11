@@ -19,12 +19,9 @@ from typing import Any
 
 from PySide6.QtCore import (
     Property,
-    QAbstractListModel,
-    QByteArray,
     QModelIndex,
     QObject,
     QPersistentModelIndex,
-    Qt,
     Signal,
     Slot,
 )
@@ -34,9 +31,9 @@ from cole_voice_lab.api.journey_contracts import JourneyDocument, JourneyFeature
 from .. import journey_charts as charts
 from ..api import ApiRefused
 from ..education import card
+from ..tablemodel import TableRows
 from ..viewmodel import AppContext, ViewModel, qproperty
 
-ROW_ROLE = Qt.ItemDataRole.UserRole + 1
 TRENDS_UNAVAILABLE = (
     "Voice trends need the features manifest: the PC's journey pipeline writes it (its "
     "features stage), and the server reads it on its next request."
@@ -48,34 +45,6 @@ FEATURE_STORE_MISSING = (
 
 type Json = dict[str, Any]
 type Index = QModelIndex | QPersistentModelIndex
-
-
-class RowsModel(QAbstractListModel):
-    """A small table's rows for ``SuiTable`` (role ``row``: the formatted cells)."""
-
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._rows: list[Json] = []
-
-    def rowCount(self, parent: Index = QModelIndex()) -> int:  # noqa: B008, N802 (Qt's name)
-        return 0 if parent.isValid() else len(self._rows)
-
-    def data(self, index: Index, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
-        if not index.isValid() or not 0 <= index.row() < len(self._rows):
-            return None
-        return self._rows[index.row()] if role == ROW_ROLE else None
-
-    def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802
-        return {ROW_ROLE: QByteArray(b"row")}
-
-    def set_rows(self, rows: list[Json]) -> None:
-        self.beginResetModel()
-        self._rows = list(rows)
-        self.endResetModel()
-
-    @property
-    def rows(self) -> list[Json]:
-        return list(self._rows)
 
 
 class JourneyModel(ViewModel):
@@ -118,8 +87,8 @@ class JourneyModel(ViewModel):
     def __init__(self, context: AppContext, open_corpus: Callable[[str], None]) -> None:
         super().__init__(context, {})
         self.open_corpus = open_corpus
-        self._range_table = RowsModel(self)
-        self._cause_table = RowsModel(self)
+        self._range_table = TableRows(parent=self)
+        self._cause_table = TableRows(parent=self)
         self.trends: Json | None = None
         self.journeys: Json | None = None
         self._generation = 0
@@ -256,8 +225,8 @@ class JourneyModel(ViewModel):
             "subject": requested,
         }
         if trends is None:
-            self._range_table.set_rows([])
-            self._cause_table.set_rows([])
+            self._range_table.replace([])
+            self._cause_table.replace([])
             return empty
         quarters = charts.active_quarters(trends, include)
         span = charts.year_span(trends)
@@ -265,8 +234,8 @@ class JourneyModel(ViewModel):
         subject = charts.active_subject(requested, availability)
         clusters = list(trends.get("clusters") or [])
         eras = list(trends.get("eras") or [])
-        self._range_table.set_rows(charts.range_table(quarters))
-        self._cause_table.set_rows(charts.cause_table(quarters))
+        self._range_table.replace(charts.range_table(quarters))
+        self._cause_table.replace(charts.cause_table(quarters))
         tuning = charts.tuning_pseudo_quarters(journeys)
         return {
             **empty,

@@ -22,12 +22,7 @@ from typing import Any, Final
 
 from PySide6.QtCore import (
     Property,
-    QAbstractListModel,
-    QByteArray,
-    QModelIndex,
     QObject,
-    QPersistentModelIndex,
-    Qt,
     QTimer,
     Signal,
     Slot,
@@ -41,7 +36,9 @@ from cole_voice_lab.api.journey_contracts import (
 )
 
 from ..api import ApiRefused
+from ..formatting import text
 from ..playback import REFEREE_LOWPASS_HZ
+from ..tablemodel import TableRows
 from ..viewmodel import AppContext, ViewModel, qproperty
 
 #: The SPA's pause between the reveal and the next blind pair.
@@ -67,19 +64,6 @@ YEAR_COLUMNS: Final = (
 PLAYER_KEYS: Final = ("referee:a", "referee:b")
 
 
-def js_number(value: Any) -> str:
-    """A number as JavaScript's ``String(n)`` writes it (``2.0`` is ``2``)."""
-    if isinstance(value, bool):
-        return str(value).lower()
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    return "" if value is None else str(value)
-
-
-def _text(value: Any) -> str:
-    return "" if value is None else str(value)
-
-
 def _count(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
@@ -99,9 +83,9 @@ def progress_text(judged: int, pool_size: int) -> str:
 
 def reveal_text(reveal: Mapping[str, Any]) -> str:
     """``A was <date> · B was <date> · <cluster>``: what the blind trial hid."""
-    a = _text(reveal.get("a_captured_at"))[:10]
-    b = _text(reveal.get("b_captured_at"))[:10]
-    return f"A was {a} · B was {b} · {_text(reveal.get('cluster_id'))}"
+    a = text(reveal.get("a_captured_at"))[:10]
+    b = text(reveal.get("b_captured_at"))[:10]
+    return f"A was {a} · B was {b} · {text(reveal.get('cluster_id'))}"
 
 
 def audio_error_text(message: str) -> str:
@@ -116,13 +100,13 @@ def year_rows(years: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The counts table: one row a judged year."""
     return [
         {
-            "_key": _text(row.get("year")),
-            "year": _text(row.get("year")),
-            "strength": js_number(row.get("strengthLog2")),
-            "wins": js_number(row.get("wins")),
-            "losses": js_number(row.get("losses")),
-            "ties": js_number(row.get("ties")),
-            "trials": js_number(row.get("trials")),
+            "_key": text(row.get("year")),
+            "year": text(row.get("year")),
+            "strength": text(row.get("strengthLog2")),
+            "wins": text(row.get("wins")),
+            "losses": text(row.get("losses")),
+            "ties": text(row.get("ties")),
+            "trials": text(row.get("trials")),
         }
         for row in years
     ]
@@ -130,7 +114,7 @@ def year_rows(years: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 def choices_text(by_choice: Mapping[str, Any]) -> str:
     def n(key: str) -> str:
-        return js_number(by_choice.get(key, 0))
+        return text(by_choice.get(key, 0))
 
     return (
         f"choices: A {n('a')} · B {n('b')} · too close {n('too_close')} · "
@@ -142,7 +126,7 @@ def flags_text(flags: Sequence[Mapping[str, Any]]) -> str:
     """The chained-cluster flags ("" when there are none)."""
     if not flags:
         return ""
-    listed = ", ".join(f"{_text(f.get('clusterId'))} ×{js_number(f.get('count'))}" for f in flags)
+    listed = ", ".join(f"{text(f.get('clusterId'))} ×{text(f.get('count'))}" for f in flags)
     return f"Chained-cluster flags: {listed} — these feed the cluster repair pass."
 
 
@@ -163,14 +147,14 @@ def bradley_terry_spec(years: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     for index, row in enumerate(years):
         value = values[index]
         trials = _count(row.get("trials"))
-        strength = js_number(row.get("strengthLog2"))
+        strength = text(row.get("strengthLog2"))
         signed = ("+" if value >= 0 else "") + strength
         points.append(
             {
                 "x": index,
                 "y": value,
                 "r": max(3.0, min(7.0, 2 + math.sqrt(trials))),
-                "tooltip": f"{_text(row.get('year'))} · {signed} · {trials} trials",
+                "tooltip": f"{text(row.get('year'))} · {signed} · {trials} trials",
             }
         )
         labels.append({"x": index, "y": value + above, "text": signed, "align": "center"})
@@ -178,7 +162,7 @@ def bradley_terry_spec(years: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "label": "Perceived quality by year, Bradley-Terry log2 strengths",
         "xMin": 0,
         "xMax": len(years) - 1,
-        "xTicks": [{"value": i, "label": _text(row.get("year"))} for i, row in enumerate(years)],
+        "xTicks": [{"value": i, "label": text(row.get("year"))} for i, row in enumerate(years)],
         "padLeft": 56,
         "padRight": 20,
         "panels": [
@@ -203,43 +187,6 @@ def bradley_terry_spec(years: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             }
         ],
     }
-
-
-class RowsModel(QAbstractListModel):
-    """A list model with one role, ``row`` (SuiTable's contract)."""
-
-    ROW_ROLE: Final = Qt.ItemDataRole.UserRole + 1
-
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._rows: list[dict[str, Any]] = []
-
-    def rowCount(  # noqa: N802 (Qt's name)
-        self,
-        parent: QModelIndex | QPersistentModelIndex = QModelIndex(),  # noqa: B008
-    ) -> int:
-        return 0 if parent.isValid() else len(self._rows)
-
-    def data(
-        self, index: QModelIndex | QPersistentModelIndex, role: int = Qt.ItemDataRole.DisplayRole
-    ) -> Any:
-        if not index.isValid() or role != self.ROW_ROLE or index.row() >= len(self._rows):
-            return None
-        return self._rows[index.row()]
-
-    def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802
-        return {self.ROW_ROLE: QByteArray(b"row")}
-
-    def replace(self, rows: list[dict[str, Any]]) -> None:
-        if rows == self._rows:
-            return
-        self.beginResetModel()
-        self._rows = list(rows)
-        self.endResetModel()
-
-    @property
-    def rows(self) -> list[dict[str, Any]]:
-        return list(self._rows)
 
 
 class RefereeModel(ViewModel):
@@ -280,7 +227,7 @@ class RefereeModel(ViewModel):
     def __init__(self, context: AppContext) -> None:
         super().__init__(context, {})
         self._v.update(self._initial())
-        self._years = RowsModel(self)
+        self._years = TableRows(parent=self)
         self._error_pair = ""
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
@@ -325,7 +272,7 @@ class RefereeModel(ViewModel):
             "flagsText": "",
         }
 
-    def _get_years(self) -> RowsModel:
+    def _get_years(self) -> TableRows:
         return self._years
 
     #: The counts table's rows (a list model for SuiTable).
