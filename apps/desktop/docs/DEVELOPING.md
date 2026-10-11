@@ -27,10 +27,9 @@ pins them exactly for `uv sync` and `uv tool install`.
 | `playback.py` | the one player: PyAV decode, NumPy shaping (gain, 8 kHz low-pass), PortAudio out (D-038) |
 | `screens/` | `status.py`, `uploads.py`, `corpus.py`, `journey.py`, `practice.py`, `referee.py` |
 | `formatting.py`, `journey_charts.py`, `education.py` | the SPA's display rules (`fmt.js`), its chart geometry as `SuiChart` specs (`chartUtils.js` and the chart components), the Journey tabs' static texts |
-| `measurement/` | voice-journey-capture's UMIK-1 ritual: the chain, devices, level readers, the pin, the recorder, the session package, the local store and its upload, the measurement window's controller |
+| `measurement/` | voice-journey-capture's UMIK-1 ritual: the chain, devices, level readers, the pin, the recorder, the session package, the local store and its upload; `controller.py` is the Measurement screen's model |
 | `cli.py` | the command line and the windows |
 | `qml/Main.qml`, `qml/screens/` | the main window and its screens (`PlayerBar.qml`, `ScreenPage.qml`, `Card.qml` are shared) |
-| `qml/measurement/` | the measurement window |
 | `qml/VoiceLab/StandIn/` | stand-ins for scshafe-qt's gaps, each marked for removal |
 
 ## Tests

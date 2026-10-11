@@ -43,12 +43,23 @@ def test_sidebar_reaches_every_screen(qtbot: Any, window: Any) -> None:
         assert sidebar_list.property("selectedIndex") == index
     # Navigating never replaces the sidebar's entries (a model reset mislabels its headers).
     assert resets == []
+    # Nor does a change of an entry (the uploads' count): the row changes in place.
+    model = window.model.sidebarModel
+    reset: list[int] = []
+    changed: list[int] = []
+    model.modelReset.connect(lambda: reset.append(1))
+    model.dataChanged.connect(lambda top, _bottom, _roles: changed.append(top.row()))
+    rows = [dict(row) for row in window.model.sidebar]
+    rows[1]["count"] = 3
+    model.update(rows)
+    assert reset == [] and changed == [1]
+    assert model.rows[1]["count"] == 3 and model.rowCount() == len(SCREENS)
     shown = sorted(
         (item.y(), item.property("text"))
         for item in window.items("sectionHeader", sidebar_list)
         if item.isVisible()
     )
-    assert [text for _y, text in shown] == ["Lab", "Corpus", "Analysis", "Referee"]
+    assert [text for _y, text in shown] == ["Lab", "Record", "Corpus", "Analysis", "Referee"]
 
 
 @pytest.mark.checklist("A-03")

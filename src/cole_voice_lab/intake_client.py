@@ -40,7 +40,13 @@ from .api.contracts import (
 )
 from .canonical import canonical_json_bytes, open_regular_no_follow
 from .errors import SecurityError, VoiceLabError
-from .home_host import HomeHostApproval, HomeHostLedger, load_approval, record_sha256
+from .home_host import (
+    HomeHostApproval,
+    HomeHostClass,
+    HomeHostLedger,
+    load_approval,
+    record_sha256,
+)
 from .intake import ValidatedPackage, validate_capture_package
 from .models import utc_now
 from .paths import AssetLayout
@@ -54,6 +60,9 @@ MAX_ROUNDS: Final = 3
 MAX_ANSWER_BYTES: Final = 4 * 1024 * 1024
 DEFAULT_WAIT_SECONDS: Final = 900.0
 POLL_SECONDS: Final = 2.0
+
+#: ``progress(path, bytes the server holds, size)`` after every chunk the server took.
+type Progress = Callable[[str, int, int], None]
 
 
 class UploadError(VoiceLabError):
@@ -221,6 +230,7 @@ def _send_file(
     session_id: str,
     declared: FileDeclaration,
     received: int,
+    progress: Progress | None = None,
 ) -> None:
     path = _session_path(session_id, "files", urllib.parse.quote(declared.path, safe=""))
     restarted = False
@@ -247,6 +257,11 @@ def _send_file(
             )
             if answer.status in {200, 202}:
                 chunk = _model(answer, ChunkAnswer)
+                if progress is not None:
+                    done = (
+                        declared.size_bytes if chunk.state == "received" else chunk.received_bytes
+                    )
+                    progress(declared.path, done, declared.size_bytes)
                 if chunk.state == "received":
                     return
                 received = chunk.received_bytes
@@ -273,8 +288,14 @@ def upload_session(
     clock: Callable[[], datetime] = utc_now,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
+    package_class: HomeHostClass = "capture",
+    progress: Progress | None = None,
 ) -> IntakeSessionStatus:
     """Upload one finalized capture package and wait for its intake receipt.
+
+    ``package_class`` is what the package is (a prompted ``capture``, or a UMIK-1
+    ``measurement`` session, journey/measurement_package.py): the standing approval must
+    cover it. ``progress`` hears every chunk the server took.
 
     Returns: the ``accepted`` status, whose receipt names this package's manifest digest.
     Raises: ``SecurityError``/``ContractError`` when the local package or the approval
@@ -283,8 +304,8 @@ def upload_session(
     """
     package = validate_capture_package(session)
     approval, approval_sha256 = load_approval(layout, now=clock())
-    if "capture" not in approval.classes:
-        raise SecurityError("the home-host approval does not cover capture packages")
+    if package_class not in approval.classes:
+        raise SecurityError(f"the home-host approval does not cover {package_class} packages")
     request = session_request(package)
     peer = client.check_identity(approval)
     ledger = HomeHostLedger(layout)
@@ -298,7 +319,7 @@ def upload_session(
     }
     ledger.append(event="upload-started", at=clock(), **common)
     try:
-        status = _transfer(client, session, package, request)
+        status = _transfer(client, session, package, request, progress)
         status = _await_publication(client, request, status, wait_seconds, sleep, monotonic)
     except UploadRefused as refused:
         ledger.append(event="upload-refused", at=clock(), detail=str(refused)[:2000], **common)
@@ -321,6 +342,7 @@ def _transfer(
     session: Path,
     package: ValidatedPackage,
     request: IntakeSessionRequest,
+    progress: Progress | None = None,
 ) -> IntakeSessionStatus:
     body = canonical_json_bytes(request)
     answer = client.request(
@@ -335,18 +357,19 @@ def _transfer(
     for _round in range(MAX_ROUNDS):
         if status.state != "open":
             return status
-        for progress in status.files:
-            if progress.complete:
+        for file in status.files:
+            if file.complete:
                 continue
-            declared = request.declared(progress.path)
+            declared = request.declared(file.path)
             if declared is None:
                 raise SecurityError("the server reports a file this package does not declare")
             _send_file(
                 client,
-                session / progress.path,
+                session / file.path,
                 request.session_id,
                 declared,
-                progress.received_bytes,
+                file.received_bytes,
+                progress,
             )
         again = validate_capture_package(session)
         if again._snapshot != package._snapshot:

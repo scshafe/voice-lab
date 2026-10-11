@@ -20,24 +20,12 @@ network-less intake publisher (``intake_publisher.py``) validates it with the un
 validator and publishes it into ``raw/`` with a v2 receipt; it is the only publisher of raw
 audio. A session is ``accepted`` only once that receipt exists.
 
-The package (what the strict validator requires, and how a measurement session fills it):
-
-- ``session_id`` ``vj-<sessionId>``; ``prompt_suite_id`` ``voice-journey-measurement``
-  (``journey.corpus.MEASUREMENT_SUITE_ID``, no prompt catalog: the recording library and
-  the datasets skip packages of a suite they do not hold); ``subject_id`` the configured
-  subject (``cole-self`` by default); ``capture_host`` ``voice-journey-capture``;
-  ``captured_at``/``finalized_at`` the session's ``startedAt``/``endedAt``.
-- ``capture_device``: ``device_id`` ``voice-journey-chain:<chainId>`` (the chain identity
-  the index reads back), ``display_name`` ``miniDSP UMIK-1 (voice-journey chain <chainId>)``,
-  ``microphone_serial`` the cal file's serial (``capture.calSerial``) when the client sent
-  one, ``calibration_sha256`` ``capture.calFileSha256``. ``backend`` keeps the model's
-  historical default: it has no value for PortAudio's host APIs.
-- one file entry per WAV, in the manifest's order, at ``<segmentKey>/<name>`` (the key of
-  the last segment naming the file, as the index reads segment maps) or at ``<name>`` when
-  no segment names it. The ritual's quiet segment, ``room-silence``, is the ``room-tone``
-  file; every other take (calibrator tone, vowels, glide, song, practice) is
-  ``calibration``: measurement audio, never a prompted utterance with a transcript.
-- ``qc.json``: the portable QC metrics the validator recomputes, ``READY`` last.
+The package is the one ``journey/measurement_package.py`` defines (the desktop app builds
+the same package itself for ``/api/v1/intake``, phase 4b): ``vj-<sessionId>``, suite
+``voice-journey-measurement``, subject ``cole-self`` by default, ``capture_host``
+``voice-journey-capture`` here, the chain as the device, one file per WAV under its
+segment's key, ``room-silence`` as the room tone and every other take ``calibration``,
+``qc.json`` and ``READY`` last.
 
 What does not fit the capture manifest (the input level, the distance, the segment labels
 and modes, the client's own level statistics, who finalized it) stays in the session's
@@ -97,31 +85,27 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from email.message import Message
 from pathlib import Path
 from typing import Any, Final
 
-from ..audio import WavInspection, inspect_canonical_wav
 from ..canonical import (
     fsync_directory,
     open_regular_no_follow,
     rename_no_replace,
-    write_canonical_json,
 )
-from ..capture import MANIFEST_NAME, QC_REPORT_NAME, READY_NAME, ReadyMarker
-from ..errors import ContractError, SecurityError
+from ..errors import SecurityError
 from ..intake import RECEIPT_NAME, IntakeReceipt
 from ..intake_publisher import read_refusal
 from ..journey import jscompat as js
-from ..journey.corpus import (
-    MEASUREMENT_DEVICE_PREFIX,
-    MEASUREMENT_SESSION_PREFIX,
-    MEASUREMENT_SUITE_ID,
-)
+from ..journey import measurement_package as package
 from ..journey.jsonio import MISSING, parse_json, read_json, stringify_compact, write_json
+from ..journey.measurement_package import (
+    DEFAULT_SUBJECT_ID,
+    package_layout,
+)
+from ..journey.measurement_package import strict_equal as _strict_equal
 from ..journey.paths import packaged_chains
-from ..models import AudioFileEvidence, CaptureDevice, CaptureManifest, QcReport
 from ..paths import AssetLayout
 from .auth import AuthError, TokenVerifier
 from .staging import ByteSource
@@ -132,10 +116,7 @@ STAGING_NAME: Final = ".journey-uploads"
 RECORD_NAME: Final = "session.json"
 MANIFEST_FILE: Final = "manifest.json"
 FILES_NAME: Final = "files"
-ROOM_TONE_SEGMENT_KEY: Final = "room-silence"
 CAPTURE_HOST: Final = "voice-journey-capture"
-DEFAULT_SUBJECT_ID: Final = "cole-self"
-CANONICAL_FORMAT: Final = "mono-48000-pcm-s24le"
 PUBLISH_WAIT_SECONDS: Final = 120.0
 POLL_SECONDS: Final = 1.0
 MAX_MANIFEST_BYTES: Final = 256 * 1024
@@ -147,14 +128,10 @@ SESSION_ID_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{5,63}\Z")
 FILE_NAME_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.wav\Z")
 SHA256_RE: Final = re.compile(r"[0-9a-f]{64}\Z")
 _CONTENT_RANGE: Final = re.compile(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)\Z")
-_PORTABLE_SESSION_ID: Final = re.compile(r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\Z")
-_SEGMENT_KEY: Final = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 _UMIK: Final = re.compile(r"umik", re.IGNORECASE)
-_UMIK1: Final = re.compile(r"umik[\s_-]?1(?![0-9])", re.IGNORECASE)
 _PERCENT: Final = re.compile(r"%(?![0-9A-Fa-f]{2})")
 RESERVED_NAMES: Final = frozenset({"session.json"})
 _MAX_SAFE_INTEGER: Final = 2**53 - 1
-_EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
 Json = dict[str, Any]
 
@@ -212,14 +189,6 @@ def is_integer(value: Any) -> bool:
     if isinstance(number, float) and not number.is_integer():
         return False
     return bool(abs(number) <= _MAX_SAFE_INTEGER)
-
-
-def _strict_equal(left: Any, right: Any) -> bool:
-    """``left === right`` for JSON values that are numbers or strings."""
-
-    if js.is_number(left) and js.is_number(right):
-        return bool(left == right)
-    return type(left) is type(right) and bool(left == right)
 
 
 def decode_uri_component(text: str) -> str:
@@ -349,139 +318,14 @@ def validate_manifest(value: Any, registry: Any, limits: IntakeLimits = DEFAULT_
     }
 
 
-def _moment(text: str) -> datetime:
-    milliseconds = js.date_parse(text)
-    assert milliseconds is not None  # validate_manifest checked it
-    return _EPOCH + timedelta(milliseconds=int(milliseconds))
-
-
 def require_package_mapping(manifest: Json, registry: Any) -> None:
-    """The rules a voice-lab capture package adds to voice-journey's (see the module
-    docstring). Raises: ``IntakeError`` (422)."""
+    """The rules a voice-lab capture package adds to voice-journey's
+    (``journey.measurement_package``). Raises: ``IntakeError`` (422)."""
 
-    def bad(code: str, detail: Json | None = None) -> IntakeError:
-        return IntakeError(422, code, detail)
-
-    session_id = manifest["sessionId"]
-    if not _PORTABLE_SESSION_ID.match(session_id):
-        raise bad(
-            "invalid_session_id",
-            {"reason": "voice-lab session ids are lower case and end in a letter or digit"},
-        )
-    chain = next(
-        candidate
-        for candidate in js.coalesce(js.get(registry, "chains"), [])
-        if _strict_equal(js.get(candidate, "chainId"), manifest["chainId"])
-    )
-    identity = " ".join(
-        js.to_string(js.coalesce(js.get(chain, key), ""))
-        for key in ("chainId", "deviceName", "label")
-    )
-    if not isinstance(manifest["chainId"], str) or not _UMIK1.search(identity):
-        raise bad(
-            "chain_not_accepted",
-            {"chainId": manifest["chainId"], "reason": "the lab accepts UMIK-1 chains only"},
-        )
-    capture = manifest["capture"]
-    declared = (
-        (js.get(chain, "sampleRate"), 48000),
-        (js.get(capture, "sampleRate"), 48000),
-        (js.get(capture, "bitDepth"), 24),
-        (js.get(capture, "channels"), 1),
-    )
-    if any(found is not MISSING and not _strict_equal(found, want) for found, want in declared):
-        raise bad("format_not_accepted", {"expected": CANONICAL_FORMAT})
     try:
-        started, ended = _moment(manifest["startedAt"]), _moment(manifest["endedAt"])
-    except OverflowError as error:
-        raise bad("invalid_timestamp", {"reason": "years 1 to 9999 only"}) from error
-    if ended < started:
-        raise bad("invalid_timestamp", {"field": "endedAt", "reason": "ends before it starts"})
-    if any(not _SEGMENT_KEY.match(segment["key"]) for segment in manifest["segments"]):
-        raise bad("invalid_segment_key", {"pattern": "[a-z0-9][a-z0-9-]{0,63}"})
-    if not any(kind == "room-tone" for _, _, kind in package_layout(manifest)):
-        raise bad("room_tone_required", {"segment": ROOM_TONE_SEGMENT_KEY})
-
-
-def package_session_id(session_id: str) -> str:
-    """The capture package's session id for a voice-journey session."""
-
-    return MEASUREMENT_SESSION_PREFIX + session_id
-
-
-def package_layout(manifest: Json) -> list[tuple[str, str, str]]:
-    """``(name, package path, kind)`` per file, in the manifest's order.
-
-    A file sits under the key of the last segment naming it (the index's rule), or at the
-    package root when no segment names it.
-    """
-
-    segment_by_file = {segment["file"]: segment["key"] for segment in manifest["segments"]}
-    layout: list[tuple[str, str, str]] = []
-    for file in manifest["files"]:
-        key = segment_by_file.get(file["name"])
-        path = file["name"] if key is None else f"{key}/{file['name']}"
-        layout.append(
-            (file["name"], path, "room-tone" if key == ROOM_TONE_SEGMENT_KEY else "calibration")
-        )
-    return layout
-
-
-def capture_manifest(
-    manifest: Json, inspections: dict[str, WavInspection], *, subject_id: str
-) -> CaptureManifest:
-    """The capture manifest of a verified session (see the module docstring)."""
-
-    capture = manifest["capture"]
-    serial = js.get(capture, "calSerial")
-    files = tuple(
-        AudioFileEvidence(
-            path=path,
-            kind="room-tone" if kind == "room-tone" else "calibration",
-            sha256=inspections[name].sha256,
-            size_bytes=inspections[name].size_bytes,
-            audio=inspections[name].audio,
-        )
-        for name, path, kind in package_layout(manifest)
-    )
-    return CaptureManifest(
-        session_id=package_session_id(manifest["sessionId"]),
-        subject_id=subject_id,
-        prompt_suite_id=MEASUREMENT_SUITE_ID,
-        capture_host=CAPTURE_HOST,
-        captured_at=_moment(manifest["startedAt"]),
-        finalized_at=_moment(manifest["endedAt"]),
-        capture_device=CaptureDevice(
-            device_id=MEASUREMENT_DEVICE_PREFIX + manifest["chainId"],
-            display_name=f"miniDSP UMIK-1 (voice-journey chain {manifest['chainId']})",
-            microphone_serial=serial
-            if isinstance(serial, str) and 0 < len(serial) <= 500
-            else None,
-            calibration_sha256=js.get(capture, "calFileSha256") or None,
-        ),
-        files=files,
-    )
-
-
-def qc_report(
-    manifest: CaptureManifest, manifest_sha256: str, inspections: dict[str, WavInspection]
-) -> QcReport:
-    """The package's ``qc.json``: the validator's portable metrics, generated at
-    ``finalized_at`` (a measurement package has no utterance, so no signal-to-noise)."""
-
-    metrics = tuple(
-        inspections[Path(evidence.path).name].qc_metrics(
-            evidence.path, allow_quiet=evidence.kind == "room-tone"
-        )
-        for evidence in manifest.files
-    )
-    return QcReport(
-        session_id=manifest.session_id,
-        manifest_sha256=manifest_sha256,
-        generated_at=manifest.finalized_at,
-        status="pass" if all(metric.passed for metric in metrics) else "review",
-        metrics=metrics,
-    )
+        package.require_package_mapping(manifest, registry)
+    except package.PackageRefusal as refusal:
+        raise IntakeError(422, refusal.code, refusal.detail) from refusal
 
 
 def parse_content_range(header: str, declared_size: int) -> tuple[int, int, int]:
@@ -869,40 +713,18 @@ class JourneyIntake:
             raise IntakeError(422, "checksum_mismatch", {"files": mismatched})
         if missing:
             raise IntakeError(409, "incomplete", {"missing": missing})
-        layout = package_layout(staged)
-        self._tidy(directory, layout)
-        inspections: dict[str, WavInspection] = {}
-        refused: list[str] = []
-        for name, found in located.items():
-            try:
-                inspections[name] = inspect_canonical_wav(found)
-            except ContractError:
-                refused.append(name)
-        if refused:
-            raise IntakeError(
-                422,
-                "audio_not_accepted",
-                {"files": refused, "expected": CANONICAL_FORMAT},
+        self._tidy(directory, package_layout(staged))
+        try:
+            manifest, manifest_sha256 = package.write_package(
+                staged,
+                located,
+                directory,
+                subject_id=self.subject_id,
+                capture_host=CAPTURE_HOST,
+                move=True,
             )
-        for name, member, _ in layout:
-            target = directory / member
-            if located[name] != target:
-                target.parent.mkdir(mode=0o700, exist_ok=True)
-                os.rename(located[name], target)
-        manifest = capture_manifest(staged, inspections, subject_id=self.subject_id)
-        manifest_sha256 = write_canonical_json(directory / MANIFEST_NAME, manifest)
-        report_sha256 = write_canonical_json(
-            directory / QC_REPORT_NAME, qc_report(manifest, manifest_sha256, inspections)
-        )
-        write_canonical_json(
-            directory / READY_NAME,
-            ReadyMarker(
-                session_id=manifest.session_id,
-                manifest_sha256=manifest_sha256,
-                qc_report_sha256=report_sha256,
-                finalized_at=manifest.finalized_at,
-            ),
-        )
+        except package.PackageRefusal as refusal:
+            raise IntakeError(422, refusal.code, refusal.detail) from refusal
         record = {
             **staged,
             "intake": {

@@ -134,6 +134,11 @@ class Config:
         return self.issuer
 
     @property
+    def library_dir(self) -> Path:
+        """This machine's private library for the home-host approval and its ledger (D-021)."""
+        return Path(self.data_dir) / "library"
+
+    @property
     def measurement_dir(self) -> Path:
         """The measurement capture's own data: its sessions, the level pin, the cal file."""
         return Path(self.data_dir) / "measurement"

@@ -31,7 +31,33 @@ to the app. If the browser says the redirect is not allowed, quit and start with
 `--fixed-port` (it listens on `127.0.0.1:53683`). **Status** then shows the server's build,
 its API versions and its gates.
 
-## 4. Coming from voice-journey-capture
+## 4. Approve the home host (once per machine)
+
+Sessions go to the PC through `/api/v1/intake` only under a standing approval you author on
+this machine (D-021): it names the PC's endpoint, its tailnet node and the classes of what
+may be sent, for at most 366 days, and every upload is written into this machine's ledger
+before its first byte. **Uploads** says when it is missing. The library that holds it is
+`~/.local/share/voice-lab-desktop/library` (Linux) or `~/Library/Application
+Support/voice-lab-desktop/library` (macOS); open **Uploads** once and the app creates it.
+The node's stable ID comes from `tailscale status --json` (the peer whose `DNSName` is the
+endpoint), never from a document:
+
+```sh
+LIB=~/.local/share/voice-lab-desktop/library      # macOS: ~/Library/Application Support/voice-lab-desktop/library
+voice-lab home-host approve --asset-root "$LIB" \
+  --approval-id pc-home-host-2026 \
+  --endpoint voice-lab.<tailnet>.ts.net --tailnet-suffix <tailnet>.ts.net \
+  --node-stable-id <StableID> --classes capture measurement \
+  --approved-at <now, ISO-8601 with offset> --expires-at <at most 366 days later> \
+  --approved-by Cole --statement "My recordings, to my own PC." --preview
+# then the same arguments, without --preview, plus:
+#   --reviewed-approval-sha256 <the printed approval_sha256> --i-approve-this-destination
+```
+
+The server in Settings must be `https://` that same endpoint. Before each upload the app
+checks, through Tailscale, that the node answering for it is the approved one.
+
+## 5. Coming from voice-journey-capture
 
 The old capture client kept its level pin, its cal file and its sessions in its own data
 dir. Copy them once (nothing is moved or deleted; nothing is overwritten):
@@ -43,10 +69,10 @@ voice-lab-desktop --import-capture-data
 Then `voice-lab-desktop --sessions` lists them, and **Uploads** sends what is still
 waiting. A level pinned in the old client stays the same pin (not a new chain era).
 
-## 5. A measurement session
+## 6. A measurement session
 
-`voice-lab-desktop --measure` opens the UMIK-1 window (phase 4b moves it into the main
-window). The steps are voice-journey-capture's, unchanged:
+The **Measurement** screen (or `voice-lab-desktop --measure`, which opens on it). The steps
+are voice-journey-capture's, unchanged; the mouth distance is in **Status → Settings**:
 
 1. Plug in the UMIK-1. Any other microphone is refused. On macOS set its format to 48,000 Hz
    in Audio MIDI Setup; on Linux the app opens it through ALSA `hw:` when PortAudio lists it,

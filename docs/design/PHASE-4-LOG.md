@@ -15,9 +15,9 @@ touched; phases 5 and 6 are out of scope.
 
 | Step | What | PR | State |
 | --- | --- | --- | --- |
-| 4a | `voice-journey-capture` becomes `voice-lab-desktop` (Python 3.12, scshafe-qt 0.2); sign-in and status, Uploads, Corpus, Journey, Practice, Referee on `/api/v1`; the checklist | — | built, checklist ticked; PR next |
-| view | Tests: every `/view` route refuses non-GET; none serves audio | — | ready on `phase4/view-tests`, after 4a |
-| 4b | The UMIK-1 ritual in the app; `/api/v1/intake` with the D-021 ledger | — | not started |
+| 4a | `voice-journey-capture` becomes `voice-lab-desktop` (Python 3.12, scshafe-qt 0.2); sign-in and status, Uploads, Corpus, Journey, Practice, Referee on `/api/v1`; the checklist | #34 | merged `f440436` |
+| view | Tests: every `/view` route refuses non-GET; none serves audio | #35 | merged `5036dba` |
+| 4b | The UMIK-1 ritual in the app; `/api/v1/intake` with the D-021 ledger | #36 | open, after #35 |
 | 4c | Prompted capture; the S-1 harness; Linux packaging; the macOS bundle script and install page | — | not started |
 | removal | Remove the SPA's routes and voice-journey's unversioned paths | draft | gated: checklist sign-off, cutover (F) |
 
@@ -83,10 +83,42 @@ touched; phases 5 and 6 are out of scope.
   - charts fill the pane rather than the SPA's fixed widths with horizontal scrolling;
     their dots have tooltips the SPA's did not; the inspector is a centred dialog.
 - **Observed, not fixed:** with Qt's software renderer (all this host can render
-  offscreen), a window resized before its first frame can draw the sidebar's first section
-  header with another section's name; the item holds the right text and any later layout
-  draws it right. Whether a GPU renderer shows it is for the owner to see; if it does, it is
-  `SuiSidebarList`'s section delegates (a scshafe-qt report).
+  offscreen), the sidebar's first section header can be drawn with another section's name
+  after a navigation (open on Corpus, resize, go to another screen); the header item holds
+  the right text, and later frames draw it right. Whether a GPU renderer shows it is for the
+  owner to see; if it does, it is `SuiSidebarList`'s section delegates (a scshafe-qt
+  report).
+
+### 2026-10-11, 4b
+
+- **#34 (4a) merged** (`f440436`); its deploy run 38122257558 passed verify, deploy and
+  health. **#35 (the view tests) merged** (`5036dba`) after it.
+- **One mapping for measurement packages.** The mapping from a UMIK-1 session to the capture
+  package moves out of the API's compatibility path into
+  `journey/measurement_package.py`, used by both: the server (unchanged behaviour, its tests
+  unchanged) and the app, which now builds the package itself (`capture_host`
+  `voice-lab-desktop`; everything else the same, a test compares the two).
+- **Uploads go through `/api/v1/intake` with the D-021 ledger**, closing the gap D-035
+  recorded: `intake_client.upload_session` checks the package's class against the
+  standing approval (a measurement package needs `measurement`) and reports progress; the
+  app's library (`<data dir>/library`) holds the approval and the ledger; the receipt's
+  digests stay with the session. Until the owner binds an approval on a machine, Uploads
+  says so and sends nothing. A session that changed on disk is refused, never sent.
+- **The ritual is a screen** ("Record: Measurement"): the window's ritual unchanged; its
+  sign-in, settings and upload controls are the app's (Status, Uploads); the mouth
+  distance moved to Status → Settings; `--measure` opens the main window on it; a session
+  keeps running when another screen is shown (its sidebar entry shows a dot), and closing
+  the app aborts it with the reason. Device scans and level polls run only while the screen
+  is shown. voice-journey-capture's tests pass in `apps/desktop/` (the design's 4b
+  acceptance on the code side); the window's sign-in/settings/upload tests were dropped,
+  as Status and Uploads own that behaviour now.
+- **The compatibility transport** (`measurement/upload.py`, voice-journey's `/api/intake/…`)
+  is no longer used by the app; it and its tests stay until the removal PR deletes the
+  server's path with them, so that the rollback client (`468c744`) and its protocol stay
+  tested.
+- **Not done here, building on #31:** the app still pins its chain (`chain.py`). Reading
+  `GET /api/v1/chains` needs #31's route and its `ChainRegistryView`; it follows #31 as a
+  small draft stacked on it (gated like #31).
 
 ## scshafe-qt asks
 
@@ -105,7 +137,7 @@ instant under reduced motion.
 | `SuiProgress` (determinate, cancel) | yes | Uploads | waiting |
 | `SuiTable` (sortable, virtualised) | yes | Corpus (about 7,000 rows), data tables | waiting |
 | `SuiChart` (line, band, scatter, bars) | yes | Journey, Referee | waiting |
-| `SuiLevelMeter` | 4b | Record: measurement | — |
+| `SuiLevelMeter` | yes (4b) | Record: measurement | waiting |
 | `SuiWaveform` with trim | 4c | Record: prompts | — |
 | `SuiSwitch`, `SuiRadio` | no | not needed by phase 4 | — |
 
@@ -207,11 +239,24 @@ the full `spec`:
   fingerprint about 2,400 points; Cause & Effect about 90 monthly bars and two panels; the
   threads chart 8 rows. Width follows the pane; heights 100 to 400 px per panel.
 
+### SuiLevelMeter
+
+A level meter for live input.
+
+- `peak` and `rms`: fractions in [0, 1] of the meter's scale (clamped); the bar draws `rms`,
+  a 2 px marker `peak`. The owner maps dBFS onto the scale (the capture maps -60…0 dBFS).
+- `clipping` (bool): bar and marker turn danger; `warnAt` (default 0.92): a peak above it
+  turns the bar warn.
+- `label` (accessible name), `text` (an optional reading such as "-24.0 dBFS peak", in the
+  accessible description), `orientation` (`Qt.Horizontal` default, or `Qt.Vertical`).
+- Implicit 200 × 14 px horizontal, 14 × 120 px vertical. Updated about 20 times a second (a
+  50 ms timer), with no animation, so it is never late. Accessible as a progress bar.
+
 ## Stand-ins waiting on scshafe-qt
 
 Every file in `apps/desktop/src/voice_lab_desktop/qml/VoiceLab/StandIn/` (see the table
 above): `SuiText`, `SuiCheckbox`, `SuiSelect`, `SuiSlider`, `SuiProgress`, `SuiTable`,
-`SuiChart`.
+`SuiChart`, `SuiLevelMeter`.
 
 ## Owner's steps
 
@@ -253,3 +298,13 @@ or the owner's judgement.
    headphones (the matched gain and the 8 kHz band limit).
 5. Open `https://voice-lab.<tailnet>.ts.net/view/` on the phone, through the door: every page
    renders and none plays audio (the phone check of design §9's web-view acceptance).
+6. **4b, on each machine that records (the PC and the Air):** approve the home host once in the
+   app's library ([FIRST-RUN.md](../../apps/desktop/docs/FIRST-RUN.md) §4, `voice-lab
+   home-host approve --asset-root <library> … --classes capture measurement`, preview, then
+   approve with the printed digest). **Uploads** then says where sessions go.
+7. **4b acceptance:** one real UMIK-1 measurement session from macOS (the Air) and one from
+   Linux (the PC), each recorded on the app's Measurement screen and accepted on the PC: the
+   session's row in Uploads shows the receipt's package and manifest digest, `voice-lab
+   home-host show --asset-root <library>` shows its two ledger entries, and the session
+   appears in the Corpus after the job runner's next pass. Until this is done, the standalone
+   client (step 1) stays the rollback.
