@@ -15,7 +15,7 @@ touched; phases 5 and 6 are out of scope.
 
 | Step | What | PR | State |
 | --- | --- | --- | --- |
-| 4a | `voice-journey-capture` becomes `voice-lab-desktop` (Python 3.12, scshafe-qt 0.2); sign-in and status, Uploads, Corpus, Journey, Practice, Referee on `/api/v1`; the checklist | — | in progress |
+| 4a | `voice-journey-capture` becomes `voice-lab-desktop` (Python 3.12, scshafe-qt 0.2); sign-in and status, Uploads, Corpus, Journey, Practice, Referee on `/api/v1`; the checklist | — | built, checklist ticked; PR next |
 | view | Tests: every `/view` route refuses non-GET; none serves audio | — | ready on `phase4/view-tests`, after 4a |
 | 4b | The UMIK-1 ritual in the app; `/api/v1/intake` with the D-021 ledger | — | not started |
 | 4c | Prompted capture; the S-1 harness; Linux packaging; the macOS bundle script and install page | — | not started |
@@ -46,6 +46,47 @@ touched; phases 5 and 6 are out of scope.
 - **Playback** (D-038): PyAV decodes in memory, NumPy shapes, PortAudio plays; one player.
 - **The capture client's tests** in `apps/desktop/tests/measurement/` (139 passed and 2
   skipped before the move, on Python 3.12 with scshafe-qt 0.2.0 unchanged).
+- **The screens** were built in parallel, one agent per screen in its own worktree, on the
+  foundation (the app model, the `/api/v1` client, the player, the Status and Uploads
+  screens, the stand-ins), and merged: Corpus (C, A-04, A-06), Journey (J), Practice (P),
+  Referee (R); a fifth brought `measurement/` under Ruff and strict mypy without a change
+  of behaviour and replaced the end-to-end tests that needed a voice-journey checkout and
+  node with ones against voice-lab's own API: a simulated session goes through
+  `/api/intake/…`, the publisher's pass, and lands in a synthetic `raw/` with its v2
+  receipt; a cut upload resumes. Mypy found four real defects there, each fixed with a test
+  (a `session.json` that is JSON but not an object crashed the session list; the
+  measurement window's sign-in and upload with no server or issuer set raised inside a Qt
+  slot or sent to an empty URL; an implicit invariant in `finish_segment`).
+- After the merge: one `SuiTable` model (`tablemodel.py`) and one `String()` helper
+  (`formatting.text`) for every screen; the sidebar's entries got their own notify signal
+  (every navigation used to hand `SuiSidebarList` a new model).
+- **The checklist is ticked**: 91 items, each by the tests it names, against synthetic data
+  only (a real `/api/v1` over synthetic manifests and PyAV-made tones; a stand-in audio
+  device). `scripts/verify` runs them.
+- **Coverage.** The app's suite measures 88% of `voice_lab_desktop` (floor 85%, set in its
+  `pyproject.toml`): what is left is what only hardware runs (PortAudio streams, the
+  CoreAudio and ALSA/PipeWire level readers, the windowed run).
+- **Deviations from the SPA**, each also visible in the checklist's wording:
+  - the notices that told the SPA's user to relaunch the browser with a flag (no features
+    manifest, no feature store, no playback, the referee's gate, a track that fails to
+    load) now name the PC's pipeline, `serve --feature-dir`, the server's playback approval
+    and the server's read access to the corpus;
+  - no URLs: filters and the Journey's tab are kept for the session; the click-throughs
+    replace the deep links (A-07);
+  - the row's inline `<audio controls>` is a Play / Pause / Resume button; seeking is in the
+    detail's player; the referee's low-pass is a brick wall at 8 kHz (D-038);
+  - Captured and Reviewed at use the corpus format (`YYYY-MM-DD HH:MM`): the SPA's
+    `timestamp()` came from the private `@scshafe/ui`;
+  - the verdict note is one line (scshafe-qt has no text area); goal status tones are
+    info / ok / danger / neutral (no dashed chip); an Abandon that fails toasts; the goal
+    form checks the takes count before sending;
+  - charts fill the pane rather than the SPA's fixed widths with horizontal scrolling;
+    their dots have tooltips the SPA's did not; the inspector is a centred dialog.
+- **Observed, not fixed:** with Qt's software renderer (all this host can render
+  offscreen), a window resized before its first frame can draw the sidebar's first section
+  header with another section's name; the item holds the right text and any later layout
+  draws it right. Whether a GPU renderer shows it is for the owner to see; if it does, it is
+  `SuiSidebarList`'s section delegates (a scshafe-qt report).
 
 ## scshafe-qt asks
 
@@ -96,6 +137,9 @@ A single choice from a short list (a filter, a form field), with a visible capti
 - `valueSelected(value)` on a user choice (mouse, Enter, Space, arrows); `value` follows.
 - Implicit width at least 140 px; height controlHeight (+ the caption); the popup at most
   320 px tall, scrolling.
+- **Controlled:** it never assigns its own `value`; a choice only emits `valueSelected(v)`,
+  and the owner's binding on `value` carries the choice back (a choice the owner does not
+  take leaves the shown value as it was). `select(v)` is the same choice from code.
 
 ### SuiSlider
 
@@ -135,6 +179,9 @@ A sortable, virtualised table: only the visible rows have delegates.
 - `endReached()`: the view came within `endThreshold` (10) rows of the end; once per row
   count (for paging).
 - `rowHeight` (40, two-line cells), `headerHeight` (30), `label` (accessible name).
+- Stable names for tests and accessibility: each header `header-<key>` (its label
+  `headerText`), the row view `rows`, each action button `action-<id>`;
+  `positionAtRow(index)`.
 
 ### SuiChart
 
@@ -154,6 +201,8 @@ the full `spec`:
 - Hover shows the tooltip of the point, rect or region under the pointer; a click on one
   with an `id` emits `activated(id)`; `tooltipAt(x, y)`, `idAt(x, y)` and
   `pointPosition(panel, x, y)` answer for a position (tests, keyboard).
+- `spec.compact` (bool): no title, no x axis, no baseline (a sparkline, about 130 × 26 px);
+  `spec.xTitle`: a title under the x ticks.
 - Volumes: the Range River has about 30 quarters × 3 bands and a register strip; the
   fingerprint about 2,400 points; Cause & Effect about 90 monthly bars and two panels; the
   threads chart 8 rows. Width follows the pane; heights 100 to 400 px per panel.
