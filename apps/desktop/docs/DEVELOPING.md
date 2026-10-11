@@ -1,79 +1,73 @@
-# Developing voice-journey-capture
+# Developing voice-lab-desktop
+
+From the repository root, with its development environment (`.venv`, README "Linux"):
 
 ```sh
-uv sync --frozen
-uv run pytest -v                   # offscreen; any Qt/QML warning fails a test
-uv run voice-journey-capture --smoke
+.venv/bin/python -I -B -m pytest -c apps/desktop/pyproject.toml   # offscreen; a Qt warning fails a test
+.venv/bin/mypy apps/desktop/src
+.venv/bin/ruff check apps/desktop && .venv/bin/ruff format --check apps/desktop
+scripts/verify                                                    # all of it, and the backend
 ```
 
-`dev.toml [verify]` runs the last two. The repository is private, so GitHub Actions
-does not run: verify locally before every merge and say so in the PR.
+The repository is private, so GitHub Actions does not run: run `scripts/verify` (and
+`dev check .`) before every merge and say so in the PR. The root `pyproject.toml`'s `dev`
+extra carries the app's dependencies, so one environment checks both; `apps/desktop/uv.lock`
+pins them exactly for `uv sync` and `uv tool install`.
 
 ## Layout
 
 | Module | What |
 | --- | --- |
-| `chain.py` | the UMIK-1 chain (`umik1`, 48 kHz, 24-bit, mono, 35 cm, USB id): must match voice-journey `manifests/chains.json` |
-| `config.py` | settings: defaults, `config.toml`, the environment; the Settings panel's writes |
-| `devices.py` | input devices, choosing the UMIK-1, the PortAudio input stream (int32 frames) |
-| `levels.py` | the level readers: CoreAudio (ctypes HAL), ALSA (`amixer`), PipeWire (`pw-dump`) |
-| `pin.py` | the pin, its log, the guard; the cal file |
-| `wav.py` | 24-bit WAV writing, meter arithmetic |
-| `recorder.py` | one segment: audio thread → queue → writer thread; the pre-session probe |
-| `ritual.py` | the plan (capture.mjs's segments), the guard around every segment, `session.json` |
-| `package.py` | checksums, the intake's manifest rules client side |
-| `store.py` | local sessions and their upload state |
-| `upload.py` | the intake client (resumable PUT, finalize, retries) |
-| `tokens.py`, `auth.py` | Pocket ID sign-in (PKCE, loopback) and the keychain (from mailroom-desktop) |
-| `controller.py`, `qml/Main.qml` | the window |
-| `simulated.py` | the simulated UMIK-1 and level for tests and `--smoke` (never offered in the window) |
-| `cli.py` | the command line |
+| `app.py` | the composition root: the app model (account, settings, navigation), one model per screen, the context properties QML reads |
+| `viewmodel.py` | the shared context (settings, session, HTTP, tasks, player) and the property plumbing of every screen's model |
+| `api.py` | `/api/v1`, read through the backend's strict contract models; refusals as `ApiRefused`/`ApiUnavailable` |
+| `auth.py`, `tokens.py` | Pocket ID sign-in (PKCE, loopback) and the keychain (from voice-journey-capture) |
+| `config.py` | settings: `config.toml`, the environment, the Settings dialog's writes; no server in the code |
+| `net.py`, `tasks.py` | the one HTTP client (no cookies, no redirects); the worker pool whose results come back on the GUI thread |
+| `playback.py` | the one player: PyAV decode, NumPy shaping (gain, 8 kHz low-pass), PortAudio out (D-038) |
+| `screens/` | `status.py`, `uploads.py`, `corpus.py`, `journey.py`, `practice.py`, `referee.py` |
+| `formatting.py`, `journey_charts.py`, `education.py` | the SPA's display rules (`fmt.js`), its chart geometry as `SuiChart` specs (`chartUtils.js` and the chart components), the Journey tabs' static texts |
+| `measurement/` | voice-journey-capture's UMIK-1 ritual: the chain, devices, level readers, the pin, the recorder, the session package, the local store and its upload, the measurement window's controller |
+| `cli.py` | the command line and the windows |
+| `qml/Main.qml`, `qml/screens/` | the main window and its screens (`PlayerBar.qml`, `ScreenPage.qml`, `Card.qml` are shared) |
+| `qml/measurement/` | the measurement window |
+| `qml/VoiceLab/StandIn/` | stand-ins for scshafe-qt's gaps, each marked for removal |
 
 ## Tests
 
-Nothing needs a microphone, the network or the server:
+Nothing needs a microphone, a speaker, the network or the real server:
 
-- **`simulated.py`** is the audio backend and level reader: a 240 Hz tone at -24 dBFS,
-  faster than real time, with switches for digital zeros, input overflows and a device
-  that will not open.
-- **The level readers** are tested against recorded `amixer` and `pw-dump` output and a
-  fake CoreAudio HAL.
-- **`tests/fakes.py`** runs a fake Pocket ID and a fake intake behind a fake door as
-  real HTTP servers on 127.0.0.1. The intake follows voice-journey's `src/intake.mjs`
-  and can inject faults: a dropped connection mid-chunk, a corrupted chunk, a 503, a
-  door that redirects.
-- **`tests/test_e2e_intake.py`** uploads a recorded session to the **real**
-  voice-journey intake: `node src/corpus-browser.mjs` from a checkout, with a temporary
-  `VOICE_JOURNEY_DATA`, behind a small door that sets the identity headers. It runs
-  when `$VOICE_JOURNEY_CHECKOUT` or `../voice-journey` holds a checkout and node >= 22
-  is installed, and skips otherwise. It only reads the checkout, and fails if the
-  checkout's git status changes.
+- **A real `/api/v1`.** `tests/synthetic.py` writes synthetic journey manifests (72 takes,
+  2019 to 2024, two recurring songs) and short AAC tones made with PyAV, and runs the
+  backend's own `ApiServer` with the journey routes over them on 127.0.0.1, behind the
+  backend's test token verifier. `big_root` is the Corpus table's scale case (7,000 rows).
+- **The screens offscreen.** The `window` fixture loads `Main.qml` over a signed-in app model;
+  tests click through `objectName`s and read what the screens show. Any Qt or QML warning
+  fails a test (`qt_log_level_fail`).
+- **The audio device** is `RecordingOutput` (conftest): it keeps what would have played, so
+  tests check the decoded samples, the referee's gain and its low-pass.
+- **The measurement capture** keeps voice-journey-capture's fakes: a simulated UMIK-1 and
+  level, a fake Pocket ID, and voice-journey's intake behind a fake door with injectable
+  faults; its end-to-end tests upload to voice-lab's own API and its intake publisher.
+- **The checklist.** Each item of `docs/design/PHASE-4-CHECKLIST.md` names its tests, which
+  carry `@pytest.mark.checklist(...)`; `tests/test_checklist.py` fails when the two drift.
 
-When voice-journey changes its intake contract (README "Intake API", `src/intake.mjs`)
-or the `umik1` chain, update `package.py`, `chain.py`, `tests/fakes.py` and the tests in
-the same change.
+## What only real hardware and a person prove
 
-## What only real hardware proves
-
-- **macOS:** `CtypesCoreAudio`, the HAL calls: device list, name, input channels,
-  `VolumeScalar`, mute.
-- **Linux:** the PortAudio stream on a real UMIK-1, and `amixer` / `pw-dump` against
-  its real card and node.
-
-The parsing and the decisions around them are tested; the calls themselves are kept
-small.
+- Playback through a real device, and that it sounds right (the referee's matched playback
+  included).
+- The measurement capture's level readers and stream on a real UMIK-1 (macOS CoreAudio;
+  Linux `amixer`, `pw-dump`, ALSA `hw:`).
+- The sign-in with the real Pocket ID and the real door.
 
 ## scshafe-qt
 
-scshafe-qt comes from PyPI (`scshafe-qt>=0.1.2,<0.2`; published by trusted publishing
-with PEP 740 attestations), and `uv.lock` pins its sha256. 0.1.1 is the security floor:
-from it on, every `Text` in its components is `Text.PlainText`. To upgrade within 0.1:
+scshafe-qt comes from PyPI (`scshafe-qt>=0.2.0,<0.3`; trusted publishing with PEP 740
+attestations), pinned with its sha256 in `uv.lock`. When it releases a component that a
+stand-in in `qml/VoiceLab/StandIn/` stands for, adopt it in one change: raise the floor,
+`uv lock --upgrade-package scshafe-qt`, delete the stand-in and its qmldir line, and run the
+suite. The lock's sha256 should match the GitHub Release's `SHA256SUMS`:
 
 ```sh
-uv lock --upgrade-package scshafe-qt && uv run pytest
-# the lock's sha256 should match the GitHub Release's SHA256SUMS:
 gh release download vX.Y.Z -R scshafe/scshafe-qt -p SHA256SUMS -O -
 ```
-
-A 0.2 upgrade moves the bound in `pyproject.toml` too. Commit `pyproject.toml` and
-`uv.lock` together.

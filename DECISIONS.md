@@ -925,3 +925,57 @@ owner reviews it with the phase. Where the build differs from the design:
 - **Memos** are named `memos/<path>` in a manifest, read from `--memos-root` (a flag of the
   push, so the PC's `v2` bindings stay valid; a binding opts in with the `memos` class), and
   restored only into a `--memos-target` of their own, never into the library.
+
+## D-037 — The desktop app's distribution, package and layout
+
+Recorded 2026-10-11 while building the design's phase 4a (§5.2, §6.3); the owner reviews it
+with the phase (docs/design/PHASE-4-LOG.md). What the design left open, and one deviation:
+
+- **Names.** The distribution is `voice-lab-desktop` (§6.3), its import package
+  `voice_lab_desktop`, its command `voice-lab-desktop`, its Pocket ID client and keychain
+  service `voice-lab-desktop` (the public client of phase 2). Its settings file is
+  `config.toml` in `~/.config/voice-lab-desktop/` (`~/Library/Application
+  Support/voice-lab-desktop/` on macOS), its data in `$XDG_DATA_HOME/voice-lab-desktop/`, its
+  environment `VOICE_LAB_DESKTOP_*`. The `voice-lab` rename of phase 6 (D-029) leaves these
+  as they are.
+- **No server in the code.** The server and the issuer have no default; the app opens on its
+  Status screen until both are set. The capture client defaulted to the tailnet's names; the
+  publication screen (§5) asked that they become configuration.
+- **Layout.** `apps/desktop/src/voice_lab_desktop/`: the app (`app.py`, the composition root;
+  `api.py`, `auth.py`, `config.py`, `playback.py`; `screens/`, one model per screen;
+  `qml/`), and `measurement/`, voice-journey-capture's modules moved with their history and
+  unchanged in behaviour. The measurement capture keeps its data in `<data>/measurement/`;
+  `voice-lab-desktop --import-capture-data` copies the old client's level pin, its log, the
+  cal file and the sessions there (copies, never moves; refuses to overwrite).
+- **Deviation: no `contracts/` distribution yet.** §5.2 puts the `/api/v1` models in a
+  separate `voice-lab-api` so that the app need not install the backend. The app depends on
+  the backend distribution itself (`cole-voice-lab`, from this repository): its runtime
+  dependency is pydantic alone, and the app needs more than the models — the capture
+  package, its strict validator and the D-021 approval and ledger (4b) are the backend's.
+  Splitting the models out is mechanical and belongs with phase 6's rename and the first
+  PyPI release, when a separate install would matter.
+- **Stand-ins.** What scshafe-qt does not have yet (§6.4) is a local QML module,
+  `VoiceLab.StandIn`, with the API asked of scshafe-qt (PHASE-4-LOG.md, "scshafe-qt asks").
+  Each file says it is marked for removal; adopting a release is deleting the file and its
+  qmldir line.
+- **Verification.** The app's suite runs in `scripts/verify` as its own pytest run
+  (`-c apps/desktop/pyproject.toml`, pytest-qt, any Qt warning fails it); the backend's suite
+  runs without pytest-qt (`-p no:pytest-qt`), whose hooks break the backend's tests that
+  stand in a fake application. Ruff and strict mypy cover `apps/desktop`; the app's wheel
+  is built into `dist/` beside the backend's, where the guard inspects it.
+
+## D-038 — Playback in the desktop app
+
+Recorded 2026-10-11 (phase 4a). The Corpus, Journey and Referee screens play recordings the
+server streams (`GET /api/v1/recordings/{id}/audio`, only with the server's playback
+approval, design §4.2). QtMultimedia is not in PySide6-Essentials, and PySide6-Addons is
+several times its size, so the app decodes with PyAV (`av`, an exact pin; its wheels carry
+FFmpeg's decoders), shapes with NumPy and plays through PortAudio (`sounddevice`), which the
+measurement capture already uses. The bytes stay in memory and are dropped when the take
+stops; nothing is written to disk (as D-022 has it for synthesized clips). There is one
+player for the app, as the SPA had one `<audio>` element.
+
+The referee's matched playback keeps the SPA's two measures: the server's per-side gain
+(`gain_db`) and a low-pass at 8 kHz. The SPA's low-pass was a WebAudio biquad; the app's
+removes everything above 8 kHz (an FFT brick wall), a stricter band limit for the same
+purpose: a 2019 phone take and a 2026 take stop telegraphing their year through the chain.

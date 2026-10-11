@@ -1,48 +1,33 @@
-# AGENTS.md: voice-journey-capture
+# AGENTS.md: voice-lab-desktop
 
-Voice Journey's native capture client (PySide6 + QML on scshafe-qt), scshafe-dev kind
-`native`. It records the UMIK-1 session ritual and uploads it to voice-journey's intake
-API. Read README.md and docs/DEVELOPING.md first; the design is voice-journey
-`docs/move-to-lubuntu.md` ("Capture client", phase 5).
+voice-lab's desktop app (design [VOICE-PLATFORM.md](../../docs/design/VOICE-PLATFORM.md)
+§6): PySide6 + QML on scshafe-qt, over the lab's `/api/v1`. The repository's own
+[AGENTS.md](../../AGENTS.md) binds this directory too; what follows is specific to it.
 
-- Python 3.14 and `uv` (the version pinned in pyproject). Verify (`dev.toml [verify]`):
-  `uv run --frozen pytest -v && uv run --frozen voice-journey-capture --smoke`
-  (offscreen; Qt warnings fail). The repository is private, so CI does not run: verify
-  locally and say so in the PR.
-- The intake contract, the `umik1` chain and the ritual belong to voice-journey
-  (README "Intake API", `src/intake.mjs`, `manifests/chains.json`, `src/capture.mjs`).
-  `chain.py`, `package.py`, `ritual.py` and `tests/fakes.py` mirror them. Change them
-  together, and never change voice-journey from here.
-- Only the UMIK-1 is supported at launch. A new chain needs the owner and a
-  voice-journey registry change first.
-- The level guard never fails open. A level that cannot be read, or that moved, or
-  that is muted, refuses or aborts. Keep the platform readers small and tested with
-  fakes.
-- Never commit audio (`*.wav` is ignored), recordings, cal files, tokens or private
-  text. Logs hold ids, counts, levels and error codes only. Tokens live only in the
-  OS keychain. Never follow redirects or keep cookies toward the server.
-- scshafe-qt comes from PyPI (`>=0.1.2,<0.2`, hashes pinned in `uv.lock`); upgrade it per
-  docs/DEVELOPING.md.
-- Work on branches. Merge PRs as `Merge #N: <title>` merge commits, after local
-  verification.
-
-<!-- scshafe-dev:begin landing -->
-## Verify and landing
-
-Managed by scshafe-dev: `dev adopt` and `dev update` refresh this section from `dev.toml`; change `dev.toml`, not these lines.
-
-Before finishing, both of these must pass:
-
-```sh
-uv run --frozen pytest -v && uv run --frozen voice-journey-capture --smoke
-dev check .
-```
-
-How a change lands:
-
-1. Work on a branch and open a PR.
-2. Run the two commands above. If the repository is private, GitHub Actions does not run for it: verify locally and say in the PR what you ran. If it is public, wait for CI to be green.
-3. Merge your own PR with a merge commit, one change at a time: `gh pr merge <N> --merge --subject "Merge #<N>: <title>"`. Never squash or rebase (both are off on the repository), and pass `--subject`: `gh pr merge` does not make the `Merge #N: <title>` subject by itself.
-
-The project's agent may merge its own PR and push `main`; there is no approval gate.
-<!-- scshafe-dev:end landing -->
+- One distribution, `voice-lab-desktop`, Python 3.12 (D-031, D-037). It depends on the
+  backend distribution (`cole-voice-lab`, from this repository) for the `/api/v1` contracts
+  and, from 4b, the capture package and the D-021 approval and ledger. Read every server
+  answer through those strict models (`api.py`); never parse the API's JSON by hand.
+- Verify with the repository's `scripts/verify`: it runs Ruff and strict mypy over
+  `apps/desktop`, this suite as its own pytest run (`-c apps/desktop/pyproject.toml`, with
+  pytest-qt, offscreen; any Qt or QML warning fails a test) and builds the wheel. On its
+  own: `.venv/bin/python -I -B -m pytest -c apps/desktop/pyproject.toml` from the
+  repository root.
+- Tests drive the screens against a real `/api/v1` started on synthetic manifests
+  (`tests/synthetic.py`), with a simulated UMIK-1 and a stand-in audio device. Nothing here
+  needs a microphone, a speaker, the network or the real server; never point a test at
+  them. `docs/design/PHASE-4-CHECKLIST.md` names the tests that tick each item, and
+  `tests/test_checklist.py` keeps the two in step.
+- The measurement capture (`measurement/`) is voice-journey-capture's ritual, imported
+  unchanged. The level guard never fails open: a level that cannot be read, that moved, or
+  that is muted refuses or aborts. Only the UMIK-1 is supported; a new chain needs the owner
+  and the chain registry first.
+- `qml/VoiceLab/StandIn/` holds stand-ins for components scshafe-qt does not have yet
+  (§6.4). Each is marked for removal and has the API asked of scshafe-qt
+  (docs/design/PHASE-4-LOG.md, "scshafe-qt asks"). When scshafe-qt releases one, adopt it
+  and delete the stand-in in the same change.
+- Plain text only: every string from the server is shown with `Text.PlainText`. Logs and
+  toasts carry ids, counts and error codes, never audio, a transcript, a token or a name.
+- Audio is played from memory and never written to disk (D-038); recordings, cal files and
+  tokens never enter Git (`*.wav` and the data dirs are ignored; tokens live only in the OS
+  keychain). Never follow redirects or keep cookies toward the server.
