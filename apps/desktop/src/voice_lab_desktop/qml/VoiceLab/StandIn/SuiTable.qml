@@ -21,7 +21,11 @@
 // - Selection: `currentIndex`; Up/Down/Home/End/PageUp/PageDown move it, Enter
 //   emits `activated(index)`, as does a double click.
 // - `endReached()`: the view came within `endThreshold` rows of the end (for
-//   paging); emitted once per row count.
+//   paging); emitted once per row count. `positionAtRow(index)` scrolls a row
+//   into view.
+// - Object names, for tests and tools: each sortable header is
+//   "header-<column key>" (its label item "headerText"); the list is "rows";
+//   an action button is "action-<id>".
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Templates as T
@@ -94,6 +98,7 @@ FocusScope {
         // header
         T.AbstractButton {
             id: headerButton
+            objectName: cell.header ? "header-" + cell.column.key : ""
             visible: cell.header
             anchors.fill: parent
             enabled: !!cell.column.sortable
@@ -103,6 +108,7 @@ FocusScope {
             Accessible.name: cell.column.title
             onClicked: table.sortRequested(cell.column.sortKey || cell.column.key)
             contentItem: Text {
+                objectName: "headerText"
                 textFormat: Text.PlainText
                 leftPadding: SuiTheme.spaceSm
                 rightPadding: SuiTheme.spaceSm
