@@ -274,8 +274,10 @@ class Window:
 
     def find(self, name: str) -> Any:
         from PySide6.QtCore import QObject
+        from PySide6.QtQuick import QQuickItem
 
-        found = self.root.findChild(QObject, name)
+        # As an item when it is one (so its visual tree can be walked), else as an object.
+        found = self.root.findChild(QQuickItem, name) or self.root.findChild(QObject, name)
         assert found is not None, f"no object named {name!r}"
         return found
 
@@ -283,6 +285,20 @@ class Window:
         from PySide6.QtCore import QObject
 
         return [o for o in self.root.findChildren(QObject) if o.objectName() == name]
+
+    def items(self, name: str, within: Any = None) -> list[Any]:
+        """Every visual item named ``name`` under ``within`` (default: the window), delegates
+        of views and repeaters included (``findChildren`` misses them: their QObject parent
+        is not the view)."""
+        return visual_items(within if within is not None else self.root.contentItem(), name)
+
+
+def visual_items(item: Any, name: str) -> list[Any]:
+    """Every item in ``item``'s visual tree (itself included) named ``name``, in order."""
+    found = [item] if item.objectName() == name else []
+    for child in item.childItems():
+        found.extend(visual_items(child, name))
+    return found
 
 
 @contextmanager
