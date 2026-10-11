@@ -29,8 +29,9 @@ fi
 # The desktop app's suite runs on its own, with pytest-qt (apps/desktop/pyproject.toml): its
 # screens offscreen against a local /api/v1 on synthetic manifests, a simulated UMIK-1, and
 # no audio device. Any Qt or QML warning fails it.
-.venv/bin/python -I -B -m pytest -c apps/desktop/pyproject.toml \
-    --cov=voice_lab_desktop --cov-config=apps/desktop/pyproject.toml \
+# (Named explicitly: pytest reads testpaths only when run from the rootdir.)
+.venv/bin/python -I -B -m pytest -c apps/desktop/pyproject.toml apps/desktop/tests \
+    --cov=apps/desktop/src/voice_lab_desktop --cov-config=apps/desktop/pyproject.toml \
     --cov-report=term-missing --cov-branch
 .venv/bin/python -I -B -m build --no-isolation
 # Beside the backend in dist/, where guard-private-assets inspects every wheel built.

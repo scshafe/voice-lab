@@ -70,8 +70,11 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["voice_lab_desktop"]
+source = ["src/voice_lab_desktop"]
 
 [tool.coverage.report]
+# Lower than the backend's 90: what only real hardware runs (the PortAudio streams, the
+# platform level readers, the windowed run) has no test double to exercise it.
+fail_under = 85
 show_missing = true
 skip_covered = true
