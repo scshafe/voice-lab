@@ -38,7 +38,9 @@ uv tool install --python 3.12 ./apps/desktop   # the command voice-lab-desktop
 voice-lab-desktop
 ```
 
-or, to work on it, `cd apps/desktop && uv sync --frozen && uv run voice-lab-desktop`.
+or, to work on it, `cd apps/desktop && uv sync --frozen && uv run voice-lab-desktop`. The app
+uses the backend's contracts from the same checkout (installed editable), so keep the
+checkout where it is.
 
 - **Linux** (Arch): `sudo pacman -S portaudio alsa-utils pipewire gnome-keyring` (PortAudio
   for playback and capture; `amixer` and `pw-dump` read the UMIK-1's level; the sign-in is

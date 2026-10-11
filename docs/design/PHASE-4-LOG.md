@@ -169,4 +169,38 @@ above): `SuiText`, `SuiCheckbox`, `SuiSelect`, `SuiSlider`, `SuiProgress`, `SuiT
 In order. Each is the owner's because it needs the tailnet, a real device, a person's ears
 or the owner's judgement.
 
-1. Review and sign off [PHASE-4-CHECKLIST.md](PHASE-4-CHECKLIST.md) (and D-037, D-038).
+1. **Phase 3's real UMIK-1 session (runbook E) still uses voice-journey-capture.** Once 4a is
+   merged, `apps/desktop` is `voice-lab-desktop` (Python 3.12); the old client is not in
+   `main` any more. Run it from the last tree that has it, which is unchanged against the
+   server (the compatibility path stays until the removal PR):
+
+   ```sh
+   git -C ~/src/voice-lab fetch origin
+   git -C ~/src/voice-lab worktree add ~/src/voice-lab-capture 468c744
+   cd ~/src/voice-lab-capture/apps/desktop && uv sync --frozen && uv run voice-journey-capture --check-online
+   ```
+
+   (Python 3.14 and uv 0.12.21, as runbook E says; its settings stay in
+   `~/.config/voice-journey-capture/`.) Then draft #31 and the cutover (runbook F), as
+   phase 3's log lists them.
+2. Review and sign off [PHASE-4-CHECKLIST.md](PHASE-4-CHECKLIST.md) (and D-037, D-038). Your
+   sign-off and the cutover are the two gates of the removal PR.
+3. Install the app on the PC and on the Air, set it up and sign in:
+
+   ```sh
+   cd ~/src/voice-lab && git pull --ff-only
+   uv tool install --python 3.12 ./apps/desktop
+   voice-lab-desktop      # Status → Settings…: https://voice-lab.<tailnet>.ts.net, https://id.<tailnet>.ts.net
+   voice-lab-desktop --import-capture-data   # once: the old client's level pin, cal file, sessions
+   ```
+
+   Pocket ID's public client `voice-lab-desktop` (phase 2) already allows
+   `http://127.0.0.1:*/callback`; nothing changes there.
+4. Look through the screens against the real server: the Corpus with the whole corpus (about
+   7,000 rows; scroll to the end, sort, filter), the Journey tabs, Practice, the Referee's
+   results. The server serves no audio today (no `--playback-approval` in the stack's
+   `serve` command): playback and the referee's trials stay off until you decide to record
+   that approval. If you do, listen to a take in the Corpus and to a referee pair with
+   headphones (the matched gain and the 8 kHz band limit).
+5. Open `https://voice-lab.<tailnet>.ts.net/view/` on the phone, through the door: every page
+   renders and none plays audio (the phone check of design §9's web-view acceptance).
