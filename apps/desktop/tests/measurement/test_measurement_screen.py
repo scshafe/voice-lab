@@ -202,7 +202,9 @@ def test_the_level_moving_while_recording_aborts_the_session(
     qtbot.waitUntil(lambda: controller.phase == "aborted", timeout=10000)
     assert ui.find("abortBanner").property("visible")
     assert "40%" in controller.abortReason
-    assert sessions.pending() == [] and intake.requests == []
+    # Nothing was sent (the screen only asked for the chain registry when it was shown).
+    sent = [seen for seen in intake.requests if seen.path != "/api/v1/chains"]
+    assert sessions.pending() == [] and sent == []
 
 
 def test_escape_opens_the_abort_dialog(qtbot: Any, ui: Window) -> None:

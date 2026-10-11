@@ -80,6 +80,11 @@ ScreenPage {
                     }
                 }
                 Note { objectName: "deviceMessage"; text: measurement.deviceMessage }
+                Note {
+                    objectName: "chainText"
+                    text: measurement.chainText
+                    tone: measurement.chainState === "differs" ? "danger" : "default"
+                }
             }
 
             Card {
