@@ -21,10 +21,9 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from conftest import REPOSITORY
 from voice_lab_desktop import cli, desktop_entry
 from voice_lab_desktop.desktop_entry import DesktopEntryError
-
-from conftest import REPOSITORY
 
 BUILD_SCRIPT = REPOSITORY / "apps" / "desktop" / "packaging" / "macos" / "build_bundle.py"
 WRAPPER = REPOSITORY / "scripts" / "build-desktop-bundle"
@@ -385,9 +384,7 @@ def test_the_bundle_tool_is_hash_pinned_and_overlaps_nothing_else_installed(
         text=True,
         check=True,
     ).stdout
-    runtime = {
-        line.split("==")[0].lower() for line in exported.splitlines() if "==" in line[:80]
-    }
+    runtime = {line.split("==")[0].lower() for line in exported.splitlines() if "==" in line[:80]}
     assert "pyside6-essentials" in runtime and "sounddevice" in runtime
     assert not set(tool) & runtime and not set(build) & runtime
 

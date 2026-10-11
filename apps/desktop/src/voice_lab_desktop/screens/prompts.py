@@ -18,7 +18,6 @@ worker; tests use a stand-in.
 
 from __future__ import annotations
 
-import importlib
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -54,10 +53,11 @@ STATE_LABELS: Final = {
 
 
 def default_recorder() -> TakeRecorder:
-    """The capture worker (``capture/process.py``), imported when first needed."""
-    module = importlib.import_module("voice_lab_desktop.capture.process")
-    recorder: TakeRecorder = module.WorkerRecorder()
-    return recorder
+    """The PortAudio capture worker (``capture/process.py``, D-039), imported when first
+    needed."""
+    from ..capture.process import WorkerRecorder
+
+    return WorkerRecorder()
 
 
 def elapsed_text(frames: int) -> str:

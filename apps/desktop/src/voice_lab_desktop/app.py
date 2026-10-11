@@ -123,7 +123,7 @@ class AppModel(ViewModel):
         self._cancel_sign_in = threading.Event()
         self.spool = SessionStore(config.measurement_dir)
         self.prompted = PromptedStore(config.data_dir)
-        self.status = StatusModel(context, self.spool)
+        self.status = StatusModel(context, self.spool, self.prompted)
         self.uploads = UploadsModel(context, self.spool, self.prompted)
         self.prompts = PromptsModel(
             context, recorder_factory=recorder_factory or default_recorder, store=self.prompted

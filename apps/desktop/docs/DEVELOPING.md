@@ -25,7 +25,8 @@ pins them exactly for `uv sync` and `uv tool install`.
 | `config.py` | settings: `config.toml`, the environment, the Settings dialog's writes; no server in the code |
 | `net.py`, `tasks.py` | the one HTTP client (no cookies, no redirects); the worker pool whose results come back on the GUI thread |
 | `playback.py` | the one player: PyAV decode, NumPy shaping (gain, 8 kHz low-pass), PortAudio out (D-038) |
-| `screens/` | `status.py`, `uploads.py`, `corpus.py`, `journey.py`, `practice.py`, `referee.py` |
+| `screens/` | `status.py`, `uploads.py`, `prompts.py` (Record → Prompts), `corpus.py`, `journey.py`, `practice.py`, `referee.py` |
+| `prompted/` | Record → Prompts' catalogs (built-in pilots or a file), its local take store (sessions, takes, decisions, trim recipes), the waveform bins, the capture package and its upload (D-042) |
 | `formatting.py`, `journey_charts.py`, `education.py` | the SPA's display rules (`fmt.js`), its chart geometry as `SuiChart` specs (`chartUtils.js` and the chart components), the Journey tabs' static texts |
 | `measurement/` | voice-journey-capture's UMIK-1 ritual: the chain, devices, level readers, the pin, the recorder, the session package, the local store and its upload; `controller.py` is the Measurement screen's model |
 | `capture/` | prompted capture's PortAudio worker (`--capture-worker`, one process per take), its continuity rule and evidence (D-039), the parent's recorder, and the S-1 harness (`scripts/s1-portaudio`, docs/S-1.md, D-040) |
@@ -51,6 +52,12 @@ Nothing needs a microphone, a speaker, the network or the real server:
 - **The measurement capture** keeps voice-journey-capture's fakes: a simulated UMIK-1 and
   level, a fake Pocket ID, and voice-journey's intake behind a fake door with injectable
   faults; its end-to-end tests upload to voice-lab's own API and its intake publisher.
+- **Prompted capture.** The capture worker runs as a real process over a simulated UMIK-1
+  whose ADC times can jump, stall or carry an overflow (`capture/backends.py`), so the tests
+  exercise its protocol, its continuity rule and the parent's validation; the S-1 harness runs
+  end to end on it (a simulated run never reports S-1 as passed). Record → Prompts' screen
+  tests use a fake recorder (`tests/prompted/recorder_fakes.py`), and one test drives the
+  screen over the real worker into a package.
 - **The checklist.** Each item of `docs/design/PHASE-4-CHECKLIST.md` names its tests, which
   carry `@pytest.mark.checklist(...)`; `tests/test_checklist.py` fails when the two drift.
 
@@ -61,6 +68,10 @@ Nothing needs a microphone, a speaker, the network or the real server:
 - The measurement capture's level readers and stream on a real UMIK-1 (macOS CoreAudio;
   Linux `amixer`, `pw-dump`, ALSA `hw:`).
 - The sign-in with the real Pocket ID and the real door.
+- Spike S-1: the worker's continuity on a real UMIK-1 through PortAudio, on macOS (Core Audio)
+  and Linux (ALSA `hw:`), with `scripts/s1-portaudio` (docs/S-1.md).
+- The macOS bundle: building it, its signature, its first run and the microphone prompt
+  (docs/INSTALL-MACOS.md).
 
 ## scshafe-qt
 

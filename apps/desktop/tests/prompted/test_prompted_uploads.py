@@ -90,6 +90,10 @@ def test_prompted_packages_are_held_until_prompted_uploads_are_on(
         assert row["state"] == "held" and row["stateLabel"] == "held here"
         assert "until spike S-1 passes" in row["detail"] and "prompted_uploads" in row["detail"]
         assert uploads.heldCount == 1 and uploads.pendingCount == 0
+        # Status counts it apart from what waits for a receipt.
+        status = model.status
+        assert status.spoolText == "Sessions: 1 prompted, held here until spike S-1 passes."
+        assert status.pendingCount == 0
         assert (
             "covering prompted sessions (capture packages), measurement sessions"
             in uploads.readiness
@@ -113,6 +117,7 @@ def test_a_prompted_package_lands_in_raw_labelled_portaudio(
         uploads = model.uploads
         uploads.activate()
         assert rows(model)[session_id]["state"] == "pending" and uploads.pendingCount == 1
+        assert model.status.spoolText == "Sessions: 1 waiting for a receipt."
         uploads.uploadAll()
         qtbot.waitUntil(
             lambda: not uploads.busy and rows(model)[session_id]["state"] == "accepted",
@@ -126,6 +131,7 @@ def test_a_prompted_package_lands_in_raw_labelled_portaudio(
         assert state["receipt"]["packageSessionId"] == session_id
         assert state["receipt"]["approvalId"] == "pc-home-host"
         assert f"Package {session_id}, manifest " in rows(model)[session_id]["detail"]
+        assert model.status.spoolText == "Every local session has been accepted by the server."
         events = [entry.event for entry, _ in HomeHostLedger(home.library).entries()]
         assert events == ["upload-started", "upload-completed"]
         # The package itself is untouched: its receipt lives beside it.

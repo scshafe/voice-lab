@@ -90,6 +90,8 @@ Pocket ID issuer in **Status → Settings…**, or in the settings file. Precede
 | `client_id` | `voice-lab-desktop` | `VOICE_LAB_DESKTOP_CLIENT_ID` |
 | `distance_cm` | `35` (the measurement chain's mouth distance; Status → Settings) | |
 | `bearer` | `access` (the access token when it is a JWT; `id` sends the ID token) | |
+| `catalog_file` | none: Record → Prompts offers the built-in pilot catalogs; a prompt-suite JSON file adds it (docs/FIRST-RUN.md §7) | |
+| `prompted_uploads` | `false`: prompted sessions stay on this machine until spike S-1 passes (D-042); the owner sets it per machine after recording the pass | |
 | the data dir | `~/Library/Application Support/voice-lab-desktop` (macOS), `$XDG_DATA_HOME/voice-lab-desktop` (Linux) | `VOICE_LAB_DESKTOP_DATA` |
 
 The settings file is `config.toml` in `~/Library/Application Support/voice-lab-desktop/`
@@ -107,7 +109,7 @@ voice-lab-desktop --devices             # inputs, the UMIK-1, its level against 
 voice-lab-desktop --pin-level           # pin the level (a re-pin is a chain era event)
 voice-lab-desktop --import-cal PATH     # miniDSP's per-serial cal file
 voice-lab-desktop --sessions            # local measurement sessions and their upload state
-voice-lab-desktop --upload              # upload every pending session (/api/v1/intake)
+voice-lab-desktop --upload              # upload every pending measurement session (/api/v1/intake); prompted ones go from Uploads
 voice-lab-desktop --retry-failed        # refused sessions back to pending
 voice-lab-desktop --prune-accepted      # delete local copies the server has accepted
 voice-lab-desktop --import-capture-data [DIR]   # copy voice-journey-capture's pin, cal file, sessions
