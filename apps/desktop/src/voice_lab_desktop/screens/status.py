@@ -171,6 +171,7 @@ class StatusModel(ViewModel):
 
         context.tasks.submit(work, done)
 
+    @Slot()
     def refresh_spool(self) -> None:
         states = [s.upload_state for s in self.spool.sessions()]
         held = 0

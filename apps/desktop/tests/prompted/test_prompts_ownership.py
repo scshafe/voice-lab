@@ -1,11 +1,10 @@
 """Record → Prompts' model is C++-owned and survives QML's garbage collector.
 
-QML reads it through the app's ``promptsModel`` property. Left to QML's ownership
-heuristics, the JavaScript collector deleted it under the running screen at an arbitrary
-moment (seen as "Unable to assign [undefined]" warnings in whichever test was running;
-4 of 4 runs of the journey and referee suites before the fix, 0 of 6 after). The app sets
-the ownership explicitly. This test is a guard: it does not reproduce that collection
-deterministically (the reads here do not take the path that flips the ownership).
+QML reads it through the app's ``promptsModel`` property; a parentless ``QObject`` handed to
+QML that way may become JavaScript-owned under QML's ownership heuristics, so the app sets
+its ownership explicitly. (The flaky "Unable to assign [undefined]" failures first blamed
+on this had another cause: per-instance metaobjects, see ``test_qml_metaobjects.py``.)
+This test is a guard: QML's heuristics do not flip the ownership on the reads made here.
 """
 
 from __future__ import annotations
