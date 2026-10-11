@@ -20,9 +20,9 @@ touched; phases 5 and 6 are out of scope.
 | 4b | The UMIK-1 ritual in the app; `/api/v1/intake` with the D-021 ledger | #36 | merged `f09a951` |
 | 4c | Prompted capture; the S-1 harness; Linux packaging; the macOS bundle script and install page | #38 | merged `0063dcc` |
 | fix | Record → Prompts' model stays C++-owned (QML's collector could delete it) | #39 | merged `1bc053e`; its deploy failed verify on the flake below |
-| fix | Declared slots: every model QML reads keeps its class's metaobject (the app suite's flake) | #41 | merged |
+| fix | Declared slots: every model QML reads keeps its class's metaobject (the app suite's flake) | #41 | merged `a61437b` |
 | chains | The Measurement screen reads `GET /api/v1/chains` (stacked on #31) | #37 | draft, gated like #31 |
-| removal | Remove voice-journey's unversioned paths and the compatibility intake (the SPA's page routes stay as 308s) | #40 (draft) | gated: checklist sign-off, cutover (F), 4b acceptance, runbook E done |
+| removal | Remove voice-journey's unversioned paths and the compatibility intake (the SPA's page routes stay as 308s) | #40 | draft, gated: checklist sign-off, cutover (F), 4b acceptance, runbook E done |
 
 ## Entries
 
@@ -220,6 +220,19 @@ Deviations and open items:
   receiver a declared slot). In the app (one app model for the process) the same
   per-instance metaobjects were fragile, not yet broken. `test_qml_metaobjects.py` checks that
   two app models share every exposed model's metaobject: it fails without the fix.
+
+### 2026-10-11, close
+
+- **#41 merged** (`a61437b`); its deploy run 38143153641 passed verify, deploy and health, and
+  deployed #39's change with it. `main` is green again.
+- **Two drafts stay open, verified against `main` at `a61437b`, and are not mine to merge:**
+  #37 (the Measurement screen reads `GET /api/v1/chains`; after #31) and #40 (the removal;
+  its entry, "Removal (draft)", lives on its branch and lands with it). Their gates are owner
+  steps 13 and 14.
+- **Process notes.** `gh run watch` over a whole deploy outlives the broker's short-lived
+  token (HTTP 401 part way); a loop of `gh run view` calls, each with a fresh token, does
+  not. The hosted `ci.yml` fails within seconds on every commit (Actions does not run for
+  this private repository); every PR says what was verified locally instead.
 
 ### Removal (draft)
 
@@ -521,3 +534,16 @@ or the owner's judgement.
     recorded in Record → Prompts ([FIRST-RUN.md](../../apps/desktop/docs/FIRST-RUN.md) §7).
     Then freeze the Swift app with a tag. Until then the Swift app stays the macOS
     prompted-capture path (D-025).
+13. **Draft #37 (the chains client), after #31.** Once #31 is merged (it waits for phase 3's
+    real UMIK-1 session), bring `main` into #37's branch (`phase4/chains-v1`), run
+    `scripts/verify` and `dev check .`, mark it ready and merge it like any PR (`gh pr merge
+    37 --merge --subject "Merge #37: <title>"`). Its diff is then one commit.
+14. **Draft #40 (the removal), when all four gates hold:** your checklist sign-off (step 2),
+    the cutover (phase 3's runbook F), 4b's acceptance (step 7) and phase 3's runbook E
+    session through the compatibility path. Before merging, decide about the records in
+    `incoming/.journey-uploads/<id>/session.json` on the PC (each session's input level,
+    distance and segment labels, which exist nowhere else and which nothing reads after the
+    removal): keep a copy or delete them. If #31 merged first, #40 must also remove #31's
+    `/api/chains` alias and its alias tests in `tests/test_api_chains.py`. Then bring `main`
+    into `phase4/remove-compat`, verify, mark it ready and merge it; the deploy stops
+    answering the old paths at once.
