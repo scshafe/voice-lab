@@ -80,11 +80,15 @@ class SessionStore:
         data["lastError"] = error
         self._write_upload(path, data)
 
-    def mark_accepted(self, path: Path, server: str) -> None:
+    def mark_accepted(self, path: Path, server: str, receipt: dict[str, Any] | None = None) -> None:
+        """The server accepted the session; ``receipt`` keeps what its intake receipt
+        named (``/api/v1/intake``: the package's session id and manifest digest)."""
         data = self._upload(path)
         data.update(
             {"state": "accepted", "acceptedAt": now_iso(), "server": server, "lastError": None}
         )
+        if receipt is not None:
+            data["receipt"] = receipt
         self._write_upload(path, data)
 
     def mark_failed(self, path: Path, error: str) -> None:

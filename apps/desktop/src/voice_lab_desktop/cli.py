@@ -13,7 +13,7 @@ The measurement capture's chores (voice-journey-capture's flags, unchanged):
     voice-lab-desktop --pin-level        pin the UMIK-1's input level (a re-pin is an era event)
     voice-lab-desktop --import-cal PATH  import miniDSP's per-serial cal file
     voice-lab-desktop --sessions         local sessions and their upload state
-    voice-lab-desktop --upload           upload every pending session (the stored sign-in)
+    voice-lab-desktop --upload           upload every pending session (/api/v1/intake, the ledger)
     voice-lab-desktop --retry-failed     refused sessions back to pending (after a server fix)
     voice-lab-desktop --prune-accepted   delete local copies the server has accepted
     voice-lab-desktop --import-capture-data [DIR]
@@ -280,14 +280,16 @@ def sessions(config: Config) -> int:
 
 
 def upload(config: Config) -> int:
+    """Every pending measurement session through ``/api/v1/intake`` (the D-021 ledger)."""
     from .auth import Session, SignInRequired
+    from .measurement import home_host
     from .measurement.store import SessionStore
-    from .measurement.upload import IntakeClient, upload_pending
     from .net import new_http
     from .tokens import KeyringStore
 
     try:
         server = config.require_server()
+        library = home_host.library_layout(config.library_dir)
     except ConfigError as exc:
         print(f"{APP_NAME}: {exc}", file=sys.stderr)
         return 2
@@ -298,12 +300,16 @@ def upload(config: Config) -> int:
             print("not signed in: open the window and sign in first", file=sys.stderr)
             return 1
         try:
-            summary = upload_pending(
-                IntakeClient(server, session, http),
+            summary = home_host.upload_pending(
                 store,
-                server,
+                library=library,
+                server_url=server,
+                bearer=session.bearer,
                 on_session=lambda sid, state: print(f"{sid}: {state}"),
             )
+        except home_host.HomeHostNotReady as exc:
+            print(f"not uploaded: {exc}", file=sys.stderr)
+            return 1
         except SignInRequired as exc:
             print(f"sign-in required: {exc}", file=sys.stderr)
             return 1

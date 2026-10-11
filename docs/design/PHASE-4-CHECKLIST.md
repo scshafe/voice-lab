@@ -165,7 +165,7 @@ whole of 4a is in one place.
 | S-03 | The server's gates: playback, transcript text, feature detail; the job runner's watch | — | `summary`, `watch` | `test_status_shows_the_server`, `test_watch_lines_summarize_the_job_runner` | ☑ |
 | S-04 | The spool: sessions waiting for a receipt | design §6.1 | — | `test_status_shows_the_spool` | ☑ |
 | S-05 | Settings: server and issuer (no default in the code), client id; refused when invalid | publication screen §5 | — | `test_status_settings`, `test_nothing_in_the_code_names_a_server` | ☑ |
-| U-01 | Uploads: each local session with its state (waiting, uploading, accepted, refused, not uploadable) and its last error | voice-journey-capture's `--sessions` | — | `test_uploads_lists_sessions` | ☑ |
+| U-01 | Uploads: each local session with its state (waiting, uploading, accepted, refused, not uploadable) and its last error; whether this machine can upload (a home-host approval bound, 4b) | voice-journey-capture's `--sessions` | — | `test_uploads_lists_sessions`, `test_uploads_say_when_this_machine_cannot_upload` | ☑ |
 | U-02 | Per-session progress while uploading (file and bytes) | voice-journey-capture's upload text | intake | `test_uploads_progress_and_receipt` | ☑ |
 | U-03 | Resume: an interrupted upload continues from the server's byte count; retry refused sessions | `upload.py`, `--retry-failed` | intake | `test_uploads_resume_and_retry` | ☑ |
 | U-04 | Receipts: an accepted session shows when and where it was accepted | `upload.json` | intake | `test_uploads_progress_and_receipt` | ☑ |

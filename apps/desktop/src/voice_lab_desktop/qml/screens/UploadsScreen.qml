@@ -12,6 +12,22 @@ ScreenPage {
 
     Card {
         heading: "Spool"
+        SuiBanner {
+            objectName: "uploadsNotReady"
+            Layout.fillWidth: true
+            visible: !uploads.ready && uploads.readiness !== ""
+            tone: "warn"
+            title: "This machine cannot upload yet"
+            text: uploads.readiness
+        }
+        SuiText {
+            objectName: "uploadsReadiness"
+            Layout.fillWidth: true
+            visible: uploads.ready
+            text: uploads.readiness
+            variant: "caption"
+            wrapMode: Text.Wrap
+        }
         RowLayout {
             spacing: SuiTheme.spaceSm
             SuiText {
@@ -23,7 +39,7 @@ ScreenPage {
                 objectName: "uploadAll"
                 text: uploads.busy ? "Uploading…" : "Upload now"
                 variant: "primary"
-                enabled: !uploads.busy && uploads.pendingCount > 0 && app.signedIn
+                enabled: !uploads.busy && uploads.pendingCount > 0 && app.signedIn && uploads.ready
                 onClicked: uploads.uploadAll()
             }
         }

@@ -1,20 +1,27 @@
 """Uploads (design §6.1): the local spool, per-session progress, resume, receipts.
 
 The spool is the measurement capture's session store (``measurement/store.py``): a session
-stays on this machine until the server accepts it, and every attempt resumes from the bytes
-the server already holds. In 4a sessions travel by voice-journey-capture's protocol
-(``measurement/upload.py``); 4b moves them to ``/api/v1/intake`` with a D-021 ledger entry.
+stays on this machine until the server's intake publisher accepts it. Since phase 4b a
+session travels through ``/api/v1/intake`` as a capture package, with the D-021 ledger entry
+before its first byte (``measurement/home_host.py``); an interrupted upload resumes from
+the bytes the server already holds, and the receipt's digests are kept with the session.
+The screen also says whether this machine can upload at all: a home-host approval must be
+bound in its library and must name the configured server.
 """
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import Signal, Slot
 
+from cole_voice_lab.models import utc_now
+
 from ..auth import SignInRequired
+from ..measurement import home_host
 from ..measurement.store import LocalSession, SessionStore
-from ..measurement.upload import CHUNK_BYTES, IntakeClient, UploadSummary, upload_pending
 from ..viewmodel import AppContext, ViewModel, qproperty
 
 STATE_LABELS = {
@@ -41,6 +48,10 @@ def session_row(session: LocalSession, uploading: str = "") -> dict[str, Any]:
         detail = "Interrupted before it was saved: never uploaded."
     elif state == "accepted":
         detail = f"Accepted at {upload.get('acceptedAt', '?')} by {upload.get('server', '?')}."
+        receipt = upload.get("receipt")
+        if isinstance(receipt, dict) and receipt.get("manifestSha256"):
+            digest = str(receipt["manifestSha256"])
+            detail += f" Package {receipt.get('packageSessionId', '?')}, manifest {digest[:12]}…"
     elif state == "failed":
         detail = f"Refused at {upload.get('failedAt', '?')}: {upload.get('lastError') or '?'}"
     elif upload.get("attempts"):
@@ -68,6 +79,8 @@ class UploadsModel(ViewModel):
     failedCount = qproperty(int, "failedCount", changed)
     busy = qproperty(bool, "busy", changed)
     uploading = qproperty(str, "uploading", changed)
+    ready = qproperty(bool, "ready", changed)
+    readiness = qproperty(str, "readiness", changed)
     progressValue = qproperty(float, "progressValue", progressChanged)
     progressLabel = qproperty(str, "progressLabel", progressChanged)
     progressDetail = qproperty(str, "progressDetail", progressChanged)
@@ -81,13 +94,18 @@ class UploadsModel(ViewModel):
                 "failedCount": 0,
                 "busy": False,
                 "uploading": "",
+                "ready": False,
+                "readiness": "",
                 "progressValue": 0.0,
                 "progressLabel": "",
                 "progressDetail": "",
             },
         )
         self.spool = spool
-        self.chunk_bytes = CHUNK_BYTES
+        #: How the app reaches the approved node (tests: a loopback client).
+        self.client_factory: home_host.ClientFactory = home_host.tailnet_client
+        #: How an upload waits between its polls for the publisher's receipt.
+        self.sleep: Callable[[float], None] = time.sleep
         self.refresh()
 
     @property
@@ -100,6 +118,7 @@ class UploadsModel(ViewModel):
 
     def activate(self) -> None:
         self.refresh()
+        self.check_readiness()
 
     @Slot()
     def refresh(self) -> None:
@@ -112,6 +131,27 @@ class UploadsModel(ViewModel):
             failedCount=sum(1 for s in sessions if s.upload_state == "failed"),
         )
         self.spoolChanged.emit()
+
+    def check_readiness(self) -> None:
+        """Whether this machine can upload: the server is set and a standing home-host
+        approval covering measurement sessions names it."""
+        config = self.context.config
+        if not config.server_url:
+            self._set(self.changed, ready=False, readiness="Set the server on the Status screen.")
+            return
+        try:
+            library = home_host.library_layout(config.library_dir)
+            approval = home_host.approval_for(library, config.server_url, now=utc_now())
+        except Exception as exc:  # noqa: BLE001 - HomeHostNotReady, or an unsafe library
+            self._set(self.changed, ready=False, readiness=str(exc))
+            return
+        expires = approval.expires_at.date().isoformat()
+        text = (
+            f"Uploads go to {approval.endpoint} under the home-host approval "
+            f"{approval.approval_id} (until {expires}); each is recorded in this "
+            "machine's ledger."
+        )
+        self._set(self.changed, ready=True, readiness=text)
 
     @Slot(str)
     def retry(self, session_id: str) -> None:
@@ -131,11 +171,11 @@ class UploadsModel(ViewModel):
             return
         try:
             server = context.config.require_server()
-        except Exception as exc:  # noqa: BLE001 - ConfigError, shown
+            library = home_host.library_layout(context.config.library_dir)
+        except Exception as exc:  # noqa: BLE001 - ConfigError or an unsafe library, shown
             self.toast.emit(str(exc), "warn")
             return
         self._set(self.changed, busy=True)
-        client = IntakeClient(server, context.session, context.http, self.chunk_bytes)
         tasks = context.tasks
 
         def started(session_id: str) -> None:
@@ -144,15 +184,27 @@ class UploadsModel(ViewModel):
         def progress(name: str, sent: int, size: int) -> None:
             tasks.on_gui_thread(lambda: self._progress(name, sent, size))
 
-        def work() -> UploadSummary:
-            return upload_pending(client, self.spool, server, progress, on_start=started)
+        def work() -> home_host.UploadSummary:
+            return home_host.upload_pending(
+                self.spool,
+                library=library,
+                server_url=server,
+                bearer=context.session.bearer,
+                client_factory=self.client_factory,
+                progress=progress,
+                on_start=started,
+                sleep=self.sleep,
+            )
 
-        def done(summary: UploadSummary | None, error: BaseException | None) -> None:
+        def done(summary: home_host.UploadSummary | None, error: BaseException | None) -> None:
             self._set(self.changed, busy=False, uploading="")
             self._set(self.progressChanged, progressValue=0.0, progressLabel="", progressDetail="")
             if error is not None:
                 if isinstance(error, SignInRequired):
                     self.toast.emit(self.failure(error), "warn")
+                elif isinstance(error, home_host.HomeHostNotReady):
+                    self._set(self.changed, ready=False, readiness=str(error))
+                    self.toast.emit(f"Not uploaded: {error}", "warn")
                 elif isinstance(error, OSError):
                     self.toast.emit(f"Upload failed: {type(error).__name__}", "danger")
                 else:
