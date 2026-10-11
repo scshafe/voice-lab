@@ -64,6 +64,9 @@ SECURITY_HEADERS: Final = (
 )
 HTML: Final = "text/html; charset=utf-8"
 METHODS: Final = frozenset({"GET", "HEAD"})
+#: Every page, by its name under ``/view/`` ("" is the summary). The tests enumerate the
+#: routes from here, so a new page is covered by the read-only checks the day it exists.
+PAGE_NAMES: Final = ("", "recordings", "journeys", "trends", "goals", "report")
 
 
 class _Refused(Exception):
@@ -134,14 +137,16 @@ class ViewRoutes:
 
     def _page(self, store: JourneyStore, path: str, query: str) -> RouteResponse:
         name = path.removeprefix(ROOT).rstrip("/")
-        render = {
+        renderers: dict[str, Callable[[], str]] = {
             "": lambda: pages.summary_page(store),
             "recordings": lambda: pages.recordings_page(store, parse_qsl(query)),
             "journeys": lambda: pages.journeys_page(store),
             "trends": lambda: pages.trends_page(store),
             "goals": lambda: pages.goals_page(store),
             "report": lambda: pages.report_page(store, self.report_cache),
-        }.get(name)
+        }
+        assert tuple(renderers) == PAGE_NAMES
+        render = renderers.get(name)
         if render is None:
             raise _Refused(404, "Not found", "There is no such page.")
         try:
