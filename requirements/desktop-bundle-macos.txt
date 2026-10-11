@@ -1,0 +1,9 @@
+# The macOS app bundle's build tool only (scripts/build-desktop-bundle; design §6.3, S-7, D-041).
+# Reviewed PyPI wheels (pyinstaller macOS universal2; the rest pure Python), 2026-10-11.
+# PyInstaller's complete closure on macOS; setuptools comes from development-build.txt and the
+# app's own runtime from apps/desktop/uv.lock. Nothing the app runs on is changed by this lock.
+pyinstaller==6.22.3 --hash=sha256:052f4a1cd4f81092ccb7a18fe8ebc9ecf832a5917317e39fb3775af4e959b253
+pyinstaller-hooks-contrib==2026.7 --hash=sha256:24257a04c7a5a7a034cf28e39dcee20fbeeb9f043076729480f2e1b69904408a
+altgraph==0.17.5 --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+macholib==1.16.4 --hash=sha256:da1a3fa8266e30f0ce7e97c6a54eefaae8edd1e5f86f3eb8b95457cae90265ea
+packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c

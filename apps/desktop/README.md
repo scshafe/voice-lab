@@ -32,28 +32,50 @@ detail need their local stores there. Status shows each gate.
 
 ## Install
 
-Python 3.12 and [uv](https://docs.astral.sh/uv/). From a checkout of this repository:
+**Linux**: the uv tool, plus a desktop entry. You need Python 3.12 and
+[uv](https://docs.astral.sh/uv/). On Arch, `sudo pacman -S portaudio alsa-utils pipewire
+gnome-keyring`:
+
+- PortAudio, for playback and capture;
+- `amixer` and `pw-dump`, which read the UMIK-1's level;
+- the Secret Service, which keeps the sign-in.
+
+From a checkout of this repository:
 
 ```sh
 uv tool install --python 3.12 --with-executables-from cole-voice-lab ./apps/desktop
-voice-lab-desktop
+voice-lab-desktop --install-desktop-entry
 ```
 
-This installs `voice-lab-desktop` and the lab's own `voice-lab` command, which approves the
-home host once on this machine (docs/FIRST-RUN.md, "Approve the home host").
+The first command installs two commands: `voice-lab-desktop`, and the lab's own `voice-lab`,
+which approves the home host once on this machine (docs/FIRST-RUN.md, "Approve the home
+host").
 
-or, to work on it, `cd apps/desktop && uv sync --frozen && uv run voice-lab-desktop`. The app
-uses the backend's contracts from the same checkout (installed editable), so keep the
-checkout where it is.
+The second adds **voice-lab** to the desktop's application menu, for you only. It writes:
 
-- **Linux** (Arch): `sudo pacman -S portaudio alsa-utils pipewire gnome-keyring` (PortAudio
-  for playback and capture; `amixer` and `pw-dump` read the UMIK-1's level; the sign-in is
-  kept in the Secret Service).
-- **macOS**: the PortAudio and FFmpeg the app needs ship in the `sounddevice` and `av`
-  wheels. The sign-in is kept in the Keychain. Microphone access attaches to the app that
-  starts it (Terminal, iTerm…) until the app bundle of phase 4c.
+- `~/.local/share/applications/voice-lab-desktop.desktop`, which runs the installed command by
+  its absolute path;
+- its icon, under `~/.local/share/icons/hicolor/256x256/apps/`.
 
-Update with `git pull --ff-only` and the same `uv tool install --reinstall`.
+Both go under `$XDG_DATA_HOME` when that is set. The command never overwrites a file it did not
+write unless you pass `--replace`, and it prints how to remove both files.
+
+To update, run `git pull --ff-only` and the same `uv tool install` with `--reinstall`. Then run
+`voice-lab-desktop --install-desktop-entry` again; it changes nothing unless the command's path
+moved. To remove the app, run `uv tool uninstall voice-lab-desktop`, then the `rm` the entry
+printed.
+
+**macOS**: the app bundle. Build it on the Air with `scripts/build-desktop-bundle`; the first
+run of an ad-hoc-signed app is described in
+[docs/INSTALL-MACOS.md](docs/INSTALL-MACOS.md). Microphone permission attaches to the bundle.
+
+The uv tool above also works on macOS. The PortAudio and FFmpeg the app needs ship in the
+`sounddevice` and `av` wheels, and the sign-in is kept in the Keychain. The microphone
+permission then attaches to the app that starts it (Terminal, iTerm…).
+
+**To work on the app**, run `cd apps/desktop && uv sync --frozen && uv run voice-lab-desktop`.
+The uv tool and this both use the backend's contracts from the same checkout, installed
+editable, so keep the checkout where it is. The macOS bundle carries its own copy.
 
 ## Settings
 
@@ -89,6 +111,7 @@ voice-lab-desktop --upload              # upload every pending session (/api/v1/
 voice-lab-desktop --retry-failed        # refused sessions back to pending
 voice-lab-desktop --prune-accepted      # delete local copies the server has accepted
 voice-lab-desktop --import-capture-data [DIR]   # copy voice-journey-capture's pin, cal file, sessions
+voice-lab-desktop --install-desktop-entry [--replace]   # Linux: the app in the desktop's menu
 ```
 
 ## Security and privacy
