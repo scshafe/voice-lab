@@ -115,8 +115,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["--capture-worker"]:
+        # The capture worker's own process (D-039): no settings, no Qt.
+        from .capture import worker
+
+        return worker.main(arguments[1:])
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     if args.replace and not args.install_desktop_entry:
         parser.error("--replace goes with --install-desktop-entry")
     if args.install_desktop_entry:
