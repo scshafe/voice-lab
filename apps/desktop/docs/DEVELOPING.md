@@ -28,7 +28,8 @@ pins them exactly for `uv sync` and `uv tool install`.
 | `screens/` | `status.py`, `uploads.py`, `corpus.py`, `journey.py`, `practice.py`, `referee.py` |
 | `formatting.py`, `journey_charts.py`, `education.py` | the SPA's display rules (`fmt.js`), its chart geometry as `SuiChart` specs (`chartUtils.js` and the chart components), the Journey tabs' static texts |
 | `measurement/` | voice-journey-capture's UMIK-1 ritual: the chain, devices, level readers, the pin, the recorder, the session package, the local store and its upload; `controller.py` is the Measurement screen's model |
-| `cli.py` | the command line and the windows |
+| `capture/` | prompted capture's PortAudio worker (`--capture-worker`, one process per take), its continuity rule and evidence (D-039), the parent's recorder, and the S-1 harness (`scripts/s1-portaudio`, docs/S-1.md, D-040) |
+| `cli.py` | the command line and the windows (`--capture-worker` is routed before settings and Qt) |
 | `desktop_entry.py`, `resources/` | the Linux desktop entry (`--install-desktop-entry`) and the icon it and the window use |
 | `packaging/macos/build_bundle.py` | not in the wheel: the macOS app bundle's build (`scripts/build-desktop-bundle`; docs/INSTALL-MACOS.md) |
 | `qml/Main.qml`, `qml/screens/` | the main window and its screens (`PlayerBar.qml`, `ScreenPage.qml`, `Card.qml` are shared) |
