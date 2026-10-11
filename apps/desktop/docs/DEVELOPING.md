@@ -29,6 +29,8 @@ pins them exactly for `uv sync` and `uv tool install`.
 | `formatting.py`, `journey_charts.py`, `education.py` | the SPA's display rules (`fmt.js`), its chart geometry as `SuiChart` specs (`chartUtils.js` and the chart components), the Journey tabs' static texts |
 | `measurement/` | voice-journey-capture's UMIK-1 ritual: the chain, devices, level readers, the pin, the recorder, the session package, the local store and its upload; `controller.py` is the Measurement screen's model |
 | `cli.py` | the command line and the windows |
+| `desktop_entry.py`, `resources/` | the Linux desktop entry (`--install-desktop-entry`) and the icon it and the window use |
+| `packaging/macos/build_bundle.py` | not in the wheel: the macOS app bundle's build (`scripts/build-desktop-bundle`; docs/INSTALL-MACOS.md) |
 | `qml/Main.qml`, `qml/screens/` | the main window and its screens (`PlayerBar.qml`, `ScreenPage.qml`, `Card.qml` are shared) |
 | `qml/VoiceLab/StandIn/` | stand-ins for scshafe-qt's gaps, each marked for removal |
 

@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+# voice-lab-desktop as an ad-hoc-signed macOS app bundle (design §6.3, S-7, D-041).
+# Preview by default; --execute builds, on macOS only. See apps/desktop/docs/INSTALL-MACOS.md.
+export PYTHONDONTWRITEBYTECODE=1
+repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+exec "$repo_dir/.venv/bin/python" -I -B "$repo_dir/apps/desktop/packaging/macos/build_bundle.py" "$@"
