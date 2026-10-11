@@ -15,6 +15,8 @@ cd "$repo_dir"
 .venv/bin/mypy src/cole_voice_lab
 # The macOS mirror sender is its own stdlib-only package (apps/mirror, design §5.2).
 .venv/bin/mypy apps/mirror/src
+# The desktop app is its own distribution (apps/desktop, voice-lab-desktop, D-037).
+.venv/bin/mypy apps/desktop/src
 # The native app (Swift, Core Audio, launchd) builds and runs only on macOS. On
 # another host (the Arch PC) everything else runs, and the tests that need macOS
 # itself skip with the reason named (tests/macos_only.py; pytest -ra lists them).
@@ -24,6 +26,15 @@ else
     echo "verify: not macOS; skipping the native recording app build and tests" >&2
 fi
 .venv/bin/python -I -B -m pytest --cov=cole_voice_lab --cov-report=term-missing --cov-branch
+# The desktop app's suite runs on its own, with pytest-qt (apps/desktop/pyproject.toml): its
+# screens offscreen against a local /api/v1 on synthetic manifests, a simulated UMIK-1, and
+# no audio device. Any Qt or QML warning fails it.
+# (Named explicitly: pytest reads testpaths only when run from the rootdir.)
+.venv/bin/python -I -B -m pytest -c apps/desktop/pyproject.toml apps/desktop/tests \
+    --cov=apps/desktop/src/voice_lab_desktop --cov-config=apps/desktop/pyproject.toml \
+    --cov-report=term-missing --cov-branch
 .venv/bin/python -I -B -m build --no-isolation
+# Beside the backend in dist/, where guard-private-assets inspects every wheel built.
+.venv/bin/python -I -B -m build --no-isolation --outdir dist apps/desktop
 .venv/bin/python -I -B -m cole_voice_lab.schema --check
 .venv/bin/python -I -B scripts/guard-private-assets

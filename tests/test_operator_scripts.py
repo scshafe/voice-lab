@@ -78,7 +78,11 @@ def test_full_verification_launches_host_python_isolated_without_real_tools(tmp_
     assert result.returncode == 0, result.stderr
     assert log.read_text().splitlines() == [
         "1:-I -B -m pytest --cov=cole_voice_lab --cov-report=term-missing --cov-branch",
+        "1:-I -B -m pytest -c apps/desktop/pyproject.toml apps/desktop/tests"
+        " --cov=apps/desktop/src/voice_lab_desktop --cov-config=apps/desktop/pyproject.toml"
+        " --cov-report=term-missing --cov-branch",
         "1:-I -B -m build --no-isolation",
+        "1:-I -B -m build --no-isolation --outdir dist apps/desktop",
         "1:-I -B -m cole_voice_lab.schema --check",
         "1:-I -B scripts/guard-private-assets",
     ]
