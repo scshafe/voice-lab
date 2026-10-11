@@ -283,6 +283,12 @@ class Player(QObject):
         self._queue.clear()
         self.play_source(key, recording_id)
 
+    @Slot(str, str, float, float)
+    def playShaped(self, key: str, source: str, gain_db: float, lowpass_hz: float) -> None:  # noqa: N802
+        """Play ``source`` with a gain and, when ``lowpass_hz`` > 0, a low-pass (the referee)."""
+        self._queue.clear()
+        self.play_source(key, source, gain_db=gain_db, lowpass_hz=lowpass_hz or None)
+
     def play_queue(self, items: Sequence[tuple[str, str]]) -> None:
         """Play ``(key, recording id)`` items one after another (an era's sample takes)."""
         self._queue = list(items)

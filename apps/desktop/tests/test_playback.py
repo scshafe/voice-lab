@@ -100,3 +100,49 @@ def test_one_take_at_a_time_and_queues(qtbot: Any) -> None:
         assert (player.state, player.activeKey, player.duration) == ("idle", "", 0.0)
     finally:
         tasks.close()
+
+
+def test_the_player_bar_drives_the_one_player(qtbot: Any) -> None:
+    import scshafe_qt
+    from PySide6.QtCore import QObject, QUrl
+    from PySide6.QtQml import QQmlApplicationEngine
+    from voice_lab_desktop.cli import qml_dir
+
+    tasks = Tasks()
+    output = RecordingOutput()
+    memo = tone_m4a()
+    player = Player(tasks, lambda source: memo, output)
+    engine = QQmlApplicationEngine()
+    scshafe_qt.register(engine)
+    engine.addImportPath(str(qml_dir()))
+    engine.rootContext().setContextProperty("player", player)
+    screens = QUrl.fromLocalFile(str(qml_dir() / "screens")).toString()
+    source = (
+        f'import QtQuick\nimport "{screens}"\n'
+        "Window { width: 600; height: 80; visible: true\n"
+        '  PlayerBar { objectName: "a"; key: "referee:a"; source: "x"; gainDb: -6;'
+        " lowpassHz: 8000 }\n"
+        '  PlayerBar { objectName: "b"; key: "referee:b"; source: "y"; available: false;'
+        ' unavailableText: "no playback" }\n}'
+    )
+    engine.loadData(source.encode())
+    root = engine.rootObjects()[0]
+    try:
+        a = root.findChild(QObject, "a")
+        b = root.findChild(QObject, "b")
+        button = a.findChild(QObject, "playButton")
+        assert button.property("text") == "Play"
+        assert not b.findChild(QObject, "playButton").property("enabled")
+        assert b.findChild(QObject, "playerUnavailable").property("visible")
+        button.clicked.emit()
+        qtbot.waitUntil(lambda: player.state == "playing")
+        assert player.activeKey == "referee:a" and button.property("text") == "Pause"
+        assert a.findChild(QObject, "playerTime").property("text") == "0:00 / 0:00"
+        clean = shape(decode(memo), gain_db=-6.0, lowpass_hz=REFEREE_LOWPASS_HZ)
+        assert np.allclose(output.played[-1].samples, clean.samples)
+        button.clicked.emit()
+        assert player.state == "paused" and button.property("text") == "Resume"
+    finally:
+        from voice_lab_desktop.cli import teardown
+
+        teardown(engine, tasks.close)  # QML first: bindings must not outlive the player
