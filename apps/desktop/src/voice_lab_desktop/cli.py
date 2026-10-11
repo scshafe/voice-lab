@@ -102,7 +102,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["--capture-worker"]:
+        # The capture worker's own process (D-039): no settings, no Qt.
+        from .capture import worker
+
+        return worker.main(arguments[1:])
+    args = build_parser().parse_args(arguments)
     try:
         config = load_config(args.config)
         if args.server:

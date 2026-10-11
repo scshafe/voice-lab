@@ -1,0 +1,17 @@
+#!/bin/sh
+# Spike S-1 (D-040): record takes from the UMIK-1 with voice-lab-desktop's PortAudio
+# capture worker, check its continuity evidence, and run the recording acceptance
+# matrix over the results. Real hardware is the owner's (apps/desktop/docs/S-1.md);
+# --simulated is a dry run that never opens an audio device. The output directory must
+# be new or empty, mode 0700, outside the repository: recordings never enter Git.
+# The repository's .venv runs it from this checkout (the app is not installed there).
+set -eu
+export PYTHONDONTWRITEBYTECODE=1
+repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+exec "$repo_dir/.venv/bin/python" -I -B -c '
+import sys
+root = sys.argv.pop(1)
+sys.path.insert(0, root + "/apps/desktop/src")
+from voice_lab_desktop.capture.s1 import main
+raise SystemExit(main(sys.argv[1:]))
+' "$repo_dir" "$@"
