@@ -131,11 +131,11 @@ row (`/api/row/:id`) and, on request only, its local transcript text.
 
 | Id | React: field | Desktop: where | `/api/v1` | Ticked by | ✓ |
 | --- | --- | --- | --- | --- | --- |
-| P-01 | "Consulting the coach…" and a failure notice | Practice: same states | `coach` | `test_practice_states` | ☐ |
-| P-02 | Due for a take: label and cluster id, takes and years, "last sung N d ago", the why chips; click opens the Corpus on the song; the empty sentence with `dueAfterDays` | Practice: same card | `coach.dueSongs`, `params.dueAfterDays` | `test_practice_due_and_frontier` | ☐ |
-| P-03 | The frontier: label and cluster id, rule chips (range stretch, vibrato settling, sustain PB, nearly in tune, evidence-thin), each flag's detail; click opens the Corpus; the empty sentence | Practice: same card | `coach.frontier` | `test_practice_due_and_frontier` | ☐ |
+| P-01 | "Consulting the coach…" and a failure notice | Practice: same states | `coach` | `test_practice_states`, `test_practice_failure_notice` | ☐ |
+| P-02 | Due for a take: label and cluster id, takes and years, "last sung N d ago", the why chips; click opens the Corpus on the song; the empty sentence with `dueAfterDays` | Practice: same card | `coach.dueSongs`, `params.dueAfterDays` | `test_practice_due_and_frontier`, `test_practice_empty_due_and_frontier` | ☐ |
+| P-03 | The frontier: label and cluster id, rule chips (range stretch, vibrato settling, sustain PB, nearly in tune, evidence-thin), each flag's detail; click opens the Corpus; the empty sentence | Practice: same card | `coach.frontier` | `test_practice_due_and_frontier`, `test_practice_empty_due_and_frontier` | ☐ |
 | P-04 | Goals: title, derived status chip (active, achieved, missed, abandoned), scope (cluster or "whole corpus"), Abandon on active goals, progress ("N of M takes · running median … vs target … · registered …") or "abandoned …"; the empty sentence; a failure notice | Practice: same list | `goals` | `test_practice_goals_list`, `test_practice_goal_abandon` | ☐ |
-| P-05 | Goal form: Metric (from `metrics`), Direction (at least, at most), Target, Takes (N), Scope (whole corpus or a cluster "label (takes)"), Title; Pre-register, enabled when the metric and a numeric target are set; toast and refresh | Practice: same form, rule and toasts ("Goal pre-registered — …" / "Goal not created: …") | `goals` (`metrics`, `clusterOptions`); `POST goals` | `test_practice_goal_form` | ☐ |
+| P-05 | Goal form: Metric (from `metrics`), Direction (at least, at most), Target, Takes (N), Scope (whole corpus or a cluster "label (takes)"), Title; Pre-register, enabled when the metric and a numeric target are set; toast and refresh | Practice: same form, rule and toasts ("Goal pre-registered — …" / "Goal not created: …") | `goals` (`metrics`, `clusterOptions`); `POST goals` | `test_practice_goal_form`, `test_practice_form_rules` | ☐ |
 
 ## R. Referee (`RefereePageComponent.jsx`, `BradleyTerryChart`; `RefereeManager`)
 
