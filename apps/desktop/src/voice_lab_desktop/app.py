@@ -3,7 +3,8 @@
 This is the app's composition root. It builds one model per screen over a shared
 :class:`~voice_lab_desktop.viewmodel.AppContext` and hands them to QML as context
 properties (``app``, ``status``, ``uploads``, ``measurement``, ``corpus``, ``journey``,
-``practice``, ``referee``, ``player``). It owns the sign-in (Pocket ID, PKCE, a loopback
+``practice``, ``referee``, ``player``; Record: prompts' model is ``app.promptsModel``). It
+owns the sign-in (Pocket ID, PKCE, a loopback
 redirect; ``auth.py``) and the settings (``config.py``), and it navigates: a screen's model is
 activated when its screen is shown, which loads its data the first time, and deactivated when
 another is (the measurement screen stops scanning the audio devices).
@@ -21,15 +22,18 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from . import __version__
 from .auth import AuthError, Session, sign_in
+from .capture.types import TakeRecorder
 from .config import Config, ConfigError, save_settings
 from .measurement.controller import Controller
 from .measurement.devices import AudioBackend
 from .measurement.levels import LevelReader
 from .measurement.store import SessionStore
 from .playback import AudioOutput, Player
+from .prompted.store import PromptedStore
 from .screens.corpus import CorpusModel
 from .screens.journey import JourneyModel
 from .screens.practice import PracticeModel
+from .screens.prompts import PromptsModel, default_recorder
 from .screens.referee import RefereeModel
 from .screens.status import StatusModel
 from .screens.uploads import UploadsModel
@@ -42,6 +46,7 @@ from .viewmodel import AppContext, ViewModel, qproperty
 SCREENS: Final = (
     ("status", "Lab", "Status", "user"),
     ("uploads", "Lab", "Uploads", "inbox"),
+    ("prompts", "Record", "Prompts", "dot"),
     ("measurement", "Record", "Measurement", "dot"),
     ("corpus", "Corpus", "Corpus", "archive"),
     ("journey", "Analysis", "Journey", "clock"),
@@ -81,6 +86,12 @@ class AppModel(ViewModel):
     # What SuiSidebarList shows: rows changed in place, never a new model (see above).
     sidebarModel = Property(QObject, _get_sidebar_model, constant=True)
 
+    def _get_prompts_model(self) -> PromptsModel:
+        return self.prompts
+
+    # Record: prompts' model (PromptsScreen.qml reads it through the app).
+    promptsModel = Property(QObject, _get_prompts_model, constant=True)
+
     def __init__(
         self,
         config: Config,
@@ -94,11 +105,13 @@ class AppModel(ViewModel):
         fixed_port: bool = False,
         measurement_backend: AudioBackend | None = None,
         level_reader: LevelReader | None = None,
+        recorder_factory: Callable[[], TakeRecorder] | None = None,
         start_screen: str | None = None,
     ) -> None:
         """``measurement_backend`` and ``level_reader`` stand in for PortAudio and the
         platform's level readers (tests, ``--smoke``); by default they are made the first time
-        the measurement screen is shown. ``start_screen`` opens on that screen."""
+        the measurement screen is shown. ``recorder_factory`` makes Record: prompts' recorder
+        (default: the capture worker). ``start_screen`` opens on that screen."""
         tasks = tasks or Tasks()
         session = Session(config, tokens, http)
         context = AppContext(config, session, http, tasks, open_url=open_url or open_browser)
@@ -109,8 +122,12 @@ class AppModel(ViewModel):
         self.fixed_port = fixed_port
         self._cancel_sign_in = threading.Event()
         self.spool = SessionStore(config.measurement_dir)
+        self.prompted = PromptedStore(config.data_dir)
         self.status = StatusModel(context, self.spool)
-        self.uploads = UploadsModel(context, self.spool)
+        self.uploads = UploadsModel(context, self.spool, self.prompted)
+        self.prompts = PromptsModel(
+            context, recorder_factory=recorder_factory or default_recorder, store=self.prompted
+        )
         self.measurement = Controller(
             context,
             self.spool,
@@ -125,6 +142,7 @@ class AppModel(ViewModel):
         self.models: dict[str, ViewModel] = {
             "status": self.status,
             "uploads": self.uploads,
+            "prompts": self.prompts,
             "measurement": self.measurement,
             "corpus": self.corpus,
             "journey": self.journey,
@@ -136,6 +154,8 @@ class AppModel(ViewModel):
         self.uploads.spoolChanged.connect(self.status.refresh_spool)
         self.uploads.spoolChanged.connect(self._refresh_sidebar)
         self.measurement.sessionChanged.connect(self._refresh_sidebar)
+        self.prompts.transportChanged.connect(self._refresh_sidebar)
+        self.prompts.packaged.connect(self._prompted_packaged)
         context.signInRequired.connect(self._signed_out_elsewhere)
         start = start_screen or ("corpus" if config.configured and session.signed_in else "status")
         if start not in SCREEN_KEYS:
@@ -171,6 +191,7 @@ class AppModel(ViewModel):
         self._cancel_sign_in.set()
         self.player.shutdown()
         self.referee.shutdown()
+        self.prompts.shutdown()
         self.measurement.shutdown()
         self.context.tasks.close()
 
@@ -210,18 +231,27 @@ class AppModel(ViewModel):
         if self.session.signed_in and self.context.config.configured:
             self.uploads.uploadAll()
 
+    def _prompted_packaged(self) -> None:
+        """A prompted session became a package: Uploads shows it (and sends it when
+        prompted uploads are on, D-042)."""
+        self.uploads.refresh()
+        config = self.context.config
+        if config.prompted_uploads and self.session.signed_in and config.configured:
+            self.uploads.uploadAll()
+
     def _refresh_sidebar(self) -> None:
         pending = self.uploads.pending_count
         failed = self.uploads.failed_count
         # A session in progress keeps running on another screen: its entry shows it.
         recording = bool(self.measurement.inSession)
+        taking = self.prompts.recording
         rows = []
         for key, section, text, icon in SCREENS:
             entry: dict[str, Any] = {"key": key, "section": section, "text": text, "iconName": icon}
             entry["count"] = pending if key == "uploads" and pending else -1
             if key == "uploads" and failed:
                 entry["status"] = "failing"
-            elif key == "measurement" and recording:
+            elif (key == "measurement" and recording) or (key == "prompts" and taking):
                 entry["status"] = "held"
             else:
                 entry["status"] = "none"

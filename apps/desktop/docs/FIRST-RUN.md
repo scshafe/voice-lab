@@ -88,3 +88,38 @@ are voice-journey-capture's, unchanged; the mouth distance is in **Status → Se
 
 The session waits in the data dir and uploads when you are signed in; **Uploads** shows it
 until the server accepts it.
+
+## 7. Prompted recording
+
+**Record → Prompts** records a catalog's prompts into the UMIK-1, one take at a time,
+through the app's PortAudio capture worker (D-039). Until spike S-1 has passed on this
+platform, the Swift app stays the macOS path, and what you record here stays on this
+machine (D-042).
+
+1. Choose the catalog: the built-in pilot catalog (prompt suite v2, or v1), or a
+   prompt-suite JSON file named in `config.toml` (`catalog_file = "/path/to/suite.json"`).
+   The corpus catalog, held-out evaluation and physical-test catalogs are refused here.
+2. Choose the prompts. Every room tone of the catalog comes along, and its prompt says
+   **Do not speak**. **Start session** needs the UMIK-1 plugged in.
+3. On the screen, and never while you type in a field:
+   - **R** records, and **R** again stops. The time counts the audio frames that reached
+     the disk, not the clock.
+   - **Space** plays the take under review, exactly as trimmed.
+   - **Return** saves (keeps) it.
+   - **Save & next** keeps it and moves to the next prompt that still has no kept take.
+4. Drag the waveform's handles, or type the In and Out frames, to trim a take. The trim is a
+   note kept beside the take: the recording itself never changes, and the package carries
+   the take as recorded. **Remove** sets a take aside, and **Restore** brings it back.
+5. **Finish session** once every prompt has a kept take. The app builds the capture package
+   (one kept take per prompt) in `<data dir>/prompted/packages/`. The takes, their
+   history, the trims and the capture evidence stay in `<data dir>/prompted/sessions/`.
+
+**Uploads** lists the package as *held here* until you turn prompted uploads on, which you
+do only after S-1 has passed on this platform (DECISIONS.md):
+
+```toml
+prompted_uploads = true
+```
+
+It then uploads as a `capture` package, which the home-host approval must cover (`--classes
+capture measurement`, §4).
