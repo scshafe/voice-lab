@@ -179,6 +179,7 @@ ScreenPage {
             serverField.text = app.server
             issuerField.text = app.issuer
             clientField.text = app.clientId
+            distanceField.text = String(app.distanceCm)
         }
         ColumnLayout {
             spacing: SuiTheme.spaceSm
@@ -206,6 +207,14 @@ ScreenPage {
                 label: "Client"
                 enabled: app.lockedSettings.indexOf("client_id") < 0
             }
+            SuiText { text: "Measurement: mouth to capsule distance, cm"; variant: "label" }
+            SuiTextField {
+                id: distanceField
+                objectName: "distanceField"
+                Layout.fillWidth: true
+                label: "Distance in centimetres"
+                inputMethodHints: Qt.ImhDigitsOnly
+            }
         }
         actions: [
             SuiButton { text: "Cancel"; onClicked: settings.reject() },
@@ -213,7 +222,8 @@ ScreenPage {
                 objectName: "saveSettings"
                 text: "Save"
                 variant: "primary"
-                onClicked: if (app.saveSettings(serverField.text, issuerField.text, clientField.text)) settings.accept()
+                onClicked: if (app.saveSettings(serverField.text, issuerField.text, clientField.text,
+                                                parseInt(distanceField.text) || 0)) settings.accept()
             }
         ]
     }

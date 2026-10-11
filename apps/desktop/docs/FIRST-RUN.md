@@ -45,8 +45,8 @@ waiting. A level pinned in the old client stays the same pin (not a new chain er
 
 ## 5. A measurement session
 
-`voice-lab-desktop --measure` opens the UMIK-1 window (phase 4b moves it into the main
-window). The steps are voice-journey-capture's, unchanged:
+The **Measurement** screen (or `voice-lab-desktop --measure`, which opens on it). The steps
+are voice-journey-capture's, unchanged; the mouth distance is in **Status → Settings**:
 
 1. Plug in the UMIK-1. Any other microphone is refused. On macOS set its format to 48,000 Hz
    in Audio MIDI Setup; on Linux the app opens it through ALSA `hw:` when PortAudio lists it,

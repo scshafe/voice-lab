@@ -1,11 +1,11 @@
 """``voice-lab-desktop``: the app's window, plus checks and chores that need no window.
 
     voice-lab-desktop                    open the window
-    voice-lab-desktop --measure          open the UMIK-1 measurement window
+    voice-lab-desktop --measure          open the window on the UMIK-1 measurement screen
     voice-lab-desktop --check-config     settings and the keychain
     voice-lab-desktop --check-online     also the issuer and the server, reachable?
     voice-lab-desktop --sign-out         forget the stored sign-in
-    voice-lab-desktop --smoke            both windows offscreen (a simulated UMIK-1 session)
+    voice-lab-desktop --smoke            the window offscreen (every screen, a simulated session)
 
 The measurement capture's chores (voice-journey-capture's flags, unchanged):
 
@@ -62,7 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="receive the sign-in on 127.0.0.1:53683 instead of a random port",
     )
     group = ap.add_mutually_exclusive_group()
-    group.add_argument("--measure", action="store_true", help="open the UMIK-1 measurement window")
+    group.add_argument(
+        "--measure", action="store_true", help="open the window on the measurement screen"
+    )
     group.add_argument(
         "--check-config", action="store_true", help="print the settings and the keychain backend"
     )
@@ -93,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     group.add_argument("--sign-out", action="store_true", help="forget the stored sign-in")
     group.add_argument(
-        "--smoke", action="store_true", help="run both windows offscreen once, then exit"
+        "--smoke", action="store_true", help="run the window offscreen once, then exit"
     )
     ap.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
     return ap
@@ -139,7 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("signed out (the keychain item is gone)")
         return 0
     if args.measure:
-        return run_measurement(config, fixed_port=args.fixed_port)
+        return run(config, fixed_port=args.fixed_port, start_screen="measurement")
     return run(config, fixed_port=args.fixed_port)
 
 
@@ -403,6 +405,7 @@ def main_window_properties(model: Any) -> dict[str, Any]:
         "app": model,
         "status": model.status,
         "uploads": model.uploads,
+        "measurement": model.measurement,
         "corpus": model.corpus,
         "journey": model.journey,
         "practice": model.practice,
@@ -413,10 +416,6 @@ def main_window_properties(model: Any) -> dict[str, Any]:
 
 def load_main_window(model: Any) -> Any:
     return _engine(main_window_properties(model), qml_dir() / "Main.qml")
-
-
-def load_measurement_window(controller: Any) -> Any:
-    return _engine({"app": controller}, qml_dir() / "measurement" / "MeasurementWindow.qml")
 
 
 def teardown(engine: Any, shutdown: Callable[[], None]) -> None:
@@ -430,7 +429,7 @@ def teardown(engine: Any, shutdown: Callable[[], None]) -> None:
     shutdown()
 
 
-def run(config: Config, fixed_port: bool = False) -> int:
+def run(config: Config, fixed_port: bool = False, start_screen: str | None = None) -> int:
     app = _application()
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QDesktopServices
@@ -444,6 +443,7 @@ def run(config: Config, fixed_port: bool = False) -> int:
         http=new_http(),
         open_url=lambda url: QDesktopServices.openUrl(QUrl(url)),
         fixed_port=fixed_port,
+        start_screen=start_screen,
     )
     engine = load_main_window(model)
     if not engine.rootObjects():
@@ -456,35 +456,10 @@ def run(config: Config, fixed_port: bool = False) -> int:
     return code
 
 
-def run_measurement(config: Config, fixed_port: bool = False) -> int:
-    app = _application()
-    from .measurement.controller import Controller
-    from .measurement.devices import DeviceError
-    from .measurement.levels import PlatformLevelReader
-    from .tokens import KeyringStore
-
-    try:
-        backend = _real_backend()
-    except DeviceError as exc:
-        print(f"{APP_NAME}: {exc}", file=sys.stderr)
-        return 1
-    store = KeyringStore(config.issuer, config.client_id)
-    controller = Controller(config, store, backend, PlatformLevelReader(), fixed_port=fixed_port)
-    engine = load_measurement_window(controller)
-    if not engine.rootObjects():
-        print(f"{APP_NAME}: the measurement window failed to load", file=sys.stderr)
-        return 1
-    app.aboutToQuit.connect(controller.shutdown)
-    controller.start()
-    code = int(app.exec())
-    teardown(engine, controller.shutdown)
-    return code
-
-
 def smoke(config: Config) -> int:
-    """Offscreen, in a temporary data dir: the main window loads (not set up, signed out),
-    and the measurement window pins, records a whole simulated session and saves it; any
-    QML warning fails it."""
+    """Offscreen, in a temporary data dir: the window loads (not set up, signed out), shows
+    every screen, and the measurement screen pins, records a whole simulated session and
+    saves it; any QML warning fails it."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("QT_QUICK_BACKEND", "software")
     from PySide6.QtCore import QtMsgType, qInstallMessageHandler
@@ -498,8 +473,7 @@ def smoke(config: Config) -> int:
 
     qInstallMessageHandler(handler)
     app = _application()
-    from .app import AppModel
-    from .measurement.controller import Controller
+    from .app import SCREENS, AppModel
     from .measurement.simulated import SimulatedBackend, SimulatedLevelReader
     from .net import new_http
     from .tokens import MemoryStore
@@ -518,25 +492,22 @@ def smoke(config: Config) -> int:
         cfg = dataclasses.replace(
             config, server_url="", issuer="", data_dir=Path(tmp), file=Path(tmp) / "config.toml"
         )
-        model = AppModel(cfg, MemoryStore(), http=new_http(), open_url=lambda url: None)
+        model = AppModel(
+            cfg,
+            MemoryStore(),
+            http=new_http(),
+            open_url=lambda url: None,
+            measurement_backend=SimulatedBackend(speed=200, block_frames=4800),
+            level_reader=SimulatedLevelReader(),
+        )
         engine = load_main_window(model)
         ok = bool(engine.rootObjects())
         model.start()
-        for key in ("status", "uploads", "corpus", "journey", "practice", "referee"):
+        for key, *_ in SCREENS:
             model.navigate(key)
             app.processEvents()
-        teardown(engine, model.shutdown)
-
-        controller = Controller(
-            cfg,
-            MemoryStore(),
-            SimulatedBackend(speed=200, block_frames=4800),
-            SimulatedLevelReader(),
-            auto_upload=False,
-        )
-        engine = load_measurement_window(controller)
-        ok = ok and bool(engine.rootObjects())
-        controller.start()
+        model.navigate("measurement")
+        controller = model.measurement
         steps.append(until(lambda: bool(controller.property("deviceOk"))))
         controller.pinLevel()
         controller.setSkipFree(True)
@@ -558,15 +529,16 @@ def smoke(config: Config) -> int:
                 steps.append(until(lambda: controller.property("phase") != "recording"))
         controller.finishSession()
         steps.append(controller.property("phase") == "done")
-        teardown(engine, controller.shutdown)
+        steps.append(until(lambda: model.uploads.pendingCount == 1))
+        teardown(engine, model.shutdown)
     qInstallMessageHandler(None)
     if not ok or problems or not all(steps):
         for p in problems:
             print(f"smoke: {p}", file=sys.stderr)
         loaded = "loaded" if ok else "did not load"
-        print(f"smoke: FAILED (windows {loaded}, steps {steps})", file=sys.stderr)
+        print(f"smoke: FAILED (window {loaded}, steps {steps})", file=sys.stderr)
         return 1
-    print("smoke: ok (both windows loaded offscreen, a simulated session recorded, no warnings)")
+    print("smoke: ok (every screen loaded offscreen, a simulated session recorded, no warnings)")
     return 0
 
 

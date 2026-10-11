@@ -1,27 +1,32 @@
-"""The window's state and actions, for QML.
+"""The measurement screen's model: voice-journey-capture's UMIK-1 ritual, for QML.
 
-Slow work (device scans, the pre-session probe, sign-in, uploads) runs on a
-small thread pool; results come back to the GUI thread through a queued
-signal, so properties only change on the GUI thread. The ritual itself
-(segment start/stop, the level polls while recording, the meters) runs on the
-GUI thread on timers; the audio is written on the recorder's own thread.
+It is the model of the main window's Record → Measurement screen (design §6.1, phase 4b),
+over the app's shared context (``AppContext``: settings, sign-in, worker pool): the ritual's
+code paths are voice-journey-capture's, unchanged. The capture client's own sign-in,
+settings and uploads are the app's (Status and Uploads); when a session is saved the model
+calls ``on_saved``, which hands it to Uploads.
+
+Slow work (device scans, the pre-session probe) runs on the app's pool; results come back to
+the GUI thread, so properties only change there. The ritual itself (segment start/stop, the
+level polls while recording, the meters) runs on the GUI thread on timers; the audio is
+written on the recorder's own thread.
+
+The device scan and the level polls before a session run only while the screen is shown
+(``activate``/``deactivate``). A session in progress keeps running when another screen is
+shown: its guards (the level polls that abort on a moved level, the timed segments' stops)
+live here, not in the screen, and the keyboard only acts on the measurement screen. PortAudio
+is loaded the first time the screen is shown; when it cannot be, the screen says why.
 """
 
 from __future__ import annotations
 
-import threading
-import webbrowser
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-import httpx
-from PySide6.QtCore import Property, QObject, Qt, QTimer, Signal, SignalInstance, Slot
+from PySide6.QtCore import QTimer, Signal, Slot
 
-from ..auth import AuthError, Session, SignInRequired, sign_in
-from ..config import Config, ConfigError, save_settings
-from ..tokens import NoKeychainError, Tokens, TokenStore, jwt_claims
+from ..viewmodel import AppContext, ViewModel, qproperty
 from . import chain
 from .devices import AudioBackend, DeviceError, InputDevice, choose_umik
 from .levels import InputLevel, LevelReader, LevelUnreadable
@@ -29,161 +34,113 @@ from .package import PackageError
 from .pin import CalFileError, GuardError, LevelMoved, LevelMuted, NotPinned, StateStore, guard
 from .ritual import Ritual, RitualError
 from .store import SessionStore
-from .upload import IntakeClient, UploadSummary, new_http, upload_pending
 from .wav import meter_fraction
 
 METER_MS = 50
 LEVEL_POLL_MS = 1000
 SETUP_POLL_MS = 2000
+#: The phases in which no stream is open and a new session may start.
+IDLE_PHASES = ("setup", "done", "aborted")
+#: The phases of a session in progress.
+SESSION_PHASES = ("segment", "recording", "review")
 
 
-class _Bridge(QObject):
-    """Runs callables on the GUI thread (queued)."""
-
-    run = Signal(object)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.run.connect(self._call, Qt.ConnectionType.QueuedConnection)
-
-    @Slot(object)
-    def _call(self, fn: Callable[[], None]) -> None:
-        fn()
-
-
-def _p(kind: Any, name: str, notify: Signal) -> Property:
-    def getter(self: Controller) -> Any:
-        return self._v[name]
-
-    return Property(kind, getter, notify=notify)
-
-
-class Controller(QObject):
-    accountChanged = Signal()
+class Controller(ViewModel):
     setupChanged = Signal()
     sessionChanged = Signal()
     meterChanged = Signal()
-    uploadsChanged = Signal()
-    toast = Signal(str, str)  # text, tone
+    settingsChanged = Signal()
 
-    # account and settings
-    signedIn = _p(bool, "signedIn", accountChanged)
-    account = _p(str, "account", accountChanged)
-    authBusy = _p(bool, "authBusy", accountChanged)
-    server = _p(str, "server", accountChanged)
-    serverLocked = _p(bool, "serverLocked", accountChanged)
-    settingsSource = _p(str, "settingsSource", accountChanged)
-    distanceCm = _p(int, "distanceCm", accountChanged)
+    distanceCm = qproperty(int, "distanceCm", settingsChanged)
     # setup: device, level, cal file
-    deviceName = _p(str, "deviceName", setupChanged)
-    deviceOk = _p(bool, "deviceOk", setupChanged)
-    deviceMessage = _p(str, "deviceMessage", setupChanged)
-    levelState = _p(
-        str, "levelState", setupChanged
-    )  # ok | unpinned | moved | muted | unreadable | unknown
-    levelText = _p(str, "levelText", setupChanged)
-    levelMessage = _p(str, "levelMessage", setupChanged)
-    pinnedText = _p(str, "pinnedText", setupChanged)
-    calOk = _p(bool, "calOk", setupChanged)
-    calText = _p(str, "calText", setupChanged)
-    canStart = _p(bool, "canStart", setupChanged)
-    startBlocker = _p(str, "startBlocker", setupChanged)
-    busy = _p(bool, "busy", setupChanged)
-    # the session
-    phase = _p(
-        str, "phase", sessionChanged
-    )  # setup | starting | segment | recording | review | done | aborted
-    sessionId = _p(str, "sessionId", sessionChanged)
-    segments = _p("QVariantList", "segments", sessionChanged)
-    currentIndex = _p(int, "currentIndex", sessionChanged)
-    currentLabel = _p(str, "currentLabel", sessionChanged)
-    currentMode = _p(str, "currentMode", sessionChanged)
-    canRedo = _p(bool, "canRedo", sessionChanged)
-    abortReason = _p(str, "abortReason", sessionChanged)
-    calTone = _p(bool, "calTone", sessionChanged)
-    skipFree = _p(bool, "skipFree", sessionChanged)
+    deviceName = qproperty(str, "deviceName", setupChanged)
+    deviceOk = qproperty(bool, "deviceOk", setupChanged)
+    deviceMessage = qproperty(str, "deviceMessage", setupChanged)
+    # ok | unpinned | moved | muted | unreadable | unknown
+    levelState = qproperty(str, "levelState", setupChanged)
+    levelText = qproperty(str, "levelText", setupChanged)
+    levelMessage = qproperty(str, "levelMessage", setupChanged)
+    pinnedText = qproperty(str, "pinnedText", setupChanged)
+    calOk = qproperty(bool, "calOk", setupChanged)
+    calText = qproperty(str, "calText", setupChanged)
+    canStart = qproperty(bool, "canStart", setupChanged)
+    startBlocker = qproperty(str, "startBlocker", setupChanged)
+    busy = qproperty(bool, "busy", setupChanged)
+    # the session: setup | starting | segment | recording | review | done | aborted
+    phase = qproperty(str, "phase", sessionChanged)
+    inSession = qproperty(bool, "inSession", sessionChanged)
+    sessionId = qproperty(str, "sessionId", sessionChanged)
+    segments = qproperty("QVariantList", "segments", sessionChanged)
+    currentIndex = qproperty(int, "currentIndex", sessionChanged)
+    currentLabel = qproperty(str, "currentLabel", sessionChanged)
+    currentMode = qproperty(str, "currentMode", sessionChanged)
+    canRedo = qproperty(bool, "canRedo", sessionChanged)
+    abortReason = qproperty(str, "abortReason", sessionChanged)
+    calTone = qproperty(bool, "calTone", sessionChanged)
+    skipFree = qproperty(bool, "skipFree", sessionChanged)
     # meters
-    meterPeak = _p(float, "meterPeak", meterChanged)
-    meterRms = _p(float, "meterRms", meterChanged)
-    meterText = _p(str, "meterText", meterChanged)
-    clipping = _p(bool, "clipping", meterChanged)
-    elapsedText = _p(str, "elapsedText", meterChanged)
-    # uploads
-    pendingCount = _p(int, "pendingCount", uploadsChanged)
-    failedCount = _p(int, "failedCount", uploadsChanged)
-    uploadBusy = _p(bool, "uploadBusy", uploadsChanged)
-    uploadText = _p(str, "uploadText", uploadsChanged)
+    meterPeak = qproperty(float, "meterPeak", meterChanged)
+    meterRms = qproperty(float, "meterRms", meterChanged)
+    meterText = qproperty(str, "meterText", meterChanged)
+    clipping = qproperty(bool, "clipping", meterChanged)
+    elapsedText = qproperty(str, "elapsedText", meterChanged)
 
     def __init__(
         self,
-        config: Config,
-        tokens: TokenStore,
-        backend: AudioBackend,
-        levels: LevelReader,
+        context: AppContext,
+        store: SessionStore,
+        backend: Callable[[], AudioBackend],
+        levels: Callable[[], LevelReader],
         *,
-        open_browser: Callable[[str], object] = webbrowser.open,
-        fixed_port: bool = False,
-        auto_upload: bool = True,
-        http: httpx.Client | None = None,
+        on_saved: Callable[[], None] = lambda: None,
     ) -> None:
-        super().__init__()
-        self.config = config
-        self.backend = backend
-        self.levels = levels
-        self.open_browser = open_browser
-        self.fixed_port = fixed_port
-        self.auto_upload = auto_upload
-        self.http = http or new_http()
-        self.session = Session(config, tokens, self.http)
-        self.state = StateStore(config.measurement_dir)
-        self.store = SessionStore(config.measurement_dir)
+        """``backend`` and ``levels`` make the audio backend and the level reader the first
+        time the screen is shown (PortAudio is a system library on Linux)."""
+        super().__init__(
+            context,
+            {
+                "distanceCm": context.config.distance_cm,
+                "deviceName": "",
+                "deviceOk": False,
+                "deviceMessage": "Looking for the UMIK-1…",
+                "levelState": "unknown",
+                "levelText": "",
+                "levelMessage": "",
+                "pinnedText": "",
+                "calOk": False,
+                "calText": "",
+                "canStart": False,
+                "startBlocker": "",
+                "busy": False,
+                "phase": "setup",
+                "inSession": False,
+                "sessionId": "",
+                "segments": [],
+                "currentIndex": -1,
+                "currentLabel": "",
+                "currentMode": "",
+                "canRedo": False,
+                "abortReason": "",
+                "calTone": False,
+                "skipFree": False,
+                "meterPeak": 0.0,
+                "meterRms": 0.0,
+                "meterText": "",
+                "clipping": False,
+                "elapsedText": "",
+            },
+        )
+        self.state = StateStore(context.config.measurement_dir)
+        self.store = store
+        self.on_saved = on_saved
+        self._make_backend = backend
+        self._make_levels = levels
+        self.backend: AudioBackend | None = None
+        self._levels: LevelReader | None = None
         self.device: InputDevice | None = None
         self.ritual: Ritual | None = None
-        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vjc")
-        self._bridge = _Bridge()
-        self._cancel_sign_in = threading.Event()
+        self.shown = False
         self._closed = False
-        self._v: dict[str, Any] = {
-            "signedIn": self.session.signed_in,
-            "account": "",
-            "authBusy": False,
-            "server": config.server_url,
-            "serverLocked": "server_url" in config.env_keys,
-            "settingsSource": config.source,
-            "distanceCm": config.distance_cm,
-            "deviceName": "",
-            "deviceOk": False,
-            "deviceMessage": "Looking for the UMIK-1…",
-            "levelState": "unknown",
-            "levelText": "",
-            "levelMessage": "",
-            "pinnedText": "",
-            "calOk": False,
-            "calText": "",
-            "canStart": False,
-            "startBlocker": "",
-            "busy": False,
-            "phase": "setup",
-            "sessionId": "",
-            "segments": [],
-            "currentIndex": -1,
-            "currentLabel": "",
-            "currentMode": "",
-            "canRedo": False,
-            "abortReason": "",
-            "calTone": False,
-            "skipFree": False,
-            "meterPeak": 0.0,
-            "meterRms": 0.0,
-            "meterText": "",
-            "clipping": False,
-            "elapsedText": "",
-            "pendingCount": 0,
-            "failedCount": 0,
-            "uploadBusy": False,
-            "uploadText": "",
-        }
-        self._v["account"] = self._account_label()
         self._meter = QTimer(self)
         self._meter.setInterval(METER_MS)
         self._meter.timeout.connect(self._on_meter)
@@ -193,16 +150,14 @@ class Controller(QObject):
         self._setup_poll = QTimer(self)
         self._setup_poll.setInterval(SETUP_POLL_MS)
         self._setup_poll.timeout.connect(self._on_setup_poll)
+        context.configChanged.connect(self._config_changed)
 
     # --- plumbing ------------------------------------------------------------------------
-    def _set(self, signal: SignalInstance, **values: Any) -> None:
-        changed = False
-        for key, value in values.items():
-            if self._v.get(key) != value:
-                self._v[key] = value
-                changed = True
-        if changed:
-            signal.emit()
+    @property
+    def levels(self) -> LevelReader:
+        if self._levels is None:
+            self._levels = self._make_levels()
+        return self._levels
 
     def _submit(
         self, work: Callable[[], Any], done: Callable[[Any, BaseException | None], None]
@@ -210,125 +165,63 @@ class Controller(QObject):
         if self._closed:
             return
 
-        def run() -> None:
-            try:
-                result, error = work(), None
-            except BaseException as exc:  # noqa: BLE001 - handed to the GUI thread
-                result, error = None, exc
+        def guarded(result: Any, error: BaseException | None) -> None:
             if not self._closed:
-                self._bridge.run.emit(lambda: done(result, error))
+                done(result, error)
 
-        self._pool.submit(run)
+        self.context.tasks.submit(work, guarded)
 
-    def _account_label(self) -> str:
-        tokens = self.session.tokens  # display only
-        if tokens is None:
-            return ""
-        try:
-            claims = jwt_claims(tokens.id_token)
-        except (ValueError, UnicodeDecodeError):
-            return "signed in"
-        return str(claims.get("email") or claims.get("preferred_username") or "signed in")
+    def _set_phase(self, phase: str, **values: Any) -> None:
+        self._set(self.sessionChanged, phase=phase, inSession=phase in SESSION_PHASES, **values)
+
+    def _config_changed(self) -> None:
+        self._set(self.settingsChanged, distanceCm=self.context.config.distance_cm)
 
     # --- lifecycle -----------------------------------------------------------------------
-    def start(self) -> None:
-        self.refreshDevices()
-        self._refresh_uploads()
+    def activate(self) -> None:
+        """The screen is shown: find the UMIK-1 and watch its level (never during a take)."""
+        self.shown = True
+        if self.backend is None and not self._load_backend():
+            return
         self._setup_poll.start()
-        if self.auto_upload and self.session.signed_in and self.store.pending():
-            self.uploadPending()
+        self.refreshDevices()
+
+    def deactivate(self) -> None:
+        """Another screen is shown: stop scanning and polling before a session. A session in
+        progress keeps running (its own timers guard it)."""
+        self.shown = False
+        self._setup_poll.stop()
+
+    def _load_backend(self) -> bool:
+        try:
+            self.backend = self._make_backend()
+        except DeviceError as exc:
+            self._set(self.setupChanged, deviceName="", deviceOk=False, deviceMessage=str(exc))
+            self._update_can_start()
+            return False
+        return True
 
     def shutdown(self) -> None:
         if self._closed:
             return
-        self._cancel_sign_in.set()
         if self.ritual is not None and self.ritual.status == "open":
             self.ritual.abort("the app was closed during the session")
         self._closed = True
         for timer in (self._meter, self._level_poll, self._setup_poll):
             timer.stop()
-        self._pool.shutdown(wait=False, cancel_futures=True)
-
-    # --- account ---------------------------------------------------------------------------
-    @Slot()
-    def signIn(self) -> None:  # noqa: N802 (QML name)
-        if self._v["authBusy"]:
-            return
-        self._cancel_sign_in.clear()
-        self._set(self.accountChanged, authBusy=True)
-
-        def work() -> Tokens:
-            from ..tokens import KeyringStore
-
-            if isinstance(self.session.store, KeyringStore):
-                KeyringStore.check_backend()
-            return sign_in(
-                self.config,
-                self.http,
-                self.open_browser,
-                fixed_port=self.fixed_port,
-                cancelled=self._cancel_sign_in,
-            )
-
-        def done(tokens: Tokens | None, error: BaseException | None) -> None:
-            self._set(self.accountChanged, authBusy=False)
-            if error is not None:
-                failures = (AuthError, NoKeychainError, httpx.HTTPError, ConfigError)
-                if isinstance(error, failures):
-                    self.toast.emit(f"Sign-in failed: {error}", "danger")
-                    return
-                raise error
-            assert tokens is not None
-            try:
-                self.session.adopt(tokens)
-            except NoKeychainError as exc:
-                self.toast.emit(str(exc), "danger")
-                return
-            self._set(self.accountChanged, signedIn=True, account=self._account_label())
-            self.toast.emit("Signed in.", "ok")
-            if self.auto_upload and self.store.pending():
-                self.uploadPending()
-
-        self._submit(work, done)
-
-    @Slot()
-    def cancelSignIn(self) -> None:  # noqa: N802
-        self._cancel_sign_in.set()
-
-    @Slot()
-    def signOut(self) -> None:  # noqa: N802
-        self.session.sign_out()
-        self._set(self.accountChanged, signedIn=False, account="")
-
-    @Slot(str, int, result=bool)
-    def saveSettings(self, server: str, distance_cm: int) -> bool:  # noqa: N802
-        changes: dict[str, Any] = {"distance_cm": int(distance_cm)}
-        if "server_url" not in self.config.env_keys:
-            changes["server_url"] = server.strip()
-        try:
-            self.config = save_settings(self.config, changes)
-        except ConfigError as exc:
-            self.toast.emit(f"Settings not saved: {exc}", "danger")
-            return False
-        self.session.config = self.config
-        self._set(
-            self.accountChanged,
-            server=self.config.server_url,
-            distanceCm=self.config.distance_cm,
-            settingsSource=self.config.source,
-        )
-        self.toast.emit("Settings saved.", "ok")
-        return True
 
     # --- setup: device, level, cal file ----------------------------------------------------
     @Slot()
-    def refreshDevices(self) -> None:  # noqa: N802
-        if self._v["phase"] not in ("setup", "done", "aborted") or self._v["busy"]:
+    def refreshDevices(self) -> None:  # noqa: N802 (QML name)
+        if self._v["phase"] not in IDLE_PHASES or self._v["busy"]:
             return  # never re-scan PortAudio while a stream may be open
+        backend = self.backend
+        if backend is None:
+            return
         self._set(self.setupChanged, busy=True)
 
         def work() -> tuple[InputDevice, tuple[InputLevel | None, str | None]]:
-            devices = self.backend.list_inputs()
+            devices = backend.list_inputs()
             device = choose_umik(devices)
             return device, self._read_level(device)
 
@@ -438,13 +331,14 @@ class Controller(QObject):
             }.get(self._v["levelState"], "Waiting for the input level.")
         self._set(
             self.setupChanged,
-            canStart=blocker == "" and self._v["phase"] in ("setup", "done", "aborted"),
+            canStart=blocker == "" and self._v["phase"] in IDLE_PHASES,
             startBlocker=blocker,
         )
 
     def _on_setup_poll(self) -> None:
         if (
-            self._v["phase"] not in ("setup", "done", "aborted")
+            not self.shown
+            or self._v["phase"] not in IDLE_PHASES
             or self.device is None
             or self._v["busy"]
         ):
@@ -457,7 +351,7 @@ class Controller(QObject):
 
     @Slot()
     def pinLevel(self) -> None:  # noqa: N802
-        if self.device is None or self._v["phase"] not in ("setup", "done", "aborted"):
+        if self.device is None or self._v["phase"] not in IDLE_PHASES:
             return
         level, error = self._read_level(self.device)
         if level is None:
@@ -499,18 +393,18 @@ class Controller(QObject):
 
     @Slot(bool)
     def setCalTone(self, on: bool) -> None:  # noqa: N802
-        if self._v["phase"] in ("setup", "done", "aborted"):
+        if self._v["phase"] in IDLE_PHASES:
             self._set(self.sessionChanged, calTone=bool(on))
 
     @Slot(bool)
     def setSkipFree(self, on: bool) -> None:  # noqa: N802
-        if self._v["phase"] in ("setup", "done", "aborted"):
+        if self._v["phase"] in IDLE_PHASES:
             self._set(self.sessionChanged, skipFree=bool(on))
 
     # --- the ritual ------------------------------------------------------------------------
     @Slot()
     def startSession(self) -> None:  # noqa: N802
-        if not self._v["canStart"] or self.device is None:
+        if not self._v["canStart"] or self.device is None or self.backend is None:
             return
         ritual = Ritual(
             self.backend,
@@ -518,23 +412,23 @@ class Controller(QObject):
             self.levels,
             self.state,
             self.store,
-            self.config.distance_cm,
+            self.context.config.distance_cm,
             cal_tone=self._v["calTone"],
             skip_free=self._v["skipFree"],
         )
-        self._set(self.sessionChanged, phase="starting", abortReason="")
+        self._set_phase("starting", abortReason="")
         self._update_can_start()
 
         def done(_result: None, error: BaseException | None) -> None:
             if error is not None:
-                self._set(self.sessionChanged, phase="setup")
+                self._set_phase("setup")
                 self._update_can_start()
                 if isinstance(error, (RitualError, GuardError, CalFileError)):
                     self.toast.emit(f"Session not started: {error}", "danger")
                     return
                 raise error
             self.ritual = ritual
-            self._set(self.sessionChanged, phase="segment", sessionId=ritual.session_id)
+            self._set_phase("segment", sessionId=ritual.session_id)
             self._sync_segments()
 
         self._submit(ritual.begin, done)
@@ -593,7 +487,7 @@ class Controller(QObject):
         except RitualError as exc:
             self._aborted(str(exc))
             return
-        self._set(self.sessionChanged, phase="recording")
+        self._set_phase("recording")
         self._sync_segments()
         self._meter.start()
         self._level_poll.start()
@@ -613,7 +507,7 @@ class Controller(QObject):
                 return
             self.toast.emit(str(exc), "warn")  # too short: record it again
         self._set(self.meterChanged, meterPeak=0.0, meterRms=0.0, clipping=False)
-        self._set(self.sessionChanged, phase="segment" if r.current else "review")
+        self._set_phase("segment" if r.current else "review")
         self._sync_segments()
 
     @Slot()
@@ -626,7 +520,7 @@ class Controller(QObject):
         except RitualError as exc:
             self.toast.emit(str(exc), "warn")
             return
-        self._set(self.sessionChanged, phase="segment")
+        self._set_phase("segment")
         self._sync_segments()
 
     @Slot()
@@ -639,17 +533,15 @@ class Controller(QObject):
         except (RitualError, PackageError) as exc:
             self._aborted(str(exc))
             return
-        self._set(self.sessionChanged, phase="done")
+        self._set_phase("done")
         self._sync_segments()
         self._update_can_start()
         self.toast.emit(
             f"Session {manifest['sessionId']} saved: {len(manifest['files'])} files. "
-            "It uploads when signed in.",
+            "It uploads when signed in (see Uploads).",
             "ok",
         )
-        self._refresh_uploads()
-        if self.auto_upload and self.session.signed_in:
-            self.uploadPending()
+        self.on_saved()
 
     @Slot()
     def abortSession(self) -> None:  # noqa: N802
@@ -664,9 +556,8 @@ class Controller(QObject):
         if self._v["phase"] not in ("done", "aborted"):
             return
         self.ritual = None
-        self._set(
-            self.sessionChanged,
-            phase="setup",
+        self._set_phase(
+            "setup",
             sessionId="",
             segments=[],
             currentIndex=-1,
@@ -682,7 +573,7 @@ class Controller(QObject):
         self._meter.stop()
         self._level_poll.stop()
         self._set(self.meterChanged, meterPeak=0.0, meterRms=0.0, clipping=False, elapsedText="")
-        self._set(self.sessionChanged, phase="aborted", abortReason=reason)
+        self._set_phase("aborted", abortReason=reason)
         self._sync_segments()
         self._update_can_start()
         self.toast.emit(f"Session aborted: {reason}", "danger")
@@ -720,71 +611,3 @@ class Controller(QObject):
             r.poll_level()
         except RitualError as exc:
             self._aborted(str(exc))
-
-    # --- uploads ---------------------------------------------------------------------------
-    def _refresh_uploads(self) -> None:
-        sessions = self.store.sessions()
-        pending = sum(1 for s in sessions if s.upload_state == "pending")
-        failed = sum(1 for s in sessions if s.upload_state == "failed")
-        text = (
-            self._v["uploadText"]
-            if self._v["uploadBusy"]
-            else (
-                f"{pending} session(s) waiting to upload"
-                if pending
-                else "Every session is uploaded"
-                if sessions
-                else ""
-            )
-        )
-        if failed:
-            text += f"; {failed} refused by the server (see --sessions)"
-        self._set(self.uploadsChanged, pendingCount=pending, failedCount=failed, uploadText=text)
-
-    @Slot()
-    def uploadPending(self) -> None:  # noqa: N802
-        if self._v["uploadBusy"]:
-            return
-        if not self.session.signed_in:
-            self.toast.emit("Sign in to upload.", "info")
-            return
-        try:
-            server = self.config.require_server()
-        except ConfigError as exc:
-            self.toast.emit(f"Upload needs the settings: {exc}", "warn")
-            return
-        self._set(self.uploadsChanged, uploadBusy=True, uploadText="Uploading…")
-        client = IntakeClient(server, self.session, self.http)
-
-        def progress(name: str, sent: int, size: int) -> None:
-            pct = 100 * sent // max(size, 1)
-            self._bridge.run.emit(
-                lambda: self._set(self.uploadsChanged, uploadText=f"Uploading {name}: {pct}%")
-            )
-
-        def done(summary: UploadSummary | None, error: BaseException | None) -> None:
-            self._set(self.uploadsChanged, uploadBusy=False, uploadText="")
-            if error is not None:
-                if isinstance(error, SignInRequired):
-                    self._set(self.accountChanged, signedIn=self.session.signed_in)
-                    self.toast.emit(f"Upload needs a sign-in: {error}", "warn")
-                elif isinstance(error, (OSError, httpx.HTTPError)):
-                    self.toast.emit(f"Upload failed: {type(error).__name__}", "danger")
-                else:
-                    raise error
-            elif summary is not None:
-                if summary.accepted:
-                    self.toast.emit(f"{summary.accepted} session(s) accepted by the server.", "ok")
-                if summary.failed:
-                    self.toast.emit(
-                        f"{summary.failed} session(s) refused: {summary.last_error}", "danger"
-                    )
-                if summary.pending:
-                    self.toast.emit(
-                        f"{summary.pending} session(s) not uploaded yet ({summary.last_error}); "
-                        "retried next launch.",
-                        "warn",
-                    )
-            self._refresh_uploads()
-
-        self._submit(lambda: upload_pending(client, self.store, server, progress), done)

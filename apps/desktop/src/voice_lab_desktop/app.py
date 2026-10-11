@@ -2,10 +2,11 @@
 
 This is the app's composition root. It builds one model per screen over a shared
 :class:`~voice_lab_desktop.viewmodel.AppContext` and hands them to QML as context
-properties (``app``, ``status``, ``uploads``, ``corpus``, ``journey``, ``practice``,
-``referee``, ``player``). It owns the sign-in (Pocket ID, PKCE, a loopback redirect;
-``auth.py``) and the settings (``config.py``), and it navigates: a screen's model is
-activated when its screen is shown, which loads its data the first time.
+properties (``app``, ``status``, ``uploads``, ``measurement``, ``corpus``, ``journey``,
+``practice``, ``referee``, ``player``). It owns the sign-in (Pocket ID, PKCE, a loopback
+redirect; ``auth.py``) and the settings (``config.py``), and it navigates: a screen's model is
+activated when its screen is shown, which loads its data the first time, and deactivated when
+another is (the measurement screen stops scanning the audio devices).
 """
 
 from __future__ import annotations
@@ -21,6 +22,9 @@ from PySide6.QtCore import Signal, Slot
 from . import __version__
 from .auth import AuthError, Session, sign_in
 from .config import Config, ConfigError, save_settings
+from .measurement.controller import Controller
+from .measurement.devices import AudioBackend
+from .measurement.levels import LevelReader
 from .measurement.store import SessionStore
 from .playback import AudioOutput, Player
 from .screens.corpus import CorpusModel
@@ -37,6 +41,7 @@ from .viewmodel import AppContext, ViewModel, qproperty
 SCREENS: Final = (
     ("status", "Lab", "Status", "user"),
     ("uploads", "Lab", "Uploads", "inbox"),
+    ("measurement", "Record", "Measurement", "dot"),
     ("corpus", "Corpus", "Corpus", "archive"),
     ("journey", "Analysis", "Journey", "clock"),
     ("practice", "Analysis", "Practice", "tag"),
@@ -60,6 +65,7 @@ class AppModel(ViewModel):
     server = qproperty(str, "server", settingsChanged)
     issuer = qproperty(str, "issuer", settingsChanged)
     clientId = qproperty(str, "clientId", settingsChanged)
+    distanceCm = qproperty(int, "distanceCm", settingsChanged)
     settingsSource = qproperty(str, "settingsSource", settingsChanged)
     lockedSettings = qproperty("QVariantList", "lockedSettings", settingsChanged)
     version = qproperty(str, "version", settingsChanged)
@@ -78,7 +84,13 @@ class AppModel(ViewModel):
         open_browser: Callable[[str], object] = webbrowser.open,
         open_url: Callable[[str], object] | None = None,
         fixed_port: bool = False,
+        measurement_backend: AudioBackend | None = None,
+        level_reader: LevelReader | None = None,
+        start_screen: str | None = None,
     ) -> None:
+        """``measurement_backend`` and ``level_reader`` stand in for PortAudio and the
+        platform's level readers (tests, ``--smoke``); by default they are made the first time
+        the measurement screen is shown. ``start_screen`` opens on that screen."""
         tasks = tasks or Tasks()
         session = Session(config, tokens, http)
         context = AppContext(config, session, http, tasks, open_url=open_url or open_browser)
@@ -91,6 +103,13 @@ class AppModel(ViewModel):
         self.spool = SessionStore(config.measurement_dir)
         self.status = StatusModel(context, self.spool)
         self.uploads = UploadsModel(context, self.spool)
+        self.measurement = Controller(
+            context,
+            self.spool,
+            (lambda: measurement_backend) if measurement_backend else _portaudio_backend,
+            (lambda: level_reader) if level_reader else _platform_level_reader,
+            on_saved=self._measurement_saved,
+        )
         self.corpus = CorpusModel(context)
         self.journey = JourneyModel(context, self.open_corpus_with_query)
         self.practice = PracticeModel(context, self.open_corpus_with_query)
@@ -98,6 +117,7 @@ class AppModel(ViewModel):
         self.models: dict[str, ViewModel] = {
             "status": self.status,
             "uploads": self.uploads,
+            "measurement": self.measurement,
             "corpus": self.corpus,
             "journey": self.journey,
             "practice": self.practice,
@@ -107,8 +127,11 @@ class AppModel(ViewModel):
             model.toast.connect(self.toast)
         self.uploads.spoolChanged.connect(self.status.refresh_spool)
         self.uploads.spoolChanged.connect(self._refresh_sidebar)
+        self.measurement.sessionChanged.connect(self._refresh_sidebar)
         context.signInRequired.connect(self._signed_out_elsewhere)
-        start = "corpus" if config.configured and session.signed_in else "status"
+        start = start_screen or ("corpus" if config.configured and session.signed_in else "status")
+        if start not in SCREEN_KEYS:
+            raise ValueError(f"no screen {start!r}")
         self._v.update(
             signedIn=session.signed_in,
             account=self._account_label(),
@@ -139,6 +162,7 @@ class AppModel(ViewModel):
         self._cancel_sign_in.set()
         self.player.shutdown()
         self.referee.shutdown()
+        self.measurement.shutdown()
         self.context.tasks.close()
 
     # -- navigation -------------------------------------------------------------------------
@@ -147,7 +171,12 @@ class AppModel(ViewModel):
     def navigate(self, key: str) -> None:
         if key not in SCREEN_KEYS:
             return
+        previous = self._v["screen"]
         self._set(self.navigationChanged, screen=key, screenIndex=SCREEN_KEYS.index(key))
+        if previous != key:
+            deactivate = getattr(self.models[previous], "deactivate", None)
+            if deactivate is not None:
+                deactivate()
         self._activate(key)
 
     def _activate(self, key: str) -> None:
@@ -161,14 +190,27 @@ class AppModel(ViewModel):
         self.corpus.show_query(query)
         self.navigate("corpus")
 
+    def _measurement_saved(self) -> None:
+        """A measurement session was saved: Uploads shows it, and sends it when signed in."""
+        self.uploads.refresh()
+        if self.session.signed_in and self.context.config.configured:
+            self.uploads.uploadAll()
+
     def _refresh_sidebar(self) -> None:
         pending = self.uploads.pending_count
         failed = self.uploads.failed_count
+        # A session in progress keeps running on another screen: its entry shows it.
+        recording = bool(self.measurement.inSession)
         rows = []
         for key, section, text, icon in SCREENS:
             entry: dict[str, Any] = {"key": key, "section": section, "text": text, "iconName": icon}
             entry["count"] = pending if key == "uploads" and pending else -1
-            entry["status"] = "failing" if key == "uploads" and failed else "none"
+            if key == "uploads" and failed:
+                entry["status"] = "failing"
+            elif key == "measurement" and recording:
+                entry["status"] = "held"
+            else:
+                entry["status"] = "none"
             rows.append(entry)
         self._set(self.sidebarChanged, sidebar=rows)
 
@@ -256,18 +298,25 @@ class AppModel(ViewModel):
             server=config.server_url,
             issuer=config.issuer,
             clientId=config.client_id,
+            distanceCm=config.distance_cm,
             settingsSource=config.source,
             lockedSettings=list(config.env_keys),
         )
 
-    @Slot(str, str, str, result=bool)
-    def saveSettings(self, server: str, issuer: str, client_id: str) -> bool:  # noqa: N802
+    @Slot(str, str, str, int, result=bool)
+    def saveSettings(  # noqa: N802
+        self, server: str, issuer: str, client_id: str, distance_cm: int = -1
+    ) -> bool:
+        """The Settings dialog's Save; ``distance_cm`` -1 leaves the mouth distance as it is
+        (the measurement chain's; the measurement screen shows it)."""
         config = self.context.config
-        wanted = {
+        wanted: dict[str, Any] = {
             "server_url": server.strip(),
             "issuer": issuer.strip(),
             "client_id": client_id.strip(),
         }
+        if distance_cm != -1:
+            wanted["distance_cm"] = int(distance_cm)
         changes = {k: v for k, v in wanted.items() if k not in config.env_keys}
         try:
             saved = save_settings(config, changes)
@@ -302,6 +351,18 @@ class AppModel(ViewModel):
 
 def keyring_store(config: Config) -> TokenStore:
     return KeyringStore(config.issuer, config.client_id)
+
+
+def _portaudio_backend() -> AudioBackend:
+    from .measurement.devices import PortAudioBackend
+
+    return PortAudioBackend()
+
+
+def _platform_level_reader() -> LevelReader:
+    from .measurement.levels import PlatformLevelReader
+
+    return PlatformLevelReader()
 
 
 __all__ = ["SCREENS", "AppModel", "keyring_store"]
