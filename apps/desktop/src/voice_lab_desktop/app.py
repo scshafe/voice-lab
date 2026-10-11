@@ -49,6 +49,9 @@ class AppModel(ViewModel):
     accountChanged = Signal()
     settingsChanged = Signal()
     navigationChanged = Signal()
+    # Its own signal: re-reading the sidebar on every navigation would reset the list's
+    # model, and SuiSidebarList then mislabels a section header (PHASE-4-LOG.md).
+    sidebarChanged = Signal()
 
     signedIn = qproperty(bool, "signedIn", accountChanged)
     account = qproperty(str, "account", accountChanged)
@@ -62,7 +65,7 @@ class AppModel(ViewModel):
     version = qproperty(str, "version", settingsChanged)
     screen = qproperty(str, "screen", navigationChanged)
     screenIndex = qproperty(int, "screenIndex", navigationChanged)
-    sidebar = qproperty("QVariantList", "sidebar", navigationChanged)
+    sidebar = qproperty("QVariantList", "sidebar", sidebarChanged)
 
     def __init__(
         self,
@@ -167,7 +170,7 @@ class AppModel(ViewModel):
             entry["count"] = pending if key == "uploads" and pending else -1
             entry["status"] = "failing" if key == "uploads" and failed else "none"
             rows.append(entry)
-        self._set(self.navigationChanged, sidebar=rows)
+        self._set(self.sidebarChanged, sidebar=rows)
 
     # -- account ----------------------------------------------------------------------------
 

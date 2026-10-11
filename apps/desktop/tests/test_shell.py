@@ -32,11 +32,23 @@ def test_sidebar_reaches_every_screen(qtbot: Any, window: Any) -> None:
     assert [entry["key"] for entry in sidebar] == [key for key, *_ in SCREENS]
     assert {entry["text"] for entry in sidebar} >= {"Corpus", "Journey", "Practice", "Referee"}
     stack = window.find("screens")
+    sidebar_list = window.find("sidebarList")
+    resets: list[int] = []
+    window.model.sidebarChanged.connect(lambda: resets.append(1))
     for index, entry in enumerate(sidebar):
-        window.find("sidebarList").activated.emit(index)
+        sidebar_list.activated.emit(index)
         key = entry["key"]
         qtbot.waitUntil(lambda key=key: window.model.screen == key)
         assert stack.property("currentIndex") == index
+        assert sidebar_list.property("selectedIndex") == index
+    # Navigating never replaces the sidebar's entries (a model reset mislabels its headers).
+    assert resets == []
+    shown = sorted(
+        (item.y(), item.property("text"))
+        for item in window.items("sectionHeader", sidebar_list)
+        if item.isVisible()
+    )
+    assert [text for _y, text in shown] == ["Lab", "Corpus", "Analysis", "Referee"]
 
 
 @pytest.mark.checklist("A-03")
@@ -67,3 +79,39 @@ def test_toasts_carry_the_spa_messages(qtbot: Any, window: Any) -> None:
     # A toast is dismissed on request, as the SPA's tray dismissed one on a click.
     window.items("closeButton", toasts)[0].clicked.emit()
     qtbot.waitUntil(lambda: toasts.property("count") == 3)
+
+
+@pytest.mark.checklist("A-07")
+def test_click_throughs_replace_deep_links(qtbot: Any, window: Any) -> None:
+    from synthetic import CLUSTERS
+
+    model = window.model
+    corpus = model.corpus
+    first, second = list(CLUSTERS)
+
+    def filtered_to(cluster: str) -> bool:
+        rows = corpus.rows.rows
+        return (
+            model.screen == "corpus"
+            and corpus.searchText == cluster
+            and corpus.state == "loaded"
+            and not corpus.loading
+            and bool(rows)
+            and all(cluster == row.get("lyricMatchCluster") for row in rows)
+        )
+
+    # The Journey's song links (scorecards, threads) open the Corpus on that song ...
+    model.navigate("journey")
+    qtbot.waitUntil(lambda: model.journey.state == "loaded", timeout=10000)
+    model.journey.selectSubject("threads")
+    model.journey.openCluster(first)
+    qtbot.waitUntil(lambda: filtered_to(first), timeout=10000)
+    # ... and the Journey keeps the tab it was on (the SPA's ?subject=).
+    model.navigate("journey")
+    qtbot.waitUntil(lambda: model.journey.state == "loaded", timeout=10000)
+    assert model.journey.subject == "threads"
+    # The Practice's due and frontier songs do the same.
+    model.navigate("practice")
+    qtbot.waitUntil(lambda: model.practice.state == "loaded", timeout=10000)
+    model.practice.openCluster(second)
+    qtbot.waitUntil(lambda: filtered_to(second), timeout=10000)
