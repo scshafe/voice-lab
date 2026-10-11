@@ -1,37 +1,40 @@
-"""The corpus browser's HTTP surface: ``/api/v1`` resources and voice-journey's old paths.
+"""The corpus browser's HTTP surface: the ``/api/v1`` resources.
 
 @canonical api.journey_routes -- the routes of voice-journey's ``corpus-browser.mjs``,
 served by the API (an ``api.routing`` route of ``ApiServer``), over the data layer in
 ``journey/browser.py``:
 
-=======================================  ==========================================  ===
-``/api/v1`` (strict envelopes)            voice-journey path (the JS's exact JSON)    m
-=======================================  ==========================================  ===
-``/api/v1/recordings``                    ``/api/rows``                               GET
-``/api/v1/recordings/{id}``               ``/api/row/{id}``                           GET
-``/api/v1/recordings/{id}/audio``         ``/api/audio/{id}`` (HTTP ``Range``)        GET
-``/api/v1/recordings/{id}/transcript``    ``/api/transcript/{id}``                    GET
-``/api/v1/recordings/{id}/features``      ``/api/feature-detail/{id}``                GET
-``/api/v1/review/queue``                  ``/api/review-queue``                       GET
-``/api/v1/review/verdicts``               ``/api/verdicts``                           POST
-``/api/v1/summary``                       ``/api/summary``                            GET
-``/api/v1/trends``                        ``/api/trends``                             GET
-``/api/v1/journeys``                      ``/api/journeys``                           GET
-``/api/v1/coach``                         ``/api/coach``                              GET
-``/api/v1/goals``                         ``/api/goals``                              GET
-``/api/v1/goals``                         ``/api/goals``                              POST
-``/api/v1/goals/{id}/abandon``            ``/api/goals/abandon`` (``goalId`` body)    POST
-``/api/v1/referee/next``                  ``/api/referee/next``                       GET
-``/api/v1/referee/verdicts``              ``/api/referee/verdicts``                   POST
-``/api/v1/referee/results``               ``/api/referee/results``                    GET
-``/api/v1/watch``                         ``/api/watch/status``                       GET
-=======================================  ==========================================  ===
+=======================================  ====  =============================================
+``/api/v1`` (strict envelopes)            m     was (voice-journey, removed in phase 4)
+=======================================  ====  =============================================
+``/api/v1/recordings``                    GET   ``/api/rows``
+``/api/v1/recordings/{id}``               GET   ``/api/row/{id}``
+``/api/v1/recordings/{id}/audio``         GET   ``/api/audio/{id}`` (HTTP ``Range``)
+``/api/v1/recordings/{id}/transcript``    GET   ``/api/transcript/{id}``
+``/api/v1/recordings/{id}/features``      GET   ``/api/feature-detail/{id}``
+``/api/v1/review/queue``                  GET   ``/api/review-queue``
+``/api/v1/review/verdicts``               POST  ``/api/verdicts``
+``/api/v1/summary``                       GET   ``/api/summary``
+``/api/v1/trends``                        GET   ``/api/trends``
+``/api/v1/journeys``                      GET   ``/api/journeys``
+``/api/v1/coach``                         GET   ``/api/coach``
+``/api/v1/goals``                         GET   ``/api/goals``
+``/api/v1/goals``                         POST  ``/api/goals``
+``/api/v1/goals/{id}/abandon``            POST  ``/api/goals/abandon`` (``goalId`` body)
+``/api/v1/referee/next``                  GET   ``/api/referee/next``
+``/api/v1/referee/verdicts``              POST  ``/api/referee/verdicts``
+``/api/v1/referee/results``               GET   ``/api/referee/results``
+``/api/v1/watch``                         GET   ``/api/watch/status``
+=======================================  ====  =============================================
 
-The voice-journey paths answer during phase 3 only (design §3.4), as thin aliases of the
-same handlers, with the JS's status codes and JSON (``JSON.stringify(p, null, 2)``)
-including its ``{"error": ...}`` refusals. The SPA's page routes (``/``, ``/journey``,
-``/referee``, ``/practice``, ``/report``, ``/assets/*``) are not served from the PC
-(D-035): they answer ``308`` to ``/view/``.
+voice-journey's own paths answered during phase 3 only (design §3.4), as thin aliases for
+the React SPA and the old capture client; phase 4 removed them, and an unknown ``/api/`` path
+answers the server's refusal (``ApiRefusal``). The SPA's page routes (``/``, ``/journey``,
+``/referee``, ``/practice``, ``/report``, ``/assets/*``) were never served from the PC
+(D-035): they answer ``308`` to ``/view/``, and they stay. The cutover's bookmark redirect
+(D-032: ``voice-journey.<tailnet>/<path>`` → ``voice-lab.<tailnet>/<path>`` for 90 days)
+forwards an old bookmark to these paths, so it lands on the web view, until runbook I
+removes that redirect.
 
 **Auth (the defence-in-depth change).** The JS trusted the door's forwarded identity
 headers and checked nothing itself. Every ``/api/`` route here is behind the API's own
@@ -41,16 +44,9 @@ bearer verification (issuer, audience, lifetime, signature, the one allowed subj
 
 **Gates.** Without ``serve --journey`` the routes answer ``503 journey_unavailable``.
 Playback (audio and the blind referee) needs ``--playback-approval`` (design §4.2), local
-transcript text a transcript directory, feature detail a feature directory. The
-``/api/v1`` referee refuses without the approval (``403 playback_not_approved``); the
-old paths keep the JS's answers (``next`` says ``enabled: false``, verdicts are
-accepted). Every write goes to the state directory (``JourneyStore``).
-
-Differences on the old paths: a body that is not JSON is ``400 {"error":
-"invalid_json"}`` (the JS answered 500 with the parser's message); a recording whose
-file is missing is ``404 {"error": "audio_not_found"}`` (500 in the JS); the
-``corpus_access_denied`` hint names the PC's drop, not macOS's Full Disk Access; an
-unknown ``/api/`` path or method answers the server's refusal (``ApiRefusal``).
+transcript text a transcript directory, feature detail a feature directory; the referee
+refuses without the approval (``403 playback_not_approved``). Every write goes to the state
+directory (``JourneyStore``).
 """
 
 from __future__ import annotations
@@ -68,11 +64,9 @@ from pydantic import BaseModel, ValidationError
 from ..canonical import canonical_json_bytes
 from ..journey import jscompat as js
 from ..journey.browser import (
-    ALLOWED_VERDICTS,
     DEFAULT_QUEUE_SIZE,
     DEFAULT_REFEREE_SEED,
     JOURNEYS_UNAVAILABLE,
-    REFEREE_CHOICES,
     TRENDS_UNAVAILABLE,
     AudioHandle,
     BrowserError,
@@ -87,17 +81,15 @@ from ..journey.browser import (
     open_recording_audio,
     paginate_rows,
     parse_range,
-    playback_summary,
     project_rows,
     query_rows,
     review_queue_rows,
     summarize_rows,
     summary_payload,
     transcript_path,
-    transcript_text_summary,
 )
 from ..journey.goals import GoalError
-from ..journey.jsonio import MISSING, parse_json, read_json, read_text, stringify
+from ..journey.jsonio import MISSING, read_json, read_text
 from ..journey.paths import assert_bind_allowed, resolve_paths
 from .contracts import ApiErrorCode
 from .journey_contracts import (
@@ -142,37 +134,10 @@ _V1_RECORDING = re.compile(
     r"/api/v1/recordings/(?P<id>[^/]+)(?:/(?P<part>audio|transcript|features))?"
 )
 _V1_ABANDON = re.compile(r"/api/v1/goals/(?P<id>[^/]+)/abandon")
-_ALIAS_PREFIXES: Final = ("/api/row/", "/api/audio/", "/api/transcript/", "/api/feature-detail/")
-_ALIAS_PATHS: Final = frozenset(
-    {
-        "/api/rows",
-        "/api/review-queue",
-        "/api/verdicts",
-        "/api/summary",
-        "/api/trends",
-        "/api/journeys",
-        "/api/coach",
-        "/api/goals",
-        "/api/goals/abandon",
-        "/api/referee/next",
-        "/api/referee/verdicts",
-        "/api/referee/results",
-        "/api/watch/status",
-    }
-)
 ACCESS_DENIED_HINT: Final = (
     "The service cannot read the corpus root. Check that the API can read the phone "
     "drop (its owner, mode and the read-only mount), then retry."
 )
-
-
-class _JsAnswer(Exception):
-    """An old-path answer the JS gave as ``sendJson(status, payload)``."""
-
-    def __init__(self, status: int, payload: Json) -> None:
-        super().__init__(payload.get("error", "answer"))
-        self.status = status
-        self.payload = payload
 
 
 def _refuse(status: int, code: ApiErrorCode, detail: str) -> NoReturn:
@@ -188,17 +153,6 @@ def _plain(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return [None if item is MISSING else _plain(item) for item in value]
     return None if value is MISSING else value
-
-
-def _js(
-    status: int, route: str, payload: Any, headers: tuple[tuple[str, str], ...] = ()
-) -> RouteResponse:
-    return RouteResponse(
-        status=status,
-        route=route,
-        body=(stringify(payload) + "\n").encode("utf-8"),
-        headers=headers,
-    )
 
 
 def _model(status: int, route: str, model: BaseModel) -> RouteResponse:
@@ -238,8 +192,8 @@ def _totals(totals: Mapping[str, Any]) -> RowTotals:
 
 @dataclass(frozen=True, slots=True)
 class _Local:
-    """One recording's local file, located and gated (shared by both path families):
-    ``payload`` (the JS's answer), or the JS's ``status`` and ``error``."""
+    """One recording's local file, located and gated: its ``payload``, or the ``status``
+    and ``error`` that refuse it."""
 
     status: int
     error: str
@@ -251,7 +205,6 @@ class _Local:
 
 
 _V1_CODES: Final[dict[str, ApiErrorCode]] = {
-    "recording_not_indexed": "recording_not_found",
     "transcript_dir_not_configured": "transcript_dir_not_configured",
     "transcript_not_available": "transcript_not_available",
     "invalid_transcript_path": "invalid_transcript_path",
@@ -311,8 +264,6 @@ class JourneyRoutes:
             if handler is None:
                 return None
             return handler(self._require_store(), request)
-        if path in _ALIAS_PATHS or path.startswith(_ALIAS_PREFIXES):
-            return self._alias(request)
         return None
 
     def _require_store(self) -> JourneyStore:
@@ -335,15 +286,6 @@ class JourneyRoutes:
             _refuse(405, "method_not_allowed", f"this route answers {', '.join(methods)}")
         return handler
 
-    def _alias(self, request: RouteRequest) -> RouteResponse:
-        store = self._require_store()
-        try:
-            return _alias_dispatch(store, request)
-        except _JsAnswer as answer:
-            return _js(answer.status, "journey.alias", answer.payload)
-        except BrowserError as error:
-            return _js(error.status_code, "journey.alias", {"error": str(error)})
-
 
 # ---- shared handlers ------------------------------------------------------------------
 
@@ -352,11 +294,8 @@ def _row_or_none(served: ServeState, recording: str) -> Json | None:
     return served.rows_by_id.get(recording)
 
 
-def _transcript(store: JourneyStore, served: ServeState, recording: str) -> _Local:
-    row = _row_or_none(served, recording)
+def _transcript(store: JourneyStore, row: Json, recording: str) -> _Local:
     config = store.config
-    if row is None:
-        return _Local(404, "recording_not_indexed")
     if config.transcript_dir is None:
         return _Local(403, "transcript_dir_not_configured")
     if row.get("transcriptStatus") != "completed" or not js.truthy(
@@ -389,11 +328,8 @@ def _transcript(store: JourneyStore, served: ServeState, recording: str) -> _Loc
     )
 
 
-def _feature_detail(store: JourneyStore, served: ServeState, recording: str) -> _Local:
-    row = _row_or_none(served, recording)
+def _feature_detail(store: JourneyStore, row: Json, recording: str) -> _Local:
     config = store.config
-    if row is None:
-        return _Local(404, "recording_not_indexed")
     if config.feature_dir is None:
         return _Local(403, "feature_dir_not_configured")
     path = feature_detail_path(config.feature_dir, recording)
@@ -533,9 +469,9 @@ def _v1_recording(store: JourneyStore, request: RouteRequest) -> RouteResponse:
         return _v1_audio(store, request, row)
     if part in {"transcript", "features"}:
         local = (
-            _transcript(store, served, recording)
+            _transcript(store, row, recording)
             if part == "transcript"
-            else _feature_detail(store, served, recording)
+            else _feature_detail(store, row, recording)
         )
         if local.payload is None:
             _refuse(local.status, local.code, f"the {part} of that recording is not available")
@@ -819,203 +755,6 @@ _V1_ROUTES: Final[dict[str, dict[str, _Handler]]] = {
     "/api/v1/referee/results": {"GET": _v1_referee_results},
     "/api/v1/watch": {"GET": _v1_watch},
 }
-
-
-# ---- voice-journey's paths (phase 3) --------------------------------------------------
-
-
-def _alias_body(request: RouteRequest) -> Any:
-    if request.content_length is not None and request.content_length > MAX_BODY_BYTES:
-        raise _JsAnswer(413, {"error": "request_too_large"})
-    text = request.read_body(MAX_BODY_BYTES).decode("utf-8", errors="replace")
-    try:
-        return parse_json(text or "{}")
-    except ValueError as error:
-        raise _JsAnswer(400, {"error": "invalid_json"}) from error
-
-
-def _alias_id(path: str, prefix: str) -> str:
-    try:
-        return _decode_component(path.removeprefix(prefix))
-    except ValueError as error:
-        raise _JsAnswer(500, {"error": "URI malformed"}) from error
-
-
-def _alias_dispatch(store: JourneyStore, request: RouteRequest) -> RouteResponse:
-    path, method = request.path, request.method
-    route = "journey.alias"
-    get, post = method == "GET", method == "POST"
-    if get and path == "/api/trends":
-        return _js(200, route, store.current().voice_trends or TRENDS_UNAVAILABLE)
-    if get and path == "/api/journeys":
-        return _js(200, route, store.current().song_journeys or JOURNEYS_UNAVAILABLE)
-    if get and path == "/api/referee/next":
-        return _js(200, route, _alias_referee_next(store))
-    if post and path == "/api/referee/verdicts":
-        return _js(200, route, _alias_referee_verdict(store, _alias_body(request)))
-    if get and path == "/api/referee/results":
-        fit = store.referee_fit()
-        pool = len(store.current().referee_pool)
-        return _js(200, route, {"enabled": store.config.playback_enabled, "poolSize": pool, **fit})
-    if get and path == "/api/rows":
-        return _js(200, route, _alias_rows(store, request.query))
-    if get and path.startswith("/api/row/"):
-        recording = _alias_id(path, "/api/row/")
-        served = store.current()
-        row = _row_or_none(served, recording)
-        if row is None:
-            raise _JsAnswer(404, {"error": "row_not_found"})
-        return _js(200, route, {"schemaVersion": served.rows_payload["schemaVersion"], "row": row})
-    if get and path == "/api/review-queue":
-        served = store.current()
-        strategy = served.rows_payload["reviewQueue"]["strategy"]
-        return _js(200, route, {"strategy": strategy, "rows": review_queue_rows(served)})
-    if get and path == "/api/summary":
-        return _js(200, route, summary_payload(store.current(), store.config))
-    if get and path == "/api/goals":
-        return _js(200, route, store.goals())
-    if post and path == "/api/goals":
-        body = _alias_body(request)
-        try:
-            goal = store.create_goal(body)
-        except GoalError as error:
-            raise _JsAnswer(error.status_code, {"error": str(error)}) from error
-        return _js(200, route, {"ok": True, "goal": goal})
-    if post and path == "/api/goals/abandon":
-        body = _alias_body(request)
-        goal_id = js.to_string(js.coalesce(js.get(body, "goalId"), ""))
-        if store.abandon_goal(goal_id) is None:
-            raise _JsAnswer(404, {"error": "goal_not_found"})
-        return _js(200, route, {"ok": True})
-    if get and path == "/api/coach":
-        return _js(200, route, coach_payload(store.current()))
-    if get and path == "/api/watch/status":
-        return _js(200, route, store.watch_status())
-    if get and path.startswith("/api/audio/"):
-        return _alias_audio(store, request, _alias_id(path, "/api/audio/"))
-    if get and path.startswith("/api/transcript/"):
-        recording = _alias_id(path, "/api/transcript/")
-        return _alias_local(_transcript(store, store.current(), recording), recording)
-    if get and path.startswith("/api/feature-detail/"):
-        recording = _alias_id(path, "/api/feature-detail/")
-        return _alias_local(_feature_detail(store, store.current(), recording), recording)
-    if post and path == "/api/verdicts":
-        return _js(200, route, _alias_verdict(store, _alias_body(request)))
-    if not (get or post):
-        raise _JsAnswer(405, {"error": "method_not_allowed"})
-    raise _JsAnswer(404, {"error": "not_found"})
-
-
-def _alias_rows(store: JourneyStore, query: str) -> Json:
-    served = store.current()
-    payload = served.rows_payload
-    params = _params(query)
-    filtered = query_rows(payload["rows"], params)
-    page_rows, page = paginate_rows(filtered, params)
-    rows = project_rows(page_rows, next((value for key, value in params if key == "fields"), None))
-    return {
-        **payload,
-        "playback": playback_summary(store.config.playback_enabled),
-        "transcriptText": transcript_text_summary(store.config.transcript_dir is not None),
-        "totals": summarize_rows(filtered),
-        **({"page": page} if page is not None else {}),
-        "rows": rows,
-    }
-
-
-def _alias_local(local: _Local, recording: str) -> RouteResponse:
-    if local.payload is not None:
-        return _js(200, "journey.alias", local.payload)
-    if local.error == "recording_not_indexed":
-        return _js(local.status, "journey.alias", {"error": local.error})
-    return _js(local.status, "journey.alias", {"error": local.error, "recordingId": recording})
-
-
-def _alias_audio(store: JourneyStore, request: RouteRequest, recording: str) -> RouteResponse:
-    row = _row_or_none(store.current(), recording)
-    if row is None:
-        raise _JsAnswer(404, {"error": "recording_not_indexed"})
-    if not store.config.playback_enabled:
-        raise _JsAnswer(
-            403, {"error": "playback_requires_release_gate_approval", "recordingId": recording}
-        )
-    try:
-        audio = _open_audio(store, row)
-    except CorpusAccessDenied as error:
-        raise _JsAnswer(
-            503,
-            {"error": "corpus_access_denied", "recordingId": recording, "hint": ACCESS_DENIED_HINT},
-        ) from error
-    except SeamMismatch as error:
-        raise _JsAnswer(409, {"error": "seam_handle_mismatch", "recordingId": recording}) from error
-    except FileNotFoundError as error:
-        raise _JsAnswer(404, {"error": "audio_not_found", "recordingId": recording}) from error
-    return _audio_response("journey.alias", audio, request.header("Range"))
-
-
-def _alias_referee_next(store: JourneyStore) -> Json:
-    if not store.config.playback_enabled:
-        return {
-            "enabled": False,
-            "reason": "playback_requires_release_gate_approval",
-            "poolSize": len(store.current().referee_pool),
-        }
-    judged, pool_size, pair = store.referee_next()
-
-    def side(recording: Any, gain: Any) -> Json:
-        return {"audioUrl": f"/api/audio/{_encode_component(recording)}", "gainDb": gain}
-
-    return {
-        "enabled": True,
-        "progress": {"judged": judged, "poolSize": pool_size},
-        "pair": None
-        if pair is None
-        else {
-            "pairId": pair["pairId"],
-            "a": side(pair["aId"], js.coalesce(pair.get("aGainDb", MISSING), 0)),
-            "b": side(pair["bId"], js.coalesce(pair.get("bGainDb", MISSING), 0)),
-        },
-    }
-
-
-def _alias_referee_verdict(store: JourneyStore, body: Any) -> Json:
-    pair = store.find_pair(js.to_string(js.coalesce(js.get(body, "pairId"), "")))
-    if pair is None:
-        raise _JsAnswer(404, {"error": "pair_not_found"})
-    choice = js.to_string(js.coalesce(js.get(body, "choice"), ""))
-    if choice not in REFEREE_CHOICES:
-        raise _JsAnswer(400, {"error": "invalid_choice"})
-    _, judged = store.record_judgment(pair, choice, js.get(body, "judgedAt"))
-    return {
-        "ok": True,
-        "reveal": {
-            "aYear": pair["aYear"],
-            "bYear": pair["bYear"],
-            "aCapturedAt": pair["aCapturedAt"],
-            "bCapturedAt": pair["bCapturedAt"],
-            "clusterId": pair["clusterId"],
-            "clusterLabel": pair["clusterLabel"],
-        },
-        "progress": {"judged": judged, "poolSize": len(store.current().referee_pool)},
-    }
-
-
-def _alias_verdict(store: JourneyStore, body: Any) -> Json:
-    recording = js.to_string(js.coalesce(js.get(body, "recordingId"), ""))
-    verdict_name = js.to_string(js.coalesce(js.get(body, "verdict"), ""))
-    if recording not in store.current().rows_by_id:
-        raise _JsAnswer(404, {"error": "recording_not_indexed"})
-    if verdict_name not in ALLOWED_VERDICTS:
-        raise _JsAnswer(400, {"error": "invalid_verdict"})
-    verdict = make_verdict(
-        recording,
-        verdict_name,
-        note=js.get(body, "note"),
-        reviewed_by=js.get(body, "reviewedBy"),
-        reviewed_at=js.get(body, "reviewedAt"),
-    )
-    totals = store.record_verdict(verdict)
-    return {"ok": True, "verdict": verdict, "totals": totals}
 
 
 # ---- configuration (serve) ------------------------------------------------------------

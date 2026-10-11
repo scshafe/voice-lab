@@ -398,3 +398,21 @@ def test_the_module_runs_as_a_command(tmp_path: Path) -> None:
     )
     assert (result.returncode, result.stdout) == (1, "")
     assert result.stderr == "error: unsupported argument: --bogus\n"
+
+
+def test_index_rows_built_from_a_measurement_entry_carry_their_source() -> None:
+    entry = {
+        "recordingId": "r1",
+        "filename": "s-1/01-x.wav",
+        "capturedAt": "2026-10-03T10:15:00.000Z",
+        "sizeBytes": 5,
+        "modifiedAt": "2026-10-03T10:30:00.000Z",
+        "source": {
+            "type": "measurement",
+            "chainId": "umik1",
+            "sessionId": "s-1",
+            "segmentKey": "x",
+        },
+    }
+    manifest = index.build_manifest([entry], {"generatedAt": "2026-10-03T00:00:00.000Z"})
+    assert manifest["recordings"][0]["source"]["type"] == "measurement"

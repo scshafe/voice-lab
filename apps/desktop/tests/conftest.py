@@ -1,5 +1,5 @@
-"""Shared fixtures: offscreen Qt, temp homes, the fake Pocket ID and intake, a simulated
-UMIK-1, and a real /api/v1 server over synthetic manifests.
+"""Shared fixtures: offscreen Qt, temp homes, the fake Pocket ID, a quiet stand-in server, a
+simulated UMIK-1, and a real /api/v1 server over synthetic manifests.
 
 Nothing here needs a microphone, a speaker, the network or the real server. The app's
 sources and the backend's test fixtures (``tests/home_host_fixtures.py``,
@@ -38,7 +38,7 @@ for _var in (
     os.environ.pop(_var, None)
 
 import pytest  # noqa: E402
-from fakes import FakeIntake, FakeIssuer, fake_jwt  # noqa: E402
+from fakes import FakeIssuer, QuietServer, fake_jwt  # noqa: E402
 from voice_lab_desktop.config import Config  # noqa: E402
 from voice_lab_desktop.measurement.pin import StateStore  # noqa: E402
 from voice_lab_desktop.measurement.simulated import (  # noqa: E402
@@ -79,24 +79,25 @@ def measurement_dir(data_dir: Path) -> Path:
 
 
 @pytest.fixture
-def intake(tmp_path: Path) -> Iterator[FakeIntake]:
-    fake = FakeIntake(tmp_path / "server").start()
+def server() -> Iterator[QuietServer]:
+    """The settings' server where a test needs one: it answers nothing and records what it
+    was asked."""
+    fake = QuietServer().start()
     yield fake
     fake.stop()
 
 
 @pytest.fixture
-def issuer(intake: FakeIntake) -> Iterator[FakeIssuer]:
+def issuer() -> Iterator[FakeIssuer]:
     fake = FakeIssuer(client_id="voice-lab-desktop").start()
-    fake.on_access_token = intake.valid_tokens.add  # what the issuer mints, the door accepts
     yield fake
     fake.stop()
 
 
 @pytest.fixture
-def config(intake: FakeIntake, issuer: FakeIssuer, data_dir: Path, tmp_path: Path) -> Config:
+def config(server: QuietServer, issuer: FakeIssuer, data_dir: Path, tmp_path: Path) -> Config:
     return Config(
-        server_url=intake.url,
+        server_url=server.url,
         issuer=issuer.issuer,
         client_id="voice-lab-desktop",
         data_dir=data_dir,
@@ -105,7 +106,8 @@ def config(intake: FakeIntake, issuer: FakeIssuer, data_dir: Path, tmp_path: Pat
 
 
 def mint(issuer: FakeIssuer, *, expires_in: float = 3600, refresh: bool = True) -> Tokens:
-    """Tokens as if a sign-in had happened (the access token is valid at the fake door)."""
+    """Tokens as if a sign-in had happened (the issuer's ``on_access_token`` hears the
+    access token)."""
     now = time.time()
     claims = {
         "iss": issuer.issuer,

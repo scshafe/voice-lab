@@ -1,8 +1,8 @@
 """Uploading measurement sessions to the home host through ``/api/v1/intake`` (phase 4b).
 
 A completed session (``session.json`` and its WAVs, as the ritual wrote them) becomes the
-voice-lab capture package ``journey.measurement_package`` defines, the same package the
-server's compatibility path built in phase 3, in ``<measurement>/packages/vj-<id>/``. It is
+voice-lab capture package ``journey.measurement_package`` defines (the same package phase
+3's compatibility path built on the server), in ``<measurement>/packages/vj-<id>/``. It is
 built once and rebuilt to the same bytes, so a retried upload names the same manifest
 digest. ``intake_client.upload_session`` then does what D-021 asks of every upload to the
 home host: it validates the package with the strict validator, loads the standing
@@ -170,7 +170,6 @@ def build_package(local: LocalSession, packages_root: Path) -> Path:
             work,
             subject_id=package.DEFAULT_SUBJECT_ID,
             capture_host=CAPTURE_HOST,
-            move=False,
         )
         validate_capture_package(work)
         os.rename(work, target)

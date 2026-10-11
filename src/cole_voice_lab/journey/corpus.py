@@ -10,9 +10,10 @@ here: it moves with the mirror to ``apps/mirror/``.
 
 Measurement sessions have two sources (design §5.4). voice-journey's own
 ``<root>/<sessionId>/session.json`` directories, as before; and, after the merge, the lab's
-content-addressed ``raw/<manifest sha256>/`` packages that the API's compatibility intake
-(``api/journey_intake.py``) converted and the intake publisher accepted. A ``raw/``
-package counts when its intake receipt names it and its manifest is a measurement
+content-addressed ``raw/<manifest sha256>/`` packages built by
+``journey/measurement_package.py`` (the desktop app; phase 3's compatibility intake) and
+accepted by the intake publisher. A ``raw/`` package counts when its intake receipt names
+it and its manifest is a measurement
 session's (prompt suite ``voice-journey-measurement``, session ``vj-<sessionId>``, device
 ``voice-journey-chain:<chainId>``); its entries are the ones the old source gave for the
 same session (same ``recordingId``, ``filename`` and ``source``), with ``hostPath`` in
@@ -82,7 +83,7 @@ _RAW_PACKAGE = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_CONTROL_BYTES = 1024 * 1024
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
-# How a measurement session is named in a voice-lab capture package (api/journey_intake.py).
+# How a measurement session is named in a voice-lab capture package (measurement_package.py).
 MEASUREMENT_SUITE_ID = "voice-journey-measurement"
 MEASUREMENT_SESSION_PREFIX = "vj-"
 MEASUREMENT_DEVICE_PREFIX = "voice-journey-chain:"

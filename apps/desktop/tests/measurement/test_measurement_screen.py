@@ -193,7 +193,7 @@ def test_pin_then_start(
 
 
 def test_the_level_moving_while_recording_aborts_the_session(
-    qtbot: Any, ui: Window, levels: Any, sessions: Any, intake: Any
+    qtbot: Any, ui: Window, levels: Any, sessions: Any, server: Any
 ) -> None:
     controller = started(qtbot, ui)
     controller.toggleRecording()
@@ -202,7 +202,7 @@ def test_the_level_moving_while_recording_aborts_the_session(
     qtbot.waitUntil(lambda: controller.phase == "aborted", timeout=10000)
     assert ui.find("abortBanner").property("visible")
     assert "40%" in controller.abortReason
-    assert sessions.pending() == [] and intake.requests == []
+    assert sessions.pending() == [] and server.requests == []  # nothing was sent
 
 
 def test_escape_opens_the_abort_dialog(qtbot: Any, ui: Window) -> None:

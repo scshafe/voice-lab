@@ -315,7 +315,7 @@ def upsert_referee_judgment(state: Json, judgment: Json) -> Json:
 
 
 def read_watch_status(path: Path | str) -> Json:
-    """``GET /api/watch/status`` from the job runner's watch state file.
+    """The job runner's watch status (``GET /api/v1/watch``) from its watch state file.
 
     The watcher no longer runs inside the API (design §5.3): what the API can say is
     what the job runner persisted. Absent (or of another version) it is the JS's

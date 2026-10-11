@@ -8,8 +8,6 @@ tailnet sidecar and the Pocket ID door. Phase 2 serves:
 - ``POST /api/v1/intake/sessions``, ``GET …/{id}``, ``PUT …/{id}/files/{path}`` (the path
   percent-encoded as one segment, with ``Content-Range``), ``POST …/{id}/finalize``,
   ``GET …/{id}/receipt``;
-- phase 3's compatibility path: voice-journey's ``/api/intake/…``, answered by
-  ``journey_intake.JourneyIntake`` in voice-journey's shapes (it checks the bearer itself).
 - whatever its ``routes`` answer (``api/routing.py``): the journey routes
   (``journey_routes.py``, ``serve --journey``), after the bearer check for ``/api/``,
   and the read-only web view under ``/view/`` (``view/routes.py``), which checks the
@@ -50,8 +48,6 @@ from .contracts import (
     IntakeSessionRequest,
     validate_package_path,
 )
-from .journey_intake import PATH_PREFIX as JOURNEY_INTAKE_PREFIX
-from .journey_intake import JourneyIntake
 from .journey_routes import add_arguments as add_journey_arguments
 from .journey_routes import routes_from_options as journey_routes_from_options
 from .routing import Route, RouteRefusal, RouteRequest, RouteResponse
@@ -91,11 +87,9 @@ class ApiServer(ThreadingHTTPServer):
         verifier: TokenVerifier,
         meta: ApiMeta,
         log: bool = True,
-        journey_intake: JourneyIntake | None = None,
         routes: Sequence[Route] = (),
     ) -> None:
         self.staging = staging
-        self.journey_intake = journey_intake
         self.verifier = verifier
         self.meta = meta
         self.log = log
@@ -261,13 +255,6 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._send(200, _Health())
             return
         api = path.startswith("/api/")
-        if (
-            api
-            and path.startswith(JOURNEY_INTAKE_PREFIX)
-            and self.server.journey_intake is not None
-        ):
-            self._journey_intake(self.server.journey_intake, path)
-            return
         if api:
             self._authorize()
         if self._extension(parts.path, parts.query):
@@ -313,23 +300,6 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._put(session_id, member)
         else:
             raise _Refusal(404, "not_found", "no such route")
-
-    def _journey_intake(self, intake: JourneyIntake, path: str) -> None:
-        """Hand a ``/api/intake/…`` request to voice-journey's protocol and send its answer."""
-        self._route = "journey.intake"
-        status, body = intake.handle(self.command, path, self.headers, _Body(self))
-        if self._unread > MAX_CHUNK_BYTES:
-            self.close_connection = True
-        else:
-            self._discard_body()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
-        self._access_log(status)
 
     # -- extensions (api/routing.py) --------------------------------------------------------
 
@@ -462,7 +432,6 @@ def build_server(
             minimum_client_version=config.minimum_client_version,
         ),
         log=log,
-        journey_intake=JourneyIntake(layout, verifier=verifier),
         routes=routes,
     )
 

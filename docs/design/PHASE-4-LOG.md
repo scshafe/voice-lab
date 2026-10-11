@@ -234,6 +234,65 @@ Deviations and open items:
   not. The hosted `ci.yml` fails within seconds on every commit (Actions does not run for
   this private repository); every PR says what was verified locally instead.
 
+### Removal (draft)
+
+Prepared on `phase4/remove-compat` (based on the 4c branch, then `main` after #39), as a draft PR: **not to be
+merged** until all of these hold:
+
+- the owner has signed off [PHASE-4-CHECKLIST.md](PHASE-4-CHECKLIST.md) (owner step 2);
+- the cutover (phase 3's runbook F) is done, so the laptop's voice-journey is no longer the
+  live rollback;
+- 4b is accepted (owner step 7): real measurement sessions from macOS and Linux went through
+  the app, so the standalone capture client (owner step 1) is no longer the rollback;
+- phase 3's runbook E session through the compatibility path is done (draft #31 is gated on
+  it, and that path is what this PR removes).
+
+Merging deploys: the new image stops answering the old paths at once.
+
+What it removes:
+
+- **voice-journey's unversioned paths**, the phase-3 aliases of the journey routes
+  (`/api/rows`, `/api/row/{id}`, `/api/audio/{id}`, `/api/transcript/{id}`,
+  `/api/feature-detail/{id}`, `/api/review-queue`, `/api/verdicts`, `/api/summary`,
+  `/api/trends`, `/api/journeys`, `/api/coach`, `/api/goals`, `/api/goals/abandon`,
+  `/api/referee/*`, `/api/watch/status`) with their JS-shaped answers (`journey_routes.py`):
+  they now answer the server's `404 not_found` (`401` without a bearer, which is checked
+  first);
+- **the compatibility intake** (`/api/intake/…`, `api/journey_intake.py`) and its wiring in
+  `api/server.py`; `journey/measurement_package.py` stays (the app builds its packages with
+  it) and loses the move branch only that path used;
+- **the app's compatibility transport** (`measurement/upload.py`) and its tests, and the test
+  fakes of voice-journey's intake (`FakeIntake`); the settings' server in tests is a quiet
+  recording stand-in, so "nothing was sent" stays checked.
+
+What stays, and why:
+
+- **The SPA's page routes** (`/`, `/journey`, `/referee`, `/practice`, `/report`, `/assets/*`)
+  keep answering `308` to `/view/`: the cutover's bookmark redirect (D-032,
+  `voice-journey.<tailnet>/<path>` → `voice-lab.<tailnet>/<path>`, 90 days) sends old
+  bookmarks there, so they land on the web view until runbook I removes that redirect. (The
+  SPA itself was never served from the PC, D-035.)
+- `capture_console.py`'s local `/api/*` (a loopback console, not voice-journey's API),
+  `--journey` and the `VOICE_JOURNEY_*` settings (they serve `/api/v1` and `/view/`).
+- The intake publisher still skips `incoming/.journey-uploads/` (left on disk by the
+  compatibility path).
+
+Tests: the alias-only cases are gone where an `/api/v1` test already held the same
+behaviour; what only they held moved onto `/api/v1` (rows carry no transcript text and a
+climbing id is refused; a verdict leaves the manifests untouched; the coach's and trends'
+read scopes; blind referee trials and persisted judgments; goal progress; the audio's
+content type and suffix range; HEAD and a client that leaves mid-answer; an oversized body
+answered and the connection closed, refused or not; a file that shrinks mid-answer). A new
+test checks that every old path is gone. The compatibility intake's tests of the package
+mapping moved to `tests/test_journey_measurement_package.py` (refusal codes, layout, the
+package's shape, audio the lab cannot keep, never through a symlink).
+
+For the owner, before merging: the records in `incoming/.journey-uploads/<id>/session.json`
+on the PC (each session's input level, distance and segment labels, which exist nowhere
+else) are read by nothing after this PR. Keep a copy or delete them, as you decide; the PR
+does neither. Measurement packages still say `avfoundation` as their device label (see 4c's
+open items): changing it is not part of this PR.
+
 ## scshafe-qt asks
 
 What voice-lab-desktop needs from scshafe-qt (design §6.4), as the API its stand-ins in
