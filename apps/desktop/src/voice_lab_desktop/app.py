@@ -19,6 +19,7 @@ from typing import Any, Final
 
 import httpx
 from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtQml import QQmlEngine
 
 from . import __version__
 from .auth import AuthError, Session, sign_in
@@ -128,6 +129,10 @@ class AppModel(ViewModel):
         self.prompts = PromptsModel(
             context, recorder_factory=recorder_factory or default_recorder, store=self.prompted
         )
+        # QML reads it through a property (promptsModel): a parentless QObject handed to QML
+        # that way is JavaScript-owned, and QML's garbage collector would delete it under the
+        # running screen. The app owns it.
+        QQmlEngine.setObjectOwnership(self.prompts, QQmlEngine.ObjectOwnership.CppOwnership)
         self.measurement = Controller(
             context,
             self.spool,
