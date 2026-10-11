@@ -979,3 +979,118 @@ The referee's matched playback keeps the SPA's two measures: the server's per-si
 (`gain_db`) and a low-pass at 8 kHz. The SPA's low-pass was a WebAudio biquad; the app's
 removes everything above 8 kHz (an FFT brick wall), a stricter band limit for the same
 purpose: a 2019 phone take and a 2026 take stop telegraphing their year through the chain.
+
+## D-039 — The desktop app's PortAudio capture worker and its continuity evidence
+
+Recorded 2026-10-11 (phase 4c; design §6.2, spike S-1). voice-lab-desktop records prompted
+takes through a capture worker in its own process, one process per take
+(`voice-lab-desktop --capture-worker`; in a frozen bundle the same executable). It opens the
+UMIK-1 only (`measurement.devices.choose_umik`) through PortAudio: Core Audio on macOS, with
+PortAudio told to fail rather than convert; ALSA `hw:` (or PipeWire's JACK at 48 kHz) on
+Linux; mono, 48 kHz, 24-bit, a fixed block of 1,024 frames. The callback only copies a block
+and its timing into a bounded queue; a writer thread writes the WAV (stdlib `wave`, s24le)
+and reports each written block on stdout, which the screen turns into elapsed time
+(D-014).
+
+**The continuity rule.** PortAudio exposes no device sample counter like Audio Queue's
+`mSampleTime`; the closest is each block's `inputBufferAdcTime`. Every block must carry a
+finite, positive ADC time, and each block's must equal the previous block's plus its frames
+at 48 kHz within a declared tolerance (default 64 frames, 1.3 ms; a lost buffer moves it by a
+whole block). An input overflow or underflow, a missing ADC time, a deviation beyond the
+tolerance or a full writer queue fails the take: capture stops, the partial is kept, and no
+sample is inserted or dropped. The tolerance is a spike parameter: the evidence records the
+largest deviation seen, so S-1's result can be judged against it (D-040).
+
+**The evidence.** The worker writes `voice-lab-desktop.portaudio-continuity/v1` on success
+and on failure: mode 0600, one link, at most 16 KiB, bound to the partial's name, SHA-256,
+size and frame count, with the host API, the device, the block size, the tolerance, the
+largest deviation, the overflow and underflow counts and the queue's high-water mark. The
+parent validates it, inspects the WAV (`inspect_canonical_wav`) and checks the reported frames
+against the file before `original.wav` exists; anything missing, malformed, unsuccessful or
+mismatched fails closed and keeps both files. The evidence never leaves the capturing machine.
+
+This is not D-015's `capture-continuity/v1`: that contract, its `coreaudio-audioqueue`
+backend and the Swift app's worker are unchanged, and PortAudio never writes it. Packages
+built from these takes say so: `CaptureDevice.backend` gains `"portaudio"` (an added enum
+value; native recording groups still require `"coreaudio"`). Until S-1 passes on a platform
+(D-040), the Swift app stays the macOS prompted-capture path and nothing about D-015 is
+relaxed (D-025).
+
+## D-040 — The S-1 harness, and what "S-1 passes" means
+
+Recorded 2026-10-11 (phase 4c). `scripts/s1-portaudio` runs the worker of D-039 on this
+machine's UMIK-1: cold starts, warm takes, long takes, stopped and maximum-duration takes. For
+each take it keeps the WAV, the evidence, a per-block timing trace and an independent
+re-validation from disk. It writes a benchmark report whose rows are computed by the existing
+latency benchmark's own rules (`tests/recording_latency_benchmark.py`; rows it does not
+measure say `not-measured`), a verification root, runs `scripts/recording_acceptance_matrix.py`
+over them, and writes `s1-report.md`.
+
+S-1 passes on a platform when a run there on the UMIK-1, not simulated, has every take
+successful at the declared tolerance, no overflow or underflow, an ADC time for every block,
+and every take re-validated. The verdict is recorded here with the report's continuity block
+and the commit, never with audio. The matrix's Swift-UI parity rows and its physical-gate rows
+(permission states, headphone comparison, …) are not the harness's to answer: the owner
+judges the app and the hardware against them. A simulated run is only ever "simulated: harness
+check only". Running the harness on real hardware is the owner's.
+
+## D-041 — Packaging the desktop app (spike S-7)
+
+Recorded 2026-10-11 (phase 4c; design §6.3). **Linux**: the uv tool (`uv tool install
+--python 3.12 --with-executables-from cole-voice-lab ./apps/desktop`) plus a per-user desktop
+entry, `voice-lab-desktop --install-desktop-entry`: a `.desktop` file whose `Exec` is the
+installed command's absolute path, and a 256 px icon derived from the lab's icon, both under
+`$XDG_DATA_HOME`; the app names its desktop file (`voice-lab-desktop`) so a Wayland
+compositor matches its window. An AppImage only if asked.
+
+**macOS**: `voice-lab.app`, built with PyInstaller by `scripts/build-desktop-bundle` on the Air
+(GitHub's free macOS runners once the repository is public). PyInstaller rather than
+Briefcase: its wheels pin and hash-check like the rest of `requirements/`
+(`requirements/desktop-bundle-macos.txt`: PyInstaller 6.22.3 and its closure), it maintains
+PySide6/QML hooks and contrib hooks for sounddevice's PortAudio, PyAV's FFmpeg and keyring, it
+fetches nothing at build time, and a onedir `.app` comes from a generated spec; Briefcase
+brings its own project layout and fetches its templates when it builds. The bundle id is
+`private.cole.voice-lab-desktop` (not the legacy launcher's or the Swift app's, so TCC grants
+stay apart); `NSMicrophoneUsageDescription` is set. The bundle is signed ad-hoc
+(`codesign --sign -`, no paid Developer ID, no notarization; D-028) with the hardened runtime
+and three entitlements: audio input, library validation off (ad-hoc signatures carry no team
+id) and unsigned executable memory (cffi's callbacks); `--no-hardened-runtime` is the fallback
+if a library will not load. Each build is verified (`codesign --verify --strict --deep`),
+its Info.plist linted, zipped and recorded with its SHA-256. The first run of an ad-hoc-signed
+app is the install page's (`apps/desktop/docs/INSTALL-MACOS.md`). Nothing of this has run on
+macOS yet: building and the first run are the owner's.
+
+## D-042 — Record → Prompts in the desktop app
+
+Recorded 2026-10-11 (phase 4c; design §6.1, D-010 to D-018). The screen records the prompts
+of a catalog through the capture worker of D-039, one take per private directory.
+
+- **Catalogs.** The built-in pilot catalogs (`pilot-v2.json` by default, `pilot-v1.json`) or a
+  prompt-suite file named by the setting `catalog_file`. Held-out evaluation, physical-test
+  and corpus catalogs are refused, as are `procedure` prompts and a suite without room tone.
+  The corpus catalog (D-017) needs the PC to serve it (`GET /api/v1/catalog`, design §3.4) and
+  its pilot gate; neither is built in phase 4.
+- **Batches and ids.** A batch is the chosen prompts plus every room tone, in catalog order
+  (D-010); its package names the catalog itself, or a subset suite named by its prompts'
+  digest (`native-subset-…` for prompt-suite/v2, `desktop-subset-…` for v1). Session ids are
+  `native-desktop-<yyyymmdd>t<hhmmss>z-<6 hex>`: prompt-suite/v2 packages require `native-`,
+  and `desktop` tells them from the Swift app's.
+- **What stays on the machine.** Sessions and takes live in `<data dir>/prompted/sessions/`
+  (0700 directories, 0600 records written atomically, take numbers never reused). Every take
+  keeps its history of decisions; a removal can be undone (D-012). A trim is a recipe bound
+  to the original's SHA-256; the original is never rewritten, and the preview plays exactly
+  the trimmed frames. A take exists only once the recorder validated it; failed and damaged
+  take directories are shown, never used.
+- **The package.** Finish builds `<data dir>/prompted/packages/<session id>/`: the most
+  recently kept take of each batch prompt, its original untrimmed bytes, finalized and
+  validated by the lab's own `finalize_capture_session` and strict validator,
+  `CaptureDevice.backend = "portaudio"`, `captured_at` the earliest kept take's request time,
+  `finalized_at` the session's persisted finish time; rebuilt to the same bytes, never
+  overwritten. Trims, take history, unchosen takes and continuity evidence never travel. So
+  the PC sees untrimmed takes: carrying edit decisions to the PC is a contract for later
+  (before fine-tuning on the PC uses trims).
+- **Uploads wait for S-1.** Until spike S-1 passes on a platform (D-040), prompted packages
+  stay on the machine: Uploads and Status show them as held. After recording the pass, the
+  owner sets `prompted_uploads = true` in that machine's `config.toml`; they then upload as
+  class `capture` through `/api/v1/intake` with the D-021 ledger, which the standing home-host
+  approval must cover.
