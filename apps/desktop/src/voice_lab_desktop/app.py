@@ -1,0 +1,307 @@
+"""The app model: the account, the settings, the sidebar and the screens' models.
+
+This is the app's composition root. It builds one model per screen over a shared
+:class:`~voice_lab_desktop.viewmodel.AppContext` and hands them to QML as context
+properties (``app``, ``status``, ``uploads``, ``corpus``, ``journey``, ``practice``,
+``referee``, ``player``). It owns the sign-in (Pocket ID, PKCE, a loopback redirect;
+``auth.py``) and the settings (``config.py``), and it navigates: a screen's model is
+activated when its screen is shown, which loads its data the first time.
+"""
+
+from __future__ import annotations
+
+import threading
+import webbrowser
+from collections.abc import Callable
+from typing import Any, Final
+
+import httpx
+from PySide6.QtCore import Signal, Slot
+
+from . import __version__
+from .auth import AuthError, Session, sign_in
+from .config import Config, ConfigError, save_settings
+from .measurement.store import SessionStore
+from .playback import AudioOutput, Player
+from .screens.corpus import CorpusModel
+from .screens.journey import JourneyModel
+from .screens.practice import PracticeModel
+from .screens.referee import RefereeModel
+from .screens.status import StatusModel
+from .screens.uploads import UploadsModel
+from .tasks import Tasks
+from .tokens import KeyringStore, NoKeychainError, TokenStore, jwt_claims
+from .viewmodel import AppContext, ViewModel, qproperty
+
+#: The sidebar, in order: (key, section, label, icon).
+SCREENS: Final = (
+    ("status", "Lab", "Status", "user"),
+    ("uploads", "Lab", "Uploads", "inbox"),
+    ("corpus", "Corpus", "Corpus", "archive"),
+    ("journey", "Analysis", "Journey", "clock"),
+    ("practice", "Analysis", "Practice", "tag"),
+    ("referee", "Referee", "Referee", "check"),
+)
+SCREEN_KEYS: Final = tuple(key for key, *_ in SCREENS)
+
+
+class AppModel(ViewModel):
+    accountChanged = Signal()
+    settingsChanged = Signal()
+    navigationChanged = Signal()
+    # Its own signal: re-reading the sidebar on every navigation would reset the list's
+    # model, and SuiSidebarList then mislabels a section header (PHASE-4-LOG.md).
+    sidebarChanged = Signal()
+
+    signedIn = qproperty(bool, "signedIn", accountChanged)
+    account = qproperty(str, "account", accountChanged)
+    authBusy = qproperty(bool, "authBusy", accountChanged)
+    configured = qproperty(bool, "configured", settingsChanged)
+    server = qproperty(str, "server", settingsChanged)
+    issuer = qproperty(str, "issuer", settingsChanged)
+    clientId = qproperty(str, "clientId", settingsChanged)
+    settingsSource = qproperty(str, "settingsSource", settingsChanged)
+    lockedSettings = qproperty("QVariantList", "lockedSettings", settingsChanged)
+    version = qproperty(str, "version", settingsChanged)
+    screen = qproperty(str, "screen", navigationChanged)
+    screenIndex = qproperty(int, "screenIndex", navigationChanged)
+    sidebar = qproperty("QVariantList", "sidebar", sidebarChanged)
+
+    def __init__(
+        self,
+        config: Config,
+        tokens: TokenStore,
+        *,
+        http: httpx.Client,
+        tasks: Tasks | None = None,
+        output: AudioOutput | None = None,
+        open_browser: Callable[[str], object] = webbrowser.open,
+        open_url: Callable[[str], object] | None = None,
+        fixed_port: bool = False,
+    ) -> None:
+        tasks = tasks or Tasks()
+        session = Session(config, tokens, http)
+        context = AppContext(config, session, http, tasks, open_url=open_url or open_browser)
+        if output is not None:
+            context.player = Player(tasks, context.fetch_audio, output)
+        super().__init__(context, {})
+        self.open_browser = open_browser
+        self.fixed_port = fixed_port
+        self._cancel_sign_in = threading.Event()
+        self.spool = SessionStore(config.measurement_dir)
+        self.status = StatusModel(context, self.spool)
+        self.uploads = UploadsModel(context, self.spool)
+        self.corpus = CorpusModel(context)
+        self.journey = JourneyModel(context, self.open_corpus_with_query)
+        self.practice = PracticeModel(context, self.open_corpus_with_query)
+        self.referee = RefereeModel(context)
+        self.models: dict[str, ViewModel] = {
+            "status": self.status,
+            "uploads": self.uploads,
+            "corpus": self.corpus,
+            "journey": self.journey,
+            "practice": self.practice,
+            "referee": self.referee,
+        }
+        for model in self.models.values():
+            model.toast.connect(self.toast)
+        self.uploads.spoolChanged.connect(self.status.refresh_spool)
+        self.uploads.spoolChanged.connect(self._refresh_sidebar)
+        context.signInRequired.connect(self._signed_out_elsewhere)
+        start = "corpus" if config.configured and session.signed_in else "status"
+        self._v.update(
+            signedIn=session.signed_in,
+            account=self._account_label(),
+            authBusy=False,
+            screen=start,
+            screenIndex=SCREEN_KEYS.index(start),
+            sidebar=[],
+            version=__version__,
+        )
+        self._apply_config(config)
+        self._refresh_sidebar()
+
+    @property
+    def player(self) -> Player:
+        return self.context.player
+
+    @property
+    def session(self) -> Session:
+        return self.context.session
+
+    # -- lifecycle --------------------------------------------------------------------------
+
+    def start(self) -> None:
+        self.status.refresh_spool()
+        self._activate(self._v["screen"])
+
+    def shutdown(self) -> None:
+        self._cancel_sign_in.set()
+        self.player.shutdown()
+        self.referee.shutdown()
+        self.context.tasks.close()
+
+    # -- navigation -------------------------------------------------------------------------
+
+    @Slot(str)
+    def navigate(self, key: str) -> None:
+        if key not in SCREEN_KEYS:
+            return
+        self._set(self.navigationChanged, screen=key, screenIndex=SCREEN_KEYS.index(key))
+        self._activate(key)
+
+    def _activate(self, key: str) -> None:
+        model = self.models[key]
+        activate = getattr(model, "activate", None)
+        if activate is not None:
+            activate()
+
+    def open_corpus_with_query(self, query: str) -> None:
+        """Journey and Practice click-throughs: the Corpus filtered to one song."""
+        self.corpus.show_query(query)
+        self.navigate("corpus")
+
+    def _refresh_sidebar(self) -> None:
+        pending = self.uploads.pending_count
+        failed = self.uploads.failed_count
+        rows = []
+        for key, section, text, icon in SCREENS:
+            entry: dict[str, Any] = {"key": key, "section": section, "text": text, "iconName": icon}
+            entry["count"] = pending if key == "uploads" and pending else -1
+            entry["status"] = "failing" if key == "uploads" and failed else "none"
+            rows.append(entry)
+        self._set(self.sidebarChanged, sidebar=rows)
+
+    # -- account ----------------------------------------------------------------------------
+
+    def _account_label(self) -> str:
+        tokens = self.session.tokens
+        if tokens is None:
+            return ""
+        try:
+            claims = jwt_claims(tokens.id_token)
+        except (ValueError, UnicodeDecodeError):
+            return "signed in"
+        return str(claims.get("email") or claims.get("preferred_username") or "signed in")
+
+    @Slot()
+    def signIn(self) -> None:  # noqa: N802 (QML name)
+        if self._v["authBusy"]:
+            return
+        try:
+            self.context.config.require_server()
+            self.context.config.require_issuer()
+        except ConfigError as exc:
+            self.toast.emit(f"Sign-in needs the settings: {exc}", "warn")
+            return
+        self._cancel_sign_in.clear()
+        self._set(self.accountChanged, authBusy=True)
+        config, http = self.context.config, self.context.http
+
+        def work() -> Any:
+            if isinstance(self.session.store, KeyringStore):
+                KeyringStore.check_backend()
+            return sign_in(
+                config,
+                http,
+                self.open_browser,
+                fixed_port=self.fixed_port,
+                cancelled=self._cancel_sign_in,
+            )
+
+        def done(tokens: Any, error: BaseException | None) -> None:
+            self._set(self.accountChanged, authBusy=False)
+            if error is not None:
+                if isinstance(error, (AuthError, NoKeychainError, httpx.HTTPError, ConfigError)):
+                    self.toast.emit(f"Sign-in failed: {error}", "danger")
+                    return
+                raise error
+            try:
+                self.session.adopt(tokens)
+            except NoKeychainError as exc:
+                self.toast.emit(str(exc), "danger")
+                return
+            self._set(self.accountChanged, signedIn=True, account=self._account_label())
+            self.toast.emit("Signed in.", "ok")
+            self.status.refresh()
+            self._activate(self._v["screen"])
+
+        self.context.tasks.submit(work, done)
+
+    @Slot()
+    def cancelSignIn(self) -> None:  # noqa: N802
+        self._cancel_sign_in.set()
+
+    @Slot()
+    def signOut(self) -> None:  # noqa: N802
+        self.player.stop()
+        self.session.sign_out()
+        self._set(self.accountChanged, signedIn=False, account="")
+        for model in self.models.values():
+            forget = getattr(model, "forget", None)
+            if forget is not None:
+                forget()
+
+    def _signed_out_elsewhere(self, _reason: str) -> None:
+        self._set(self.accountChanged, signedIn=self.session.signed_in)
+        if not self.session.signed_in:
+            self._set(self.accountChanged, account="")
+
+    # -- settings ---------------------------------------------------------------------------
+
+    def _apply_config(self, config: Config) -> None:
+        self._set(
+            self.settingsChanged,
+            configured=config.configured,
+            server=config.server_url,
+            issuer=config.issuer,
+            clientId=config.client_id,
+            settingsSource=config.source,
+            lockedSettings=list(config.env_keys),
+        )
+
+    @Slot(str, str, str, result=bool)
+    def saveSettings(self, server: str, issuer: str, client_id: str) -> bool:  # noqa: N802
+        config = self.context.config
+        wanted = {
+            "server_url": server.strip(),
+            "issuer": issuer.strip(),
+            "client_id": client_id.strip(),
+        }
+        changes = {k: v for k, v in wanted.items() if k not in config.env_keys}
+        try:
+            saved = save_settings(config, changes)
+        except ConfigError as exc:
+            self.toast.emit(f"Settings not saved: {exc}", "danger")
+            return False
+        identity_changed = (saved.issuer, saved.client_id) != (config.issuer, config.client_id)
+        if identity_changed and self.session.signed_in:
+            self.signOut()
+        if isinstance(self.session.store, KeyringStore):
+            self.session.store = KeyringStore(saved.issuer, saved.client_id)
+        self.context.set_config(saved)
+        self._apply_config(saved)
+        for model in self.models.values():
+            forget = getattr(model, "forget", None)
+            if forget is not None:
+                forget()
+        self.toast.emit("Settings saved.", "ok")
+        self.status.refresh()
+        return True
+
+    @Slot()
+    def openReport(self) -> None:  # noqa: N802
+        """The evidence report, in the browser: the web view renders it (A-02)."""
+        try:
+            server = self.context.config.require_server()
+        except ConfigError as exc:
+            self.toast.emit(str(exc), "warn")
+            return
+        self.context.open_url(f"{server}/view/report")
+
+
+def keyring_store(config: Config) -> TokenStore:
+    return KeyringStore(config.issuer, config.client_id)
+
+
+__all__ = ["SCREENS", "AppModel", "keyring_store"]

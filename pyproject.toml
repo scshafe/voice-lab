@@ -44,6 +44,14 @@ dev = [
   "cffi==2.1.1",
   "pycparser==3.0",
   "numpy==2.5.3",
+  # The desktop app's closure (apps/desktop, D-037), so that scripts/verify checks and
+  # tests it in this environment; its conftest puts apps/desktop/src on sys.path.
+  "scshafe-qt==0.2.0",
+  "httpx==0.28.1",
+  "keyring==25.7.0",
+  "sounddevice==0.5.6",
+  "av==19.0.1",
+  "pytest-qt==4.5.0",
 ]
 
 [project.scripts]
@@ -56,7 +64,10 @@ where = ["src"]
 cole_voice_lab = ["py.typed", "resources/*"]
 
 [tool.pytest.ini_options]
-addopts = "--strict-config --strict-markers -ra"
+# The desktop app's suite (apps/desktop/tests) runs on its own, with pytest-qt; this suite
+# runs without it: its hooks call QApplication.instance() around every test, which breaks
+# the tests here that stand in a fake application.
+addopts = "--strict-config --strict-markers -ra -p no:pytest-qt"
 # apps/mirror/tests: the macOS mirror sender (a separate, stdlib-only package; its
 # conftest puts apps/mirror/src on sys.path, so it needs no install).
 testpaths = ["tests", "apps/mirror/tests"]
@@ -79,13 +90,18 @@ platform = "darwin"
 strict = true
 packages = ["cole_voice_lab"]
 
+# The desktop app's untyped dependencies (apps/desktop): scshafe-qt's Python surface is three
+# functions; PortAudio's binding ships no types.
+[[tool.mypy.overrides]]
+module = ["scshafe_qt", "sounddevice"]
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 # legacy/voice-journey/ is the imported Node tree being ported (design §5.2, phase 3);
 # its one Python file moves into the package, under these rules, when it is ported.
-# apps/desktop/ is voice-journey-capture as imported (D-035); phase 4 brings it under them.
-extend-exclude = ["legacy", "apps/desktop"]
+extend-exclude = ["legacy"]
 # Extensionless Python scripts Ruff would otherwise skip.
 extend-include = ["scripts/journey-parity"]
 
