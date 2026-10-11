@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import platform
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any
 
 from .. import __version__
 from . import chain
@@ -43,13 +44,22 @@ class SpineSegment:
 
 
 SPINE_SEGMENTS: tuple[SpineSegment, ...] = (
-    SpineSegment("room-silence", "room silence — stand still, say nothing (noise floor)", "timed", 10),
-    SpineSegment("cal-tone", "94 dB calibrator tone on the capsule", "timed", 10, requires="cal_tone"),
+    SpineSegment(
+        "room-silence", "room silence — stand still, say nothing (noise floor)", "timed", 10
+    ),
+    SpineSegment(
+        "cal-tone", "94 dB calibrator tone on the capsule", "timed", 10, requires="cal_tone"
+    ),
     SpineSegment("vowel-soft", "sustained /a/ — comfortable pitch, soft", "manual"),
     SpineSegment("vowel-loud", "sustained /a/ — same pitch, full voice", "manual"),
     SpineSegment("glide", "slow glide — bottom of range to top and back", "manual"),
     SpineSegment("anchor-song", "the anchor song — one verse, same song every session", "manual"),
-    SpineSegment("free-practice", "free practice — everything else, mic keeps rolling", "manual", skip="skip_free"),
+    SpineSegment(
+        "free-practice",
+        "free practice — everything else, mic keeps rolling",
+        "manual",
+        skip="skip_free",
+    ),
 )
 
 #: A manual segment shorter than this is refused (an accidental double press); redo it.
@@ -73,7 +83,15 @@ def plan_segments(cal_tone: bool = False, skip_free: bool = False) -> list[Plann
             continue
         if segment.skip and options[segment.skip]:
             continue
-        out.append(PlannedSegment(segment.key, segment.label, segment.mode, segment.seconds, f"{len(out) + 1:02d}-{segment.key}.wav"))
+        out.append(
+            PlannedSegment(
+                segment.key,
+                segment.label,
+                segment.mode,
+                segment.seconds,
+                f"{len(out) + 1:02d}-{segment.key}.wav",
+            )
+        )
     return out
 
 
@@ -111,11 +129,11 @@ class Ritual:
     level: InputLevel | None = field(init=False, default=None)
     cal: CalFile | None = field(init=False, default=None)
     cal_sha256: str | None = field(init=False, default=None)
-    results: list[dict] = field(init=False, default_factory=list)
+    results: list[dict[str, Any]] = field(init=False, default_factory=list)
     recording: SegmentRecording | None = field(init=False, default=None)
     status: str = field(init=False, default="new")  # new | open | completed | aborted
     error: str | None = field(init=False, default=None)
-    manifest: dict | None = field(init=False, default=None)
+    manifest: dict[str, Any] | None = field(init=False, default=None)
     _segment_started_at: datetime | None = field(init=False, default=None)
 
     # --- checks ----------------------------------------------------------------------
@@ -125,7 +143,9 @@ class Ritual:
             level = self.levels.read(self.device)
         except LevelUnreadable as exc:
             self.state.log_check(when, None, False, self.session_id or None)
-            raise RitualError(f"the input level cannot be read ({exc}); recording is refused") from exc
+            raise RitualError(
+                f"the input level cannot be read ({exc}); recording is refused"
+            ) from exc
         try:
             guard(self.pin, level)
         except GuardError as exc:
@@ -146,15 +166,24 @@ class Ritual:
         except DeviceError as exc:
             raise RitualError(str(exc)) from exc
         if stats.digital_silence:
-            hint = (" On macOS, allow microphone access for the app that runs this one (System Settings → "
-                    "Privacy & Security → Microphone)." if sys.platform == "darwin" else "")
-            raise RitualError(f"the UMIK-1 delivers digital silence (every sample is zero); a live capsule never does.{hint}")
+            hint = (
+                " On macOS, allow microphone access for the app that runs this one "
+                "(System Settings → Privacy & Security → Microphone)."
+                if sys.platform == "darwin"
+                else ""
+            )
+            raise RitualError(
+                "the UMIK-1 delivers digital silence (every sample is zero); a live capsule "
+                f"never does.{hint}"
+            )
         start = self.now()
         self.session_id = session_id_for(start)
         try:
             self.session_dir = self.sessions.new_dir(self.session_id)
         except FileExistsError as exc:
-            raise RitualError("a session with this id already exists; wait a second and start again") from exc
+            raise RitualError(
+                "a session with this id already exists; wait a second and start again"
+            ) from exc
         self.started_at = start
         self.plan = plan_segments(self.cal_tone, self.skip_free)
         self.status = "open"
@@ -167,7 +196,9 @@ class Ritual:
 
     @property
     def current(self) -> PlannedSegment | None:
-        return self.plan[self.index] if self.status == "open" and self.index < len(self.plan) else None
+        return (
+            self.plan[self.index] if self.status == "open" and self.index < len(self.plan) else None
+        )
 
     def start_segment(self) -> SegmentRecording:
         segment = self.current
@@ -181,7 +212,13 @@ class Ritual:
             raise
         max_frames = segment.seconds * self.sample_rate if segment.seconds else None
         try:
-            self.recording = SegmentRecording(self.backend, self.device, self.session_dir / segment.file, self.sample_rate, max_frames)
+            self.recording = SegmentRecording(
+                self.backend,
+                self.device,
+                self.session_dir / segment.file,
+                self.sample_rate,
+                max_frames,
+            )
             self._segment_started_at = self.now()
             self.recording.start()
         except DeviceError as exc:
@@ -201,7 +238,7 @@ class Ritual:
             self.abort(str(exc))
             raise
 
-    def finish_segment(self) -> dict:
+    def finish_segment(self) -> dict[str, Any]:
         """Stop (manual) or collect (timed) the current segment and check the level after it."""
         segment = self.current
         recording = self.recording
@@ -218,11 +255,18 @@ class Ritual:
         except RitualError as exc:
             self.abort(str(exc))
             raise
+        assert self.session_dir is not None  # a segment records only inside a begun session
         if segment.mode == "manual" and result.frames < MIN_MANUAL_SECONDS * self.sample_rate:
             (self.session_dir / segment.file).unlink(missing_ok=True)
-            raise RitualError(f"that take of {segment.key} was shorter than {MIN_MANUAL_SECONDS:.0f} s; record it again")
+            raise RitualError(
+                f"that take of {segment.key} was shorter than {MIN_MANUAL_SECONDS:.0f} s; "
+                "record it again"
+            )
         if result.digital_silence:
-            self.abort(f"{segment.key} recorded digital silence (every sample zero): the input stopped delivering audio")
+            self.abort(
+                f"{segment.key} recorded digital silence (every sample zero): "
+                "the input stopped delivering audio"
+            )
             raise RitualError(self.error or "digital silence")
         entry = {
             "key": segment.key,
@@ -249,7 +293,7 @@ class Ritual:
         assert self.session_dir is not None
         (self.session_dir / last["file"]).unlink(missing_ok=True)
 
-    def complete(self) -> dict:
+    def complete(self) -> dict[str, Any]:
         if self.status != "open" or self.index < len(self.plan):
             raise RitualError("the session is not finished")
         assert self.session_dir is not None and self.level is not None
@@ -282,7 +326,7 @@ class Ritual:
             write_session_json(self.session_dir, self._manifest("aborted"))
         self.status = "aborted"
 
-    def _manifest(self, status: str) -> dict:
+    def _manifest(self, status: str) -> dict[str, Any]:
         assert self.started_at is not None and self.level is not None and self.pin is not None
         out = {
             "schemaVersion": SESSION_SCHEMA_VERSION,
@@ -304,8 +348,17 @@ class Ritual:
                 "calSerial": self.cal.serial if self.cal else None,
                 "inputLevel": {k: v for k, v in self.level.to_json().items() if k != "volume"},
                 "levelPinnedAt": self.pin.pinned_at,
-                "device": {"name": self.device.name, "hostApi": self.device.host_api, "usbId": self.device.usb_id},
-                "client": {"name": "voice-lab-desktop", "version": __version__, "platform": sys.platform, "machine": platform.machine()},
+                "device": {
+                    "name": self.device.name,
+                    "hostApi": self.device.host_api,
+                    "usbId": self.device.usb_id,
+                },
+                "client": {
+                    "name": "voice-lab-desktop",
+                    "version": __version__,
+                    "platform": sys.platform,
+                    "machine": platform.machine(),
+                },
             },
             "segments": list(self.results),
         }

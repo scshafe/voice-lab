@@ -7,10 +7,9 @@ import time
 import httpx
 import pytest
 from helpers import new_ritual, record_segment, record_session
-
 from voice_lab_desktop.auth import Session, SignInRequired
-from voice_lab_desktop.tokens import MemoryStore, Tokens
 from voice_lab_desktop.measurement.upload import IntakeClient, upload_pending
+from voice_lab_desktop.tokens import MemoryStore, Tokens
 
 CHUNK = 256 * 1024  # small chunks so every file takes several PUTs
 
@@ -36,25 +35,34 @@ def test_a_session_is_accepted_byte_for_byte(client, recorded, sessions, intake,
     assert (summary.accepted, summary.pending, summary.failed) == (1, 0, 0)
     sid = recorded.session_id
     for entry in recorded.manifest["files"]:
-        assert (intake.measurement / sid / entry["name"]).read_bytes() == (recorded.session_dir / entry["name"]).read_bytes()
+        assert (intake.measurement / sid / entry["name"]).read_bytes() == (
+            recorded.session_dir / entry["name"]
+        ).read_bytes()
     assert intake.accepted[sid]["capture"]["inputVolume"] == 63
     assert sessions.sessions()[0].upload_state == "accepted" and sessions.pending() == []
     ranges = [r.headers["content-range"] for r in puts(intake)]
-    assert ranges[0] == f"bytes 0-{CHUNK - 1}/{recorded.manifest['files'][0]['sizeBytes']}" and len(ranges) > len(recorded.manifest["files"])
+    assert ranges[0] == f"bytes 0-{CHUNK - 1}/{recorded.manifest['files'][0]['sizeBytes']}" and len(
+        ranges
+    ) > len(recorded.manifest["files"])
     assert all("cookie" not in r.headers for r in intake.requests)
     assert upload_pending(client, sessions, config.server_url).accepted == 0  # nothing left
 
 
-def test_an_interrupted_upload_resumes_where_the_server_stopped(client, recorded, sessions, intake, config):
+def test_an_interrupted_upload_resumes_where_the_server_stopped(
+    client, recorded, sessions, intake, config
+):
     intake.drop_after = 1000
     first = upload_pending(client, sessions, config.server_url)
     assert first.pending == 1 and "did not answer" in first.last_error
     assert sessions.pending()[0].upload["attempts"] == 1
-    # The first chunk (start 0) was dropped: the server kept nothing of it. Interrupt a later chunk too.
+    # The first chunk (start 0) was dropped: the server kept nothing of it. Interrupt a later
+    # chunk too.
     sent_before = len(puts(intake))
     intake.drop_after, intake.drop_min_start = 5000, 1
     upload_pending(client, sessions, config.server_url)
-    resumed_from = [int(r.headers["content-range"].split()[1].split("-")[0]) for r in puts(intake)[sent_before:]]
+    resumed_from = [
+        int(r.headers["content-range"].split()[1].split("-")[0]) for r in puts(intake)[sent_before:]
+    ]
     assert resumed_from[0] == 0 and resumed_from[1] == CHUNK
     before = len(puts(intake))
     third = upload_pending(client, sessions, config.server_url)
@@ -64,9 +72,16 @@ def test_an_interrupted_upload_resumes_where_the_server_stopped(client, recorded
     assert sessions.sessions()[0].upload_state == "accepted"
 
 
-def test_a_corrupted_chunk_is_rejected_and_the_file_resent(client, recorded, sessions, intake, config):
+def test_a_corrupted_chunk_is_rejected_and_the_file_resent(
+    client, recorded, sessions, intake, config
+):
     intake.corrupt_next_put = True
-    small = IntakeClient(client.base.removesuffix("/api/intake/sessions"), client.session, client.http, chunk_bytes=50_000_000)
+    small = IntakeClient(
+        client.base.removesuffix("/api/intake/sessions"),
+        client.session,
+        client.http,
+        chunk_bytes=50_000_000,
+    )
     summary = upload_pending(small, sessions, config.server_url)
     assert summary.accepted == 1
     assert [r.error for r in puts(intake)][0] == "checksum_mismatch"
@@ -115,7 +130,9 @@ def test_a_refused_token_is_refreshed_once(config, issuer, intake, recorded, ses
     assert [r.status for r in intake.requests][:2] == [401, 201]
 
 
-def test_the_door_asking_for_a_browser_is_sign_in_required_and_not_followed(config, intake, recorded, sessions):
+def test_the_door_asking_for_a_browser_is_sign_in_required_and_not_followed(
+    config, intake, recorded, sessions
+):
     intake.door_redirects = True
     store = MemoryStore(Tokens("x.y.z", "x.y.z", time.time() + 3600, None))
     with httpx.Client(follow_redirects=False) as http:
@@ -126,7 +143,9 @@ def test_the_door_asking_for_a_browser_is_sign_in_required_and_not_followed(conf
     assert sessions.pending()[0].upload["lastError"] == "sign-in required"
 
 
-def test_aborted_sessions_are_never_uploaded(client, backend, levels, pinned, sessions, intake, config):
+def test_aborted_sessions_are_never_uploaded(
+    client, backend, levels, pinned, sessions, intake, config
+):
     ritual = new_ritual(backend, levels, pinned, sessions)
     ritual.begin()
     record_segment(ritual)
@@ -140,14 +159,18 @@ def test_prune_accepted(client, recorded, sessions, config):
     assert sessions.prune_accepted() == 1 and not recorded.session_dir.exists()
 
 
-def test_finalize_and_the_last_chunk_wait_for_the_servers_re_hash(client, recorded, sessions, config, monkeypatch):
-    from voice_lab_desktop import upload
+def test_finalize_and_the_last_chunk_wait_for_the_servers_re_hash(
+    client, recorded, sessions, config, monkeypatch
+):
+    from voice_lab_desktop.measurement import upload
 
     seen: list[tuple[str, float]] = []
     real = client.http.request
 
     def spy(method, url, **kwargs):
-        seen.append((url.rsplit("/", 1)[-1] if method == "POST" else method, kwargs["timeout"].read))
+        seen.append(
+            (url.rsplit("/", 1)[-1] if method == "POST" else method, kwargs["timeout"].read)
+        )
         return real(method, url, **kwargs)
 
     monkeypatch.setattr(client.http, "request", spy)

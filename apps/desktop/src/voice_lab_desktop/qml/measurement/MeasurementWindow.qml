@@ -1,5 +1,6 @@
-// voice-journey-capture: the capture window. All state and actions live in the
-// Python controller (`app`); this file lays out scshafe-qt components around it.
+// voice-lab measurement: the UMIK-1 capture window (voice-journey-capture's, unchanged).
+// All state and actions live in the Python controller (`app`); this file lays out
+// scshafe-qt components around it.
 //
 // Left: the checklist before a session (sign-in, the UMIK-1, the pinned input
 // level, the cal file, options). Right: the ritual (segments, the prompt, live
@@ -17,7 +18,7 @@ Window {
     minimumHeight: 560
     visible: true
     color: SuiTheme.bg
-    title: app.phase === "recording" ? "Recording — Voice Journey capture" : "Voice Journey capture"
+    title: app.phase === "recording" ? "Recording — voice-lab measurement" : "voice-lab measurement"
 
     readonly property bool inSession: ["segment", "recording", "review"].indexOf(app.phase) >= 0
     readonly property bool modalOpen: abortDialog.visible || settingsDialog.visible || repinDialog.visible
@@ -91,7 +92,7 @@ Window {
                 spacing: SuiTheme.spaceMd
 
                 Text {
-                    text: "Voice Journey capture"
+                    text: "voice-lab measurement"
                     textFormat: Text.PlainText
                     color: SuiTheme.textStrong
                     font.pixelSize: SuiTheme.fontSizeLg

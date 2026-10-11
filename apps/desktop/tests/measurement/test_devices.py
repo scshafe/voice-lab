@@ -3,22 +3,29 @@
 from __future__ import annotations
 
 import pytest
+from voice_lab_desktop.measurement import chain
+from voice_lab_desktop.measurement.devices import (
+    DeviceRefused,
+    InputDevice,
+    _linux_usb_id,
+    choose_umik,
+)
 
-from voice_lab_desktop import chain
-from voice_lab_desktop.measurement.devices import DeviceRefused, InputDevice, _linux_usb_id, choose_umik
 
-
-@pytest.mark.parametrize("name,usb,ok", [
-    ("Umik-1  Gain: 18dB", None, True),
-    ("UMIK-1", None, True),
-    ("umik1 measurement mic", None, True),
-    ("Umik-1  Gain: 18dB: USB Audio (hw:2,0)", None, True),
-    ("USB Audio Device", "2752:0007", True),
-    ("UMIK-2", None, False),
-    ("Umik-10", None, False),
-    ("MacBook Air Microphone", None, False),
-    ("USB Audio Device", "2752:0016", False),
-])
+@pytest.mark.parametrize(
+    "name,usb,ok",
+    [
+        ("Umik-1  Gain: 18dB", None, True),
+        ("UMIK-1", None, True),
+        ("umik1 measurement mic", None, True),
+        ("Umik-1  Gain: 18dB: USB Audio (hw:2,0)", None, True),
+        ("USB Audio Device", "2752:0007", True),
+        ("UMIK-2", None, False),
+        ("Umik-10", None, False),
+        ("MacBook Air Microphone", None, False),
+        ("USB Audio Device", "2752:0016", False),
+    ],
+)
 def test_is_umik1(name, usb, ok):
     assert chain.is_umik1(name, usb) is ok
 
@@ -28,15 +35,25 @@ def dev(index, name, api="ALSA", channels=1, usb=None):
 
 
 def test_choose_umik_prefers_the_shortest_path():
-    devices = [dev(0, "Umik-1  Gain: 18dB Mono", "JACK Audio Connection Kit"), dev(4, "Umik-1  Gain: 18dB: USB Audio (hw:2,0)"),
-               dev(1, "pipewire"), dev(2, "Ryzen HD Audio Controller Analog Stereo", "JACK Audio Connection Kit", 2)]
+    devices = [
+        dev(0, "Umik-1  Gain: 18dB Mono", "JACK Audio Connection Kit"),
+        dev(4, "Umik-1  Gain: 18dB: USB Audio (hw:2,0)"),
+        dev(1, "pipewire"),
+        dev(2, "Ryzen HD Audio Controller Analog Stereo", "JACK Audio Connection Kit", 2),
+    ]
     chosen = choose_umik(devices)
     assert chosen.index == 4 and chosen.alsa_card == 2
     assert choose_umik([devices[0]]).host_api.startswith("JACK")
 
 
 def test_no_umik_is_refused_with_what_was_seen():
-    with pytest.raises(DeviceRefused, match=r"No UMIK-1 found.*built-in and other microphones are refused.*MacBook Air Microphone"):
+    with pytest.raises(
+        DeviceRefused,
+        match=(
+            r"No UMIK-1 found.*built-in and other microphones are refused"
+            r".*MacBook Air Microphone"
+        ),
+    ):
         choose_umik([dev(1, "MacBook Air Microphone", "Core Audio")])
     with pytest.raises(DeviceRefused, match="no input devices"):
         choose_umik([])

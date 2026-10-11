@@ -1,4 +1,5 @@
-"""Local sessions: ``<data dir>/sessions/<sessionId>/`` with the WAVs, ``session.json`` and ``upload.json``.
+"""Local sessions: ``<data dir>/sessions/<sessionId>/`` with the WAVs, ``session.json`` and
+``upload.json``.
 
 A completed session stays here until the server accepts it; every launch
 retries the ones still pending. An aborted session is kept (its reason in
@@ -12,6 +13,7 @@ import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .package import PackageError, read_session_json
 from .pin import now_iso
@@ -24,7 +26,7 @@ class LocalSession:
     session_id: str
     path: Path
     status: str  # completed | aborted | recording (interrupted)
-    upload: dict
+    upload: dict[str, Any]
 
     @property
     def upload_state(self) -> str:
@@ -58,14 +60,14 @@ class SessionStore:
     def pending(self) -> list[LocalSession]:
         return [s for s in self.sessions() if s.upload_state == "pending"]
 
-    def _upload(self, path: Path) -> dict:
+    def _upload(self, path: Path) -> dict[str, Any]:
         try:
             data = json.loads((path / UPLOAD_FILE).read_text())
             return data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             return {}
 
-    def _write_upload(self, path: Path, data: dict) -> None:
+    def _write_upload(self, path: Path, data: dict[str, Any]) -> None:
         tmp = path / (UPLOAD_FILE + ".tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n")
         tmp.replace(path / UPLOAD_FILE)
@@ -80,7 +82,9 @@ class SessionStore:
 
     def mark_accepted(self, path: Path, server: str) -> None:
         data = self._upload(path)
-        data.update({"state": "accepted", "acceptedAt": now_iso(), "server": server, "lastError": None})
+        data.update(
+            {"state": "accepted", "acceptedAt": now_iso(), "server": server, "lastError": None}
+        )
         self._write_upload(path, data)
 
     def mark_failed(self, path: Path, error: str) -> None:

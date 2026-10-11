@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 
 import httpx
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
-from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtCore import QObject, Qt
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (root objects come back as QQuickWindow)
 from PySide6.QtTest import QTest
-
-import scshafe_qt
-from voice_lab_desktop.cli import qml_path
+from voice_lab_desktop.cli import load_measurement_window, teardown
 from voice_lab_desktop.measurement.controller import Controller
 from voice_lab_desktop.measurement.simulated import BUILT_IN, SimulatedBackend, SimulatedLevelReader
 from voice_lab_desktop.tokens import MemoryStore
@@ -20,11 +18,8 @@ from voice_lab_desktop.tokens import MemoryStore
 
 def make_ui(qtbot, config, store, backend, levels, **kwargs):
     controller = Controller(config, store, backend, levels, **kwargs)
-    engine = QQmlApplicationEngine()
-    scshafe_qt.register(engine)
-    engine.rootContext().setContextProperty("app", controller)
-    engine.load(str(qml_path()))
-    assert engine.rootObjects(), "Main.qml failed to load"
+    engine = load_measurement_window(controller)
+    assert engine.rootObjects(), "MeasurementWindow.qml failed to load"
     window = engine.rootObjects()[0]
     qtbot.waitExposed(window)
     window.requestActivate()
@@ -35,9 +30,7 @@ def make_ui(qtbot, config, store, backend, levels, **kwargs):
 def close(controller, window, engine):
     # QML goes first: bindings must never outlive the controller they read.
     window.close()
-    engine.deleteLater()
-    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    controller.shutdown()
+    teardown(engine, controller.shutdown)
 
 
 @pytest.fixture
@@ -69,30 +62,46 @@ def test_a_session_from_the_keyboard_is_saved_and_uploaded(qtbot, ui, intake):
     while controller.property("phase") == "segment":
         mode = controller.property("currentMode")
         space(window)
-        qtbot.waitUntil(lambda: controller.property("phase") == "recording" or mode == "timed", timeout=5000)
+        qtbot.waitUntil(
+            lambda mode=mode: controller.property("phase") == "recording" or mode == "timed",
+            timeout=5000,
+        )
         if mode == "manual":
             qtbot.waitUntil(lambda: controller.ritual.recording.seconds > 1.2, timeout=10000)
             assert find(window, "meterText").property("text").endswith("dBFS peak")
             space(window)
-        qtbot.waitUntil(lambda: controller.property("phase") in ("segment", "review"), timeout=10000)
+        qtbot.waitUntil(
+            lambda: controller.property("phase") in ("segment", "review"), timeout=10000
+        )
     assert controller.property("phase") == "review"
     assert [row["state"] for row in controller.property("segments")] == ["done"] * 5
     assert find(window, "finishButton").property("visible")
     controller.finishSession()
     assert controller.property("phase") == "done"
     qtbot.waitUntil(lambda: len(intake.accepted) == 1, timeout=20000)
-    qtbot.waitUntil(lambda: controller.property("pendingCount") == 0 and not controller.property("uploadBusy"), timeout=10000)
+    qtbot.waitUntil(
+        lambda: controller.property("pendingCount") == 0 and not controller.property("uploadBusy"),
+        timeout=10000,
+    )
     assert controller.property("uploadText") == "Every session is uploaded"
 
 
 def test_without_a_umik_nothing_records(qtbot, config, signed_in, levels, pinned):
-    controller, window, engine = make_ui(qtbot, config, signed_in, SimulatedBackend(devices=[BUILT_IN]), levels)
+    controller, window, engine = make_ui(
+        qtbot, config, signed_in, SimulatedBackend(devices=[BUILT_IN]), levels
+    )
     try:
-        qtbot.waitUntil(lambda: "No UMIK-1 found" in controller.property("deviceMessage"), timeout=10000)
+        qtbot.waitUntil(
+            lambda: "No UMIK-1 found" in controller.property("deviceMessage"), timeout=10000
+        )
         assert find(window, "deviceChip").property("text") == "No UMIK-1"
-        assert "built-in and other microphones are refused" in find(window, "deviceMessage").property("text")
+        assert "built-in and other microphones are refused" in find(
+            window, "deviceMessage"
+        ).property("text")
         assert not find(window, "startButton").property("enabled")
-        assert find(window, "startBlocker").property("text") == "Plug in the UMIK-1 (see Microphone)."
+        assert (
+            find(window, "startBlocker").property("text") == "Plug in the UMIK-1 (see Microphone)."
+        )
     finally:
         close(controller, window, engine)
 
@@ -103,7 +112,9 @@ def test_an_unreadable_level_blocks_the_start(qtbot, config, signed_in, backend,
     try:
         qtbot.waitUntil(lambda: controller.property("levelState") == "unreadable", timeout=10000)
         assert "pw-dump is not installed" in find(window, "levelMessage").property("text")
-        assert not find(window, "startButton").property("enabled") and not find(window, "pinButton").property("enabled")
+        assert not find(window, "startButton").property("enabled") and not find(
+            window, "pinButton"
+        ).property("enabled")
     finally:
         close(controller, window, engine)
 
@@ -118,8 +129,12 @@ def test_pin_then_start(qtbot, config, signed_in, backend, levels, state):
         assert controller.property("levelState") == "ok" and controller.property("canStart")
         assert state.pin().level.volume == 63
         levels.move_to(80)
-        qtbot.waitUntil(lambda: controller.property("levelState") == "moved", timeout=10000)  # the setup poll sees it
-        assert find(window, "pinButton").property("text") == "Re-pin…" and not controller.property("canStart")
+        qtbot.waitUntil(
+            lambda: controller.property("levelState") == "moved", timeout=10000
+        )  # the setup poll sees it
+        assert find(window, "pinButton").property("text") == "Re-pin…" and not controller.property(
+            "canStart"
+        )
     finally:
         close(controller, window, engine)
 
@@ -146,25 +161,32 @@ def test_escape_opens_the_abort_dialog(qtbot, ui):
     qtbot.waitUntil(lambda: dialog.property("visible"), timeout=5000)
     controller.abortSession()
     dialog.close()
-    assert controller.property("phase") == "aborted" and controller.property("abortReason") == "stopped by you"
+    assert (
+        controller.property("phase") == "aborted"
+        and controller.property("abortReason") == "stopped by you"
+    )
     controller.newSession()
     qtbot.waitUntil(lambda: controller.property("canStart"), timeout=10000)
 
 
 def test_settings_are_saved_to_the_file(qtbot, ui, config):
     controller, _window = ui
-    assert controller.saveSettings("https://voice-journey-next.colobus-stargazer.ts.net", 30)
-    assert controller.property("server") == "https://voice-journey-next.colobus-stargazer.ts.net"
-    assert 'distance_cm = 30' in config.file.read_text()
+    assert controller.saveSettings("https://voice-lab.example.ts.net", 30)
+    assert controller.property("server") == "https://voice-lab.example.ts.net"
+    assert "distance_cm = 30" in config.file.read_text()
     assert not controller.saveSettings("http://not-https.example", 30)
 
 
 def test_sign_in_from_the_window(qtbot, config, backend, levels, pinned, issuer):
     def open_url(url: str) -> None:
-        threading.Thread(target=lambda: httpx.get(url, follow_redirects=True, timeout=10), daemon=True).start()
+        threading.Thread(
+            target=lambda: httpx.get(url, follow_redirects=True, timeout=10), daemon=True
+        ).start()
 
     store = MemoryStore()
-    controller, window, engine = make_ui(qtbot, config, store, backend, levels, open_browser=open_url)
+    controller, window, engine = make_ui(
+        qtbot, config, store, backend, levels, open_browser=open_url
+    )
     try:
         assert find(window, "signInButton").property("text") == "Sign in"
         controller.signIn()
@@ -173,5 +195,29 @@ def test_sign_in_from_the_window(qtbot, config, backend, levels, pinned, issuer)
         assert store.tokens is not None
         controller.signOut()
         assert store.tokens is None and find(window, "signInButton").property("text") == "Sign in"
+    finally:
+        close(controller, window, engine)
+
+
+def test_without_a_server_or_issuer_sign_in_and_upload_say_so(
+    qtbot, config, signed_in, backend, levels, pinned
+):
+    bare = dataclasses.replace(config, server_url="", issuer="")
+    controller, window, engine = make_ui(qtbot, bare, signed_in, backend, levels)
+    toasts: list[tuple[str, str]] = []
+    controller.toast.connect(lambda text, tone: toasts.append((text, tone)))
+    try:
+        controller.uploadPending()
+        assert toasts[-1] == (
+            "Upload needs the settings: no server is set: set server_url in Settings "
+            "(or VOICE_LAB_DESKTOP_SERVER)",
+            "warn",
+        )
+        assert not controller.property("uploadBusy")
+        controller.signOut()
+        controller.signIn()
+        qtbot.waitUntil(lambda: not controller.property("authBusy"), timeout=10000)
+        text, tone = toasts[-1]
+        assert tone == "danger" and text.startswith("Sign-in failed: no Pocket ID issuer is set")
     finally:
         close(controller, window, engine)

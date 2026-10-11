@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Protocol
 
 from . import chain
 
@@ -61,7 +62,9 @@ class InputStream(Protocol):
 
 class AudioBackend(Protocol):
     def list_inputs(self) -> list[InputDevice]: ...
-    def open_input(self, device: InputDevice, sample_rate: int, callback: BlockCallback) -> InputStream: ...
+    def open_input(
+        self, device: InputDevice, sample_rate: int, callback: BlockCallback
+    ) -> InputStream: ...
 
 
 # Prefer the path with the fewest stages: CoreAudio, then ALSA hw (no graph), then JACK (PipeWire).
@@ -75,13 +78,15 @@ def choose_umik(devices: list[InputDevice]) -> InputDevice:
         others = [d for d in devices if chain.is_other_umik(d.name)]
         if others:
             raise DeviceRefused(
-                f"{others[0].name!r} is not a UMIK-1. At launch only the miniDSP UMIK-1 is supported "
-                f"(chain {chain.CHAIN_ID}); other chains need a reviewed change in voice-journey's chain registry first."
+                f"{others[0].name!r} is not a UMIK-1. At launch only the miniDSP UMIK-1 is "
+                f"supported (chain {chain.CHAIN_ID}); other chains need a reviewed change in "
+                "voice-journey's chain registry first."
             )
         seen = ", ".join(sorted({d.name for d in devices})) or "no input devices"
         raise DeviceRefused(
-            "No UMIK-1 found: plug in the miniDSP UMIK-1. At launch it is the only supported device "
-            f"(chain {chain.CHAIN_ID}); built-in and other microphones are refused. Seen: {seen}."
+            "No UMIK-1 found: plug in the miniDSP UMIK-1. At launch it is the only supported "
+            f"device (chain {chain.CHAIN_ID}); built-in and other microphones are refused. "
+            f"Seen: {seen}."
         )
     return sorted(candidates, key=lambda d: (_HOST_API_ORDER.get(d.host_api, 9), d.index))[0]
 
@@ -94,14 +99,16 @@ def _linux_usb_id(card: int, root: Path = Path("/proc/asound")) -> str | None:
 
 
 class PortAudioBackend:
-    """The real backend (``sounddevice``). Imported lazily: PortAudio is a system library on Linux."""
+    """The real backend (``sounddevice``). Imported lazily: PortAudio is a system library
+    on Linux."""
 
     def __init__(self) -> None:
         try:
             import sounddevice
         except OSError as exc:  # libportaudio missing
             raise DeviceError(
-                "PortAudio is not installed (Arch: sudo pacman -S portaudio; Debian/Ubuntu: sudo apt install libportaudio2)"
+                "PortAudio is not installed (Arch: sudo pacman -S portaudio; Debian/Ubuntu: "
+                "sudo apt install libportaudio2)"
             ) from exc
         self.sd = sounddevice
 
@@ -125,22 +132,29 @@ class PortAudioBackend:
                 default_rate=float(info["default_samplerate"]),
             )
             if device.alsa_card is not None:
-                device = InputDevice(**{**device.__dict__, "usb_id": _linux_usb_id(device.alsa_card)})
+                device = InputDevice(
+                    **{**device.__dict__, "usb_id": _linux_usb_id(device.alsa_card)}
+                )
             out.append(device)
         return out
 
-    def open_input(self, device: InputDevice, sample_rate: int, callback: BlockCallback) -> InputStream:
+    def open_input(
+        self, device: InputDevice, sample_rate: int, callback: BlockCallback
+    ) -> InputStream:
         sd = self.sd
         extra = None
         if sys.platform == "darwin":
-            # Set the device to 48 kHz, and fail instead of converting (no resampling in a measurement chain).
-            extra = sd.CoreAudioSettings(change_device_parameters=True, fail_if_conversion_required=True)
+            # Set the device to 48 kHz, and fail instead of converting (no resampling in a
+            # measurement chain).
+            extra = sd.CoreAudioSettings(
+                change_device_parameters=True, fail_if_conversion_required=True
+            )
 
-        def on_block(indata, frames, _time, status) -> None:
+        def on_block(indata: Any, frames: int, _time: Any, status: Any) -> None:
             callback(bytes(indata), int(frames), bool(status.input_overflow))
 
         try:
-            return sd.RawInputStream(
+            stream: InputStream = sd.RawInputStream(
                 samplerate=sample_rate,
                 device=device.index,
                 channels=1,
@@ -149,8 +163,14 @@ class PortAudioBackend:
                 callback=on_block,
                 extra_settings=extra,
             )
+            return stream
         except sd.PortAudioError as exc:
             hint = ""
             if device.host_api.startswith("JACK"):
-                hint = " (PipeWire's graph must run at 48 kHz: pw-metadata -n settings 0 clock.force-rate 48000)"
-            raise DeviceError(f"cannot open {device.describe()} at {sample_rate} Hz, 24-bit mono: {exc}{hint}") from exc
+                hint = (
+                    " (PipeWire's graph must run at 48 kHz: "
+                    "pw-metadata -n settings 0 clock.force-rate 48000)"
+                )
+            raise DeviceError(
+                f"cannot open {device.describe()} at {sample_rate} Hz, 24-bit mono: {exc}{hint}"
+            ) from exc

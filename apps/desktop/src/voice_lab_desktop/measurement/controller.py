@@ -11,24 +11,25 @@ from __future__ import annotations
 
 import threading
 import webbrowser
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import httpx
-from PySide6.QtCore import Property, QObject, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import Property, QObject, Qt, QTimer, Signal, SignalInstance, Slot
 
-from . import chain
 from ..auth import AuthError, Session, SignInRequired, sign_in
 from ..config import Config, ConfigError, save_settings
+from ..tokens import NoKeychainError, Tokens, TokenStore, jwt_claims
+from . import chain
 from .devices import AudioBackend, DeviceError, InputDevice, choose_umik
 from .levels import InputLevel, LevelReader, LevelUnreadable
 from .package import PackageError
 from .pin import CalFileError, GuardError, LevelMoved, LevelMuted, NotPinned, StateStore, guard
 from .ritual import Ritual, RitualError
 from .store import SessionStore
-from ..tokens import NoKeychainError, TokenStore, jwt_claims
-from .upload import IntakeClient, new_http, upload_pending
+from .upload import IntakeClient, UploadSummary, new_http, upload_pending
 from .wav import meter_fraction
 
 METER_MS = 50
@@ -77,7 +78,9 @@ class Controller(QObject):
     deviceName = _p(str, "deviceName", setupChanged)
     deviceOk = _p(bool, "deviceOk", setupChanged)
     deviceMessage = _p(str, "deviceMessage", setupChanged)
-    levelState = _p(str, "levelState", setupChanged)  # ok | unpinned | moved | muted | unreadable | unknown
+    levelState = _p(
+        str, "levelState", setupChanged
+    )  # ok | unpinned | moved | muted | unreadable | unknown
     levelText = _p(str, "levelText", setupChanged)
     levelMessage = _p(str, "levelMessage", setupChanged)
     pinnedText = _p(str, "pinnedText", setupChanged)
@@ -87,7 +90,9 @@ class Controller(QObject):
     startBlocker = _p(str, "startBlocker", setupChanged)
     busy = _p(bool, "busy", setupChanged)
     # the session
-    phase = _p(str, "phase", sessionChanged)  # setup | starting | segment | recording | review | done | aborted
+    phase = _p(
+        str, "phase", sessionChanged
+    )  # setup | starting | segment | recording | review | done | aborted
     sessionId = _p(str, "sessionId", sessionChanged)
     segments = _p("QVariantList", "segments", sessionChanged)
     currentIndex = _p(int, "currentIndex", sessionChanged)
@@ -139,16 +144,44 @@ class Controller(QObject):
         self._cancel_sign_in = threading.Event()
         self._closed = False
         self._v: dict[str, Any] = {
-            "signedIn": self.session.signed_in, "account": "", "authBusy": False,
-            "server": config.server_url, "serverLocked": "server_url" in config.env_keys,
-            "settingsSource": config.source, "distanceCm": config.distance_cm,
-            "deviceName": "", "deviceOk": False, "deviceMessage": "Looking for the UMIK-1…",
-            "levelState": "unknown", "levelText": "", "levelMessage": "", "pinnedText": "",
-            "calOk": False, "calText": "", "canStart": False, "startBlocker": "", "busy": False,
-            "phase": "setup", "sessionId": "", "segments": [], "currentIndex": -1, "currentLabel": "",
-            "currentMode": "", "canRedo": False, "abortReason": "", "calTone": False, "skipFree": False,
-            "meterPeak": 0.0, "meterRms": 0.0, "meterText": "", "clipping": False, "elapsedText": "",
-            "pendingCount": 0, "failedCount": 0, "uploadBusy": False, "uploadText": "",
+            "signedIn": self.session.signed_in,
+            "account": "",
+            "authBusy": False,
+            "server": config.server_url,
+            "serverLocked": "server_url" in config.env_keys,
+            "settingsSource": config.source,
+            "distanceCm": config.distance_cm,
+            "deviceName": "",
+            "deviceOk": False,
+            "deviceMessage": "Looking for the UMIK-1…",
+            "levelState": "unknown",
+            "levelText": "",
+            "levelMessage": "",
+            "pinnedText": "",
+            "calOk": False,
+            "calText": "",
+            "canStart": False,
+            "startBlocker": "",
+            "busy": False,
+            "phase": "setup",
+            "sessionId": "",
+            "segments": [],
+            "currentIndex": -1,
+            "currentLabel": "",
+            "currentMode": "",
+            "canRedo": False,
+            "abortReason": "",
+            "calTone": False,
+            "skipFree": False,
+            "meterPeak": 0.0,
+            "meterRms": 0.0,
+            "meterText": "",
+            "clipping": False,
+            "elapsedText": "",
+            "pendingCount": 0,
+            "failedCount": 0,
+            "uploadBusy": False,
+            "uploadText": "",
         }
         self._v["account"] = self._account_label()
         self._meter = QTimer(self)
@@ -162,7 +195,7 @@ class Controller(QObject):
         self._setup_poll.timeout.connect(self._on_setup_poll)
 
     # --- plumbing ------------------------------------------------------------------------
-    def _set(self, signal: Signal, **values: Any) -> None:
+    def _set(self, signal: SignalInstance, **values: Any) -> None:
         changed = False
         for key, value in values.items():
             if self._v.get(key) != value:
@@ -171,7 +204,9 @@ class Controller(QObject):
         if changed:
             signal.emit()
 
-    def _submit(self, work: Callable[[], Any], done: Callable[[Any, BaseException | None], None]) -> None:
+    def _submit(
+        self, work: Callable[[], Any], done: Callable[[Any, BaseException | None], None]
+    ) -> None:
         if self._closed:
             return
 
@@ -186,7 +221,7 @@ class Controller(QObject):
         self._pool.submit(run)
 
     def _account_label(self) -> str:
-        tokens = self.session._tokens  # noqa: SLF001 - display only
+        tokens = self.session.tokens  # display only
         if tokens is None:
             return ""
         try:
@@ -222,20 +257,28 @@ class Controller(QObject):
         self._cancel_sign_in.clear()
         self._set(self.accountChanged, authBusy=True)
 
-        def work():
+        def work() -> Tokens:
             from ..tokens import KeyringStore
 
             if isinstance(self.session.store, KeyringStore):
                 KeyringStore.check_backend()
-            return sign_in(self.config, self.http, self.open_browser, fixed_port=self.fixed_port, cancelled=self._cancel_sign_in)
+            return sign_in(
+                self.config,
+                self.http,
+                self.open_browser,
+                fixed_port=self.fixed_port,
+                cancelled=self._cancel_sign_in,
+            )
 
-        def done(tokens, error):
+        def done(tokens: Tokens | None, error: BaseException | None) -> None:
             self._set(self.accountChanged, authBusy=False)
             if error is not None:
-                if isinstance(error, (AuthError, NoKeychainError, httpx.HTTPError)):
+                failures = (AuthError, NoKeychainError, httpx.HTTPError, ConfigError)
+                if isinstance(error, failures):
                     self.toast.emit(f"Sign-in failed: {error}", "danger")
                     return
                 raise error
+            assert tokens is not None
             try:
                 self.session.adopt(tokens)
             except NoKeychainError as exc:
@@ -268,8 +311,12 @@ class Controller(QObject):
             self.toast.emit(f"Settings not saved: {exc}", "danger")
             return False
         self.session.config = self.config
-        self._set(self.accountChanged, server=self.config.server_url, distanceCm=self.config.distance_cm,
-                  settingsSource=self.config.source)
+        self._set(
+            self.accountChanged,
+            server=self.config.server_url,
+            distanceCm=self.config.distance_cm,
+            settingsSource=self.config.source,
+        )
         self.toast.emit("Settings saved.", "ok")
         return True
 
@@ -280,24 +327,34 @@ class Controller(QObject):
             return  # never re-scan PortAudio while a stream may be open
         self._set(self.setupChanged, busy=True)
 
-        def work():
+        def work() -> tuple[InputDevice, tuple[InputLevel | None, str | None]]:
             devices = self.backend.list_inputs()
             device = choose_umik(devices)
             return device, self._read_level(device)
 
-        def done(result, error):
+        def done(
+            result: tuple[InputDevice, tuple[InputLevel | None, str | None]] | None,
+            error: BaseException | None,
+        ) -> None:
             self._set(self.setupChanged, busy=False)
             if error is not None:
                 self.device = None
                 if not isinstance(error, DeviceError):
                     error = DeviceError(f"listing input devices failed ({type(error).__name__})")
-                self._set(self.setupChanged, deviceName="", deviceOk=False, deviceMessage=str(error))
+                self._set(
+                    self.setupChanged, deviceName="", deviceOk=False, deviceMessage=str(error)
+                )
                 self._apply_level(None, None)
                 return
+            assert result is not None
             device, (level, level_error) = result
             self.device = device
-            self._set(self.setupChanged, deviceName=device.name, deviceOk=True,
-                      deviceMessage=f"{chain.LABEL} via {device.host_api}")
+            self._set(
+                self.setupChanged,
+                deviceName=device.name,
+                deviceOk=True,
+                deviceMessage=f"{chain.LABEL} via {device.host_api}",
+            )
             self._apply_level(level, level_error)
 
         self._submit(work, done)
@@ -315,11 +372,19 @@ class Controller(QObject):
             pin = self.state.pin()
         except GuardError as exc:
             pin_error = str(exc)
-        pinned = f"pinned at {pin.level.volume}% ({pin.level.source}) since {pin.pinned_at[:10]}" if pin else "not pinned"
+        pinned = (
+            f"pinned at {pin.level.volume}% ({pin.level.source}) since {pin.pinned_at[:10]}"
+            if pin
+            else "not pinned"
+        )
         if self.device is None:
             state, text, message = "unknown", "", ""
         elif level is None:
-            state, text, message = "unreadable", "unreadable", f"The input level cannot be read, so recording is refused: {error}"
+            state, text, message = (
+                "unreadable",
+                "unreadable",
+                f"The input level cannot be read, so recording is refused: {error}",
+            )
         else:
             text = f"{level.volume}%" + (" (muted)" if level.muted else "")
             try:
@@ -336,8 +401,15 @@ class Controller(QObject):
             except GuardError as exc:
                 state, message = "unreadable", str(exc)
         cal_text, cal_ok = self._cal_status()
-        self._set(self.setupChanged, levelState=state, levelText=text, levelMessage=message, pinnedText=pinned,
-                  calText=cal_text, calOk=cal_ok)
+        self._set(
+            self.setupChanged,
+            levelState=state,
+            levelText=text,
+            levelMessage=message,
+            pinnedText=pinned,
+            calText=cal_text,
+            calOk=cal_ok,
+        )
         self._update_can_start()
 
     def _cal_status(self) -> tuple[str, bool]:
@@ -346,7 +418,10 @@ class Controller(QObject):
         except (CalFileError, GuardError) as exc:
             return str(exc), False
         if cal is None:
-            return "No cal file imported: sessions are recorded uncalibrated (calFileSha256 null).", False
+            return (
+                "No cal file imported: sessions are recorded uncalibrated (calFileSha256 null).",
+                False,
+            )
         serial = f", serial {cal.serial}" if cal.serial else ""
         return f"{cal.name}{serial} (sha256 {cal.sha256[:12]}…)", True
 
@@ -361,13 +436,24 @@ class Controller(QObject):
                 "muted": "Unmute the UMIK-1's input.",
                 "unreadable": "The input level cannot be read, so recording is refused.",
             }.get(self._v["levelState"], "Waiting for the input level.")
-        self._set(self.setupChanged, canStart=blocker == "" and self._v["phase"] in ("setup", "done", "aborted"), startBlocker=blocker)
+        self._set(
+            self.setupChanged,
+            canStart=blocker == "" and self._v["phase"] in ("setup", "done", "aborted"),
+            startBlocker=blocker,
+        )
 
     def _on_setup_poll(self) -> None:
-        if self._v["phase"] not in ("setup", "done", "aborted") or self.device is None or self._v["busy"]:
+        if (
+            self._v["phase"] not in ("setup", "done", "aborted")
+            or self.device is None
+            or self._v["busy"]
+        ):
             return
         device = self.device
-        self._submit(lambda: self._read_level(device), lambda result, error: self._apply_level(*result) if error is None else None)
+        self._submit(
+            lambda: self._read_level(device),
+            lambda result, error: self._apply_level(*result) if error is None else None,
+        )
 
     @Slot()
     def pinLevel(self) -> None:  # noqa: N802
@@ -384,7 +470,11 @@ class Controller(QObject):
             self.toast.emit(f"Not pinned: {exc}", "danger")
             return
         if previous and not previous.level.same_setting(level):
-            self.toast.emit(f"Re-pinned at {new.level.volume}% (was {previous.level.volume}%): logged as a chain era event.", "warn")
+            self.toast.emit(
+                f"Re-pinned at {new.level.volume}% (was {previous.level.volume}%): "
+                "logged as a chain era event.",
+                "warn",
+            )
         else:
             self.toast.emit(f"Input level pinned at {new.level.volume}%.", "ok")
         self._apply_level(level, None)
@@ -422,12 +512,20 @@ class Controller(QObject):
     def startSession(self) -> None:  # noqa: N802
         if not self._v["canStart"] or self.device is None:
             return
-        ritual = Ritual(self.backend, self.device, self.levels, self.state, self.store, self.config.distance_cm,
-                        cal_tone=self._v["calTone"], skip_free=self._v["skipFree"])
+        ritual = Ritual(
+            self.backend,
+            self.device,
+            self.levels,
+            self.state,
+            self.store,
+            self.config.distance_cm,
+            cal_tone=self._v["calTone"],
+            skip_free=self._v["skipFree"],
+        )
         self._set(self.sessionChanged, phase="starting", abortReason="")
         self._update_can_start()
 
-        def done(_result, error):
+        def done(_result: None, error: BaseException | None) -> None:
             if error is not None:
                 self._set(self.sessionChanged, phase="setup")
                 self._update_can_start()
@@ -452,14 +550,30 @@ class Controller(QObject):
             elif i == r.index and r.recording is not None:
                 state, detail = "recording", ""
             elif i == r.index and r.status == "open":
-                state, detail = "current", f"{seg.seconds} s, stops by itself" if seg.mode == "timed" else "you stop it"
+                state, detail = (
+                    "current",
+                    f"{seg.seconds} s, stops by itself" if seg.mode == "timed" else "you stop it",
+                )
             else:
                 state, detail = "pending", f"{seg.seconds} s" if seg.mode == "timed" else ""
-            rows.append({"key": seg.key, "label": seg.label, "mode": seg.mode, "state": state, "detail": detail})
+            rows.append(
+                {
+                    "key": seg.key,
+                    "label": seg.label,
+                    "mode": seg.mode,
+                    "state": state,
+                    "detail": detail,
+                }
+            )
         current = r.current
-        self._set(self.sessionChanged, segments=rows, currentIndex=r.index if current else -1,
-                  currentLabel=current.label if current else "", currentMode=current.mode if current else "",
-                  canRedo=bool(r.results) and r.recording is None and r.status == "open")
+        self._set(
+            self.sessionChanged,
+            segments=rows,
+            currentIndex=r.index if current else -1,
+            currentLabel=current.label if current else "",
+            currentMode=current.mode if current else "",
+            canRedo=bool(r.results) and r.recording is None and r.status == "open",
+        )
 
     @Slot()
     def toggleRecording(self) -> None:  # noqa: N802
@@ -528,7 +642,11 @@ class Controller(QObject):
         self._set(self.sessionChanged, phase="done")
         self._sync_segments()
         self._update_can_start()
-        self.toast.emit(f"Session {manifest['sessionId']} saved: {len(manifest['files'])} files. It uploads when signed in.", "ok")
+        self.toast.emit(
+            f"Session {manifest['sessionId']} saved: {len(manifest['files'])} files. "
+            "It uploads when signed in.",
+            "ok",
+        )
         self._refresh_uploads()
         if self.auto_upload and self.session.signed_in:
             self.uploadPending()
@@ -546,8 +664,17 @@ class Controller(QObject):
         if self._v["phase"] not in ("done", "aborted"):
             return
         self.ritual = None
-        self._set(self.sessionChanged, phase="setup", sessionId="", segments=[], currentIndex=-1, currentLabel="",
-                  currentMode="", canRedo=False, abortReason="")
+        self._set(
+            self.sessionChanged,
+            phase="setup",
+            sessionId="",
+            segments=[],
+            currentIndex=-1,
+            currentLabel="",
+            currentMode="",
+            canRedo=False,
+            abortReason="",
+        )
         self._update_can_start()
         self.refreshDevices()
 
@@ -563,9 +690,9 @@ class Controller(QObject):
 
     def _on_meter(self) -> None:
         r = self.ritual
-        recording = r.recording if r else None
-        if recording is None:
+        if r is None or r.recording is None:
             return
+        recording = r.recording
         block = recording.last_block
         seconds = recording.seconds
         segment = r.current
@@ -574,9 +701,14 @@ class Controller(QObject):
         else:
             elapsed = f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
         peak = block.peak_dbfs
-        self._set(self.meterChanged, meterPeak=meter_fraction(peak), meterRms=meter_fraction(block.rms_dbfs),
-                  meterText="—" if peak is None else f"{peak:.1f} dBFS peak", clipping=recording.stats.clipped > 0,
-                  elapsedText=elapsed)
+        self._set(
+            self.meterChanged,
+            meterPeak=meter_fraction(peak),
+            meterRms=meter_fraction(block.rms_dbfs),
+            meterText="—" if peak is None else f"{peak:.1f} dBFS peak",
+            clipping=recording.stats.clipped > 0,
+            elapsedText=elapsed,
+        )
         if recording.finished.is_set():  # a timed segment reached its length (or the writer failed)
             self.stopSegment()
 
@@ -594,8 +726,17 @@ class Controller(QObject):
         sessions = self.store.sessions()
         pending = sum(1 for s in sessions if s.upload_state == "pending")
         failed = sum(1 for s in sessions if s.upload_state == "failed")
-        text = self._v["uploadText"] if self._v["uploadBusy"] else (
-            f"{pending} session(s) waiting to upload" if pending else "Every session is uploaded" if sessions else "")
+        text = (
+            self._v["uploadText"]
+            if self._v["uploadBusy"]
+            else (
+                f"{pending} session(s) waiting to upload"
+                if pending
+                else "Every session is uploaded"
+                if sessions
+                else ""
+            )
+        )
         if failed:
             text += f"; {failed} refused by the server (see --sessions)"
         self._set(self.uploadsChanged, pendingCount=pending, failedCount=failed, uploadText=text)
@@ -607,15 +748,21 @@ class Controller(QObject):
         if not self.session.signed_in:
             self.toast.emit("Sign in to upload.", "info")
             return
+        try:
+            server = self.config.require_server()
+        except ConfigError as exc:
+            self.toast.emit(f"Upload needs the settings: {exc}", "warn")
+            return
         self._set(self.uploadsChanged, uploadBusy=True, uploadText="Uploading…")
-        client = IntakeClient(self.config.server_url, self.session, self.http)
-        server = self.config.server_url
+        client = IntakeClient(server, self.session, self.http)
 
         def progress(name: str, sent: int, size: int) -> None:
             pct = 100 * sent // max(size, 1)
-            self._bridge.run.emit(lambda: self._set(self.uploadsChanged, uploadText=f"Uploading {name}: {pct}%"))
+            self._bridge.run.emit(
+                lambda: self._set(self.uploadsChanged, uploadText=f"Uploading {name}: {pct}%")
+            )
 
-        def done(summary, error):
+        def done(summary: UploadSummary | None, error: BaseException | None) -> None:
             self._set(self.uploadsChanged, uploadBusy=False, uploadText="")
             if error is not None:
                 if isinstance(error, SignInRequired):
@@ -625,13 +772,19 @@ class Controller(QObject):
                     self.toast.emit(f"Upload failed: {type(error).__name__}", "danger")
                 else:
                     raise error
-            else:
+            elif summary is not None:
                 if summary.accepted:
                     self.toast.emit(f"{summary.accepted} session(s) accepted by the server.", "ok")
                 if summary.failed:
-                    self.toast.emit(f"{summary.failed} session(s) refused: {summary.last_error}", "danger")
+                    self.toast.emit(
+                        f"{summary.failed} session(s) refused: {summary.last_error}", "danger"
+                    )
                 if summary.pending:
-                    self.toast.emit(f"{summary.pending} session(s) not uploaded yet ({summary.last_error}); retried next launch.", "warn")
+                    self.toast.emit(
+                        f"{summary.pending} session(s) not uploaded yet ({summary.last_error}); "
+                        "retried next launch.",
+                        "warn",
+                    )
             self._refresh_uploads()
 
         self._submit(lambda: upload_pending(client, self.store, server, progress), done)

@@ -18,9 +18,10 @@ disk is never uploaded. Raw audio goes only to the configured server.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -52,7 +53,7 @@ class UploadRefused(UploadError):
 @dataclass
 class Answer:
     status: int
-    body: dict
+    body: dict[str, Any]
 
 
 def new_http() -> httpx.Client:
@@ -61,19 +62,34 @@ def new_http() -> httpx.Client:
 
 
 class IntakeClient:
-    def __init__(self, server_url: str, session: Session, http: httpx.Client, chunk_bytes: int = CHUNK_BYTES) -> None:
+    def __init__(
+        self, server_url: str, session: Session, http: httpx.Client, chunk_bytes: int = CHUNK_BYTES
+    ) -> None:
         self.base = server_url.rstrip("/") + "/api/intake/sessions"
         self.session = session
         self.http = http
         self.chunk_bytes = chunk_bytes
 
-    def _send(self, method: str, url: str, *, content: bytes | None = None, headers: dict[str, str] | None = None,
-              timeout: httpx.Timeout = TIMEOUT) -> Answer:
+    def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        content: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout = TIMEOUT,
+    ) -> Answer:
         bearer = self.session.bearer()
         for attempt in (1, 2):
-            sent = {"Authorization": f"Bearer {bearer}", "Accept": "application/json", **(headers or {})}
+            sent = {
+                "Authorization": f"Bearer {bearer}",
+                "Accept": "application/json",
+                **(headers or {}),
+            }
             try:
-                response = self.http.request(method, url, content=content, headers=sent, timeout=timeout)
+                response = self.http.request(
+                    method, url, content=content, headers=sent, timeout=timeout
+                )
             except httpx.HTTPError as exc:
                 raise UploadError(f"the server did not answer ({type(exc).__name__})") from exc
             self.http.cookies.clear()
@@ -82,7 +98,10 @@ class IntakeClient:
                 continue
             break
         if response.is_redirect:
-            raise SignInRequired("the server's door asked for a browser sign-in instead of accepting the token (is the door configured for this client?)")
+            raise SignInRequired(
+                "the server's door asked for a browser sign-in instead of accepting the token "
+                "(is the door configured for this client?)"
+            )
         if response.status_code == 401:
             raise SignInRequired("the server refused the sign-in; sign in again")
         try:
@@ -97,7 +116,9 @@ class IntakeClient:
         return Answer(response.status_code, body)
 
     def open(self, manifest_bytes: bytes) -> Answer:
-        answer = self._send("POST", self.base, content=manifest_bytes, headers={"Content-Type": "application/json"})
+        answer = self._send(
+            "POST", self.base, content=manifest_bytes, headers={"Content-Type": "application/json"}
+        )
         if answer.status in (200, 201):
             return answer
         code = answer.body.get("error", f"HTTP {answer.status}")
@@ -108,7 +129,9 @@ class IntakeClient:
     def status(self, session_id: str) -> Answer:
         return self._send("GET", f"{self.base}/{quote(session_id)}")
 
-    def put_file(self, session_id: str, path: Path, size: int, start: int, progress: Progress | None = None) -> None:
+    def put_file(
+        self, session_id: str, path: Path, size: int, start: int, progress: Progress | None = None
+    ) -> None:
         """Send ``path`` from ``start`` in chunks until the server has it all."""
         url = f"{self.base}/{quote(session_id)}/files/{quote(path.name)}"
         offset = start
@@ -120,10 +143,16 @@ class IntakeClient:
                 if not chunk:
                     raise UploadRefused(f"{path.name} is shorter on disk than its manifest says")
                 end = offset + len(chunk) - 1
-                answer = self._send("PUT", url, content=chunk, headers={
-                    "Content-Type": "application/octet-stream",
-                    "Content-Range": f"bytes {offset}-{end}/{size}",
-                }, timeout=SLOW_TIMEOUT if end + 1 == size else TIMEOUT)
+                answer = self._send(
+                    "PUT",
+                    url,
+                    content=chunk,
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "Content-Range": f"bytes {offset}-{end}/{size}",
+                    },
+                    timeout=SLOW_TIMEOUT if end + 1 == size else TIMEOUT,
+                )
                 state = answer.body.get("state")
                 if answer.status == 202 and state == "partial":
                     offset = int(answer.body.get("receivedBytes", end + 1))
@@ -140,18 +169,31 @@ class IntakeClient:
                 elif answer.status == 409 and answer.body.get("error") == "session_busy":
                     raise UploadError("the server is busy with this session; try again shortly")
                 elif answer.status == 404 and answer.body.get("error") == "session_not_found":
-                    raise UploadError("the server no longer holds the open session (purged); it is reopened next time")
+                    raise UploadError(
+                        "the server no longer holds the open session (purged); "
+                        "it is reopened next time"
+                    )
                 else:
-                    raise UploadRefused(f"the server refused {path.name} ({answer.body.get('error', f'HTTP {answer.status}')})")
+                    raise UploadRefused(
+                        f"the server refused {path.name} "
+                        f"({answer.body.get('error', f'HTTP {answer.status}')})"
+                    )
                 if progress:
                     progress(path.name, offset, size)
 
     def finalize(self, session_id: str) -> Answer:
-        return self._send("POST", f"{self.base}/{quote(session_id)}/finalize", content=b"", headers={"Content-Type": "application/json"},
-                          timeout=SLOW_TIMEOUT)
+        return self._send(
+            "POST",
+            f"{self.base}/{quote(session_id)}/finalize",
+            content=b"",
+            headers={"Content-Type": "application/json"},
+            timeout=SLOW_TIMEOUT,
+        )
 
 
-def upload_session(client: IntakeClient, local: LocalSession, progress: Progress | None = None) -> str:
+def upload_session(
+    client: IntakeClient, local: LocalSession, progress: Progress | None = None
+) -> str:
     """Upload one completed session until the server accepts it. Returns "accepted"."""
     manifest = read_session_json(local.path)
     if manifest.get("status") != "completed":
@@ -162,7 +204,9 @@ def upload_session(client: IntakeClient, local: LocalSession, progress: Progress
         raise UploadRefused(f"the package is not acceptable ({exc})") from exc
     changed = verify_files(local.path, manifest)
     if changed:
-        raise UploadRefused(f"{len(changed)} file(s) changed on disk since the session was recorded; not uploaded")
+        raise UploadRefused(
+            f"{len(changed)} file(s) changed on disk since the session was recorded; not uploaded"
+        )
     body = (local.path / "session.json").read_bytes()  # sent exactly as written, every time
     session_id = manifest["sessionId"]
     sizes = {f["name"]: f["sizeBytes"] for f in manifest["files"]}
@@ -174,17 +218,38 @@ def upload_session(client: IntakeClient, local: LocalSession, progress: Progress
             name = entry.get("name")
             if name not in sizes or entry.get("complete"):
                 continue
-            client.put_file(session_id, local.path / name, sizes[name], int(entry.get("receivedBytes", 0)), progress)
+            client.put_file(
+                session_id,
+                local.path / name,
+                sizes[name],
+                int(entry.get("receivedBytes", 0)),
+                progress,
+            )
         final = client.finalize(session_id)
         if final.status == 200 and final.body.get("state") == "accepted":
             return "accepted"
         code = final.body.get("error", f"HTTP {final.status}")
-        if final.status == 409 and code == "incomplete" or final.status == 422 and code == "checksum_mismatch":
-            answer = client.status(session_id)  # the server dropped or misses files: send them again
+        if (
+            final.status == 409
+            and code == "incomplete"
+            or final.status == 422
+            and code == "checksum_mismatch"
+        ):
+            answer = client.status(
+                session_id
+            )  # the server dropped or misses files: send them again
             if answer.status != 200:
-                raise UploadError(f"the session's status could not be read ({answer.body.get('error', answer.status)})")
+                raise UploadError(
+                    "the session's status could not be read "
+                    f"({answer.body.get('error', answer.status)})"
+                )
             continue
-        if final.status == 409 and code == "session_busy" or final.status == 404 and code == "session_not_found":
+        if (
+            final.status == 409
+            and code == "session_busy"
+            or final.status == 404
+            and code == "session_not_found"
+        ):
             raise UploadError(f"the session was not finalized ({code}); it is retried next time")
         raise UploadRefused(f"the server did not accept the session ({code})")
     raise UploadError("the session was not accepted after several rounds; it will be retried")
@@ -198,9 +263,14 @@ class UploadSummary:
     last_error: str | None = None
 
 
-def upload_pending(client: IntakeClient, store: SessionStore, server: str, progress: Progress | None = None,
-                   on_session: Callable[[str, str], None] | None = None,
-                   on_start: Callable[[str], None] | None = None) -> UploadSummary:
+def upload_pending(
+    client: IntakeClient,
+    store: SessionStore,
+    server: str,
+    progress: Progress | None = None,
+    on_session: Callable[[str, str], None] | None = None,
+    on_start: Callable[[str], None] | None = None,
+) -> UploadSummary:
     """Every pending session, oldest first. Logs and messages carry ids and counts only.
 
     ``on_start(session_id)`` is called as each session starts (the Uploads screen shows
