@@ -18,7 +18,8 @@ touched; phases 5 and 6 are out of scope.
 | 4a | `voice-journey-capture` becomes `voice-lab-desktop` (Python 3.12, scshafe-qt 0.2); sign-in and status, Uploads, Corpus, Journey, Practice, Referee on `/api/v1`; the checklist | #34 | merged `f440436` |
 | view | Tests: every `/view` route refuses non-GET; none serves audio | #35 | merged `5036dba` |
 | 4b | The UMIK-1 ritual in the app; `/api/v1/intake` with the D-021 ledger | #36 | merged `f09a951` |
-| 4c | Prompted capture; the S-1 harness; Linux packaging; the macOS bundle script and install page | (this PR) | open, after #36 |
+| 4c | Prompted capture; the S-1 harness; Linux packaging; the macOS bundle script and install page | #38 | merged `0063dcc` |
+| fix | Record → Prompts' model stays C++-owned (QML's collector could delete it) | #39 | merged `1bc053e` |
 | chains | The Measurement screen reads `GET /api/v1/chains` (stacked on #31) | #37 | draft, gated like #31 |
 | removal | Remove voice-journey's unversioned paths and the compatibility intake (the SPA's page routes stay as 308s) | (draft) | gated: checklist sign-off, cutover (F), 4b acceptance, runbook E done |
 
@@ -196,9 +197,21 @@ Deviations and open items:
   path already built; it belongs with the removal PR, or a decision of the owner's.
 - **New stand-in:** `SuiWaveform` (its API is in the scshafe-qt asks below).
 
+### 2026-10-11, after 4c
+
+- **#38 (4c) merged** (`0063dcc`); its deploy run 38131925979 passed verify, deploy and
+  health.
+- **A 4c defect, fixed in its own PR.** `PromptsScreen.qml` reads its model through
+  `AppModel.promptsModel`, a property returning a parentless `QObject`; QML's JavaScript
+  collector could delete it under the running screen ("Unable to assign [undefined]"). The
+  removal draft's tree made it fail one journey or referee test per run (4 of 4 runs; 0 of 6
+  with the fix); `main` passed only by the collector's timing. The app now sets
+  `CppOwnership` on it. In the app this would have been a crash or a dead screen at a random
+  moment.
+
 ### Removal (draft)
 
-Prepared on `phase4/remove-compat` (based on the 4c branch), as a draft PR: **not to be
+Prepared on `phase4/remove-compat` (based on the 4c branch, then `main` after #39), as a draft PR: **not to be
 merged** until all of these hold:
 
 - the owner has signed off [PHASE-4-CHECKLIST.md](PHASE-4-CHECKLIST.md) (owner step 2);
