@@ -146,6 +146,7 @@ def add_records(layout: AssetLayout, *, loose: bool = True) -> None:
         "derived/datasets/pilot-1/manifest.json",
         "derived/transfer-plans/plan-1/manifest.json",
         "provenance/pilot-gates/gate-1.json",
+        "provenance/host-transfers/move-1.txt",
         "provenance/diagnostic-root.json",
     ):
         write_file(root, relative, f'{{"record":"{relative}"}}\n'.encode(), mode=0o400)

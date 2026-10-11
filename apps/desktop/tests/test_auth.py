@@ -11,18 +11,22 @@ import time
 import httpx
 import pytest
 from conftest import mint
-
-from voice_journey_capture import auth
-from voice_journey_capture.auth import AuthError, LoopbackReceiver, Session, SignInRequired, sign_in
-from voice_journey_capture.tokens import KeyringStore, MemoryStore, NoKeychainError, Tokens
+from voice_lab_desktop import auth
+from voice_lab_desktop.auth import AuthError, LoopbackReceiver, Session, SignInRequired, sign_in
+from voice_lab_desktop.tokens import KeyringStore, MemoryStore, NoKeychainError, Tokens
 
 
 def browser(log: list[str] | None = None):
-    """A 'browser' that follows the authorize redirect to the loopback callback (on its own thread)."""
+    """A 'browser' that follows the authorize redirect to the loopback callback (on its own
+    thread)."""
+
     def open_url(url: str) -> None:
         if log is not None:
             log.append(url)
-        threading.Thread(target=lambda: httpx.get(url, follow_redirects=True, timeout=10), daemon=True).start()
+        threading.Thread(
+            target=lambda: httpx.get(url, follow_redirects=True, timeout=10), daemon=True
+        ).start()
+
     return open_url
 
 
@@ -32,14 +36,20 @@ def test_sign_in_pkce_s256_state_nonce_and_exact_redirect(config, issuer):
         tokens = sign_in(config, http, browser(opened), timeout=10)
     assert tokens.refresh_token and tokens.bearer == tokens.access_token
     params = issuer.authorize_params[0]
-    assert params["response_type"] == "code" and params["client_id"] == "voice-journey-capture"
+    assert params["response_type"] == "code" and params["client_id"] == "voice-lab-desktop"
     assert params["code_challenge_method"] == "S256" and len(params["code_challenge"]) == 43
     assert params["scope"] == "openid email profile offline_access"
-    assert params["redirect_uri"].startswith("http://127.0.0.1:") and params["redirect_uri"].endswith("/callback")
+    assert params["redirect_uri"].startswith("http://127.0.0.1:") and params[
+        "redirect_uri"
+    ].endswith("/callback")
     assert len(params["state"]) >= 40 and len(params["nonce"]) >= 40
     exchange = issuer.token_requests[0]
     assert exchange["redirect_uri"] == params["redirect_uri"]  # exactly the same string
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(exchange["code_verifier"].encode()).digest()).rstrip(b"=").decode()
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(exchange["code_verifier"].encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
     assert challenge == params["code_challenge"]
     assert "client_secret" not in exchange
 
@@ -57,16 +67,31 @@ def test_nonce_and_audience_are_checked(config, issuer, monkeypatch):
     with httpx.Client() as http, pytest.raises(AuthError, match="nonce mismatch"):
         sign_in(config, http, browser(), timeout=10)
     issuer.client_id = "another-client"
-    from voice_journey_capture.config import Config
-    other = Config(server_url=config.server_url, issuer=config.issuer, client_id="another-client", data_dir=config.data_dir).validated()
-    issuer._tokens = lambda nonce: {**real(nonce), "id_token": __import__("fakes").fake_jwt({"iss": issuer.issuer, "aud": "voice-journey-capture", "nonce": nonce})}
+    from voice_lab_desktop.config import Config
+
+    other = Config(
+        server_url=config.server_url,
+        issuer=config.issuer,
+        client_id="another-client",
+        data_dir=config.data_dir,
+    ).validated()
+    issuer._tokens = lambda nonce: {
+        **real(nonce),
+        "id_token": __import__("fakes").fake_jwt(
+            {"iss": issuer.issuer, "aud": "voice-lab-desktop", "nonce": nonce}
+        ),
+    }
     with httpx.Client() as http, pytest.raises(AuthError, match="different issuer or client"):
         sign_in(other, http, browser(), timeout=10)
 
 
 def test_without_offline_access_no_refresh_scope(config, issuer, monkeypatch):
     real = auth.discover
-    monkeypatch.setattr(auth, "discover", lambda c, h: auth.Discovery(**{**real(c, h).__dict__, "scopes_supported": ("openid",)}))
+    monkeypatch.setattr(
+        auth,
+        "discover",
+        lambda c, h: auth.Discovery(**{**real(c, h).__dict__, "scopes_supported": ("openid",)}),
+    )
     with httpx.Client() as http:
         sign_in(config, http, browser(), timeout=10)
     assert "offline_access" not in issuer.authorize_params[0]["scope"]
@@ -80,7 +105,9 @@ def test_loopback_listens_on_127_0_0_1_only_and_answers_once():
     t.start()
     assert httpx.get(f"http://127.0.0.1:{receiver.port}/favicon.ico").status_code == 404
     first = httpx.get(f"http://127.0.0.1:{receiver.port}/callback?code=c1&state=s1")
-    assert first.status_code == 200 and "c1" not in first.text and "s1" not in first.text  # never reflected
+    assert (
+        first.status_code == 200 and "c1" not in first.text and "s1" not in first.text
+    )  # never reflected
     t.join(5)
     assert got == {"code": "c1", "state": "s1"}
     with pytest.raises(httpx.ConnectError):  # closed after the one callback
@@ -90,11 +117,13 @@ def test_loopback_listens_on_127_0_0_1_only_and_answers_once():
 def test_loopback_gives_up_after_too_many_stray_requests():
     receiver = LoopbackReceiver(0)
     errors: list[Exception] = []
+
     def wait():
         try:
             receiver.wait(timeout=10)
         except AuthError as exc:
             errors.append(exc)
+
     t = threading.Thread(target=wait, daemon=True)
     t.start()
     for _ in range(auth.MAX_LOOPBACK_REQUESTS):
@@ -132,7 +161,12 @@ def test_refresh_rotates_and_keeps_old_refresh_if_not_rotated(config, issuer):
         bearer = session.bearer()
         assert bearer != before.bearer and store.tokens.refresh_token != before.refresh_token
         issuer.issue_refresh = False
-        store.tokens = Tokens(store.tokens.access_token, store.tokens.id_token, time.time() - 10, store.tokens.refresh_token)
+        store.tokens = Tokens(
+            store.tokens.access_token,
+            store.tokens.id_token,
+            time.time() - 10,
+            store.tokens.refresh_token,
+        )
         session._tokens = store.tokens
         kept = store.tokens.refresh_token
         session.bearer()
@@ -156,6 +190,7 @@ def test_tokens_never_appear_in_repr():
 def test_keychain_without_backend_refuses(monkeypatch):
     import keyring
     from keyring.backends import fail
+
     monkeypatch.setattr(keyring, "get_keyring", lambda: fail.Keyring())
     with pytest.raises(NoKeychainError, match="no OS keychain"):
         KeyringStore.check_backend()
@@ -170,20 +205,26 @@ def test_keychain_round_trip_with_a_real_backend_shape(monkeypatch):
     class Memory(KeyringBackend):
         priority = 1
         items: dict = {}
-        def get_password(self, service, username): return self.items.get((service, username))
-        def set_password(self, service, username, password): self.items[(service, username)] = password
-        def delete_password(self, service, username): self.items.pop((service, username), None)
+
+        def get_password(self, service, username):
+            return self.items.get((service, username))
+
+        def set_password(self, service, username, password):
+            self.items[(service, username)] = password
+
+        def delete_password(self, service, username):
+            self.items.pop((service, username), None)
 
     backend = Memory()
     monkeypatch.setattr(keyring, "get_keyring", lambda: backend)
     monkeypatch.setattr(keyring, "get_password", backend.get_password)
     monkeypatch.setattr(keyring, "set_password", backend.set_password)
     monkeypatch.setattr(keyring, "delete_password", backend.delete_password)
-    store = KeyringStore("https://id.example", "voice-journey-capture")
+    store = KeyringStore("https://id.example", "voice-lab-desktop")
     tokens = Tokens("a.b.c", "d.e.f", 123.0, "r")
     store.save(tokens)
     assert store.load() == tokens
-    assert list(backend.items) == [("voice-journey-capture", "voice-journey-capture@https://id.example")]
+    assert list(backend.items) == [("voice-lab-desktop", "voice-lab-desktop@https://id.example")]
     store.clear()
     assert store.load() is None
 
@@ -200,4 +241,7 @@ def test_bearer_kind_follows_the_settings(config, issuer):
     tokens = mint(issuer)
     with httpx.Client() as http:
         assert Session(config, MemoryStore(tokens), http).bearer() == tokens.access_token
-        assert Session(replace(config, bearer="id"), MemoryStore(tokens), http).bearer() == tokens.id_token
+        assert (
+            Session(replace(config, bearer="id"), MemoryStore(tokens), http).bearer()
+            == tokens.id_token
+        )

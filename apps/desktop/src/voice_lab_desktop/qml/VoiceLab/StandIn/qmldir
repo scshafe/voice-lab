@@ -1,0 +1,9 @@
+module VoiceLab.StandIn
+SuiText 1.0 SuiText.qml
+SuiCheckbox 1.0 SuiCheckbox.qml
+SuiSelect 1.0 SuiSelect.qml
+SuiSlider 1.0 SuiSlider.qml
+SuiProgress 1.0 SuiProgress.qml
+SuiTable 1.0 SuiTable.qml
+SuiChart 1.0 SuiChart.qml
+SuiLevelMeter 1.0 SuiLevelMeter.qml

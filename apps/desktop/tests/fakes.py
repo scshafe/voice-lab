@@ -29,7 +29,8 @@ def b64(data: dict) -> str:
 
 
 def fake_jwt(claims: dict) -> str:
-    return f"{b64({'alg': 'RS256', 'kid': 'k1'})}.{b64(claims)}.{base64.urlsafe_b64encode(secrets.token_bytes(16)).rstrip(b'=').decode()}"
+    signature = base64.urlsafe_b64encode(secrets.token_bytes(16)).rstrip(b"=").decode()
+    return f"{b64({'alg': 'RS256', 'kid': 'k1'})}.{b64(claims)}.{signature}"
 
 
 class FakeIssuer:
@@ -48,8 +49,12 @@ class FakeIssuer:
         self.lock = threading.Lock()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.server.daemon_threads = True
-        self.thread = threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.05), daemon=True)
+        self.thread = threading.Thread(
+            target=lambda: self.server.serve_forever(poll_interval=0.05), daemon=True
+        )
         self.on_access_token = lambda token: None
+        #: Mints the access token instead of a fake one (a test whose API verifies signatures).
+        self.access_factory: Any = None
 
     @property
     def issuer(self) -> str:
@@ -65,12 +70,27 @@ class FakeIssuer:
 
     def _tokens(self, nonce: str | None) -> dict:
         now = int(time.time())
-        claims = {"iss": self.issuer, "aud": self.client_id, "sub": "sub-owner", "iat": now, "exp": now + self.expires_in}
-        access = fake_jwt({**claims, "jti": secrets.token_hex(8)})
+        claims = {
+            "iss": self.issuer,
+            "aud": self.client_id,
+            "sub": "sub-owner",
+            "iat": now,
+            "exp": now + self.expires_in,
+        }
+        access = (
+            self.access_factory()
+            if self.access_factory
+            else fake_jwt({**claims, "jti": secrets.token_hex(8)})
+        )
         id_claims = {**claims, "email": "owner@example.test"}
         if nonce is not None:
             id_claims["nonce"] = nonce
-        out = {"access_token": access, "id_token": fake_jwt(id_claims), "token_type": "Bearer", "expires_in": self.expires_in}
+        out = {
+            "access_token": access,
+            "id_token": fake_jwt(id_claims),
+            "token_type": "Bearer",
+            "expires_in": self.expires_in,
+        }
         if self.issue_refresh:
             rt = "rt-" + secrets.token_hex(8)
             self.refresh_tokens[rt] = True
@@ -97,11 +117,23 @@ class FakeIssuer:
             def do_GET(self) -> None:  # noqa: N802
                 parts = urlsplit(self.path)
                 if parts.path == "/.well-known/openid-configuration":
-                    return self._json(200, {
-                        "issuer": fake.issuer, "authorization_endpoint": f"{fake.issuer}/authorize",
-                        "token_endpoint": f"{fake.issuer}/api/oidc/token", "end_session_endpoint": f"{fake.issuer}/api/oidc/end-session",
-                        "scopes_supported": ["openid", "profile", "email", "groups", "offline_access"],
-                        "code_challenge_methods_supported": ["plain", "S256"]})
+                    return self._json(
+                        200,
+                        {
+                            "issuer": fake.issuer,
+                            "authorization_endpoint": f"{fake.issuer}/authorize",
+                            "token_endpoint": f"{fake.issuer}/api/oidc/token",
+                            "end_session_endpoint": f"{fake.issuer}/api/oidc/end-session",
+                            "scopes_supported": [
+                                "openid",
+                                "profile",
+                                "email",
+                                "groups",
+                                "offline_access",
+                            ],
+                            "code_challenge_methods_supported": ["plain", "S256"],
+                        },
+                    )
                 if parts.path == "/authorize":
                     params = {k: v[0] for k, v in parse_qs(parts.query).items()}
                     with fake.lock:
@@ -110,7 +142,10 @@ class FakeIssuer:
                         fake.codes[code] = params
                     state = "tampered" if fake.tamper_state else params["state"]
                     self.send_response(302)
-                    self.send_header("Location", f"{params['redirect_uri']}?{urlencode({'code': code, 'state': state})}")
+                    self.send_header(
+                        "Location",
+                        f"{params['redirect_uri']}?{urlencode({'code': code, 'state': state})}",
+                    )
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
@@ -121,17 +156,32 @@ class FakeIssuer:
                 form = {k: v[0] for k, v in parse_qs(raw).items()}
                 with fake.lock:
                     fake.token_requests.append(form)
-                if urlsplit(self.path).path != "/api/oidc/token" or form.get("client_id") != fake.client_id:
+                if (
+                    urlsplit(self.path).path != "/api/oidc/token"
+                    or form.get("client_id") != fake.client_id
+                ):
                     return self._json(400, {"error": "invalid_client"})
                 if form.get("grant_type") == "authorization_code":
                     params = fake.codes.pop(form.get("code", ""), None)
                     if params is None:
                         return self._json(400, {"error": "invalid_grant"})
                     if form.get("redirect_uri") != params["redirect_uri"]:
-                        return self._json(400, {"error": "invalid_grant", "error_description": "redirect_uri"})
-                    challenge = base64.urlsafe_b64encode(hashlib.sha256(form.get("code_verifier", "").encode()).digest()).rstrip(b"=").decode()
-                    if params.get("code_challenge_method") != "S256" or challenge != params.get("code_challenge"):
-                        return self._json(400, {"error": "invalid_grant", "error_description": "pkce"})
+                        return self._json(
+                            400, {"error": "invalid_grant", "error_description": "redirect_uri"}
+                        )
+                    challenge = (
+                        base64.urlsafe_b64encode(
+                            hashlib.sha256(form.get("code_verifier", "").encode()).digest()
+                        )
+                        .rstrip(b"=")
+                        .decode()
+                    )
+                    if params.get("code_challenge_method") != "S256" or challenge != params.get(
+                        "code_challenge"
+                    ):
+                        return self._json(
+                            400, {"error": "invalid_grant", "error_description": "pkce"}
+                        )
                     return self._json(200, fake._tokens(params.get("nonce")))
                 if form.get("grant_type") == "refresh_token":
                     rt = form.get("refresh_token", "")
@@ -141,7 +191,6 @@ class FakeIssuer:
                 return self._json(400, {"error": "unsupported_grant_type"})
 
         return Handler
-
 
 
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{5,63}$")
@@ -180,7 +229,9 @@ class FakeIntake:
         self.lock = threading.Lock()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.server.daemon_threads = True
-        self.thread = threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.05), daemon=True)
+        self.thread = threading.Thread(
+            target=lambda: self.server.serve_forever(poll_interval=0.05), daemon=True
+        )
 
     @property
     def url(self) -> str:
@@ -202,8 +253,21 @@ class FakeIntake:
         for f in self.manifests[sid]["files"]:
             done = self.files_dir(sid) / f["name"]
             part = self.files_dir(sid) / (f["name"] + ".part")
-            received = done.stat().st_size if done.exists() else part.stat().st_size if part.exists() else 0
-            out.append({"name": f["name"], "sizeBytes": f["sizeBytes"], "receivedBytes": received, "complete": done.exists()})
+            received = (
+                done.stat().st_size
+                if done.exists()
+                else part.stat().st_size
+                if part.exists()
+                else 0
+            )
+            out.append(
+                {
+                    "name": f["name"],
+                    "sizeBytes": f["sizeBytes"],
+                    "receivedBytes": received,
+                    "complete": done.exists(),
+                }
+            )
         return out
 
     def _handler(self):
@@ -215,7 +279,9 @@ class FakeIntake:
             def log_message(self, *args: Any) -> None:
                 return
 
-            def _send(self, seen: Seen, status: int, data: dict, headers: dict[str, str] | None = None) -> None:
+            def _send(
+                self, seen: Seen, status: int, data: dict, headers: dict[str, str] | None = None
+            ) -> None:
                 seen.status, seen.error = status, data.get("error")
                 raw = json.dumps(data).encode()
                 self.send_response(status)
@@ -251,7 +317,11 @@ class FakeIntake:
 
             def _route(self) -> None:
                 parts = urlsplit(self.path)
-                seen = Seen(self.command, parts.path, {k.lower(): v for k, v in self.headers.items() if k.lower() != "authorization"})
+                seen = Seen(
+                    self.command,
+                    parts.path,
+                    {k.lower(): v for k, v in self.headers.items() if k.lower() != "authorization"},
+                )
                 with fake.lock:
                     fake.requests.append(seen)
                 if not self._door(seen):
@@ -286,7 +356,18 @@ class FakeIntake:
                     return self._send(seen, 422, {"error": "invalid_session_id"})
                 if manifest.get("chainId") != "umik1":
                     return self._send(seen, 422, {"error": "unknown_chain"})
-                kept = {k: manifest[k] for k in ("sessionId", "chainId", "startedAt", "endedAt", "capture", "segments", "files")}
+                kept = {
+                    k: manifest[k]
+                    for k in (
+                        "sessionId",
+                        "chainId",
+                        "startedAt",
+                        "endedAt",
+                        "capture",
+                        "segments",
+                        "files",
+                    )
+                }
                 if sid in fake.accepted:
                     if canonical(fake.accepted[sid]) == canonical(kept):
                         return self._send(seen, 200, {"sessionId": sid, "state": "accepted"})
@@ -294,17 +375,23 @@ class FakeIntake:
                 if sid in fake.manifests:
                     if canonical(fake.manifests[sid]) != canonical(kept):
                         return self._send(seen, 409, {"error": "session_manifest_conflict"})
-                    return self._send(seen, 200, {"sessionId": sid, "state": "open", "files": fake.progress(sid)})
+                    return self._send(
+                        seen, 200, {"sessionId": sid, "state": "open", "files": fake.progress(sid)}
+                    )
                 fake.manifests[sid] = kept
                 fake.files_dir(sid).mkdir(parents=True)
-                self._send(seen, 201, {"sessionId": sid, "state": "open", "files": fake.progress(sid)})
+                self._send(
+                    seen, 201, {"sessionId": sid, "state": "open", "files": fake.progress(sid)}
+                )
 
             def _status(self, seen: Seen, sid: str) -> None:
                 if sid in fake.accepted:
                     return self._send(seen, 200, {"sessionId": sid, "state": "accepted"})
                 if sid not in fake.manifests:
                     return self._send(seen, 404, {"error": "session_not_found"})
-                self._send(seen, 200, {"sessionId": sid, "state": "open", "files": fake.progress(sid)})
+                self._send(
+                    seen, 200, {"sessionId": sid, "state": "open", "files": fake.progress(sid)}
+                )
 
             def _put(self, seen: Seen, sid: str, name: str) -> None:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -319,7 +406,15 @@ class FakeIntake:
                 part = fake.files_dir(sid) / (name + ".part")
                 if final.exists():
                     self._body()
-                    return self._send(seen, 200, {"name": name, "state": "already_received", "sizeBytes": final.stat().st_size})
+                    return self._send(
+                        seen,
+                        200,
+                        {
+                            "name": name,
+                            "state": "already_received",
+                            "sizeBytes": final.stat().st_size,
+                        },
+                    )
                 rng = self.headers.get("Content-Range")
                 start = 0
                 if rng is not None:
@@ -334,7 +429,9 @@ class FakeIntake:
                     have = part.stat().st_size if part.exists() else 0
                     if start != have:
                         self._body()
-                        return self._send(seen, 409, {"error": "range_not_contiguous", "receivedBytes": have})
+                        return self._send(
+                            seen, 409, {"error": "range_not_contiguous", "receivedBytes": have}
+                        )
                 else:
                     if length != entry["sizeBytes"]:
                         self._body()
@@ -359,12 +456,16 @@ class FakeIntake:
                     fh.write(body)
                 size = part.stat().st_size
                 if size < entry["sizeBytes"]:
-                    return self._send(seen, 202, {"name": name, "state": "partial", "receivedBytes": size})
+                    return self._send(
+                        seen, 202, {"name": name, "state": "partial", "receivedBytes": size}
+                    )
                 if hashlib.sha256(part.read_bytes()).hexdigest() != entry["sha256"]:
                     part.unlink()
                     return self._send(seen, 422, {"error": "checksum_mismatch", "name": name})
                 part.rename(final)
-                self._send(seen, 200, {"name": name, "state": "received", "sizeBytes": entry["sizeBytes"]})
+                self._send(
+                    seen, 200, {"name": name, "state": "received", "sizeBytes": entry["sizeBytes"]}
+                )
 
             def _finalize(self, seen: Seen, sid: str) -> None:
                 if sid in fake.accepted:
@@ -387,6 +488,14 @@ class FakeIntake:
                 fake.measurement.mkdir(parents=True, exist_ok=True)
                 fake.files_dir(sid).rename(fake.measurement / sid)
                 fake.accepted[sid] = fake.manifests.pop(sid)
-                self._send(seen, 200, {"sessionId": sid, "state": "accepted", "files": len(fake.accepted[sid]["files"])})
+                self._send(
+                    seen,
+                    200,
+                    {
+                        "sessionId": sid,
+                        "state": "accepted",
+                        "files": len(fake.accepted[sid]["files"]),
+                    },
+                )
 
         return Handler

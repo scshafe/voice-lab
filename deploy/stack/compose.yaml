@@ -167,6 +167,15 @@ services:
       - 0.0.0.0
       - --port
       - "8080"
+      # Phase 3 (design §3.4, §6.5): the journey routes and the read-only web view /view/.
+      # Playback (audio, the blind referee) stays off: no --playback-approval (§4.2).
+      - --journey
+    environment:
+      VOICE_JOURNEY_CONTAINER: "1"
+      VOICE_JOURNEY_DATA: /data/voice-lab/journey
+      VOICE_JOURNEY_CORPUS_ROOT: /data/voice-lab/memos/phone
+      VOICE_JOURNEY_STATE_DIR: /data/voice-lab/state/journey
+      VOICE_JOURNEY_MEASUREMENT_DIR: /data/voice-lab/lab/raw
     volumes:
       - type: bind
         source: /data/voice-lab/lab
@@ -182,6 +191,20 @@ services:
       - type: bind
         source: /data/voice-lab/state
         target: /data/voice-lab/state
+        bind:
+          create_host_path: false
+      # Phase 3: the journey pipeline's manifests and artifacts (the job runner writes them)
+      # and the Voice Memos drop, both read-only here (infra host.conf grants both).
+      - type: bind
+        source: /data/voice-lab/journey
+        target: /data/voice-lab/journey
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /data/voice-lab/memos
+        target: /data/voice-lab/memos
+        read_only: true
         bind:
           create_host_path: false
     networks:

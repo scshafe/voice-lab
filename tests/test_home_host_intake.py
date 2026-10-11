@@ -272,6 +272,36 @@ def test_an_expired_or_unbound_approval_sends_nothing(rig: Rig, tmp_path: Path) 
             client=rig.client(),
             clock=lambda: NOW,
         )
+    with pytest.raises(SecurityError, match="does not cover measurement"):
+        upload_session(
+            _session(rig, "synthetic-007"),
+            layout=rig.client_layout,
+            client=rig.client(),
+            clock=lambda: NOW,
+            package_class="measurement",
+        )
+    assert list(HomeHostLedger(rig.client_layout).entries()) == []
+    assert not (rig.server_layout.directory("incoming") / "synthetic-007").exists()
+
+
+def test_progress_hears_each_file_up_to_its_last_byte(rig: Rig) -> None:
+    session = _session(rig, "synthetic-008")
+    heard: list[tuple[str, int, int]] = []
+    status = upload_session(
+        session,
+        layout=rig.client_layout,
+        client=rig.client(),
+        clock=lambda: NOW,
+        sleep=lambda _seconds: rig.publish(),
+        wait_seconds=30,
+        progress=lambda path, sent, size: heard.append((path, sent, size)),
+    )
+    assert status.state == "accepted"
+    declared = session_request(validate_capture_package(session)).files
+    assert {path for path, _, _ in heard} == {file.path for file in declared}
+    for file in declared:
+        sent = [done for path, done, size in heard if path == file.path and size == file.size_bytes]
+        assert sent == sorted(sent) and sent[-1] == file.size_bytes
 
 
 def test_a_wrong_token_is_refused(rig: Rig) -> None:

@@ -214,6 +214,7 @@ READ_ONLY_TREES: Final = (
     "derived/datasets",
     "derived/transfer-plans",
     "provenance/pilot-gates",
+    "provenance/host-transfers",
 )
 
 _LEDGER_FILE: Final = re.compile(r"([0-9]{8})\.json")

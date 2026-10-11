@@ -1,67 +1,90 @@
 # First run
 
-What you need: the miniDSP UMIK-1, its per-serial calibration file from miniDSP, and
-the voice-journey server reachable on the tailnet. Install first (README "Install").
+What you need: the voice-lab server reachable on the tailnet, Pocket ID, and for
+measurement sessions the miniDSP UMIK-1 and its per-serial calibration file. Install first
+(README "Install").
 
 ## 1. A keychain (Linux only)
 
 The sign-in is kept only in the OS keychain. macOS always has one. On Linux, check:
 
 ```sh
-uv run voice-journey-capture --check-online
+voice-lab-desktop --check-config
 ```
 
 If it says `keychain: NONE`, start a Secret Service provider (GNOME Keyring:
-`sudo pacman -S gnome-keyring libsecret`, plus `exec --no-startup-id
-gnome-keyring-daemon --start --components=secrets` in the i3 config; or KeePassXC with
-Secret Service integration on), then check again. `--check-online` also confirms that
-Pocket ID and the server answer (`intake asks for a sign-in`).
+`sudo pacman -S gnome-keyring libsecret`; it starts on demand through D-Bus; or KeePassXC
+with Secret Service integration on), then check again.
 
-## 2. Sign in
+## 2. The server and Pocket ID
 
-Open the window (`uv run voice-journey-capture`) and press **Sign in**. Your browser
-opens Pocket ID; sign in with your passkey, then come back to the window. If the
-browser says the redirect is not allowed, quit and start with `--fixed-port` (it
-listens on `127.0.0.1:53683`).
+Open the app (`voice-lab-desktop`). It opens on **Status**, which asks you to set it up:
+**Settings…**, then the server (`https://voice-lab.<tailnet>.ts.net`) and the Pocket ID
+issuer (`https://id.<tailnet>.ts.net`); the client stays `voice-lab-desktop`. Or write them
+into `config.toml` (README "Settings"). `voice-lab-desktop --check-online` then confirms
+that Pocket ID answers and that the server's door asks for a sign-in.
 
-## 3. The UMIK-1
+## 3. Sign in
 
-Plug it in. **Microphone** shows `Umik-1  Gain: 18dB` (press Refresh if not). Any
-other microphone is refused: only the UMIK-1 is supported at launch.
+Press **Sign in**. Your browser opens Pocket ID; sign in with your passkey and come back
+to the app. If the browser says the redirect is not allowed, quit and start with
+`--fixed-port` (it listens on `127.0.0.1:53683`). **Status** then shows the server's build,
+its API versions and its gates.
 
-- **macOS:** in Audio MIDI Setup, select the UMIK-1, set its format to 48,000 Hz, and
-  set its input volume once to the level you will keep.
-- **Linux:** the app opens the UMIK-1 directly (ALSA `hw:`) when PortAudio lists it,
-  and then reads the card's capture control with `amixer`. Otherwise it goes through
-  PipeWire, reads the source's volume with `pw-dump`, and needs PipeWire's graph at 48
-  kHz (`pw-metadata -n settings 0 clock.force-rate 48000`).
+## 4. Approve the home host (once per machine)
 
-## 4. Pin the input level
+Sessions go to the PC through `/api/v1/intake` only under a standing approval you author on
+this machine (D-021): it names the PC's endpoint, its tailnet node and the classes of what
+may be sent, for at most 366 days, and every upload is written into this machine's ledger
+before its first byte. **Uploads** says when it is missing. The library that holds it is
+`~/.local/share/voice-lab-desktop/library` (Linux) or `~/Library/Application
+Support/voice-lab-desktop/library` (macOS); open **Uploads** once and the app creates it.
+The node's stable ID comes from `tailscale status --json` (the peer whose `DNSName` is the
+endpoint), never from a document:
 
-Set the level deliberately, then press **Pin level** (or run
-`voice-journey-capture --pin-level`). From then on, a moved, muted or unreadable level
-blocks recording. Moving it back to the pinned value unblocks it. **Re-pin…** records
-the new level as a chain era event; do that only on purpose.
+```sh
+LIB=~/.local/share/voice-lab-desktop/library      # macOS: ~/Library/Application Support/voice-lab-desktop/library
+voice-lab home-host approve --asset-root "$LIB" \
+  --approval-id pc-home-host-2026 \
+  --endpoint voice-lab.<tailnet>.ts.net --tailnet-suffix <tailnet>.ts.net \
+  --node-stable-id <StableID> --classes capture measurement \
+  --approved-at <now, ISO-8601 with offset> --expires-at <at most 366 days later> \
+  --approved-by Cole --statement "My recordings, to my own PC." --preview
+# then the same arguments, without --preview, plus:
+#   --reviewed-approval-sha256 <the printed approval_sha256> --i-approve-this-destination
+```
 
-## 5. The cal file
+The server in Settings must be `https://` that same endpoint. Before each upload the app
+checks, through Tailscale, that the node answering for it is the approved one.
 
-Download the UMIK-1's calibration file for its serial number from miniDSP (the 0°
-file, e.g. `7012345.txt`). Paste its path into **Calibration file** and press
-**Import** (or run `voice-journey-capture --import-cal PATH`). The app keeps a copy
-and sends its SHA-256 with each session. Without one, sessions are marked
-uncalibrated (`calFileSha256: null`).
+## 5. Coming from voice-journey-capture
 
-## 6. Record a session
+The old capture client kept its level pin, its cal file and its sessions in its own data
+dir. Copy them once (nothing is moved or deleted; nothing is overwritten):
 
-Check the distance in Settings (35 cm, mouth to capsule) and stand in the same corner
-as always. Turn on **94 dB calibrator** only if you have one. Press **Start session**
-(it checks the level, the cal file and that the UMIK-1 delivers real audio). Then
-press Space for each segment: the timed ones (room silence, calibrator) stop by
-themselves; for the others, Space again stops. R redoes the last segment. When all
-are done, press **Finish session**.
+```sh
+voice-lab-desktop --import-capture-data
+```
 
-The session is saved locally and uploads straight away when you are signed in.
-**Upload now** retries; every launch retries what is still pending.
-`voice-journey-capture --sessions` lists each session's state. The server accepts the
-whole session into `corpus/measurement/<sessionId>/` or nothing, and its watcher
-picks it up from there.
+Then `voice-lab-desktop --sessions` lists them, and **Uploads** sends what is still
+waiting. A level pinned in the old client stays the same pin (not a new chain era).
+
+## 6. A measurement session
+
+The **Measurement** screen (or `voice-lab-desktop --measure`, which opens on it). The steps
+are voice-journey-capture's, unchanged; the mouth distance is in **Status → Settings**:
+
+1. Plug in the UMIK-1. Any other microphone is refused. On macOS set its format to 48,000 Hz
+   in Audio MIDI Setup; on Linux the app opens it through ALSA `hw:` when PortAudio lists it,
+   else through PipeWire, whose graph must run at 48 kHz (`pw-metadata -n settings 0
+   clock.force-rate 48000`).
+2. Set the input level deliberately and **Pin level** (`voice-lab-desktop --pin-level`).
+   From then on a moved, muted or unreadable level blocks recording; **Re-pin…** records a
+   chain era event, so do that only on purpose.
+3. Import the cal file from miniDSP (the 0° file for its serial): **Calibration file** →
+   **Import**, or `voice-lab-desktop --import-cal PATH`.
+4. **Start session**, then Space for each segment (the timed ones stop by themselves); R redoes
+   the last one; **Finish session**.
+
+The session waits in the data dir and uploads when you are signed in; **Uploads** shows it
+until the server accepts it.

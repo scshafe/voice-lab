@@ -744,6 +744,16 @@ _RULES: Final = (
         example="provenance/transfer-approvals/approval-1.json",
     ),
     _rule(
+        "host-transfers",
+        "provenance/host-transfers/**",
+        "records",
+        owner="the operator (data moves between the owner's hosts)",
+        reason="a move's approval record, its sha256 manifest and its parity report "
+        "(voice-journey into voice-lab, phase 3); immutable once written",
+        example="provenance/host-transfers/voice-journey-2026-10-10.txt",
+        mode=0o400,
+    ),
+    _rule(
         "fine-tune-job-records",
         "provenance/finetune-jobs/{requests|terminal}/{id}.json",
         "records",
