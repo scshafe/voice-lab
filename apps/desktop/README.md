@@ -15,13 +15,14 @@ First time? See [docs/FIRST-RUN.md](docs/FIRST-RUN.md).
 | --- | --- |
 | **Status** | Sign-in, the settings, the server (build, API versions, the minimum client version), its gates (playback, transcript text, feature detail), the job runner, the local spool, the evidence report (opens the web view's in the browser) |
 | **Uploads** | Each local session: waiting, uploading (with progress), accepted (when, where, the receipt's digests), refused (why, with Retry); an interrupted upload resumes where the server stopped. Sessions go through `/api/v1/intake` under this machine's standing home-host approval, each in its ledger (D-021) |
+| **Measurement** | The UMIK-1 ritual (voice-journey-capture's, unchanged): the device, the pinned input level, the cal file, the segments, the live meter; Space records and stops, R redoes, Escape asks to abort. A session keeps running if another screen is shown (its sidebar entry shows a dot); a saved session goes to Uploads |
 | **Corpus** | Every recording: search and filters, a sortable table that pages as you scroll, the row detail, playback, the local transcript on request, spot-check verdicts |
 | **Journey** | The longitudinal analysis: the verdict, the range river, cause and effect, the vibrato story, what not to trust, song scorecards, repertoire threads, the take inspector |
 | **Practice** | The coach (songs due for a take, the frontier) and pre-registered goals |
 | **Referee** | Blind same-song A/B trials, loudness-matched and band-limited, and the results by year |
 
-The measurement capture (the UMIK-1 ritual) is its own window in 4a, `voice-lab-desktop
---measure`; phase 4b brings it into the main window. Prompted capture follows in 4c.
+`voice-lab-desktop --measure` opens the window on the Measurement screen. Prompted capture
+follows in 4c.
 [docs/design/PHASE-4-CHECKLIST.md](../../docs/design/PHASE-4-CHECKLIST.md) maps every view
 and field of voice-journey's React SPA to these screens.
 
@@ -65,7 +66,7 @@ Pocket ID issuer in **Status → Settings…**, or in the settings file. Precede
 | `server_url` | none (`https://voice-lab.<tailnet>.ts.net`) | `VOICE_LAB_DESKTOP_SERVER` |
 | `issuer` | none (`https://id.<tailnet>.ts.net`) | `VOICE_LAB_DESKTOP_ISSUER` |
 | `client_id` | `voice-lab-desktop` | `VOICE_LAB_DESKTOP_CLIENT_ID` |
-| `distance_cm` | `35` (the measurement chain's mouth distance) | |
+| `distance_cm` | `35` (the measurement chain's mouth distance; Status → Settings) | |
 | `bearer` | `access` (the access token when it is a JWT; `id` sends the ID token) | |
 | the data dir | `~/Library/Application Support/voice-lab-desktop` (macOS), `$XDG_DATA_HOME/voice-lab-desktop` (Linux) | `VOICE_LAB_DESKTOP_DATA` |
 
@@ -76,7 +77,7 @@ The settings file is `config.toml` in `~/Library/Application Support/voice-lab-d
 
 ```sh
 voice-lab-desktop                       # the window
-voice-lab-desktop --measure             # the UMIK-1 measurement window
+voice-lab-desktop --measure             # the window, on the Measurement screen
 voice-lab-desktop --check-online        # settings, keychain, Pocket ID and the server
 voice-lab-desktop --sign-out
 voice-lab-desktop --smoke               # both windows offscreen (a simulated session)

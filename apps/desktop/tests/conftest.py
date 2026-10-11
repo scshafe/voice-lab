@@ -221,8 +221,16 @@ def synthetic_root(tmp_path: Path) -> Path:
 
 @contextmanager
 def make_rig(
-    tmp_path: Path, journey_config: Any, *, signed_in: bool = True, configured: bool = True
+    tmp_path: Path,
+    journey_config: Any,
+    *,
+    signed_in: bool = True,
+    configured: bool = True,
+    measurement_backend: Any = None,
+    level_reader: Any = None,
 ) -> Iterator[AppRig]:
+    """The app over a synthetic server. The measurement screen gets a simulated UMIK-1 and
+    level (never PortAudio) unless a test hands its own."""
     from synthetic import ISSUER, serve
     from voice_lab_desktop.app import AppModel
     from voice_lab_desktop.net import new_http
@@ -245,6 +253,9 @@ def make_rig(
             output=output,
             open_url=opened.append,
             open_browser=opened.append,
+            measurement_backend=measurement_backend
+            or SimulatedBackend(speed=200, block_frames=4800),
+            level_reader=level_reader or SimulatedLevelReader(),
         )
         try:
             yield AppRig(model, output, opened, served, tmp_path)

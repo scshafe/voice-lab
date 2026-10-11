@@ -48,7 +48,7 @@ def test_sidebar_reaches_every_screen(qtbot: Any, window: Any) -> None:
         for item in window.items("sectionHeader", sidebar_list)
         if item.isVisible()
     )
-    assert [text for _y, text in shown] == ["Lab", "Corpus", "Analysis", "Referee"]
+    assert [text for _y, text in shown] == ["Lab", "Record", "Corpus", "Analysis", "Referee"]
 
 
 @pytest.mark.checklist("A-03")
