@@ -186,6 +186,7 @@ class Controller(ViewModel):
     def _set_phase(self, phase: str, **values: Any) -> None:
         self._set(self.sessionChanged, phase=phase, inSession=phase in SESSION_PHASES, **values)
 
+    @Slot()
     def _config_changed(self) -> None:
         self._set(self.settingsChanged, distanceCm=self.context.config.distance_cm)
 
@@ -388,6 +389,7 @@ class Controller(ViewModel):
             startBlocker=blocker,
         )
 
+    @Slot()
     def _on_setup_poll(self) -> None:
         if (
             not self.shown
@@ -632,6 +634,7 @@ class Controller(ViewModel):
         self.toast.emit(f"Session aborted: {reason}", "danger")
         self.refreshDevices()
 
+    @Slot()
     def _on_meter(self) -> None:
         r = self.ritual
         if r is None or r.recording is None:
@@ -656,6 +659,7 @@ class Controller(ViewModel):
         if recording.finished.is_set():  # a timed segment reached its length (or the writer failed)
             self.stopSegment()
 
+    @Slot()
     def _on_level_poll(self) -> None:
         r = self.ritual
         if r is None or r.recording is None:

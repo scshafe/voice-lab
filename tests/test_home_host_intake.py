@@ -42,6 +42,7 @@ from cole_voice_lab.intake_client import (
     upload_session,
 )
 from cole_voice_lab.intake_publisher import publish_pending, read_refusal
+from cole_voice_lab.models import CaptureDevice
 from cole_voice_lab.synthetic_capture import build_synthetic_session
 from cole_voice_lab.tailnet import ResolvedPeer
 
@@ -282,6 +283,24 @@ def test_an_expired_or_unbound_approval_sends_nothing(rig: Rig, tmp_path: Path) 
         )
     assert list(HomeHostLedger(rig.client_layout).entries()) == []
     assert not (rig.server_layout.directory("incoming") / "synthetic-007").exists()
+
+
+def test_a_package_from_the_desktop_capture_worker_keeps_its_portaudio_label(rig: Rig) -> None:
+    # voice-lab-desktop's capture worker is PortAudio, with its own continuity evidence kept
+    # on the capturing machine (D-039); its packages say so, and the PC keeps the label.
+    device = CaptureDevice(
+        backend="portaudio",
+        device_id="umik-1:2752:0007",
+        display_name="miniDSP UMIK-1 (PortAudio, ALSA)",
+    )
+    session = build_synthetic_session(
+        rig.work / "synthetic-009", session_id="synthetic-009", seconds=0.2, device=device
+    )
+    status = _upload(rig, session)
+    assert status.state == "accepted" and status.receipt is not None
+    raw = rig.server_layout.root / status.receipt.raw_path
+    published = validate_capture_package(raw, allow_intake_receipt=True).manifest
+    assert published.capture_device == device
 
 
 def test_progress_hears_each_file_up_to_its_last_byte(rig: Rig) -> None:

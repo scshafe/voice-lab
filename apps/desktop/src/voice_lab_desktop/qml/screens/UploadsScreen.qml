@@ -1,5 +1,6 @@
 // Uploads (design §6.1; checklist U-01 to U-04): the local spool, per-session progress,
-// resume, retry and receipts.
+// resume, retry and receipts. Measurement sessions and prompted packages (phase 4c; held
+// here until prompted uploads are on, D-042).
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
@@ -34,6 +35,7 @@ ScreenPage {
                 objectName: "uploadsSummary"
                 Layout.fillWidth: true
                 text: uploads.pendingCount + " waiting · " + uploads.failedCount + " refused"
+                      + (uploads.heldCount > 0 ? " · " + uploads.heldCount + " held here" : "")
             }
             SuiButton {
                 objectName: "uploadAll"
@@ -60,7 +62,7 @@ ScreenPage {
             visible: uploads.rows.length === 0
             iconName: "inbox"
             title: "No local sessions"
-            description: "Measurement sessions recorded on this machine wait here until the server accepts them."
+            description: "Measurement and prompted sessions recorded on this machine wait here until the server accepts them."
         }
         Repeater {
             objectName: "sessionRows"

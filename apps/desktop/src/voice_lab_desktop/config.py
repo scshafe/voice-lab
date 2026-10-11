@@ -13,6 +13,8 @@ file; nothing secret ever goes in it (tokens live in the OS keychain).
     client_id = "voice-lab-desktop"
     distance_cm = 35
     bearer = "access"        # or "id": which token the door is sent
+    catalog_file = "/path/to/suite.json"   # Record: prompts may also use this prompt suite
+    prompted_uploads = false # send prompted sessions; only once spike S-1 passed (D-042)
 
 Environment overrides (each wins over the file):
 
@@ -41,7 +43,17 @@ DEFAULT_CLIENT_ID: Final = "voice-lab-desktop"
 #: The fixed loopback port to register with Pocket ID, used when an ephemeral one is refused.
 FALLBACK_PORT: Final = 53683
 
-KEYS: Final = ("server_url", "issuer", "client_id", "distance_cm", "bearer")
+KEYS: Final = (
+    "server_url",
+    "issuer",
+    "client_id",
+    "distance_cm",
+    "bearer",
+    "catalog_file",
+    "prompted_uploads",
+)
+#: Each key's TOML type (the others are strings).
+_KINDS: Final[dict[str, type]] = {"distance_cm": int, "prompted_uploads": bool}
 ENV: Final = {
     "server_url": "VOICE_LAB_DESKTOP_SERVER",
     "issuer": "VOICE_LAB_DESKTOP_ISSUER",
@@ -88,6 +100,10 @@ class Config:
     client_id: str = DEFAULT_CLIENT_ID
     distance_cm: int = chain.DEFAULT_DISTANCE_CM
     bearer: str = "access"
+    #: Record: prompts may also record from this prompt-suite file (D-042).
+    catalog_file: str = ""
+    #: Prompted sessions upload only when this is on: after spike S-1 passed (D-042).
+    prompted_uploads: bool = False
     data_dir: Path = field(default_factory=default_data_dir)
     #: Where the settings came from (for --check-config and the Settings dialog).
     source: str = "defaults"
@@ -112,6 +128,8 @@ class Config:
             )
         if self.bearer not in ("access", "id"):
             raise ConfigError(f"bearer must be 'access' or 'id': {self.bearer!r}")
+        if not isinstance(self.prompted_uploads, bool):
+            raise ConfigError(f"prompted_uploads must be true or false: {self.prompted_uploads!r}")
         return replace(self, server_url=server, issuer=issuer, data_dir=Path(self.data_dir))
 
     @property
@@ -139,6 +157,11 @@ class Config:
         return Path(self.data_dir) / "library"
 
     @property
+    def prompted_dir(self) -> Path:
+        """Record: prompts' sessions, takes and packages (``prompted/store.py``)."""
+        return Path(self.data_dir) / "prompted"
+
+    @property
     def measurement_dir(self) -> Path:
         """The measurement capture's own data: its sessions, the level pin, the cal file."""
         return Path(self.data_dir) / "measurement"
@@ -159,9 +182,9 @@ def read_settings(file: Path) -> dict[str, Any]:
     if unknown:
         raise ConfigError(f"{file}: unknown keys {unknown} (known: {list(KEYS)})")
     for key, value in data.items():
-        want = int if key == "distance_cm" else str
-        if not isinstance(value, want) or isinstance(value, bool):
-            kind = "whole number" if want is int else "string"
+        want = _KINDS.get(key, str)
+        if not isinstance(value, want) or (want is not bool and isinstance(value, bool)):
+            kind = {int: "whole number", bool: "true or false"}.get(want, "string")
             raise ConfigError(f"{file}: {key} must be a {kind}")
     return data
 
@@ -197,7 +220,9 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
 
 
 def _toml_value(value: object) -> str:
-    if isinstance(value, int) and not isinstance(value, bool):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
         return str(value)
     text = str(value)
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'

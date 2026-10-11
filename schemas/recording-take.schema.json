@@ -166,7 +166,8 @@
           "default": "avfoundation",
           "enum": [
             "avfoundation",
-            "coreaudio"
+            "coreaudio",
+            "portaudio"
           ],
           "title": "Backend",
           "type": "string"

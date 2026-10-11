@@ -4,7 +4,8 @@ The account and the settings belong to the app model (``app.py``); this model re
 the server says about itself: ``GET /api/v1/meta`` (build, API versions served, minimum
 client version), ``GET /api/v1/summary`` (the playback, transcript-text and feature-detail
 gates) and ``GET /api/v1/watch`` (the job runner's watcher), and counts the local spool
-(measurement sessions waiting for the server's acceptance).
+(measurement sessions and packaged prompted sessions waiting for the server's acceptance;
+prompted ones held on this machine until spike S-1 passes, D-042, are counted apart).
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from cole_voice_lab.api.journey_contracts import JourneySummary, WatchStatus
 from .. import __version__
 from ..api import API_VERSION
 from ..measurement.store import SessionStore
+from ..prompted import uploads as prompted_uploads
+from ..prompted.store import PromptedStore
 from ..viewmodel import AppContext, ViewModel, qproperty
 
 _VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
@@ -81,7 +84,9 @@ class StatusModel(ViewModel):
     failedCount = qproperty(int, "failedCount", spoolChanged)
     spoolText = qproperty(str, "spoolText", spoolChanged)
 
-    def __init__(self, context: AppContext, spool: SessionStore) -> None:
+    def __init__(
+        self, context: AppContext, spool: SessionStore, prompted: PromptedStore | None = None
+    ) -> None:
         super().__init__(
             context,
             {
@@ -101,6 +106,7 @@ class StatusModel(ViewModel):
             },
         )
         self.spool = spool
+        self.prompted = prompted
 
     def activate(self) -> None:
         self.refresh_spool()
@@ -165,15 +171,26 @@ class StatusModel(ViewModel):
 
         context.tasks.submit(work, done)
 
+    @Slot()
     def refresh_spool(self) -> None:
-        sessions = self.spool.sessions()
-        pending = sum(1 for s in sessions if s.upload_state == "pending")
-        failed = sum(1 for s in sessions if s.upload_state == "failed")
-        if not sessions:
+        states = [s.upload_state for s in self.spool.sessions()]
+        held = 0
+        if self.prompted is not None:
+            prompted = [
+                package.upload_state for package in prompted_uploads.packages(self.prompted)
+            ]
+            if not self.context.config.prompted_uploads:
+                held = prompted.count("pending")
+                prompted = [state for state in prompted if state != "pending"]
+            states += prompted
+        pending = states.count("pending")
+        failed = states.count("failed")
+        if not states and not held:
             text = "No local sessions."
-        elif pending or failed:
+        elif pending or failed or held:
             parts = [f"{pending} waiting for a receipt"] if pending else []
             parts += [f"{failed} refused by the server"] if failed else []
+            parts += [f"{held} prompted, held here until spike S-1 passes"] if held else []
             text = "Sessions: " + "; ".join(parts) + "."
         else:
             text = "Every local session has been accepted by the server."

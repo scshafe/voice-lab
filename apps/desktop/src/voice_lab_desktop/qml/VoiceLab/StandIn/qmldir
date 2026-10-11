@@ -7,3 +7,4 @@ SuiProgress 1.0 SuiProgress.qml
 SuiTable 1.0 SuiTable.qml
 SuiChart 1.0 SuiChart.qml
 SuiLevelMeter 1.0 SuiLevelMeter.qml
+SuiWaveform 1.0 SuiWaveform.qml

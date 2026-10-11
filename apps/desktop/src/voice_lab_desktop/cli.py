@@ -6,6 +6,9 @@
     voice-lab-desktop --check-online     also the issuer and the server, reachable?
     voice-lab-desktop --sign-out         forget the stored sign-in
     voice-lab-desktop --smoke            the window offscreen (every screen, a simulated session)
+    voice-lab-desktop --install-desktop-entry [--replace]
+                                         Linux: add the app to the desktop's menu (a .desktop
+                                         file and its icon under $XDG_DATA_HOME)
 
 The measurement capture's chores (voice-journey-capture's flags, unchanged):
 
@@ -97,12 +100,35 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument(
         "--smoke", action="store_true", help="run the window offscreen once, then exit"
     )
+    group.add_argument(
+        "--install-desktop-entry",
+        action="store_true",
+        help="Linux: add the app to the desktop's menu (a .desktop file and its icon)",
+    )
+    ap.add_argument(
+        "--replace",
+        action="store_true",
+        help="with --install-desktop-entry: overwrite an entry or icon that differs",
+    )
     ap.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
     return ap
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["--capture-worker"]:
+        # The capture worker's own process (D-039): no settings, no Qt.
+        from .capture import worker
+
+        return worker.main(arguments[1:])
+    parser = build_parser()
+    args = parser.parse_args(arguments)
+    if args.replace and not args.install_desktop_entry:
+        parser.error("--replace goes with --install-desktop-entry")
+    if args.install_desktop_entry:
+        from . import desktop_entry
+
+        return desktop_entry.main(replace=args.replace)
     try:
         config = load_config(args.config)
         if args.server:
@@ -382,13 +408,19 @@ def import_capture_data(config: Config, source: Path | None) -> int:
 
 
 def _application() -> Any:
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
+
+    from . import desktop_entry
 
     existing = QApplication.instance()
     app = existing if isinstance(existing, QApplication) else QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("voice-lab")
     app.setApplicationDisplayName("voice-lab")
+    # The .desktop file's id (desktop_entry.py): a Wayland compositor matches the window to it.
+    app.setDesktopFileName(desktop_entry.DESKTOP_ID)
+    app.setWindowIcon(QIcon(str(desktop_entry.icon_file())))
     return app
 
 

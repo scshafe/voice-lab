@@ -203,7 +203,7 @@ class Player(QObject):
         self._started = 0  # counts output starts: a stopped stream's late "done" is ignored
         self._timer = QTimer(self)
         self._timer.setInterval(POSITION_MS)
-        self._timer.timeout.connect(self.positionChanged.emit)
+        self._timer.timeout.connect(self.positionChanged)
 
     # -- properties -------------------------------------------------------------------------
 
@@ -254,6 +254,15 @@ class Player(QObject):
     ) -> None:
         """Fetch ``source`` (a recording id, or an ``/api/v1/...`` audio path), decode,
         shape and play it, as ``key``."""
+
+        def work() -> Clip:
+            return shape(decode(self._fetch(source)), gain_db=gain_db, lowpass_hz=lowpass_hz)
+
+        self.play_clip(key, work)
+
+    def play_clip(self, key: str, load: Callable[[], Clip]) -> None:
+        """Play the audio ``load`` returns (run off the GUI thread), as ``key``: a take on
+        this machine, exactly the frames it was asked for (Record: prompts' preview)."""
         self._stop_output()
         self._generation += 1
         generation = self._generation
@@ -261,7 +270,7 @@ class Player(QObject):
         self._set(key=key, state="loading", error="")
 
         def work() -> Clip:
-            return shape(decode(self._fetch(source)), gain_db=gain_db, lowpass_hz=lowpass_hz)
+            return load()
 
         def done(clip: Clip | None, error: BaseException | None) -> None:
             if generation != self._generation:
