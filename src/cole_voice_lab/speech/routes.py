@@ -12,6 +12,8 @@ other route ever sees a request that skipped the global check. Besides submit, s
 cancel and the joined audio, it serves each published sentence
 (``…/segments/{n}/audio``) and a per-job server-sent event stream (``…/events``) that
 announces them and the job's end; it only ever reports files the job runner has finished.
+A caller holds at most ``MAX_EVENT_STREAMS`` streams at once (``429 too_many_streams``), so
+one caller cannot take every one of the API's threads.
 
 The API only enqueues and serves finished files: it reads the asset root (read-only) for the
 voice release and the consent record, and the GPU slot's holder record; the job runner
@@ -22,9 +24,11 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import BinaryIO, Final
 
@@ -40,20 +44,37 @@ from .config import SpeechCaller, SpeechConfig, webhook_url_problem
 from .contracts import JOB_ID_PATTERN, TERMINAL_STATES, SpeechRequest
 from .gpu import busy_with_long_job
 from .release import VoiceReleaseError, current_release, require_release_consent, require_subject
-from .store import Job, SpeechRefusal, SpeechStore, open_audio, open_segment, to_status
+from .store import (
+    Job,
+    SpeechRefusal,
+    SpeechStore,
+    log_to_stderr,
+    open_audio,
+    open_segment,
+    to_status,
+)
 
 PREFIX: Final = "/api/v1/speech"
 EVENTS_MAX_SECONDS: Final = 600.0
 KEEPALIVE_SECONDS: Final = 15.0
+# Open event streams per caller (each holds one of the API's threads for up to 10 minutes).
+MAX_EVENT_STREAMS: Final = 4
+# How many audiences one trusted issuer takes (``api.auth.TrustedIssuer``).
+MAX_POLICY_AUDIENCES: Final = 8
 _SEGMENT_INDEX: Final = re.compile(r"^[1-9][0-9]{0,3}$")
 MAX_BODY_BYTES: Final = 64 * 1024
 _RANGE: Final = re.compile(r"^bytes=(?P<start>[0-9]{0,15})-(?P<end>[0-9]{0,15})$")
 _LAST_EVENT_ID: Final = re.compile(r"^[0-9]{1,4}$")
 
 
-def caller_policy(config: SpeechConfig, jwks_path: str) -> AuthPolicy:
+def caller_policy(
+    config: SpeechConfig, jwks_path: str, *, log: Callable[[str], None] = log_to_stderr
+) -> AuthPolicy:
     """The token policy of the speech routes: the callers' issuer, audiences and subjects.
 
+    The issuer takes at most ``MAX_POLICY_AUDIENCES`` audiences (the first, sorted); when the
+    callers name more, the rest are dropped and the log says how many and which callers lose
+    an audience (never a token or a secret).
     Raises: ``ValueError`` when callers name more than one issuer (the API holds one key file).
     """
     issuers = {caller.issuer for caller in config.callers}
@@ -62,10 +83,18 @@ def caller_policy(config: SpeechConfig, jwks_path: str) -> AuthPolicy:
     audiences = tuple(
         sorted({audience for caller in config.callers for audience in caller.audiences})
     )
+    kept = audiences[:MAX_POLICY_AUDIENCES]
+    if len(kept) < len(audiences):
+        affected = sorted(
+            caller.caller_id for caller in config.callers if not set(caller.audiences) <= set(kept)
+        )
+        log(
+            f"the speech callers name {len(audiences)} audiences; the token policy takes"
+            f" {MAX_POLICY_AUDIENCES}, so tokens for the other {len(audiences) - len(kept)}"
+            f" are refused (callers losing an audience: {', '.join(affected)})"
+        )
     return AuthPolicy(
-        issuers=(
-            TrustedIssuer(issuer=issuers.pop(), audiences=audiences[:8], jwks_path=jwks_path),
-        ),
+        issuers=(TrustedIssuer(issuer=issuers.pop(), audiences=kept, jwks_path=jwks_path),),
         allowed_subjects=tuple(caller.subject for caller in config.callers),
     )
 
@@ -159,6 +188,8 @@ class SpeechRoutes:
         self.store = SpeechStore(config)
         self.store.ensure()
         self.asset_root = Path(config.asset_root)
+        self._streams: dict[str, int] = {}
+        self._streams_lock = threading.Lock()
 
     def __call__(self, request: RouteRequest) -> RouteResponse | None:
         path = request.path
@@ -217,12 +248,16 @@ class SpeechRoutes:
             self._only(request, "GET")
             self.store.for_caller(caller, job_id)  # refused before the stream starts
             resume = last_event_id(request.header("Last-Event-ID"))  # parsed before headers
+            self._open_stream(caller)
             return RouteResponse(
                 status=200,
                 route="speech.events",
                 content_type="text/event-stream; charset=utf-8",
                 headers=(("X-Accel-Buffering", "no"),),
-                events=self._events(caller, job_id, resume),
+                events=_CountedStream(
+                    self._events(caller, job_id, resume),
+                    partial(self._close_stream, caller.caller_id),
+                ),
             )
         if action == "cancel":
             self._only(request, "POST")
@@ -336,6 +371,33 @@ class SpeechRoutes:
 
     # -- events --------------------------------------------------------------------------------
 
+    def _open_stream(self, caller: SpeechCaller) -> None:
+        """Count one more open stream for ``caller``.
+
+        Raises: ``SpeechRefusal`` 429 ``too_many_streams`` at ``MAX_EVENT_STREAMS``.
+        """
+        with self._streams_lock:
+            open_now = self._streams.get(caller.caller_id, 0)
+            if open_now >= MAX_EVENT_STREAMS:
+                raise SpeechRefusal(
+                    429,
+                    "too_many_streams",
+                    f"at most {MAX_EVENT_STREAMS} event streams at once; close one or poll",
+                )
+            self._streams[caller.caller_id] = open_now + 1
+
+    def _close_stream(self, caller_id: str) -> None:
+        with self._streams_lock:
+            left = self._streams.get(caller_id, 0) - 1
+            if left > 0:
+                self._streams[caller_id] = left
+            else:
+                self._streams.pop(caller_id, None)
+
+    def open_streams(self, caller_id: str) -> int:
+        with self._streams_lock:
+            return self._streams.get(caller_id, 0)
+
     def _events(self, caller: SpeechCaller, job_id: str, sent: int) -> Iterator[bytes]:
         """``segment.ready`` for each published segment after segment ``sent``, then the
         terminal event; a comment every ``KEEPALIVE_SECONDS``; closed after
@@ -362,6 +424,40 @@ class SpeechRoutes:
                 last_beat = now
                 yield b": keepalive\n\n"
             self.sleep(self.events_poll_seconds)
+
+
+class _CountedStream:
+    """An event stream that gives its caller's stream count back exactly once: when it ends,
+    or when the server closes it (it does on every path, even when the client goes away
+    before the first chunk), or, failing both, when it is collected."""
+
+    def __init__(self, events: Iterator[bytes], done: Callable[[], None]) -> None:
+        self._events = events
+        self._done: Callable[[], None] | None = done
+
+    def __iter__(self) -> Iterator[bytes]:
+        return self
+
+    def __next__(self) -> bytes:
+        try:
+            return next(self._events)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        done, self._done = self._done, None
+        if done is None:
+            return
+        try:
+            close = getattr(self._events, "close", None)
+            if close is not None:
+                close()
+        finally:
+            done()
+
+    def __del__(self) -> None:
+        self.close()
 
 
 def _event(name: str, identifier: str, model: ContractModel) -> bytes:

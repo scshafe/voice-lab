@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
-from speech_fixtures import NOW, Lab, build_lab
+from speech_fixtures import NOW, FakeBackend, Lab, build_lab
 
 from cole_voice_lab.api import server as server_module
 from cole_voice_lab.canonical import canonical_json_bytes
 from cole_voice_lab.cli import main
 from cole_voice_lab.speech.contracts import SpeechRequest
 from cole_voice_lab.speech.routes import PREFIX
-from cole_voice_lab.speech.runner import EXIT_OUTDATED
-from cole_voice_lab.speech.store import SpeechStore
+from cole_voice_lab.speech.runner import EXIT_MISCONFIGURED, EXIT_OUTDATED, SpeechRunner
+from cole_voice_lab.speech.store import TEXT_KEY_NAME, SpeechStore
 
 
 def write_config(lab: Lab) -> Path:
@@ -118,11 +119,42 @@ def test_a_runner_whose_release_link_moved_exits_for_systemd_to_restart_it(
     store.ensure()
     job, _ = store.submit(lab.config.callers[0], SpeechRequest(text="Hi."), now=NOW)
     link = tmp_path / "current"
-    link.symlink_to(tmp_path / "a-pruned-release")
+    (tmp_path / "another-release").mkdir()
+    link.symlink_to(tmp_path / "another-release")
     argv = ["speech", "run", "--config", str(config), "--release-link", str(link)]
     assert main([*argv, "--once"]) == EXIT_OUTDATED == 75
-    assert "does not resolve" in capsys.readouterr().err
+    assert "is not in the active release" in capsys.readouterr().err
     assert [queued.record.job_id for queued in store.queued()] == [job.record.job_id]
+    # A dangling or missing link is no deploy: 78, which the unit does not restart.
+    link.unlink()
+    link.symlink_to(tmp_path / "a-pruned-release")
+    assert main([*argv, "--once"]) == EXIT_MISCONFIGURED == 78
+    assert "stopping, not restarting" in capsys.readouterr().err
+    link.unlink()
+    assert main([*argv, "--once"]) == 78
+    assert [queued.record.job_id for queued in store.queued()] == [job.record.job_id]
+    unit = Path(__file__).resolve().parents[1] / "deploy/host-manual/voice-lab-speech.service"
+    assert "RestartPreventExitStatus=78" in unit.read_text()
+
+
+def test_the_operator_makes_a_new_text_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lab = build_lab(tmp_path)
+    config = write_config(lab)
+    store = SpeechStore(lab.config)
+    store.ensure()
+    store.submit(lab.config.callers[0], SpeechRequest(text="Hi."), now=NOW)
+    argv = ["speech", "new-text-key", "--config", str(config)]
+    assert main(argv) == 2
+    assert "--i-accept-the-lost-key" in capsys.readouterr().err
+    assert main([*argv, "--i-accept-the-lost-key"]) == 2  # the key is there
+    assert "move it aside" in capsys.readouterr().err
+    (store.root / TEXT_KEY_NAME).unlink()
+    assert main([*argv, "--i-accept-the-lost-key"]) == 0
+    made = json.loads(capsys.readouterr().out)
+    assert made == {"made": True, "job_records": 1, "ledger_entries": 0}
+    assert len((store.root / TEXT_KEY_NAME).read_bytes()) == 32
 
 
 def test_serve_adds_the_speech_routes_first(
@@ -163,3 +195,22 @@ def test_serve_adds_the_speech_routes_first(
     assert "identity provider" in capsys.readouterr().err
     argv[-1] = str(tmp_path / "missing.json")
     assert server_module.main(argv) == 1
+
+
+def test_a_pass_by_hand_is_refused_while_the_runner_unit_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lab = build_lab(tmp_path)
+    config = write_config(lab)
+    store = SpeechStore(lab.config)
+    store.ensure()
+    job, _ = store.submit(lab.config.callers[0], SpeechRequest(text="Hi."), now=NOW)
+    held = SpeechRunner(lab.config, FakeBackend())._instance_lock()  # the unit's
+    assert held is not None
+    try:
+        assert main(["speech", "run", "--config", str(config), "--once"]) == 2
+        assert "another speech runner is running" in capsys.readouterr().err
+        assert [queued.record.job_id for queued in store.queued()] == [job.record.job_id]
+        assert store.claim_owner(job.record.job_id) is None
+    finally:
+        os.close(held)

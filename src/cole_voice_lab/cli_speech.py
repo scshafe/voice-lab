@@ -6,11 +6,13 @@ next voice release (D-045): an act of judgement that is Cole's, never an agent's
 the consent record explicitly and designates only the pinned subject's run (the
 configuration's ``subject_id`` with ``--config``, else ``cole-self``).
 ``voice release show|history`` print releases. ``speech run`` is the job runner with its
-resident model until SIGTERM (the host unit ``voice-lab-speech``, no network; ``--once``: one
-pass); with ``--release-link`` it exits ``EXIT_OUTDATED`` once a deploy has moved that link
-off its own code, for systemd to start the new code. ``speech deliver`` is the webhook
-delivery pass (``voice-lab-speech-webhooks``, tailnet only); ``speech check-config``
-validates a configuration and prints its callers without anything secret.
+resident model until SIGTERM (the host unit ``voice-lab-speech``, no network); ``--once`` is
+one pass by hand, refused (exit 2) while the unit runs; with ``--release-link`` it exits
+``EXIT_OUTDATED`` once a deploy has moved that link off its own code, for systemd to start the
+new code, and ``EXIT_MISCONFIGURED`` (78, not restarted) when the link is missing or
+unreadable. ``speech deliver`` is the webhook delivery pass (``voice-lab-speech-webhooks``,
+tailnet only); ``speech check-config`` validates a configuration and prints its callers
+without anything secret; ``speech new-text-key`` is the operator's repair of a lost text key.
 """
 
 from __future__ import annotations
@@ -29,7 +31,15 @@ from .paths import AssetLayout
 from .speech.config import load_speech_config
 from .speech.families import ReleaseBackend, family_ids
 from .speech.release import SPEECH_SUBJECT, BlindReviewRef, current_release, designate, history
-from .speech.runner import EXIT_OUTDATED, RunnerOutdated, SpeechRunner, release_code_check
+from .speech.runner import (
+    EXIT_MISCONFIGURED,
+    EXIT_OUTDATED,
+    RunnerMisconfigured,
+    RunnerOutdated,
+    SpeechRunner,
+    release_code_check,
+)
+from .speech.store import SpeechStore, TextKeyError
 from .speech.webhooks import WebhookDispatcher
 
 
@@ -103,18 +113,31 @@ def _run(options: argparse.Namespace) -> int:
     runner = SpeechRunner(config, ReleaseBackend(config), code_check=check)
     try:
         if options.once:
-            try:
-                report = runner.run_pending()
-            finally:
-                runner.unload()
-            _print(asdict(report))
+            _print(asdict(runner.run_once()))
             return 0
         stopping = threading.Event()
         for signum in (signal.SIGTERM, signal.SIGINT):
             signal.signal(signum, lambda *_: stopping.set())
         runner.serve(stop=stopping.is_set)
+    except RunnerMisconfigured:
+        return EXIT_MISCONFIGURED
     except RunnerOutdated:
         return EXIT_OUTDATED
+    return 0
+
+
+def _new_text_key(options: argparse.Namespace) -> int:
+    if not options.i_accept_the_lost_key:
+        raise VoiceLabError(
+            "a new text key leaves earlier digests unverifiable: restore the old key from a"
+            " backup if there is one, else add --i-accept-the-lost-key"
+        )
+    store = SpeechStore(load_speech_config(options.config))
+    try:
+        records, entries = store.make_text_key()
+    except TextKeyError as error:
+        raise VoiceLabError(str(error)) from error
+    _print({"made": True, "job_records": records, "ledger_entries": entries})
     return 0
 
 
@@ -188,7 +211,11 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "run", help="the speech job runner with its resident model (host unit, no network)"
     )
     run.add_argument("--config", type=Path, required=True)
-    run.add_argument("--once", action="store_true", help="one pass, then unload and exit")
+    run.add_argument(
+        "--once",
+        action="store_true",
+        help="one pass by hand, then unload and exit; refused while the runner unit runs",
+    )
     run.add_argument(
         "--release-link",
         type=Path,
@@ -200,6 +227,13 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     )
     deliver.add_argument("--config", type=Path, required=True)
     deliver.set_defaults(handler=_deliver)
+    new_key = speech_commands.add_parser(
+        "new-text-key",
+        help="make a new text key where a lost one was (deploy/speech/README.md, 'The text key')",
+    )
+    new_key.add_argument("--config", type=Path, required=True)
+    new_key.add_argument("--i-accept-the-lost-key", action="store_true")
+    new_key.set_defaults(handler=_new_text_key)
     check = speech_commands.add_parser("check-config", help="validate a speech configuration")
     check.add_argument("--config", type=Path, required=True)
     check.set_defaults(handler=_check_config)

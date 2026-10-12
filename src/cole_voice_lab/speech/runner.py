@@ -2,11 +2,15 @@
 
 @canonical speech.runner -- ``voice-lab speech run`` (the long-running host unit
 ``voice-lab-speech``, ``PrivateNetwork=yes``) calls ``SpeechRunner.serve``; ``--once`` makes
-one pass (``run_pending``). Under a runner lock a pass first recovers what a stopped runner
-(or API) left: a job left ``running`` fails ``internal_error``; a queued job someone claimed
-but never ended is cancelled when a cancel asked for it, failed ``queue_timeout`` when its
-queue time is up, else given back to the queue. Then it claims each queued job, oldest first,
-and for each:
+one pass (``run_once``) for an operator while the unit is stopped. One runner process runs at
+a time: ``serve`` holds the instance lock (``.runner.instance.lock`` in the speech state) for
+its whole life, and ``run_once`` refuses (``RunnerBusy``) while another holds it, rather than
+wait for the GPU slot the resident runner keeps and stall the queue. Under a runner lock a
+pass first recovers what a stopped runner (or API) left: a job left ``running`` ends
+``cancelled`` when a cancel asked for it, else fails ``internal_error``; a queued job someone
+claimed but never ended is cancelled when a cancel asked for it, failed ``queue_timeout`` when
+its queue time is up, else given back to the queue. Then it claims each queued job, oldest
+first, and for each:
 
 1. ends it ``cancelled`` when a cancel arrived, and fails it ``queue_timeout`` when it waited
    longer than the configuration allows;
@@ -29,20 +33,35 @@ precise fits); the particulars go to the runner's log (stderr, the journal), nev
 caller. Between jobs ``serve`` unloads the model and gives the slot back after the idle time,
 or at once when a long job wants the slot and no speech is queued; it sweeps retention every
 few minutes. A job that started rendering has a ledger entry, whatever its outcome, unless
-the runner itself was stopped mid-render.
+the runner itself was killed mid-render. Each sentence is published (listed and served) as
+soon as it is rendered, before the job's ledger entry exists; that is inherent in serving
+sentences during the render. Once a job has ended, though, nothing of it is served without
+its entry: when the entry cannot be written the job fails ``internal_error`` and its
+segments and audio are unlisted and deleted, and a job a killed runner left ``running``
+without an entry has them withdrawn when the next pass recovers it.
+
+``serve``'s stop (SIGTERM) is honoured between jobs, while a job waits for the GPU slot (the
+job goes back to the queue) and between sentences (the job ends ``failed internal_error``
+with its ledger entry), so ``systemctl stop`` waits for at most the sentence being rendered
+(the unit's ``TimeoutStopSec``, 150 s, exceeds the default ``segment_deadline_seconds``).
 
 A deploy replaces the release the host unit runs from (``/opt/voice-lab/current``) but does
-not restart the unit. Given ``code_check`` (``release_code_check``), the runner checks before
-every model load, and whenever it is idle without a model, that its own code is still in the
-active release; when it is not it gives back what it holds and raises ``RunnerOutdated``, and
-``speech run`` exits ``EXIT_OUTDATED`` for systemd to start the new code.
+not restart the unit. Given ``code_check`` (``release_code_check``), the runner checks at the
+start of every pass, before it claims each job and before each model load, whether a model is
+loaded or not, that its own code is still in the active release. When it is not, the job in
+hand (if any) has already ended, so nothing stops mid-sentence: it unloads the model, gives
+back the GPU slot (and a job it claimed but had not started goes back to the queue) and raises
+``RunnerOutdated``, and ``speech run`` exits ``EXIT_OUTDATED`` for systemd to start the new
+code. A busy runner therefore restarts after the job it is rendering, not after its idle time.
+A release link that is missing, dangling or unreadable is not a deploy: the runner gives back
+what it holds the same way, raises ``RunnerMisconfigured`` and exits ``EXIT_MISCONFIGURED``
+(78), which the unit's ``RestartPreventExitStatus=78`` does not restart.
 """
 
 from __future__ import annotations
 
 import fcntl
 import os
-import sys
 import time
 import wave
 from collections.abc import Callable, Iterator
@@ -87,36 +106,65 @@ from .release import (
     verify_release,
 )
 from .segments import job_seed, join_wavs, segment_seed, split_sentences
-from .store import AUDIO_NAME, Job, SpeechStore
+from .store import AUDIO_NAME, LEDGER_DIRECTORY, Job, SpeechStore, log_to_stderr
 
-LEDGER_DIRECTORY: Final = "speech-renders"
 MAX_AUDIO_FRAMES: Final = API_SAMPLE_RATE_HZ * 60 * 30  # 30 minutes: far beyond 2,000 characters
 SWEEP_SECONDS: Final = 300.0
 # ``speech run``'s exit status when its code is no longer the active release's (EX_TEMPFAIL):
 # not success, so the unit's ``Restart=on-failure`` starts the new code.
 EXIT_OUTDATED: Final = 75
+# ... and when the release link is missing or unreadable (EX_CONFIG): the unit's
+# ``RestartPreventExitStatus=78`` keeps systemd from restarting it every ten seconds.
+EXIT_MISCONFIGURED: Final = 78
 # A family's segment limit is never taken below this (a hard cut needs room for a character).
 MIN_SEGMENT_BYTES: Final = 16
+# Held by the one runner process (``serve`` for its life, ``run_once`` for its pass).
+INSTANCE_LOCK_NAME: Final = ".runner.instance.lock"
 
 
 class RunnerOutdated(Exception):
     """This runner's code is no longer in the active release; it must be restarted."""
 
 
-def release_code_check(link: Path) -> Callable[[], str | None]:
+class RunnerMisconfigured(RunnerOutdated):
+    """The release link is missing or unreadable: a restart cannot fix it (exit 78)."""
+
+
+class RunnerBusy(VoiceLabError):
+    """Another runner process (the ``voice-lab-speech`` unit) is running."""
+
+
+@dataclass(frozen=True, slots=True)
+class CodeProblem:
+    """Why the runner's code is not the active release's, and whether a restart can help: a
+    link moved to another release can (exit 75), a link that is missing or unreadable cannot
+    (exit 78)."""
+
+    reason: str
+    restartable: bool
+
+
+type CodeCheck = Callable[[], str | CodeProblem | None]
+
+
+def release_code_check(link: Path) -> CodeCheck:
     """A check that this process's code is still the release ``link`` points at.
 
     The package's directory is resolved now, at start (``link`` is resolved again at each
     check), so a deploy that moves ``link`` or prunes the old release is noticed.
-    Returns: a function answering ``None`` while the code is current, else why it is not.
+    Returns: a function answering ``None`` while the code is current, why it is not (a
+    string: a restart starts the new code), or a ``CodeProblem`` that a restart cannot fix
+    (``link`` is missing, dangling or unreadable).
     """
     package = Path(__file__).resolve().parents[1]
 
-    def check() -> str | None:
+    def check() -> str | CodeProblem | None:
         try:
             active = link.resolve(strict=True)
-        except OSError:
-            return f"{link} does not resolve"
+        except (OSError, RuntimeError):
+            return CodeProblem(f"{link} does not resolve", restartable=False)
+        if not active.is_dir():
+            return CodeProblem(f"{link} is not a release directory", restartable=False)
         if not package.is_dir():
             return f"this runner's code ({package}) is gone"
         if not package.is_relative_to(active):
@@ -124,10 +172,6 @@ def release_code_check(link: Path) -> Callable[[], str | None]:
         return None
 
     return check
-
-
-def _stderr(message: str) -> None:
-    print(f"voice-lab speech: {message}", file=sys.stderr, flush=True)
 
 
 @dataclass
@@ -186,14 +230,14 @@ class SpeechRunner:
         monotonic: Callable[[], float] = time.monotonic,
         digests: FineTuneDigestCache | None = None,
         slot_poll_seconds: float = 0.5,
-        code_check: Callable[[], str | None] | None = None,
-        log: Callable[[str], None] = _stderr,
+        code_check: CodeCheck | None = None,
+        log: Callable[[str], None] = log_to_stderr,
     ) -> None:
         self.config = config
         self.backend = backend
         self.clock = clock
         self.monotonic = monotonic
-        self.store = SpeechStore(config)
+        self.store = SpeechStore(config, log=log)
         self.layout = AssetLayout.validate(Path(config.asset_root))
         self.digests = FineTuneDigestCache() if digests is None else digests
         self.slot_poll_seconds = slot_poll_seconds
@@ -203,6 +247,9 @@ class SpeechRunner:
         self.last_job = monotonic()
         self._last_sweep: float | None = None
         self._prepared: str | None = None
+        # ``serve``'s stop: honoured between jobs, between sentences and while a job waits for
+        # the GPU slot, so SIGTERM never waits for a whole job.
+        self._stopping: Callable[[], bool] = lambda: False
 
     @contextmanager
     def _runner_lock(self) -> Iterator[None]:
@@ -217,24 +264,80 @@ class SpeechRunner:
         finally:
             os.close(descriptor)
 
+    def _instance_lock(
+        self, *, stop: Callable[[], bool] | None = None, poll_seconds: float = 0.25
+    ) -> int | None:
+        """Take the instance lock: at once, or (with ``stop``) waiting until it is free.
+
+        Returns: its descriptor, or ``None`` when ``stop()`` turned true while it waited.
+        Raises: ``RunnerBusy`` without ``stop`` when another runner holds it.
+        """
+        self.store.ensure()
+        descriptor = os.open(
+            self.store.root / INSTANCE_LOCK_NAME,
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+        waiting = False
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return descriptor
+            except BlockingIOError:
+                if stop is not None and not waiting:
+                    waiting = True
+                    self.log("waiting for a pass by hand (speech run --once) to end")
+                if stop is None:
+                    os.close(descriptor)
+                    raise RunnerBusy(
+                        "another speech runner is running (the voice-lab-speech unit): stop it"
+                        " before a pass by hand, or let it render the queue"
+                    ) from None
+            except BaseException:
+                os.close(descriptor)
+                raise
+            if stop():
+                os.close(descriptor)
+                return None
+            time.sleep(poll_seconds)
+
     # -- the loop ------------------------------------------------------------------------------
 
     def serve(self, *, stop: Callable[[], bool], poll_seconds: float = 0.25) -> None:
         """Run passes until ``stop()``; keep the model resident between jobs; unload at the end.
 
-        Raises: ``RunnerOutdated`` when, idle and without a model, its code is no longer the
-        active release's.
+        Holds the instance lock throughout (waiting first while a pass by hand holds it).
+        Raises: ``RunnerOutdated`` when its code is no longer the active release's (checked
+        every pass and between jobs, never mid-job).
         """
+        descriptor = self._instance_lock(stop=stop, poll_seconds=poll_seconds)
+        if descriptor is None:
+            return
+        self._stopping = stop
         try:
             while not stop():
                 report = self.run_pending(sweep=self._sweep_due())
                 if not report.outcomes:
                     self.yield_if_idle()
-                    if not self.backend.loaded:
-                        self._require_current_code()
                     time.sleep(poll_seconds)
         finally:
+            self._stopping = lambda: False
             self.unload()
+            os.close(descriptor)
+
+    def run_once(self) -> PassReport:
+        """One pass by hand (``speech run --once``), then unload.
+
+        Raises: ``RunnerBusy`` at once, before anything is claimed, while another runner
+        (the host unit) runs; ``RunnerOutdated`` as ``run_pending``.
+        """
+        descriptor = self._instance_lock()
+        assert descriptor is not None
+        try:
+            return self.run_pending()
+        finally:
+            self.unload()
+            os.close(descriptor)
 
     def _sweep_due(self) -> bool:
         now = self.monotonic()
@@ -244,10 +347,24 @@ class SpeechRunner:
         return False
 
     def _require_current_code(self) -> None:
+        """Between jobs: unload, give the slot back and raise when the code is outdated.
+
+        Raises: ``RunnerOutdated`` (a restart starts the new code), or its
+        ``RunnerMisconfigured`` when the release link is missing or unreadable.
+        """
         problem = None if self.code_check is None else self.code_check()
-        if problem is not None:
-            self.log(f"restarting: {problem}")
-            raise RunnerOutdated(problem)
+        if problem is None:
+            return
+        self.unload()
+        if isinstance(problem, CodeProblem) and not problem.restartable:
+            self.log(
+                f"stopping, not restarting: {problem.reason}; fix the release link, then"
+                " start voice-lab-speech.service"
+            )
+            raise RunnerMisconfigured(problem.reason)
+        reason = problem.reason if isinstance(problem, CodeProblem) else problem
+        self.log(f"restarting: {reason}")
+        raise RunnerOutdated(reason)
 
     def unload(self) -> None:
         self.backend.unload()
@@ -270,15 +387,18 @@ class SpeechRunner:
         """One pass: what stopped runners left, then every queued job, then (with ``sweep``)
         retention.
 
-        Raises: ``RunnerOutdated`` (before it claims anything) when its code is outdated.
+        Raises: ``RunnerOutdated`` when its code is outdated: at the start of the pass, or
+        after a job ends and before the next is claimed (never while a job renders).
         """
         self.store.ensure()
         report = PassReport()
         with self._runner_lock():
+            self._require_current_code()
             self._recover(report)
             for job in self.store.queued():
-                if not self.backend.loaded:
-                    self._require_current_code()
+                if self._stopping():
+                    break
+                self._require_current_code()
                 if not self.store.claim(job.record.job_id, "runner"):
                     continue
                 ended = self._run_safely(job)
@@ -292,17 +412,9 @@ class SpeechRunner:
         """End or requeue the jobs that a stopped runner or API left owned but unfinished."""
         now = self.clock()
         for job in self.store.jobs():
-            if job.state.state == "running":
-                self._safely(
-                    report,
-                    partial(
-                        self._fail,
-                        job,
-                        "internal_error",
-                        "the job runner stopped while it rendered",
-                    ),
-                    job,
-                )
+            if job.state.state != "running":
+                continue
+            self._safely(report, partial(self._end_unfinished, job), job)
         for job, owner in self.store.orphaned_claims(now=now):
             job_id = job.record.job_id
             waited = (now - job.record.created_at).total_seconds()
@@ -317,6 +429,19 @@ class SpeechRunner:
                     self.log(f"{job_id}: claimed by a runner that stopped; queued again")
                 except Exception as error:  # noqa: BLE001 - the next pass tries again
                     self.log(f"{job_id}: could not be queued again: {type(error).__name__}")
+
+    def _end_unfinished(self, job: Job) -> Job:
+        """End a job a stopped runner left ``running``: ``cancelled`` when a cancel asked for
+        it, else ``failed internal_error``. Without its ledger entry (the runner stopped before
+        writing it) its published sentences are withdrawn first: nothing is served without
+        one."""
+        job_id = job.record.job_id
+        if not ledger_path(self.layout, job_id).exists():
+            job = self.store.withdraw_audio(job)
+        if self.store.cancel_requested(job_id):
+            self.log(f"{job_id}: the job runner stopped while it rendered; cancelled")
+            return self._cancel(job)
+        return self._fail(job, "internal_error", "the job runner stopped while it rendered")
 
     def _safely(self, report: PassReport, end: Callable[[], Job], job: Job) -> None:
         try:
@@ -407,19 +532,23 @@ class SpeechRunner:
                 holder,
                 timeout_seconds=remaining,
                 poll_seconds=self.slot_poll_seconds,
-                stop=lambda: self.store.cancel_requested(job_id),
+                stop=lambda: self._stopping() or self.store.cancel_requested(job_id),
             )
         except GpuSlotTimeout:
             return self._fail(job, "queue_timeout", "the GPU slot stayed busy past the queue limit")
         except GpuSlotAbandoned:
-            return self._cancel(job)
-        if not self.backend.loaded or self._prepared != verified.digest:
-            try:
-                self._require_current_code()
-            except RunnerOutdated:
-                self.unload()
-                self.store.requeue(job_id)
-                raise
+            if self.store.cancel_requested(job_id):
+                return self._cancel(job)
+            self.store.requeue(job_id)  # the runner is stopping: the job waits for the next
+            return job
+        if self._stopping():
+            self.store.requeue(job_id)
+            return job
+        try:
+            self._require_current_code()  # a deploy while it waited for the slot
+        except RunnerOutdated:
+            self.store.requeue(job_id)
+            raise
         try:
             fingerprint = self.backend.prepare(verified)
         except SpeechBackendError as error:
@@ -449,6 +578,10 @@ class SpeechRunner:
             for index, sentence in enumerate(sentences, start=1):
                 if self.store.cancel_requested(job_id):
                     outcome = "cancelled"
+                    break
+                if self._stopping():
+                    outcome, failure = "failed", "internal_error"
+                    self.log(f"{job_id}: the job runner was stopped between sentences")
                     break
                 self._still_current(verified)
                 partial = self.store.partial_segment_path(job_id, index)
@@ -492,8 +625,8 @@ class SpeechRunner:
             self._ledger(running, verified, finished, outcome, failure, fingerprint, seed, audio)
         except Exception as error:  # noqa: BLE001 - nothing is served without its ledger entry
             self.log(f"{job_id}: the ledger entry could not be written: {type(error).__name__}")
-            self.store.audio_path(job_id).unlink(missing_ok=True)
             outcome, failure, audio = "failed", "internal_error", None
+            running = self.store.withdraw_audio(running)
         if outcome == "failed":
             assert failure is not None
             return self.store.finish(running, "failed", now=finished, failure=failure)
@@ -559,6 +692,9 @@ __all__ = [
     "AUDIO_NAME",
     "EXIT_OUTDATED",
     "PassReport",
+    "CodeProblem",
+    "EXIT_MISCONFIGURED",
+    "RunnerMisconfigured",
     "RunnerOutdated",
     "SpeechRunner",
     "check_wav",

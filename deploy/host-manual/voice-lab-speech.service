@@ -12,9 +12,17 @@
 # steps of docs/SPEECH_API.md §11 are done (/etc/voice-lab/speech.json exists).
 #
 # A deploy moves /opt/voice-lab/current but does not restart this unit (the lane does not
-# manage it). With --release-link the runner notices, before its next model load or once it
-# is idle, that its code is no longer the active release's, gives back the GPU slot and any
-# job it claimed, and exits 75, which Restart=on-failure turns into a start of the new code.
+# manage it). With --release-link the runner checks at every pass and before every job, model
+# loaded or not, that its code is still the active release's; once a deploy moved the link it
+# lets the job in hand finish, unloads, gives back the GPU slot and any job it claimed but had
+# not started, and exits 75, which Restart=on-failure turns into a start of the new code. A
+# link that is missing or dangling is no deploy: it exits 78, which RestartPreventExitStatus
+# keeps from restarting every ten seconds; fix the link, then start the unit.
+#
+# A stop (SIGTERM) is honoured between sentences: the job in hand ends failed with its ledger
+# entry, a job waiting for the GPU slot goes back to the queue. TimeoutStopSec covers one
+# sentence at the default segment_deadline_seconds (120 s): raise it with that setting, so a
+# stop never kills a render.
 #
 # It writes only the speech state, the GPU slot's lock and the render ledger: the ledger's
 # directory must exist before the unit starts (deploy/speech/README.md, step 8).
@@ -33,7 +41,8 @@ UMask=0077
 ExecStart=/opt/voice-lab/current/bin/voice-lab speech run --config /etc/voice-lab/speech.json --release-link /opt/voice-lab/current
 Restart=on-failure
 RestartSec=10s
-TimeoutStopSec=30s
+RestartPreventExitStatus=78
+TimeoutStopSec=150s
 PrivateNetwork=yes
 IPAddressDeny=any
 RestrictAddressFamilies=AF_UNIX

@@ -47,7 +47,7 @@ RELEASE_PURPOSE: Final = "private-assistant-speech"
 RELEASE_BOUNDARY: Final = "home-host"
 MAX_RELEASE_BYTES: Final = 64 * 1024
 # The one subject whose voice speaks (AGENTS.md: never another subject). The speech
-# configuration's ``subject_id`` defaults to it.
+# configuration's ``subject_id`` is pinned to it (``config.SpeechSubject``).
 SPEECH_SUBJECT: Final = "cole-self"
 
 

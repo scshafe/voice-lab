@@ -13,7 +13,16 @@ never started is given back to the queue (``requeue``) until the job's queue tim
 
 The text and the request are named by keyed digests (HMAC-SHA256 under ``text-digest.key``,
 32 random bytes made once per install, 0600, in the state root: never in the asset root, so
-never in the vault), never by plain SHA-256; the render ledger keeps the same digest.
+never in the vault), never by plain SHA-256; the render ledger keeps the same digest. A key
+is made only on a new install (no job record and no render ledger entry yet). A key that is
+unusable (not a private regular file of 32 bytes), or missing once anything was named by it,
+is never made or replaced automatically: whatever needs it answers ``500 internal_error``
+and the log names why, once per change, for the operator's repair (deploy/speech/README.md,
+"The text key"; ``voice-lab speech new-text-key``). The API re-checks the key file on every
+use, so it never keeps using a key that vanished, and uses a replaced one from then on.
+After a new key, earlier jobs' idempotency keys answer ``409 idempotency_key_unverifiable``
+(each entry names the key it was made under by ``text_key_id``) and the earlier ledger
+entries no longer match a text under it.
 
 When a job ends its text is deleted first, then its state is made final, and (with a
 ``callback_url``) a webhook event is written to ``outbox/`` for the delivery process.
@@ -30,7 +39,8 @@ import os
 import secrets
 import shutil
 import stat
-from collections.abc import Iterator
+import sys
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -45,7 +55,7 @@ from ..canonical import (
     write_new_private_file,
 )
 from ..errors import VoiceLabError
-from ..models import ContractModel, StableId
+from ..models import ContractModel, Sha256, StableId
 from .config import SpeechCaller, SpeechConfig
 from .contracts import (
     JOB_ID_PATTERN,
@@ -81,7 +91,16 @@ ABANDONED_SUBMIT: Final = timedelta(hours=1)
 # A cancel's claim older than this whose job is still queued: the API stopped in between.
 ABANDONED_CANCEL: Final = timedelta(minutes=1)
 TEXT_KEY_NAME: Final = "text-digest.key"
+# The render ledger's directory in the asset root's provenance (written by the job runner).
+LEDGER_DIRECTORY: Final = "speech-renders"
 TEXT_KEY_BYTES: Final = 32
+# What a key's identifier is the keyed digest of: it names the key without revealing it.
+TEXT_KEY_ID_LABEL: Final = b"cole-voice-lab.speech-text-key-id/v1"
+
+
+def log_to_stderr(message: str) -> None:
+    """The speech processes' log line (stderr: the journal, or the API container's log)."""
+    print(f"voice-lab speech: {message}", file=sys.stderr, flush=True)
 
 
 class SpeechRefusal(Exception):
@@ -107,6 +126,9 @@ class SpeechRefusal(Exception):
 
 class _IdempotencyEntry(ContractModel):
     job_id: StableId
+    # The identifier of the text key the job's request digest was made under (``None`` in an
+    # entry written before it was recorded).
+    text_key_id: Sha256 | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,28 +155,57 @@ def keyed_digest(key: bytes, data: bytes) -> str:
     return hmac.new(key, data, hashlib.sha256).hexdigest()
 
 
+def _key_id(key: bytes) -> str:
+    return keyed_digest(key, TEXT_KEY_ID_LABEL)
+
+
+def _lost_key_problem(path: Path, history: tuple[int, int] | None) -> str:
+    if history is None:
+        named = "the job records or the render ledger cannot be listed"
+    else:
+        named = f"{history[0]} job record(s) and {history[1]} ledger entr(ies) were named by it"
+    return (
+        f"{path} is missing and is not made again ({named}): restore it from a backup, or"
+        " make a new one with `voice-lab speech new-text-key`"
+    )
+
+
+class TextKeyError(VoiceLabError):
+    """The text key cannot be used; the message says why, never what the key is."""
+
+
 def read_text_key(path: Path) -> bytes:
     """The text key at ``path``: a private regular file of exactly ``TEXT_KEY_BYTES`` bytes.
 
-    Raises: ``SpeechRefusal`` 500 ``internal_error`` (never naming the key).
+    Raises: ``TextKeyError`` naming what is wrong (missing, not a regular file, open to
+    others, the wrong size, unreadable), never the key's bytes.
     """
+    if not os.path.lexists(path):
+        raise TextKeyError(f"{path} is missing")
     try:
         with open_regular_no_follow(path) as stream:
-            if stat.S_IMODE(os.fstat(stream.fileno()).st_mode) & 0o077:
-                raise ValueError("open to others")
+            mode = stat.S_IMODE(os.fstat(stream.fileno()).st_mode)
+            if mode & 0o077:
+                raise TextKeyError(f"{path} is open to group or others (mode {mode:04o}, not 0600)")
             key = stream.read(TEXT_KEY_BYTES + 1)
-    except (OSError, ValueError, VoiceLabError) as error:
-        raise SpeechRefusal(500, "internal_error", "the speech state is unavailable") from error
+    except VoiceLabError as error:
+        if isinstance(error, TextKeyError):
+            raise
+        raise TextKeyError(f"{path} is not a regular file (a link or another kind)") from error
+    except OSError as error:
+        raise TextKeyError(f"{path} cannot be read: {type(error).__name__}") from error
     if len(key) != TEXT_KEY_BYTES:
-        raise SpeechRefusal(500, "internal_error", "the speech state is unavailable")
+        size = f"{len(key)} bytes" if len(key) <= TEXT_KEY_BYTES else "longer"
+        raise TextKeyError(f"{path} is {size}, not {TEXT_KEY_BYTES} bytes")
     return key
 
 
 class SpeechStore:
     """The job directories under one ``state_root``."""
 
-    def __init__(self, config: SpeechConfig) -> None:
+    def __init__(self, config: SpeechConfig, *, log: Callable[[str], None] = log_to_stderr) -> None:
         self.config = config
+        self.log = log
         self.root = Path(config.state_root)
         self.jobs_root = self.root / "jobs"
         self.queue_root = self.root / "queue"
@@ -162,10 +213,18 @@ class SpeechStore:
         self.outbox_root = self.root / "outbox"
         self.webhooks_root = self.root / "webhooks"
         self._text_key: bytes | None = None
+        self._key_signature: tuple[int, ...] | None = None
+        self._key_problem: str | None = None
 
     def ensure(self) -> None:
-        """Create the directories (0700) and the text key; a link where one belongs is
-        refused."""
+        """Create the directories (0700) and, on a new install, the text key; a link where
+        one belongs is refused.
+
+        The key is made only when nothing was ever named by one: no job record and no render
+        ledger entry. Otherwise a missing key is a lost key, and it is reported, never made
+        again here (``make_text_key`` is the operator's repair). Any problem with the key is
+        logged once while it stays the same.
+        """
         for directory in (
             self.root,
             self.jobs_root,
@@ -180,27 +239,133 @@ class SpeechStore:
                 raise SpeechRefusal(500, "internal_error", "the speech state is unavailable")
         key = self.root / TEXT_KEY_NAME
         if not os.path.lexists(key):
+            history = self.named_history()
+            if history is None or any(history):
+                self._note_key_problem(_lost_key_problem(key, history))
+                return
             try:
                 write_new_private_file(key, secrets.token_bytes(TEXT_KEY_BYTES))
             except FileExistsError:
                 pass  # the API and the runner raced; the one that won made it
+            self._note_key_problem(None)
+            return
+        try:
+            read_text_key(key)
+        except TextKeyError as error:
+            self._note_key_problem(str(error))
+        else:
+            self._note_key_problem(None)
+
+    def named_history(self) -> tuple[int, int] | None:
+        """How many job records and render ledger entries exist (each was named by a text
+        key); ``None`` when they cannot be counted."""
+        try:
+            records = sum(
+                1 for name in os.listdir(self.jobs_root) if JOB_ID_PATTERN.fullmatch(name)
+            )
+        except FileNotFoundError:
+            records = 0
+        except OSError:
+            return None
+        ledger = Path(self.config.asset_root) / "provenance" / LEDGER_DIRECTORY
+        try:
+            entries = sum(1 for name in os.listdir(ledger) if name.endswith(".json"))
+        except FileNotFoundError:
+            entries = 0
+        except OSError:
+            return None
+        return records, entries
+
+    def make_text_key(self) -> tuple[int, int]:
+        """Make a new text key where none is (the operator's repair of a lost key).
+
+        Returns: the job records and ledger entries named by the lost key.
+        Raises: ``TextKeyError`` when a key file is there (move an unusable one aside first)
+        or the history cannot be counted.
+        """
+        key = self.root / TEXT_KEY_NAME
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.path.lexists(key):
+            raise TextKeyError(f"{key} exists: move it aside first if it is unusable")
+        history = self.named_history()
+        if history is None:
+            raise TextKeyError("the job records or the render ledger cannot be listed")
+        try:
+            write_new_private_file(key, secrets.token_bytes(TEXT_KEY_BYTES))
+        except FileExistsError as error:
+            raise TextKeyError(f"{key} exists: another process made it") from error
+        self.log(
+            f"a new {TEXT_KEY_NAME} was made by hand; {history[0]} job record(s) and"
+            f" {history[1]} ledger entr(ies) were named by the lost key"
+        )
+        return history
+
+    def _note_key_problem(self, problem: str | None) -> None:
+        """Log a problem with the key once per change (and when it is resolved)."""
+        if problem == self._key_problem:
+            return
+        previous, self._key_problem = self._key_problem, problem
+        if problem is not None:
+            self.log(
+                f"the text key cannot be used: {problem}; speech requests answer 500 until it"
+                " is repaired (deploy/speech/README.md, 'The text key')"
+            )
+        elif previous is not None:
+            self.log("the text key is usable again")
 
     def text_key(self) -> bytes:
-        """The install's text key (read once).
+        """The install's text key, re-read whenever its file changed (checked by ``lstat``
+        on every call), so a key that vanished is never used from memory and a replaced one
+        is used, with a log line, from then on.
 
-        Raises: ``SpeechRefusal`` 500 when it is missing or unsafe.
+        Raises: ``SpeechRefusal`` 500 ``internal_error`` when it is missing or unusable (the
+        log says why, once per change).
         """
-        if self._text_key is None:
-            self._text_key = read_text_key(self.root / TEXT_KEY_NAME)
-        return self._text_key
+        path = self.root / TEXT_KEY_NAME
+        try:
+            metadata = os.lstat(path)
+            signature: tuple[int, ...] | None = (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_mode,
+            )
+        except OSError:
+            signature = None
+        if self._text_key is not None and signature == self._key_signature:
+            return self._text_key
+        try:
+            key = read_text_key(path)
+        except TextKeyError as error:
+            self._text_key, self._key_signature = None, None
+            problem = str(error)
+            if not os.path.lexists(path):
+                problem = _lost_key_problem(path, self.named_history())
+            self._note_key_problem(problem)
+            raise SpeechRefusal(500, "internal_error", "the speech state is unavailable") from (
+                error
+            )
+        if self._text_key is not None and not hmac.compare_digest(key, self._text_key):
+            self.log(
+                f"the text key changed on disk (key id {_key_id(self._text_key)[:12]} to"
+                f" {_key_id(key)[:12]}); new digests use the new key"
+            )
+        self._text_key, self._key_signature = key, signature
+        self._note_key_problem(None)
+        return key
 
-    def text_digest(self, text: str) -> str:
+    def text_key_id(self, key: bytes | None = None) -> str:
+        """The text key's identifier: a keyed digest of a fixed label, never the key."""
+        return _key_id(self.text_key() if key is None else key)
+
+    def text_digest(self, text: str, key: bytes | None = None) -> str:
         """The keyed digest the job record and the ledger name a text by."""
-        return keyed_digest(self.text_key(), text.encode("utf-8"))
+        return keyed_digest(self.text_key() if key is None else key, text.encode("utf-8"))
 
-    def request_digest(self, request: SpeechRequest) -> str:
+    def request_digest(self, request: SpeechRequest, key: bytes | None = None) -> str:
         """The keyed digest of a whole request (its text included), for idempotency."""
-        return keyed_digest(self.text_key(), canonical_json_bytes(request))
+        return keyed_digest(self.text_key() if key is None else key, canonical_json_bytes(request))
 
     # -- paths -----------------------------------------------------------------------------
 
@@ -274,20 +439,35 @@ class SpeechStore:
     def _idempotency_path(self, caller_id: str, key_sha256: str) -> Path:
         return self.idempotency_root / caller_id / f"{key_sha256}.json"
 
-    def replay(self, caller: SpeechCaller, request: SpeechRequest) -> Job | None:
+    def replay(
+        self, caller: SpeechCaller, request: SpeechRequest, *, key: bytes | None = None
+    ) -> Job | None:
         """The job an earlier request with the same idempotency key made, if it still exists.
 
-        Raises: ``SpeechRefusal`` 409 ``idempotency_conflict`` when that request differed.
+        Raises: ``SpeechRefusal`` 409 ``idempotency_conflict`` when that request differed;
+        409 ``idempotency_key_unverifiable`` when the job was made under a text key that has
+        since been replaced, so the two requests cannot be compared.
         """
         if request.idempotency_key is None:
             return None
         path = self._idempotency_path(caller.caller_id, _sha256_text(request.idempotency_key))
         if not os.path.lexists(path):
             return None
-        existing = self.load(_read(path, _IdempotencyEntry).job_id)
+        entry = _read(path, _IdempotencyEntry)
+        existing = self.load(entry.job_id)
         if existing is None:
             return None
-        digest = self.request_digest(request)
+        key = self.text_key() if key is None else key
+        if entry.text_key_id is not None and not hmac.compare_digest(
+            entry.text_key_id, self.text_key_id(key)
+        ):
+            raise SpeechRefusal(
+                409,
+                "idempotency_key_unverifiable",
+                "this idempotency key's job was made before the server's text key was replaced,"
+                " so this request cannot be compared with it; use a new idempotency key",
+            )
+        digest = self.request_digest(request, key)
         if not hmac.compare_digest(existing.record.request_hmac_sha256, digest):
             raise SpeechRefusal(
                 409, "idempotency_conflict", "this idempotency key was used for a different request"
@@ -303,13 +483,14 @@ class SpeechStore:
         Raises: ``SpeechRefusal`` 409 ``idempotency_conflict``, 429 ``too_many_jobs`` or
         ``daily_budget_exhausted``, 503 ``queue_full``.
         """
-        request_digest = self.request_digest(request)
+        key = self.text_key()  # one key for the whole request, even if the file changes
+        request_digest = self.request_digest(request, key)
         key_sha256 = (
             None if request.idempotency_key is None else _sha256_text(request.idempotency_key)
         )
         characters = len(request.text)
         with self._submit_lock():
-            existing = self.replay(caller, request)
+            existing = self.replay(caller, request, key=key)
             if existing is not None:
                 return existing, False
             active = 0
@@ -346,7 +527,7 @@ class SpeechStore:
                 client_ref=request.client_ref,
                 idempotency_key_sha256=key_sha256,
                 request_hmac_sha256=request_digest,
-                text_hmac_sha256=self.text_digest(request.text),
+                text_hmac_sha256=self.text_digest(request.text, key),
                 text_characters=characters,
             )
             state = SpeechJobState(job_id=job_id, state="queued")
@@ -360,7 +541,8 @@ class SpeechStore:
             if key_sha256 is not None:
                 path = self._idempotency_path(caller.caller_id, key_sha256)
                 path.parent.mkdir(mode=0o700, exist_ok=True)
-                write_canonical_json(path, _IdempotencyEntry(job_id=job_id))  # replaces a stale key
+                entry = _IdempotencyEntry(job_id=job_id, text_key_id=self.text_key_id(key))
+                write_canonical_json(path, entry)  # replaces a stale key
             write_new_private_file(self.queue_root / job_id, b"")
             return Job(record, state), True
 
@@ -483,6 +665,21 @@ class SpeechStore:
         state = job.state.model_copy(update={"segments": (*job.state.segments, segment)})
         state = SpeechJobState.model_validate(state.model_dump())
         self.write_state(state)
+        return Job(job.record, state)
+
+    def withdraw_audio(self, job: Job) -> Job:
+        """Unpublish everything ``job`` rendered (its owner only, before ``finish``): first the
+        state that lists its segments, then the segment files and the joined audio, which go
+        even when that state cannot be written."""
+        job_id = job.record.job_id
+        state = SpeechJobState.model_validate(job.state.model_dump() | {"segments": ()})
+        directory = self.job_directory(job_id)
+        try:
+            self.write_state(state)
+        finally:
+            (directory / AUDIO_NAME).unlink(missing_ok=True)
+            (directory / PARTIAL_AUDIO_NAME).unlink(missing_ok=True)
+            shutil.rmtree(directory / SEGMENTS_DIRECTORY, ignore_errors=True)
         return Job(job.record, state)
 
     def finish(

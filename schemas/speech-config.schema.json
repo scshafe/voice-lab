@@ -157,6 +157,10 @@
         }
       ]
     },
+    "SpeechSubject": {
+      "const": "cole-self",
+      "type": "string"
+    },
     "StableId": {
       "maxLength": 128,
       "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
@@ -260,7 +264,7 @@
       "$ref": "#/$defs/AbsolutePath"
     },
     "subject_id": {
-      "$ref": "#/$defs/StableId",
+      "$ref": "#/$defs/SpeechSubject",
       "default": "cole-self"
     },
     "tailnet_suffix": {

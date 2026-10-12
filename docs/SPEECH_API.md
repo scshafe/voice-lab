@@ -101,8 +101,8 @@ fields are common to every model family (D-048) except `model`, the family's own
 --designated-by <name> [--config <speech.json>] [--reference-prompt <id>] [--blind-review
 <id> --score-sheet-sha256 <sha>]` asks the run's family which files it binds (F5-TTS resolves
 them through the existing Speak seam, `finetune.resolve_speech_model`), checks the run
-(finished, not archived, of the pinned subject: the configuration's `subject_id` with
-`--config`, else `cole-self`) and the named consent record (approved for
+(finished, not archived, of the pinned subject, `cole-self`: the configuration's `subject_id`
+can name no other) and the named consent record (approved for
 `private-assistant-speech` on `home-host`, of the same subject), hashes every file against the
 run's records, and prints the record it would write; with `--i-designate-this-run` it writes
 it. `voice release show` prints the current one; `voice release history` lists them all. The
@@ -155,12 +155,15 @@ read the parts they need.
 }
 ```
 
-`subject_id` is the one subject whose release may speak; `runtime` names the runtime of the
-release's model family (`model_family`, D-048). Validation refuses: a duplicate caller id,
+`subject_id` is the one subject whose release may speak, and it is pinned in code: it may be
+left out, and any value but `cole-self` is refused (`config.SpeechSubject`, D-045), so a
+configuration file cannot make another subject's release speak. `runtime` names the runtime of
+the release's model family (`model_family`, D-048). Validation refuses: a duplicate caller id,
 subject, secret path or secret file name; an empty audience list; an `http` webhook URL, one
 with credentials, a query or a fragment, one whose host is not a single label under
-`tailnet_suffix`, or one whose path has a dot segment, an empty segment, or a percent-encoded
-dot, slash or backslash; a limit outside its bounds (`max_text_characters` 1–2,000,
+`tailnet_suffix`, or one whose path has a dot segment, an empty segment, a path parameter
+(`;`, as in `/hooks/..;/admin`, which some receivers resolve to `/admin`), or a
+percent-encoded dot, slash, semicolon or backslash; a limit outside its bounds (`max_text_characters` 1–2,000,
 `max_queued_jobs` 1–16, `daily_character_budget` up to 1,000,000; `queue_limit` 1–256;
 `audio_retention_hours` 1–720, that is 1 hour to 30 days; `record_retention_days` 1–365); a
 relative path. At most four callers (one is expected).
@@ -183,7 +186,9 @@ file a host unit refreshes (`state/auth/jwks.json`, design §3.5).
 compatibility route does, and do not take the global `/api/` check (which admits only Cole's
 desktop audience and subject). A token is accepted when its signature verifies, its issuer is
 trusted, it is within its lifetime (60 s leeway), and its (`iss`, `sub`) and one of its `aud`
-values match a registered caller. The caller is the principal for everything after: limits,
+values match a registered caller. The check takes at most eight distinct audiences across
+all callers (the first eight, sorted); a configuration that names more is served, but the API
+logs at start how many were dropped and which callers lose one. The caller is the principal for everything after: limits,
 idempotency, job visibility (a caller sees only its own jobs; another's id answers 404) and
 allowed webhook URLs. A speech caller's token never passes the global check, so it reaches no
 other route; Cole's desktop tokens are unchanged and keep reaching everything they reach
@@ -231,7 +236,10 @@ with a stable code, and every answer is `Cache-Control: no-store`.
   `422 callback_not_allowed`.
 - `idempotency_key`: optional, 1 to 128 characters of `[A-Za-z0-9._:-]`. A replay with the
   same key and the same body answers `200` with the same job; the same key with a different
-  body answers `409 idempotency_conflict`. Keys live as long as the job's record.
+  body answers `409 idempotency_conflict`. Keys live as long as the job's record. Bodies are
+  compared by their keyed digest, so a key whose job was made before the server's text key
+  was replaced (§7) cannot be compared: it answers `409 idempotency_key_unverifiable`, and the
+  caller retries with a new idempotency key.
 - `client_ref`: optional, at most 200 characters, echoed in status and webhooks; never logged.
 
 Answer `202` with the job's status, the same body as `GET …/{id}` below:
@@ -248,7 +256,8 @@ one whose signature, lifetime, issuer, subject or audience is not a registered c
 the caller (`403 caller_not_registered` when the claims match no single caller); the caller
 may invoke `private-assistant-speech` (`403 purpose_not_allowed`); the body (`413`,
 `422 invalid_request`, `422 unsupported_format`, `422 callback_not_allowed`); idempotency
-(`200` replay, `409`); a current voice release (`503 voice_release_unavailable`; its files
+(`200` replay, `409 idempotency_conflict` or `409 idempotency_key_unverifiable`); a current
+voice release (`503 voice_release_unavailable`; its files
 are re-hashed by the job runner before every render, not by the API); the consent record the
 release names, unchanged and valid (`503 consent_unavailable`); a long job holding the GPU slot (`503 gpu_busy`, with
 `Retry-After`); the caller's queued jobs (`429 too_many_jobs`), its daily characters (UTC day,
@@ -307,7 +316,9 @@ Every published segment is sent once, in order; `Last-Event-ID: <n>` (1 to 4 ASC
 anything else starts from the beginning) resumes after segment `n`. The stream ends with one terminal event (`speech.succeeded`, `speech.failed`,
 `speech.cancelled` or `speech.expired`) and is closed. A comment line is sent every 15 seconds
 while nothing happens, and the stream is closed after 10 minutes in any case (reconnect with
-`Last-Event-ID`; oauth2-proxy's upstream timeout is 600 s). It carries no audio and no text.
+`Last-Event-ID`; oauth2-proxy's upstream timeout is 600 s). A caller holds at most four
+streams at once; a fifth answers `429 too_many_streams` before the stream starts (each holds
+one of the API's threads; close one, or poll). It carries no audio and no text.
 This is a job's event stream, not a synthesis endpoint: it only reports files the job runner
 has finished.
 
@@ -345,7 +356,12 @@ queue/<id>                    empty; the job runner looks for these
 idempotency/<caller>/<sha256 of the key>.json
 text-digest.key               32 random bytes, made once (0600): the key of the text's and the
                               request's digests (HMAC-SHA256); never in the asset root, so
-                              never in the vault
+                              never in the vault. Made only on a new install (no job
+                              record, no ledger entry); never made again or replaced
+                              automatically after that (the log says why, once per
+                              change; deploy/speech/README.md, "The text key")
+.runner.lock                  held by the job runner for each pass
+.runner.instance.lock         held by the one runner process (the unit, or a pass by hand)
 outbox/<event id>.json        a webhook event waiting for the delivery process
 webhooks/<event id>/          an event being delivered, with its delivery log
 resident/                     the resident model's private scratch (a converted reference
@@ -381,17 +397,41 @@ event. The text is deleted on every ending, first. It sweeps retention every few
 cancel is honoured between sentences, and ends a wait for the GPU slot at once.
 
 Every error ends the job with a code (`internal_error` when nothing more precise fits); the
-particulars go to the unit's journal. A runner that stops leaves nothing owned for ever: at
-its next start (and every pass) a job it left `running` fails `internal_error`, and a job it
-had claimed but not started is queued again, or ends `cancelled` when a cancel asked for it,
-or `queue_timeout` once its queue time is up. A cancel's claim the API never finished is
+particulars go to the unit's journal.
+
+**The ledger and what is served.** Each sentence is served as soon as it is published, while
+the job renders and before its ledger entry exists: that is what serving sentences during a
+render means. Once a job has ended, nothing of it is served without its ledger entry: when the
+entry cannot be written the job fails `internal_error` and its published segments are
+unlisted and deleted; and a job that a killed runner left `running` without an entry has its
+segments withdrawn the same way when the next pass recovers it (a job whose entry was written
+before the kill keeps them). A runner that stops leaves nothing owned for ever: at its next
+start (and every pass) a job it left `running` ends `cancelled` when a cancel asked for it and
+fails `internal_error` otherwise, and a job it had claimed but not started is queued again, or
+ends `cancelled` when a cancel asked for it, or `queue_timeout` once its queue time is up.
+
+**Stopping.** A stop (SIGTERM, `systemctl stop`) is honoured between jobs, while a job waits
+for the GPU slot (the job is queued again) and between sentences: the job in hand ends
+`failed internal_error` with its ledger entry and the sentences it published. So a stop waits
+for at most the sentence being rendered, which the unit's `TimeoutStopSec=150s` covers at the
+default `segment_deadline_seconds`; only a kill leaves a job `running` for recovery. A cancel's claim the API never finished is
 ended `cancelled` after a minute.
 
 **Deploys.** The unit runs `/opt/voice-lab/current/bin/voice-lab … --release-link
-/opt/voice-lab/current`. Before each model load, and when it is idle without a model, the
-runner checks that its own code is still in the release that link points at; when a deploy
-has moved it, it gives back the slot and any claimed job and exits 75, and systemd starts the
-new code (deploy/speech/README.md, "Deploys and the runner").
+/opt/voice-lab/current`. At the start of every pass and before it claims each job, with a
+model loaded or not, the runner checks that its own code is still in the release that link
+points at; when a deploy has moved it, the job being rendered (if any) has finished, and the
+runner unloads the model, gives back the slot and any job it claimed but had not started, and
+exits 75, and systemd starts the new code (deploy/speech/README.md, "Deploys and the runner").
+A link that is missing, dangling or unreadable is not a deploy, and a restart cannot fix it:
+the runner gives back what it holds the same way, logs "stopping, not restarting" and exits 78,
+which the unit's `RestartPreventExitStatus=78` leaves stopped until the link is fixed and the
+unit started. While a pass by hand runs, a starting unit logs once that it waits for it.
+
+**One runner.** The unit holds `.runner.instance.lock` for its life. `voice-lab speech run
+--config … --once` (one pass by hand, then unload) is refused at once (exit 2) while the unit
+runs, rather than wait for the GPU slot the unit's resident model holds; a unit that starts
+during a pass by hand waits for it.
 
 **The resident model worker.** The real backend (F5-TTS's; each family has its own, D-048)
 keeps one model process in the runtime's interpreter (`f5_resident.py`, D-004's isolation) with the F5-TTS model, the vocoder and the
