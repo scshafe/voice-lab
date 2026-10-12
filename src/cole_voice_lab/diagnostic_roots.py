@@ -158,7 +158,8 @@ def initialize_diagnostic_root(
 ) -> tuple[AssetLayout, DiagnosticRootMarker]:
     """Create a marked root; an existing root qualifies only while every layout member is empty.
 
-    No consent record is installed: diagnostic subjects can never approve consent.
+    A diagnostic subject is never Cole's pinned subject (``models.COLE_SUBJECT``), so nothing of
+    a diagnostic root is ever synthesized from (D-050).
     """
     marker = DiagnosticRootMarker(
         purpose="physical-test", subject_id=subject_id, created_at=clock()

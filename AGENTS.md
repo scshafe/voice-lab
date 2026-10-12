@@ -9,8 +9,8 @@ speaking with the one voice release Cole designates, for callers he registers
 
 ## Invariants
 
-- Human recordings, derived audio, model weights, consent evidence, and run
-  outputs never enter Git.
+- Human recordings, derived audio, model weights, consent records (history since
+  D-050), and run outputs never enter Git.
 - Runtime assets live under an explicit, permission-restricted asset root. The
   code repository must remain usable without access to those assets.
 - Raw recordings are accepted only after every regular file, declared path,
@@ -18,8 +18,14 @@ speaking with the one voice release Cole designates, for callers he registers
   undeclared files, path traversal, and partial sessions fail closed.
 - Accepted raw recordings are content-addressed and write-protected. Derived
   audio is always written elsewhere.
-- Recognizable-human synthesis requires a checksum-bound reference and an
-  approved, checksum-bound consent record with a matching subject and purpose.
+- Only Cole's own voice is synthesized, under his standing decision (D-050): his
+  voice may be used for fine-tuning, listening (Speak), assistant speech and
+  benchmarks on his own hardware. The subject is pinned in code to `cole-self`
+  (`models.COLE_SUBJECT`, the speech configuration's `subject_id`,
+  `release.SPEECH_SUBJECT`); designation, the speech API and job runner, reference
+  publication, dataset building and the offline workers refuse any other subject.
+  Zero-shot rendering needs a checksum-bound reference. No consent record is
+  required or read; those already on disk stay as history.
 - No human audio is sent to a hosted service or GPU host without a separate,
   explicit transfer approval naming the destination and payload digest. D-020
   permits encrypted library storage on Cole's own approved vault: a standing
@@ -27,8 +33,7 @@ speaking with the one voice release Cole designates, for callers he registers
   Tailscale node ID, tag, tailnet suffix and file classes, with a 12-month expiry
   (at most 366 days). A ledger entry naming the plaintext manifest-plan payload
   digest must precede each generation's first new blob upload. `training` is a
-  separate opt-in class. Storage needs no synthesis consent; the vault never
-  receives plaintext or executes a model.
+  separate opt-in class. The vault never receives plaintext or executes a model.
 - Free, and on Cole's own hardware (D-028): no cloud service and nothing paid,
   anywhere. No object storage (ciphertext included), no hosted or rented GPU, no
   paid model, API, signing or notarization, no hosted CI beyond what is free for a
@@ -52,11 +57,10 @@ speaking with the one voice release Cole designates, for callers he registers
   tailnet callers, completed asynchronously (polling, a per-job event stream of finished
   sentence segments, or a signed terminal webhook); never an always-on synthesis endpoint,
   audio streamed while it is synthesized, or a public endpoint. Sentences render
-  sequentially with derived seeds, so reruns are byte-identical. It needs an approved consent record for
-  `private-assistant-speech` on `home-host`. Rendered audio leaves the PC only to a
-  registered caller, is deleted after its retention, and every render is in the
-  append-only render ledger, which holds the text's digest, never the text (D-046,
-  D-047; docs/SPEECH_API.md).
+  sequentially with derived seeds, so reruns are byte-identical. Rendered audio leaves
+  the PC only to a registered caller, is deleted after its retention, and every render
+  is in the append-only render ledger, which holds the text's digest, never the text
+  (D-046, D-050; docs/SPEECH_API.md).
 
 ## Working agreement
 

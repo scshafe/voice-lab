@@ -46,6 +46,9 @@ tree; history is as screened.
   `private-chloe-speech-rendering` is retired (still readable in stored records), so the
   "Chloe" mentions in §4.1 below now survive only in history, `DECISIONS.md` and the consent
   model's retired value.
+- **Changed 2026-10-12 (D-050):** consent records are retired; the consent model, its
+  retired purpose value and the pending template are deleted, so those "Chloe" mentions
+  survive only in history and `DECISIONS.md`.
 - **Still open, optional:**
   - the `coles-macbook-pro` and `coles-macbook-air` hostnames in tests and one
     example;
@@ -139,7 +142,8 @@ Nothing slipped in.
   `src/cole_voice_lab/resources/consent.pending.json` (`approved: false`,
   `pending-subject-attestation`, no dates). It is not a signed record. The
   fixture consent files in `tests/vault_*_fixtures.py` are
-  `{"consent":"synthetic"}`.
+  `{"consent":"synthetic"}`. (Since 2026-10-12, D-050, the template is deleted
+  with the rest of the consent code; no consent JSON is in the tree.)
 - **Prompt catalogs** (`src/cole_voice_lab/resources/*-v1.json`,
   `pilot-v2.json`) are neutral reading sentences, nothing personal.
 - **Gap, optional.** `.gitignore` does not list `.env` or `deploy/vault/.env`,

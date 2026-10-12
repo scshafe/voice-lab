@@ -542,7 +542,7 @@ def test_private_asset_guard_rejects_approved_consent_and_schema_spoofing(
     assert "private evidence JSON schema: looks-like-a-schema.json" in result.stderr
 
 
-def test_private_asset_guard_allows_only_catalog_json_schemas_and_pending_template(
+def test_private_asset_guard_allows_catalog_json_schemas_and_no_longer_a_consent_template(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "repository"
@@ -562,6 +562,10 @@ def test_private_asset_guard_allows_only_catalog_json_schemas_and_pending_templa
             }
         )
     )
+    guard = (sys.executable, str(REPOSITORY / "scripts" / "guard-private-assets"), "--root")
+    assert _run(*guard, str(root)).returncode == 0
+    # Consent records are retired (D-050) and the pending template is gone: a file at its old
+    # path is private evidence like any other consent record.
     resource_directory = root / "src/cole_voice_lab/resources"
     resource_directory.mkdir(parents=True)
     (resource_directory / "consent.pending.json").write_text(
@@ -579,14 +583,13 @@ def test_private_asset_guard_allows_only_catalog_json_schemas_and_pending_templa
         )
     )
 
-    result = _run(
-        sys.executable,
-        str(REPOSITORY / "scripts" / "guard-private-assets"),
-        "--root",
-        str(root),
-    )
+    result = _run(*guard, str(root))
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1
+    assert (
+        "private evidence JSON schema: src/cole_voice_lab/resources/consent.pending.json"
+        in result.stderr
+    )
 
 
 @pytest.mark.parametrize(

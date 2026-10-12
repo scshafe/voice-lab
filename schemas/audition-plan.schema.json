@@ -353,13 +353,29 @@
       "additionalProperties": false,
       "properties": {
         "consent_path": {
-          "maxLength": 1024,
-          "minLength": 1,
-          "title": "Consent Path",
-          "type": "string"
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Path"
         },
         "consent_sha256": {
-          "$ref": "#/$defs/Sha256"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "path": {
           "maxLength": 1024,
@@ -384,9 +400,7 @@
         "path",
         "sha256",
         "transcript",
-        "subject_id",
-        "consent_path",
-        "consent_sha256"
+        "subject_id"
       ],
       "title": "ReferenceEvidence",
       "type": "object"

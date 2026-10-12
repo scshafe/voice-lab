@@ -16,8 +16,8 @@
   accelerator memory with how the backend measured it, whether a rerun of a segment is
   byte-identical, the host's fingerprint, and an advisory snapshot of the GPU's other users
   before the load and after the unload. The run is rendered as an unwritten release preview
-  (``speech.release.designate(write=False)``) under an approved consent record for
-  ``private-home-host-synthesis`` on ``home-host``; the audio is hashed in the benchmark's
+  (``speech.release.designate(write=False)``), so only a run of the pinned subject renders
+  and no consent record is read (D-050); the audio is hashed in the benchmark's
   scratch under the speech state (never the lab) and deleted, never kept or served. On the PC
   it runs in the benchmark unit (``cli_models``);
 - **quality** (optional): a link to the blind review that judged it, made only from the score
@@ -69,13 +69,12 @@ from .host_fingerprint import (
     host_fingerprint,
     training_host,
 )
-from .models import ContractModel, Sha256, StableId
+from .models import ContractModel, Sha256, StableId, historical_field, reject_explicit_null
 from .paths import AssetLayout, confined_path
 from .recording_contracts import UtcTimestamp
 from .speech.backend import SpeechBackend
 from .speech.contracts import API_SAMPLE_RATE_HZ, RenderFingerprint
 from .speech.release import (
-    SPEECH_SUBJECT,
     VoiceRelease,
     VoiceReleaseError,
     current_release,
@@ -88,7 +87,6 @@ from .training import run_family, training_adapter
 
 MODEL_COMPARISON_SCHEMA: Final = "cole-voice-lab.model-comparison/v1"
 COMPARISON_DIRECTORY: Final = "model-comparisons"
-BENCHMARK_PURPOSE: Final = "private-home-host-synthesis"
 BENCHMARK_TEXT_SET: Final = "benchmark-v1"
 # Fixed, public, held out of every corpus catalog: short and long, a question, numbers, a
 # list, a name. Changing them is a new text set, never an edit of this one.
@@ -170,8 +168,9 @@ class InferenceBenchmark(ContractModel):
     seed_basis_sha256: Sha256
     release_sha256: Sha256
     designated: bool
-    consent_id: StableId
-    consent_sha256: Sha256
+    # Retired with consent records (D-050): a benchmark names none; the fields stay readable.
+    consent_id: StableId | None = historical_field()
+    consent_sha256: Sha256 | None = historical_field()
     fingerprint: RenderFingerprint
     load_ms: int = Field(ge=0)
     first_segment_ms: int = Field(ge=0)
@@ -190,6 +189,13 @@ class InferenceBenchmark(ContractModel):
     # about the process's network and how it was started, not proof of the unit's fences.
     sandboxed: bool
     segments: tuple[SegmentTiming, ...] = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def _historical_consent(self) -> InferenceBenchmark:
+        reject_explicit_null(self, "consent_id", "consent_sha256")
+        if (self.consent_id is None) != (self.consent_sha256 is None):
+            raise ValueError("a stored consent id and digest are present together")
+        return self
 
 
 class QualityLink(ContractModel):
@@ -347,10 +353,8 @@ def benchmark_run(
     run_id: str,
     backend: SpeechBackend,
     *,
-    consent_id: str,
     now: datetime,
     work_directory: Path,
-    subject_id: str = SPEECH_SUBJECT,
     texts: tuple[str, ...] = BENCHMARK_TEXTS,
     segment_deadline_seconds: float = 120.0,
     monotonic: Callable[[], float] = time.monotonic,
@@ -368,8 +372,9 @@ def benchmark_run(
     returning; a file that cannot be removed is logged, never ignored). ``sandboxed`` records
     whether it ran in the benchmark unit's sandbox (``cli_models.in_speech_sandbox``);
     ``host`` and ``contention`` are test seams.
-    Raises: ``VoiceReleaseError`` ``not_designatable`` when the run or the consent record does
-    not allow it; ``ComparisonError`` when a text is not held out; ``SpeechBackendError``.
+    Raises: ``VoiceReleaseError`` ``not_designatable`` when the run cannot be designated (not
+    finished, archived, changed, or of another subject); ``ComparisonError`` when a text is
+    not held out; ``SpeechBackendError``.
     """
     cache = FineTuneDigestCache() if digests is None else digests
     _held_out(layout, run_id, texts)
@@ -378,11 +383,8 @@ def benchmark_run(
         run_id=run_id,
         designated_by="model comparison",
         now=now,
-        consent_id=consent_id,
-        subject_id=subject_id,
         digests=cache,
         write=False,
-        purpose=BENCHMARK_PURPOSE,
     )
     verified = verify_release(layout, release, digest, digests=cache)
     try:
@@ -452,8 +454,6 @@ def benchmark_run(
         seed_basis_sha256=basis,
         release_sha256=digest,
         designated=designated,
-        consent_id=release.consent_id,
-        consent_sha256=release.consent_sha256,
         fingerprint=fingerprint,
         load_ms=_milliseconds(load_seconds),
         first_segment_ms=timings[0].render_ms,

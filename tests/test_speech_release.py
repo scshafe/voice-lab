@@ -1,4 +1,8 @@
-"""The voice release: designation, its chain, and the checks before every render (D-045)."""
+"""The voice release: designation, its chain, and the checks before every render (D-045).
+
+No consent record is read (D-050): designation needs none, and only the pinned subject's run
+can be designated.
+"""
 
 from __future__ import annotations
 
@@ -9,10 +13,9 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from speech_fixtures import NOW, approve_consent, build_lab, finished_run
+from speech_fixtures import NOW, build_lab, finished_run, forge_release
 
 from cole_voice_lab.canonical import sha256_file
-from cole_voice_lab.consent import approve_self_consent, install_pending_consent, revoke_consent
 from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.finetune import FineTuneDigestCache
 from cole_voice_lab.paths import AssetLayout
@@ -20,16 +23,13 @@ from cole_voice_lab.speech.release import (
     BlindReviewRef,
     VoiceRelease,
     VoiceReleaseError,
-    consent_path,
     current_release,
     designate,
     history,
     record_bytes,
-    require_release_consent,
+    require_subject,
     verify_release,
 )
-
-V1 = "cole-self-v1"
 
 
 def refused(code: str, call: object) -> VoiceReleaseError:
@@ -39,16 +39,18 @@ def refused(code: str, call: object) -> VoiceReleaseError:
     return failure.value
 
 
-def test_a_designation_binds_the_run_its_files_and_the_consent(tmp_path: Path) -> None:
+def test_a_designation_binds_the_run_and_its_files_and_reads_no_consent(tmp_path: Path) -> None:
     lab = build_lab(tmp_path, release=False)
+    # No consent record exists, and an unreadable one where they used to be is never read.
+    consents = lab.layout.root / "provenance/consents"
+    consents.mkdir(mode=0o700)
+    (consents / "cole-self-v1.json").write_bytes(b"not a consent record")
     refused("no_release", lambda: current_release(lab.layout))
     preview, preview_digest = designate(
-        lab.layout, run_id="finetune-a", designated_by="Cole", now=NOW, consent_id=V1, write=False
+        lab.layout, run_id="finetune-a", designated_by="Cole", now=NOW, write=False
     )
     assert history(lab.layout) == []
-    release, digest = designate(
-        lab.layout, run_id="finetune-a", designated_by="Cole", now=NOW, consent_id=V1
-    )
+    release, digest = designate(lab.layout, run_id="finetune-a", designated_by="Cole", now=NOW)
     assert (release, digest) == (preview, preview_digest)
     path = lab.layout.root / "provenance/voice-releases/0001.json"
     assert stat.S_IMODE(path.stat().st_mode) == 0o400
@@ -64,7 +66,8 @@ def test_a_designation_binds_the_run_its_files_and_the_consent(tmp_path: Path) -
         release.file("reference").sha256
         == sha256_file(lab.layout.root / release.file("reference").path)[0]
     )
-    assert (release.consent_id, release.consent_sha256) == ("cole-self-v1", lab.consent_sha256)
+    assert (release.consent_id, release.consent_sha256) == (None, None)
+    assert b"consent" not in record_bytes(release)
     assert (release.release_id, release.sequence, release.previous_release_sha256) == (
         "vr-0001",
         1,
@@ -84,7 +87,6 @@ def test_rotation_appends_and_keeps_the_history(tmp_path: Path) -> None:
         run_id="finetune-b",
         designated_by="Cole",
         now=NOW + timedelta(hours=1),
-        consent_id=V1,
         reference_prompt_id="neutral-01",
     )
     assert (second.sequence, second.previous_release_sha256) == (2, first_digest)
@@ -154,34 +156,23 @@ def test_a_release_record_is_strict() -> None:
         )
 
 
-def test_only_a_finished_run_of_the_consenting_subject_can_be_designated(tmp_path: Path) -> None:
+def test_only_a_finished_run_can_be_designated_and_no_consent_is_needed(tmp_path: Path) -> None:
     layout = AssetLayout.initialize(tmp_path / "lab")
     finished_run(layout)
-    message = refused(
-        "not_designatable",
-        lambda: designate(
-            layout, run_id="finetune-a", designated_by="Cole", now=NOW, consent_id=V1
-        ),
-    )
-    assert "consent" in str(message)
-    approve_consent(layout, purposes=("private-fine-tuning",))
+    # No consent record anywhere in the lab: a finished run of the pinned subject is enough.
+    assert not (layout.root / "provenance/consents").exists()
+    release, _ = designate(layout, run_id="finetune-a", designated_by="Cole", now=NOW)
+    assert release.subject_id == "cole-self" and release.consent_id is None
     refused(
         "not_designatable",
-        lambda: designate(
-            layout, run_id="finetune-a", designated_by="Cole", now=NOW, consent_id=V1
-        ),
-    )
-    refused(
-        "not_designatable",
-        lambda: designate(layout, run_id="nowhere", designated_by="Cole", now=NOW, consent_id=V1),
+        lambda: designate(layout, run_id="nowhere", designated_by="Cole", now=NOW),
     )
     finished_run(layout, "finetune-running", status="running", finished_at=None)
     refused(
         "not_designatable",
-        lambda: designate(
-            layout, run_id="finetune-running", designated_by="Cole", now=NOW, consent_id=V1
-        ),
+        lambda: designate(layout, run_id="finetune-running", designated_by="Cole", now=NOW),
     )
+    assert len(history(layout)) == 1
 
 
 def test_a_designation_refuses_changed_files_and_unknown_reviews(tmp_path: Path) -> None:
@@ -192,7 +183,6 @@ def test_a_designation_refuses_changed_files_and_unknown_reviews(tmp_path: Path)
             run_id="finetune-a",
             designated_by="Cole",
             now=NOW,
-            consent_id=V1,
             blind_review=BlindReviewRef(review_id="review-1", score_sheet_sha256="a" * 64),
         )
     (lab.layout.root / "evaluations/blind-reviews/review-1").mkdir(parents=True)
@@ -201,7 +191,6 @@ def test_a_designation_refuses_changed_files_and_unknown_reviews(tmp_path: Path)
         run_id="finetune-a",
         designated_by="Cole",
         now=NOW,
-        consent_id=V1,
         blind_review=BlindReviewRef(review_id="review-1", score_sheet_sha256="a" * 64),
     )
     assert release.blind_review is not None
@@ -209,9 +198,7 @@ def test_a_designation_refuses_changed_files_and_unknown_reviews(tmp_path: Path)
     checkpoint.write_bytes(b"other weights")
     refused(
         "not_designatable",
-        lambda: designate(
-            lab.layout, run_id="finetune-a", designated_by="Cole", now=NOW, consent_id=V1
-        ),
+        lambda: designate(lab.layout, run_id="finetune-a", designated_by="Cole", now=NOW),
     )
 
 
@@ -237,22 +224,45 @@ def test_verification_refuses_a_release_whose_files_changed(tmp_path: Path, what
     )
 
 
-def test_a_release_names_one_exact_consent_record(tmp_path: Path) -> None:
-    lab = build_lab(tmp_path)
-    release, _ = current_release(lab.layout)
-    require_release_consent(lab.layout, release, at=NOW)
-    refused(
-        "consent_changed",
-        lambda: require_release_consent(lab.layout, release, at=NOW + timedelta(days=400)),
-    )
-    path = consent_path(lab.layout, release.consent_id)
-    revoke_consent(path, expected_sha256=release.consent_sha256, at=NOW)
-    refused(
-        "consent_changed",
-        lambda: require_release_consent(lab.layout, release, at=NOW + timedelta(seconds=1)),
-    )
+def test_a_release_written_before_d050_keeps_its_consent_binding_byte_for_byte(
+    tmp_path: Path,
+) -> None:
+    # A release designated under a consent record (D-045 to D-049) still validates and keeps
+    # its exact bytes; nothing reads the record it names, so verification needs none.
+    lab = build_lab(tmp_path, release=False)
+    new, _ = designate(lab.layout, run_id="finetune-a", designated_by="Cole", now=NOW, write=False)
+    stored = json.loads(record_bytes(new))
+    stored |= {"consent_id": "cole-self-v1", "consent_sha256": "c" * 64}
+    data = json.dumps(stored, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    old = VoiceRelease.model_validate_json(data)
+    assert (old.consent_id, old.consent_sha256) == ("cole-self-v1", "c" * 64)
+    assert record_bytes(old) == data
+    # (The preview made the directory; it wrote nothing.)
+    (lab.layout.root / "provenance/voice-releases/0001.json").write_bytes(data)
+    release, digest = current_release(lab.layout)
+    assert release == old
+    verify_release(lab.layout, release, digest, digests=FineTuneDigestCache())
+    require_subject(release, "cole-self")
+    # A new designation chains onto it and names no consent record.
+    second, _ = designate(lab.layout, run_id="finetune-a", designated_by="Cole", now=NOW)
+    assert second.previous_release_sha256 == digest and second.consent_id is None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"consent_id": None, "consent_sha256": None},
+        {"consent_id": "cole-self-v1"},
+        {"consent_sha256": "c" * 64},
+    ],
+)
+def test_a_stored_consent_binding_is_whole_or_absent_never_null(
+    tmp_path: Path, fields: dict[str, object]
+) -> None:
+    lab = build_lab(tmp_path, release=False)
+    new, _ = designate(lab.layout, run_id="finetune-a", designated_by="Cole", now=NOW, write=False)
     with pytest.raises(ValueError):
-        consent_path(lab.layout, "../escape")
+        VoiceRelease.model_validate({**new.model_dump(mode="json"), **fields})
 
 
 def test_a_release_file_that_is_not_a_release_is_refused(tmp_path: Path) -> None:
@@ -264,107 +274,31 @@ def test_a_release_file_that_is_not_a_release_is_refused(tmp_path: Path) -> None
         history(lab.layout)
 
 
-def test_only_the_pinned_subjects_run_and_consent_can_be_designated(tmp_path: Path) -> None:
+def test_only_the_pinned_subjects_run_can_be_designated(tmp_path: Path) -> None:
     layout = AssetLayout.initialize(tmp_path / "lab")
     finished_run(layout, "finetune-other", subject_id="someone-else")
-    _, pending = install_pending_consent(layout)
-    approve_self_consent(
-        layout,
-        acknowledgement=True,
-        purposes=("private-assistant-speech",),
-        execution_boundaries=("home-host",),
-        expires_at=NOW + timedelta(days=30),
-        subject_id="someone-else",
-        consent_id="someone-else-v1",
-        now=NOW - timedelta(days=1),
-    )
-    # Another subject's run, with that subject's own approved consent: never the voice.
-    message = refused(
-        "not_designatable",
-        lambda: designate(
-            layout,
-            run_id="finetune-other",
-            designated_by="Cole",
-            now=NOW,
-            consent_id="someone-else-v1",
-        ),
-    )
-    assert "pinned subject" in str(message)
-    # The pinned subject's run with another subject's consent record: refused too.
-    finished_run(layout, "finetune-a")
-    message = refused(
-        "not_designatable",
-        lambda: designate(
-            layout, run_id="finetune-a", designated_by="Cole", now=NOW, consent_id="someone-else-v1"
-        ),
-    )
-    assert "consent" in str(message)
+    # Another subject's run: never the voice, as a release or as a benchmark's preview.
+    for write in (True, False):
+        message = refused(
+            "not_designatable",
+            lambda write=write: designate(
+                layout, run_id="finetune-other", designated_by="Cole", now=NOW, write=write
+            ),
+        )
+        assert "pinned subject" in str(message)
     assert history(layout) == []
+    # A release of another subject written into the chain by hand is refused at render.
+    forged = forge_release(layout, "finetune-other")
+    with pytest.raises(VoiceReleaseError, match="pinned subject") as failure:
+        require_subject(forged, "cole-self")
+    assert failure.value.code == "release_changed"
 
 
-def test_a_new_consent_record_names_the_purpose_and_is_designated_by_its_id(
-    tmp_path: Path,
-) -> None:
-    # cole-self-v1 is approved without assistant speech and cannot be replaced: the owner
-    # approves a new record, cole-self-v2, and designates with it (deploy/speech/README.md).
-    lab = build_lab(tmp_path, consent=False, release=False)
-    _, pending = install_pending_consent(lab.layout)
-    approve_self_consent(
-        lab.layout,
-        acknowledgement=True,
-        purposes=("private-fine-tuning",),
-        execution_boundaries=("home-host",),
-        expires_at=NOW + timedelta(days=30),
-        expected_current_sha256=pending,
-        now=NOW - timedelta(days=1),
-    )
-    with pytest.raises(SecurityError, match="cannot be replaced"):
-        approve_self_consent(
-            lab.layout,
-            acknowledgement=True,
-            purposes=("private-assistant-speech",),
-            execution_boundaries=("home-host",),
-            expires_at=NOW + timedelta(days=30),
-            expected_current_sha256=sha256_file(consent_path(lab.layout, V1))[0],
-            now=NOW - timedelta(days=1),
-        )
-    refused("not_designatable", lambda: lab.designate())
-    approve_self_consent(
-        lab.layout,
-        acknowledgement=True,
-        purposes=("private-assistant-speech",),
-        execution_boundaries=("home-host",),
-        expires_at=NOW + timedelta(days=30),
-        consent_id="cole-self-v2",
-        now=NOW - timedelta(days=1),
-    )
-    lab.designate(consent_id="cole-self-v2")
-    release, _ = current_release(lab.layout)
-    assert release.consent_id == "cole-self-v2"
-
-
-def test_only_a_preview_may_check_another_purpose(tmp_path: Path) -> None:
+def test_a_preview_designates_nothing(tmp_path: Path) -> None:
     lab = build_lab(tmp_path, release=False)
-    with pytest.raises(ValueError, match="private-assistant-speech"):
-        designate(
-            lab.layout,
-            run_id="finetune-a",
-            designated_by="Cole",
-            now=NOW,
-            consent_id=V1,
-            purpose="private-home-host-synthesis",
-        )
-    # The fixture's consent allows assistant speech only: a benchmark's preview is refused.
-    refused(
-        "not_designatable",
-        lambda: designate(
-            lab.layout,
-            run_id="finetune-a",
-            designated_by="Cole",
-            now=NOW,
-            consent_id=V1,
-            purpose="private-home-host-synthesis",
-            write=False,
-        ),
+    preview, _ = designate(
+        lab.layout, run_id="finetune-a", designated_by="model comparison", now=NOW, write=False
     )
+    assert preview.consent_id is None
     assert history(lab.layout) == []
+    refused("no_release", lambda: current_release(lab.layout))

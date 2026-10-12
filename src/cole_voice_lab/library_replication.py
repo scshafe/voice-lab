@@ -1349,7 +1349,8 @@ class RawPackageSource:
 class ReferenceSource:
     """Published references: the manifest and the reference audio its output binds.
 
-    A reference names its raw source, its consent and its headphone review.
+    A reference names its raw source and its headphone review (and, published before D-050, a
+    consent record, copied as history).
     """
 
     name: str = "references"
@@ -2011,12 +2012,13 @@ def library_sources() -> tuple[ReplicationSource, ...]:
     continuations name the desktop session they continue and the take store context they
     open, and continuity evidence names session audio; takes name groups, and groups name
     catalog snapshots; fine-tune job records name runs, and runs name snapshots; transfer
-    plans name datasets, approvals and consents; datasets and references name consents, gates,
-    reviews and raw sessions; gates and reviews name raw sessions. Takes also name analysis
-    jobs and package maps, but no reader needs those back (a missing job is queued again and a
-    package publication is never resolved to its map), so analysis and packages come first
-    and fall back with the takes. Because raw sessions fall back with the package maps, a
-    take store commit during a pass also holds back every owner that names raw sessions.
+    plans name datasets, approvals and consents; datasets and references name gates, reviews,
+    raw sessions and (written before D-050) consents; gates and reviews name raw sessions.
+    Takes also name analysis jobs and package maps, but no reader needs those back (a missing
+    job is queued again and a package publication is never resolved to its map), so analysis
+    and packages come first and fall back with the takes. Because raw sessions fall back with
+    the package maps, a take store commit during a pass also holds back every owner that names
+    raw sessions.
     """
     return (
         RecordTreeSource(

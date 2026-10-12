@@ -289,10 +289,26 @@
           "type": "integer"
         },
         "consent_id": {
-          "$ref": "#/$defs/StableId"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "consent_sha256": {
-          "$ref": "#/$defs/Sha256"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "contention_after": {
           "$ref": "#/$defs/GpuContention"
@@ -390,8 +406,6 @@
         "seed_basis_sha256",
         "release_sha256",
         "designated",
-        "consent_id",
-        "consent_sha256",
         "fingerprint",
         "load_ms",
         "first_segment_ms",

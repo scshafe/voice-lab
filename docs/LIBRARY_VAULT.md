@@ -151,7 +151,7 @@ Six copied classes:
 
 | Class | What it holds |
 | --- | --- |
-| `records` | take heads, seals and reservations, the take-store head, operations, cursors and analysis heads; groups; edits (native, desktop and legacy); analysis jobs; packages and package origin; capture sessions and continuity; consents and their history; the diagnostic root; pilot gates; headphone reviews; transfer approvals; fine-tune job requests and terminals; transfer plans |
+| `records` | take heads, seals and reservations, the take-store head, operations, cursors and analysis heads; groups; edits (native, desktop and legacy); analysis jobs; packages and package origin; capture sessions and continuity; consents and their history (retired records, kept and copied as history, D-050); the diagnostic root; pilot gates; headphone reviews; transfer approvals; fine-tune job requests and terminals; transfer plans |
 | `prompt-database` | the corpus database (one logical entry, taken through SQLite's online backup) and `provenance/corpus/snapshots/**` |
 | `recordings` | native sealed originals, capture sessions once READY, rejected takes, `raw/**` and `references/**` |
 | `derived-edits` | rendered edits under `derived/recording-edits/**` |
@@ -409,8 +409,8 @@ two-step ceremony — `vault approve --preview <fields>` prints the record and i
 writes nothing; `vault approve --reviewed-approval-sha256 D --i-approve-this-destination
 <fields>` recomputes the record, requires the digest to match, and only then writes. It names
 no consent record: D-020 permits ciphertext storage on Cole's own host, which never
-runs a model or synthesizes. It does not authorize hosted GPU transfer or decide D-019's
-separate open question about consent for local listening.
+runs a model or synthesizes, and consent records are retired (D-050). It does not
+authorize hosted GPU transfer.
 
 `--approved-at` remains optional in the preview: if omitted, that preview generates the
 timestamp. Confirmation must explicitly reuse that exact printed timestamp as well as

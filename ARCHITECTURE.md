@@ -21,7 +21,8 @@ private asset root (mode 0700)
   incoming/       resumable Tailnet landing zones
   raw/            verified, write-protected capture sessions
   derived/        trims, resamples, references, datasets
-  provenance/     consent and transfer approvals; corpus/ prompt and catalog
+  provenance/     transfer approvals; consent records (history only, D-050);
+                  corpus/ prompt and catalog
                   store (corpus.sqlite3 + immutable snapshots/); vault/ the
                   library identity, binding, destination approvals, generation
                   state, ledger, manifest copies and request log (never copied

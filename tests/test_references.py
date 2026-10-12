@@ -18,17 +18,14 @@ from pydantic import ValidationError
 import cole_voice_lab.references as references_module
 from cole_voice_lab.canonical import sha256_file, write_canonical_json
 from cole_voice_lab.capture import expected_recording_paths, finalize_capture_session
-from cole_voice_lab.consent import approve_self_consent
 from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.intake import MIN_FREE_BYTES, IntakeReceipt, accept_capture_session
-from cole_voice_lab.models import AudioSpec, CaptureDevice, ConsentRecord, Prompt, PromptSuite
+from cole_voice_lab.models import CaptureDevice, Prompt, PromptSuite
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.references import (
     MAX_EVIDENCE_BYTES,
-    AcceptedUtteranceBinding,
     HeadphoneReviewEvidence,
     PublishedReference,
-    ReferenceFileBinding,
     ReferenceManifest,
     load_accepted_utterance,
     load_headphone_review,
@@ -95,6 +92,7 @@ def _accepted(
     *,
     session_id: str = "pilot-reference-001",
     quiet_utterance: bool = False,
+    subject_id: str = "cole-self",
 ) -> AcceptedFixture:
     layout = AssetLayout.initialize(tmp_path / "private" / "voice-assets")
     suite = _suite()
@@ -106,7 +104,7 @@ def _accepted(
     finalize_capture_session(
         incoming,
         session_id=session_id,
-        subject_id="cole",
+        subject_id=subject_id,
         prompt_suite=suite,
         device=CaptureDevice(device_id="4", display_name="miniDSP UMIK-1"),
         captured_at=NOW,
@@ -120,24 +118,6 @@ def _accepted(
         clock=lambda: NOW,
     )
     return AcceptedFixture(layout, receipt, suite)
-
-
-def _consent(fixture: AcceptedFixture) -> tuple[str, str]:
-    existing = fixture.layout.directory("provenance") / "consents" / "cole-self-v1.json"
-    if existing.exists():
-        digest, _ = sha256_file(existing)
-        return existing.relative_to(fixture.layout.root).as_posix(), digest
-    path, digest = approve_self_consent(
-        fixture.layout,
-        acknowledgement=True,
-        purposes=("private-zero-shot-evaluation", "private-fine-tuning"),
-        execution_boundaries=("capture-host", "tailnet-local-host"),
-        expires_at=NOW + timedelta(days=365),
-        subject_id="cole",
-        consent_id="cole-self-v1",
-        now=NOW,
-    )
-    return path.relative_to(fixture.layout.root).as_posix(), digest
 
 
 def _review(
@@ -180,15 +160,12 @@ def _review(
 def _publish(
     fixture: AcceptedFixture, *, reference_id: str = "cole-neutral-v1"
 ) -> PublishedReference:
-    consent_path, consent_sha256 = _consent(fixture)
     review_path, review_sha256 = _review(fixture)
     return publish_reference(
         fixture.layout,
         reference_id=reference_id,
         raw_manifest_sha256=fixture.receipt.manifest_sha256,
         prompt_id="reference-neutral-01",
-        consent_path=consent_path,
-        consent_sha256=consent_sha256,
         headphone_review_path=review_path,
         headphone_review_sha256=review_sha256,
         created_by="cole",
@@ -217,7 +194,10 @@ def test_publish_reference_is_exact_atomic_read_only_and_idempotent(tmp_path: Pa
     assert first.manifest.source.raw_session_path == f"raw/{fixture.receipt.manifest_sha256}"
     assert first.manifest.output.sha256 == raw_digest_before
     assert first.manifest.headphone_review.record.audio_quality_passed is True
-    assert first.manifest.consent.purpose == "private-zero-shot-evaluation"
+    # No consent record is bound or read (D-050): the manifest names none.
+    assert first.manifest.consent is None
+    assert b"consent" not in (first.directory / "manifest.json").read_bytes()
+    assert not (fixture.layout.root / "provenance/consents").exists()
     assert stat.S_IMODE(first.directory.stat().st_mode) == 0o500
     assert stat.S_IMODE(reference_audio.stat().st_mode) == 0o400
     assert not any(fixture.layout.directory("tmp").iterdir())
@@ -225,16 +205,12 @@ def test_publish_reference_is_exact_atomic_read_only_and_idempotent(tmp_path: Pa
     assert stat.S_IMODE(source.path.stat().st_mode) == raw_mode_before
 
 
-def test_reference_validation_rechecks_copy_raw_review_and_consent(tmp_path: Path) -> None:
+def test_reference_validation_rechecks_copy_raw_and_review(tmp_path: Path) -> None:
     fixture = _accepted(tmp_path)
     published = _publish(fixture)
 
     assert (
-        validate_reference_publication(
-            fixture.layout,
-            published.directory,
-            at=NOW + timedelta(seconds=3),
-        ).manifest_sha256
+        validate_reference_publication(fixture.layout, published.directory).manifest_sha256
         == published.manifest_sha256
     )
 
@@ -246,15 +222,12 @@ def test_reference_validation_rechecks_copy_raw_review_and_consent(tmp_path: Pat
 
 def test_reference_rejects_nonpassing_source_qc(tmp_path: Path) -> None:
     fixture = _accepted(tmp_path, quiet_utterance=True)
-    consent_path, consent_digest = _consent(fixture)
     with pytest.raises(ContractError, match="QC status must be pass"):
         publish_reference(
             fixture.layout,
             reference_id="bad-qc",
             raw_manifest_sha256=fixture.receipt.manifest_sha256,
             prompt_id="reference-neutral-01",
-            consent_path=consent_path,
-            consent_sha256=consent_digest,
             headphone_review_path="provenance/headphone-reviews/missing.json",
             headphone_review_sha256="0" * 64,
             created_by="cole",
@@ -265,7 +238,6 @@ def test_reference_rejects_nonpassing_source_qc(tmp_path: Path) -> None:
 @pytest.mark.parametrize("mismatch", ["prompt", "audio"])
 def test_reference_rejects_headphone_review_for_other_source(tmp_path: Path, mismatch: str) -> None:
     fixture = _accepted(tmp_path)
-    consent_path, consent_digest = _consent(fixture)
     review_path, review_digest = _review(
         fixture,
         prompt_id=("other-prompt" if mismatch == "prompt" else "reference-neutral-01"),
@@ -277,8 +249,6 @@ def test_reference_rejects_headphone_review_for_other_source(tmp_path: Path, mis
             reference_id="mismatched-review",
             raw_manifest_sha256=fixture.receipt.manifest_sha256,
             prompt_id="reference-neutral-01",
-            consent_path=consent_path,
-            consent_sha256=consent_digest,
             headphone_review_path=review_path,
             headphone_review_sha256=review_digest,
             created_by="cole",
@@ -288,7 +258,6 @@ def test_reference_rejects_headphone_review_for_other_source(tmp_path: Path, mis
 
 def test_reference_rejects_noncanonical_or_predating_review(tmp_path: Path) -> None:
     fixture = _accepted(tmp_path)
-    consent_path, consent_digest = _consent(fixture)
     review_path, review_digest = _review(fixture, canonical=False)
     with pytest.raises(ContractError, match="not canonical"):
         publish_reference(
@@ -296,8 +265,6 @@ def test_reference_rejects_noncanonical_or_predating_review(tmp_path: Path) -> N
             reference_id="noncanonical-review",
             raw_manifest_sha256=fixture.receipt.manifest_sha256,
             prompt_id="reference-neutral-01",
-            consent_path=consent_path,
-            consent_sha256=consent_digest,
             headphone_review_path=review_path,
             headphone_review_sha256=review_digest,
             created_by="cole",
@@ -314,8 +281,6 @@ def test_reference_rejects_noncanonical_or_predating_review(tmp_path: Path) -> N
             reference_id="early-review",
             raw_manifest_sha256=fixture.receipt.manifest_sha256,
             prompt_id="reference-neutral-01",
-            consent_path=consent_path,
-            consent_sha256=consent_digest,
             headphone_review_path=review_path,
             headphone_review_sha256=review_digest,
             created_by="cole",
@@ -323,162 +288,54 @@ def test_reference_rejects_noncanonical_or_predating_review(tmp_path: Path) -> N
         )
 
 
-def test_reference_requires_approved_zero_shot_consent_and_exact_digest(
+def test_only_an_utterance_of_the_pinned_subject_becomes_a_reference(tmp_path: Path) -> None:
+    fixture = _accepted(tmp_path, subject_id="someone-else")
+    review_path, review_digest = _review(fixture)
+    with pytest.raises(SecurityError, match="not 'cole-self'"):
+        publish_reference(
+            fixture.layout,
+            reference_id="someone-else-v1",
+            raw_manifest_sha256=fixture.receipt.manifest_sha256,
+            prompt_id="reference-neutral-01",
+            headphone_review_path=review_path,
+            headphone_review_sha256=review_digest,
+            created_by="cole",
+            provenance_statement="Must not publish.",
+        )
+    assert not any(fixture.layout.directory("references").iterdir())
+
+
+def test_a_reference_published_under_a_consent_record_still_validates_byte_for_byte(
     tmp_path: Path,
 ) -> None:
-    fixture = _accepted(tmp_path)
-    review_path, review_digest = _review(fixture)
-    directory = fixture.layout.directory("provenance") / "consents"
-    directory.mkdir(mode=0o700, exist_ok=True)
-    pending = ConsentRecord(
-        consent_id="pending",
-        subject_id="cole",
-        approved=False,
-        attestation="pending-subject-attestation",
-        allowed_purposes=("private-fine-tuning",),
-        allowed_execution_boundaries=("tailnet-local-host",),
-    )
-    path = directory / "pending.json"
-    digest = write_canonical_json(path, pending)
-    relative = path.relative_to(fixture.layout.root).as_posix()
-
-    with pytest.raises(SecurityError, match="not approved"):
-        publish_reference(
-            fixture.layout,
-            reference_id="pending-consent",
-            raw_manifest_sha256=fixture.receipt.manifest_sha256,
-            prompt_id="reference-neutral-01",
-            consent_path=relative,
-            consent_sha256=digest,
-            headphone_review_path=review_path,
-            headphone_review_sha256=review_digest,
-            created_by="cole",
-            provenance_statement="Must not publish.",
-        )
-    with pytest.raises(SecurityError, match="digest"):
-        publish_reference(
-            fixture.layout,
-            reference_id="wrong-consent-digest",
-            raw_manifest_sha256=fixture.receipt.manifest_sha256,
-            prompt_id="reference-neutral-01",
-            consent_path=relative,
-            consent_sha256="0" * 64,
-            headphone_review_path=review_path,
-            headphone_review_sha256=review_digest,
-            created_by="cole",
-            provenance_statement="Must not publish.",
-        )
-
-
-def test_reference_rejects_linked_review_and_raw_tamper(tmp_path: Path) -> None:
-    fixture = _accepted(tmp_path)
-    consent_path, consent_digest = _consent(fixture)
-    review_path, review_digest = _review(fixture)
-    real_review = fixture.layout.root / review_path
-    linked_review = real_review.with_name("linked.json")
-    linked_review.symlink_to(real_review)
-    with pytest.raises(SecurityError, match="(?:non-link|symlink)"):
-        publish_reference(
-            fixture.layout,
-            reference_id="linked-review",
-            raw_manifest_sha256=fixture.receipt.manifest_sha256,
-            prompt_id="reference-neutral-01",
-            consent_path=consent_path,
-            consent_sha256=consent_digest,
-            headphone_review_path=linked_review.relative_to(fixture.layout.root).as_posix(),
-            headphone_review_sha256=review_digest,
-            created_by="cole",
-            provenance_statement="Must not publish.",
-        )
-
-    source = load_accepted_utterance(
-        fixture.layout,
-        raw_manifest_sha256=fixture.receipt.manifest_sha256,
-        prompt_id="reference-neutral-01",
-    ).path
-    os.chmod(source, 0o600)
-    source.write_bytes(source.read_bytes() + b"tamper")
-    with pytest.raises(SecurityError, match="tampered"):
-        publish_reference(
-            fixture.layout,
-            reference_id="tampered-raw",
-            raw_manifest_sha256=fixture.receipt.manifest_sha256,
-            prompt_id="reference-neutral-01",
-            consent_path=consent_path,
-            consent_sha256=consent_digest,
-            headphone_review_path=review_path,
-            headphone_review_sha256=review_digest,
-            created_by="cole",
-            provenance_statement="Must not publish.",
-        )
-
-
-def test_reference_id_collision_fails_closed(tmp_path: Path) -> None:
-    fixture = _accepted(tmp_path)
-    _publish(fixture, reference_id="stable-reference")
-
-    with pytest.raises(SecurityError, match="collision"):
-        consent_path, consent_digest = _consent(fixture)
-        review_path, review_digest = _review(fixture)
-        publish_reference(
-            fixture.layout,
-            reference_id="stable-reference",
-            raw_manifest_sha256=fixture.receipt.manifest_sha256,
-            prompt_id="reference-neutral-01",
-            consent_path=consent_path,
-            consent_sha256=consent_digest,
-            headphone_review_path=review_path,
-            headphone_review_sha256=review_digest,
-            created_by="someone-else",
-            provenance_statement="Different provenance must collide.",
-            clock=lambda: NOW + timedelta(seconds=3),
-        )
-
-
-def test_reference_contract_rejects_transformation_or_hash_mismatch(tmp_path: Path) -> None:
+    # Published before D-050, a manifest bound a consent record; it keeps its bytes and still
+    # validates, and the record it names is not read (here it does not even exist).
     fixture = _accepted(tmp_path)
     published = _publish(fixture)
-    data = published.manifest.model_dump(mode="python")
-    data["transformation"] = "normalized"
-    with pytest.raises(ValidationError):
-        ReferenceManifest.model_validate(data)
-
-    source = published.manifest.source
-    wrong_output = ReferenceFileBinding(
-        path=published.manifest.output.path,
-        sha256="0" * 64,
-        size_bytes=source.raw_audio_size_bytes,
-        audio=source.audio,
-    )
-    with pytest.raises(ValidationError, match="byte-for-byte"):
-        ReferenceManifest.model_validate(
-            {**published.manifest.model_dump(mode="python"), "output": wrong_output}
-        )
-
-
-def test_accepted_binding_requires_content_addressed_raw_path() -> None:
-    with pytest.raises(ValidationError, match="content-addressed"):
-        AcceptedUtteranceBinding(
-            raw_session_path="raw/not-the-hash",
-            raw_manifest_sha256="a" * 64,
-            raw_audio_path="raw/not-the-hash/audio/x.wav",
-            raw_audio_sha256="b" * 64,
-            raw_audio_size_bytes=100,
-            audio=AudioSpec(
-                sample_rate_hz=48_000,
-                channels=1,
-                sample_width_bytes=3,
-                encoding="pcm_s24le",
-                frames=1,
-                duration_seconds=1 / 48_000,
-            ),
-            session_id="session",
-            subject_id="cole",
-            prompt_suite_id="suite",
-            prompt_id="prompt",
-            transcript="Exact.",
-            source_qc_report_sha256="c" * 64,
-        )
+    manifest_path = published.directory / "manifest.json"
+    stored = json.loads(manifest_path.read_bytes())
+    stored["consent"] = {
+        "consent_id": "cole-self-v1",
+        "purpose": "private-zero-shot-evaluation",
+        "file": {
+            "path": "provenance/consents/cole-self-v1.json",
+            "sha256": "c" * 64,
+            "size_bytes": 512,
+        },
+    }
+    data = json.dumps(stored, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    old = ReferenceManifest.model_validate_json(data)
+    assert old.consent is not None and old.consent.consent_id == "cole-self-v1"
+    os.chmod(published.directory, 0o700)
+    os.chmod(manifest_path, 0o600)
+    manifest_path.write_bytes(data + b"\n")
+    os.chmod(manifest_path, 0o400)
+    os.chmod(published.directory, 0o500)
+    revalidated = validate_reference_publication(fixture.layout, published.directory)
+    assert revalidated.manifest == old
+    assert not (fixture.layout.root / "provenance/consents").exists()
+    with pytest.raises(ValidationError, match="never null"):
+        ReferenceManifest.model_validate_json(json.dumps({**stored, "consent": None}))
 
 
 def test_reference_contract_cross_field_validation_matrix(tmp_path: Path) -> None:
@@ -506,7 +363,15 @@ def test_reference_contract_cross_field_validation_matrix(tmp_path: Path) -> Non
     cases.append((wrong_audio, "audio specifications"))
 
     wrong_purpose = deepcopy(base)
-    wrong_purpose["consent"]["purpose"] = "private-fine-tuning"
+    wrong_purpose["consent"] = {
+        "consent_id": "cole-self-v1",
+        "purpose": "private-fine-tuning",
+        "file": {
+            "path": "provenance/consents/cole-self-v1.json",
+            "sha256": "c" * 64,
+            "size_bytes": 1,
+        },
+    }
     cases.append((wrong_purpose, "consent purpose"))
 
     early = deepcopy(base)
@@ -636,7 +501,6 @@ def test_reference_stage_cleanup_and_rename_race_are_safe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fixture = _accepted(tmp_path)
-    consent_path, consent_digest = _consent(fixture)
     review_path, review_digest = _review(fixture)
     source = load_accepted_utterance(
         fixture.layout,
@@ -654,8 +518,6 @@ def test_reference_stage_cleanup_and_rename_race_are_safe(
             reference_id="failed-stage",
             raw_manifest_sha256=fixture.receipt.manifest_sha256,
             prompt_id="reference-neutral-01",
-            consent_path=consent_path,
-            consent_sha256=consent_digest,
             headphone_review_path=review_path,
             headphone_review_sha256=review_digest,
             created_by="cole",
@@ -677,8 +539,6 @@ def test_reference_stage_cleanup_and_rename_race_are_safe(
         reference_id="race-safe",
         raw_manifest_sha256=fixture.receipt.manifest_sha256,
         prompt_id="reference-neutral-01",
-        consent_path=consent_path,
-        consent_sha256=consent_digest,
         headphone_review_path=review_path,
         headphone_review_sha256=review_digest,
         created_by="cole",

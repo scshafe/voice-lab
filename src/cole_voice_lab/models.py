@@ -1,11 +1,11 @@
-"""Strict versioned contracts for capture, evidence, consent, and experiments."""
+"""Strict versioned contracts for capture, evidence, and experiments."""
 
 from __future__ import annotations
 
 import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Final, Literal
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import (
     BaseModel,
@@ -17,7 +17,7 @@ from pydantic import (
     model_validator,
 )
 
-from .errors import ContractError
+from .errors import ContractError, SecurityError
 from .paths import validate_relative_path
 
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -28,6 +28,40 @@ type StableId = Annotated[
 # The first model family's id (D-048, D-049): F5-TTS. The one definition; the training
 # adapter (``training``), the speech family (``speech.f5``) and their contracts import it.
 F5_FAMILY: Final = "f5-tts"
+# The one subject whose voice the lab synthesizes (D-050): Cole. Speech pins its configuration
+# to it (``speech.config.SpeechSubject``, ``speech.release.SPEECH_SUBJECT``); reference
+# publication, dataset building and the offline workers refuse any other subject.
+COLE_SUBJECT: Final = "cole-self"
+
+
+def require_cole_subject(subject_id: str, *, what: str) -> None:
+    """Refuse ``what`` unless it is of ``COLE_SUBJECT`` (D-050: no other voice is synthesized).
+
+    Raises: ``SecurityError``.
+    """
+    if subject_id != COLE_SUBJECT:
+        raise SecurityError(f"{what} is of subject {subject_id!r}, not {COLE_SUBJECT!r}")
+
+
+def historical_field(**constraints: Any) -> Any:
+    """A field only records written before D-050 carry (the retired consent bindings).
+
+    It defaults to absent and is left out of a record's JSON when absent, so a new record never
+    names it and a stored one keeps its exact bytes. ``reject_explicit_null`` refuses ``null``.
+    """
+    return Field(default=None, exclude_if=lambda value: value is None, **constraints)
+
+
+def reject_explicit_null(model: BaseModel, *names: str) -> None:
+    """Refuse a historical field given as ``null``: it is either a stored value or absent.
+
+    Raises: ``ValueError``.
+    """
+    for name in names:
+        if name in model.model_fields_set and getattr(model, name) is None:
+            raise ValueError(f"{name} is omitted when absent, never null")
+
+
 type CandidateId = Annotated[
     str,
     StringConstraints(pattern=r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$", max_length=80),
@@ -371,70 +405,6 @@ class QcReport(ContractModel):
         return self
 
 
-class ConsentRecord(ContractModel):
-    schema_version: Literal["cole-voice-lab.consent/v1"] = "cole-voice-lab.consent/v1"
-    consent_id: StableId
-    subject_id: StableId
-    approved: bool
-    attestation: Literal[
-        "self-recorded-and-self-authorized",
-        "pending-subject-attestation",
-    ]
-    # ``private-chloe-speech-rendering`` is retired (D-044, D-047): records written before
-    # 2026-10-11 (every pending record ``assets init`` installed) still parse, so they can be
-    # rotated into approval or revoked, but no check asks for it and nothing grants it.
-    allowed_purposes: tuple[
-        Literal[
-            "private-zero-shot-evaluation",
-            "private-fine-tuning",
-            "private-home-host-synthesis",
-            "private-assistant-speech",
-            "private-chloe-speech-rendering",
-        ],
-        ...,
-    ]
-    allowed_execution_boundaries: tuple[
-        Literal["capture-host", "tailnet-local-host", "home-host"], ...
-    ]
-    hosted_transfer_allowed: Literal[False] = False
-    disclosure_required: Literal[True] = True
-    effective_at: datetime | None = None
-    expires_at: datetime | None = None
-    revoked_at: datetime | None = None
-
-    @field_validator("effective_at", "expires_at", "revoked_at")
-    @classmethod
-    def _optional_timestamp_is_aware(cls, value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("consent timestamps require an explicit timezone")
-        return value.astimezone(UTC)
-
-    @model_validator(mode="after")
-    def _approval_is_attested(self) -> ConsentRecord:
-        if self.approved:
-            if self.attestation != "self-recorded-and-self-authorized":
-                raise ValueError("approved consent requires subject attestation")
-            if self.effective_at is None:
-                raise ValueError("approved consent requires an effective timestamp")
-            if not self.allowed_purposes or not self.allowed_execution_boundaries:
-                raise ValueError("approved consent requires non-empty scope")
-            if self.expires_at is None:
-                raise ValueError("approved consent requires an explicit expiry")
-        if len(self.allowed_purposes) != len(set(self.allowed_purposes)):
-            raise ValueError("consent purposes must be unique")
-        if len(self.allowed_execution_boundaries) != len(set(self.allowed_execution_boundaries)):
-            raise ValueError("consent execution boundaries must be unique")
-        if self.revoked_at is not None and self.approved:
-            raise ValueError("revoked consent cannot remain approved")
-        if self.expires_at and self.effective_at and self.expires_at <= self.effective_at:
-            raise ValueError("consent expiry must follow its effective time")
-        if self.revoked_at and self.effective_at and self.revoked_at < self.effective_at:
-            raise ValueError("consent revocation cannot precede its effective time")
-        return self
-
-
 class CandidateSpec(ContractModel):
     candidate_id: CandidateId
     display_name: str = Field(min_length=1, max_length=120)
@@ -482,16 +452,26 @@ class ReferenceEvidence(ContractModel):
     sha256: Sha256
     transcript: str = Field(min_length=1, max_length=2_000)
     subject_id: StableId
-    consent_path: str = Field(min_length=1, max_length=1_024)
-    consent_sha256: Sha256
+    # Retired with consent records (D-050): only a plan or request written before carries them.
+    consent_path: str | None = historical_field(min_length=1, max_length=1_024)
+    consent_sha256: Sha256 | None = historical_field()
 
     @field_validator("path", "consent_path")
     @classmethod
-    def _absolute_worker_input(cls, value: str) -> str:
+    def _absolute_worker_input(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         path = Path(value)
         if not path.is_absolute() or ".." in path.parts:
             raise ValueError("worker input paths must be normalized absolute paths")
         return value
+
+    @model_validator(mode="after")
+    def _historical_consent_pair(self) -> ReferenceEvidence:
+        reject_explicit_null(self, "consent_path", "consent_sha256")
+        if (self.consent_path is None) != (self.consent_sha256 is None):
+            raise ValueError("a stored consent path and digest are present together")
+        return self
 
 
 class ExperimentRequest(ContractModel):
@@ -643,7 +623,8 @@ class WorkerModelEvidence(ContractModel):
     executed_code_evidence_path: str = Field(min_length=1, max_length=4_096)
     executed_code_evidence_sha256: Sha256
     reference_sha256: Sha256
-    consent_sha256: Sha256
+    # Retired with consent records (D-050): only evidence written before carries it.
+    consent_sha256: Sha256 | None = historical_field()
     source_audio_sha256: Sha256 | None
     source_audio_size_bytes: int | None = Field(gt=0)
     settings: dict[str, JsonValue]
@@ -682,6 +663,7 @@ class WorkerModelEvidence(ContractModel):
             raise ValueError("source audio digest and size must be present together")
         if self.watermarked is None and "watermarked" in self.model_fields_set:
             raise ValueError("watermarked must be omitted when it is not applicable")
+        reject_explicit_null(self, "consent_sha256")
         return self
 
 

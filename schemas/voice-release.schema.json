@@ -140,10 +140,26 @@
       "default": null
     },
     "consent_id": {
-      "$ref": "#/$defs/StableId"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "consent_sha256": {
-      "$ref": "#/$defs/Sha256"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "created_at": {
       "$ref": "#/$defs/UtcTimestamp"
@@ -214,8 +230,6 @@
     "run_record_sha256",
     "files",
     "model",
-    "consent_id",
-    "consent_sha256",
     "created_at",
     "designated_by"
   ],

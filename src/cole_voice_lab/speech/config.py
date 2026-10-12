@@ -35,7 +35,8 @@ SPEECH_CONFIG_SCHEMA: Final = "cole-voice-lab.speech-config/v1"
 MAX_CONFIG_BYTES: Final = 256 * 1024
 MAX_CALLERS: Final = 4
 MAX_WEBHOOK_URL_LENGTH: Final = 2048
-# The one purpose a caller of the speech API may invoke (D-047).
+# The one use a caller of the speech API may be registered for (D-046). It is the caller's
+# scope in the registry, not a consent purpose: consent records are retired (D-050).
 type SpeechPurpose = Literal["private-assistant-speech"]
 
 _LABEL: Final = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
@@ -50,7 +51,7 @@ _PATH: Final = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,=:@%/-]*$")
 _BAD_ESCAPE: Final = re.compile(r"%(?![0-9A-Fa-f]{2})|%2[EeFf]|%3[Bb]|%5[Cc]")
 
 # Only Cole's stable subject id (``release.SPEECH_SUBJECT``; a test holds the two equal): the
-# configuration cannot name another subject (D-045).
+# configuration cannot name another subject (D-045, D-050).
 type SpeechSubject = Literal["cole-self"]
 
 type AbsolutePath = Annotated[
@@ -213,8 +214,7 @@ class SpeechConfig(ContractModel):
     state_root: AbsolutePath
     gpu_slot_root: AbsolutePath
     # The one subject whose release may speak (AGENTS.md: never another subject), pinned in
-    # code to ``SPEECH_SUBJECT``. A release, and the consent record it names, of any other
-    # subject is refused.
+    # code to ``SPEECH_SUBJECT``. A release of any other subject is refused (D-050).
     subject_id: SpeechSubject = SPEECH_SUBJECT
     tailnet_suffix: TailnetSuffix
     audio_retention_hours: int = Field(default=168, ge=1, le=720)

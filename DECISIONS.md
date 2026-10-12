@@ -277,6 +277,9 @@ not on the Mac that records, and requires an approved, checksum-bound consent re
 whose purposes include `private-fine-tuning` for the `home-host` execution boundary. Until
 then the Mac-local behaviour above is unchanged.
 
+Amended 2026-10-12 (D-050): consent records are retired. Fine-tuning needs no consent record,
+on the Mac or the PC; Cole's standing decision covers it.
+
 ## D-017 — The prompt catalog is data in the corpus store
 
 Cole asked on 2026-09-15 that prompts be editable without rebuilding the app. Cole
@@ -414,6 +417,8 @@ Amended 2026-10-06 (D-022, D-025): the app's Fine-tune model action moves, with 
 to the PC's job runner behind `/api/v1/jobs` and a consent record; the app itself is
 replaced by the `scshafe-qt` desktop app after phase 4's acceptance criteria.
 
+Amended 2026-10-12 (D-050): no consent record is required for fine-tuning or Speak, on any host.
+
 ## D-019 — In-app speech is a local listening tool
 
 Cole asked on 2026-09-15 for a separate view in the recording app to type text and perform
@@ -491,6 +496,11 @@ retired; promotion and ChloeSpeech no longer exist as uses beyond local listenin
 purposes are `private-zero-shot-evaluation`, `private-fine-tuning`,
 `private-home-host-synthesis` and `private-assistant-speech`. The retention question for
 Speak clips stays open: D-046's retention covers audio rendered through the speech API only.
+
+Amended 2026-10-12 (D-050): consent records are retired. Cole's standing decision permits his own
+voice for listening (Speak), fine-tuning, assistant speech and benchmarks on his own hardware, and
+no consent purpose or record is checked anywhere. The retention question for Speak clips stays
+open.
 
 ## D-020 — The library vault is an encrypted durable copy
 
@@ -605,6 +615,12 @@ with no second vault destination or automatic backup" and "there is no automatic
 copy" no longer hold. The library key becomes an encrypted systemd credential on the PC,
 never held by any vault host. No cloud or paid storage is used (D-028).
 
+Amended 2026-10-12 (D-050): `ConsentRecord` no longer exists, so its `hosted_transfer_allowed`
+field is gone; the rule it expressed stands on its own: human audio never goes to a hosted
+service, and hosted or GPU transfers still need their separate destination- and
+payload-specific approval. The open question about consent for Speak and fine-tuning is closed:
+neither needs a consent record.
+
 ## D-021 — The PC is the lab's home host
 
 Cole accepted the combined voice platform design on 2026-10-06
@@ -655,6 +671,10 @@ retention question for Speak clips remains open.
 Amended 2026-10-11 (D-047): a third use on the home host joins these two. Speech rendered for
 a registered caller through the speech API (D-046) needs a record whose purposes include
 `private-assistant-speech`, with the same `home-host` boundary and the same checks.
+
+Superseded 2026-10-12 (D-050) in its consent part: fine-tuning, Speak and assistant speech need no
+consent record, purpose or execution boundary; Cole's standing decision and the pinned subject
+replace them. Where they run (the PC's job runner, from phase 5) is unchanged.
 
 ## D-023 — The vault reverses direction, and every copy stays on Cole's hardware
 
@@ -1190,6 +1210,9 @@ renderer. It generates speech itself, with Cole's own voice (D-045), for callers
   components, boundaries and API table (docs/design/VOICE-PLATFORM.md), README, RUNBOOK §7,
   FINETUNE, CURRENT.md and PROGRESS_CONTRACT.md.
 
+Amended 2026-10-12 (D-050): consent records are retired; no consent purpose is read, granted or
+required, so the retired purpose's readability no longer matters.
+
 ## D-045 — The voice is Cole's own clone, designated as a voice release
 
 Cole decided on 2026-10-11: "The speech generation should explicitly use my personal voice
@@ -1218,6 +1241,12 @@ fine-tuned F5-TTS run of his own voice as the voice that speaks.
 - **Blind review is optional evidence.** A release may name a blind review (its review id and
   score-sheet digest), checked to exist when given. It is not required: Cole may designate a
   run he has listened to.
+
+Amended 2026-10-12 (D-050): a release names no consent record and designation reads none; it
+designates only a run of the pinned subject (`cole-self`), and no caller can name another
+subject. A release written before keeps the consent record's id and digest it was written with,
+which nothing reads. Revoking consent no longer stops speech: designating another run, or none
+being current, does.
 
 ## D-046 — Assistant speech over the tailnet API
 
@@ -1331,6 +1360,11 @@ a running render; a webhook whose secret is missing is retried rather than given
 caller or URL the registry no longer allows is refused for good; and an attempt has a total
 deadline of 10 seconds. docs/SPEECH_API.md has the details.
 
+Amended 2026-10-12 (D-050): the ledger names no consent digest, and neither the API at submit
+nor the job runner before each job or sentence checks a consent record; before each sentence the
+runner still checks that the release is current, so a new designation stops a render. A caller's
+`allowed_purposes` stays as the caller's scope in the registry.
+
 ## D-047 — Consent for synthesis on the home host
 
 Recorded 2026-10-11 with D-044 to D-046, from Cole's decisions above and D-022.
@@ -1352,6 +1386,10 @@ Recorded 2026-10-11 with D-044 to D-046, from Cole's decisions above and D-022.
   three boundaries.
 - **Cole's step.** Approving a consent record stays Cole's own act (`consent preview`, then
   `consent approve-self`); no agent creates or approves one.
+
+Superseded 2026-10-12 (D-050): consent records, their purposes and the `home-host` execution
+boundary are retired; Cole's standing decision and the pinned subject replace them, and no one
+approves a consent record any more.
 
 ## D-048 — Model families
 
@@ -1455,3 +1493,82 @@ Recommended in this decision, for Cole to confirm in review:
 - **Benchmarks hold the GPU slot** as kind `benchmark`, a long job: the speech API answers
   `503 gpu_busy` while one runs, as for a fine-tune.
 
+
+Amended 2026-10-12 (D-050): the benchmark needs no consent record (`--consent-id` is removed);
+its unwritten release preview still renders only a finished run of the pinned subject.
+
+## D-050 — A standing decision for Cole's own voice; consent records are retired
+
+Cole asked on 2026-10-12: "I feel like i've had to give my consent to clone my own voice many
+times now. Do i technically need to keep doing this? Can we remove this so that these
+processes can just be handled more smoothly?" After the options were laid out, he decided:
+"yes, remove them entirely after #46 and #47 merge".
+
+- **The standing decision.** This decision is Cole's recorded permission, standing until he
+  records another: his own voice (the subject `cole-self`) may be used for fine-tuning, for
+  listening (Speak), for assistant speech delivered to his registered callers, and for
+  benchmarks and bake-offs (zero-shot evaluation, the model comparison), on his own hardware.
+  It replaces every per-purpose consent record (D-019, D-022, D-047).
+- **Removed.** `consent.py` and its `voice-lab consent` commands (`install-pending`, `preview`,
+  `approve-self`, `status`, `revoke`), the pending record `assets init` installed, the
+  `ConsentRecord` model and its `consent` schema, and every check of a consent record:
+  reference publication and validation, dataset building and validation, the offline model
+  workers, the audition's re-hash of the consent file, voice release designation
+  (`--consent-id`), the speech API's check at submit (`503 consent_unavailable`), the job
+  runner's checks before each job and each sentence (`consent_changed`), and the model
+  comparison's benchmark (`--consent-id`, `VOICE_LAB_BENCHMARK_CONSENT_ID`). Fine-tuning and
+  Speak never read a consent record in code (D-022's requirement waited for phase 5 and was
+  never built), so for them only the documents change. The speech setup no longer approves a
+  `cole-self-v2` record, and nothing is designated again because consent was renewed.
+- **What remains, and why it is enough.** A consent record answered one question: may this
+  subject's voice be synthesized for this purpose? The lab synthesizes one voice, Cole's, and
+  the code makes that so:
+  - *The subject is pinned in code.* `models.COLE_SUBJECT` is `cole-self`. The speech
+    configuration's `subject_id` is `Literal["cole-self"]` and `release.SPEECH_SUBJECT` is the
+    same constant. Designation refuses a run of any other subject, and no caller of
+    `designate` (the CLI, the benchmark) can name another subject any more (strengthened
+    today). The API and the job runner refuse a release of another subject. Reference
+    publication and validation, dataset building and validation, and the offline workers now
+    refuse any subject but `cole-self` too (new today: before, a consent record had to name the
+    source's subject, but any subject could have one). A diagnostic subject is never the
+    pinned subject.
+  - *Only the designated release speaks* (D-045): never the base weights, a zero-shot
+    reference or another run; its files are re-hashed before every job, and before every
+    sentence the runner checks it is still the current release.
+  - *The render ledger* (D-046) records every render, with the text's keyed digest only.
+  - *Tailnet only, free, own hardware* (D-028): no public endpoint, nothing paid, no cloud.
+  - *Human audio is never sent to a hosted service.* The separate transfer-approval rule stays:
+    the hosted-transfer approval a fine-tuning transfer plan needs, the standing home-host
+    approval (D-021) and the vault destination approvals (D-020). It was never a consent
+    record about Cole's voice: it governs where audio may go, not whether his voice may be
+    used, so it is kept whole.
+
+  No one else's voice is recorded, stored or synthesized; diagnostic subjects are
+  physical-test material and are never synthesized. A record of Cole's consent to his own
+  voice, approved by Cole, added steps but no protection the pinned subject does not give.
+  Fine-tuning and Speak work on the recording library's subject (`cole-self` by default) as
+  they always have; a run of any other subject could never be designated, served or
+  benchmarked.
+- **Stored records.** Consent records already under `provenance/consents/` (and `history/`)
+  stay as history, untouched, and nothing reads them. The vault's classification keeps their
+  rules (`consents`, `consent-history`) and replication keeps copying them, so a pass never
+  meets a file it cannot classify; the private-asset guard still treats an approved consent
+  record as private evidence. Every record written before today that names a consent record
+  still validates, byte for byte: reference and dataset manifests (`consent`), worker
+  requests and audition plans (`consent_path`, `consent_sha256`), worker model evidence
+  (`consent_sha256`), voice releases, render-ledger entries and model-comparison benchmarks
+  (`consent_id`, `consent_sha256`). Those fields are optional and absent from every new record
+  (never `null`), and a pair is present whole or not at all; no consent record they name is
+  read. Schema ids stay `v1`, since every stored record still validates. The job failure code
+  `consent_changed` and the refusal `consent_unavailable` are removed outright: no job, ledger
+  entry or caller exists yet (speech is not live), as when D-048 changed those shapes.
+- **The caller registry's purpose stays.** A caller's `allowed_purposes`
+  (`private-assistant-speech`, D-046) is the caller's scope in the registry, not a consent
+  record.
+- **Supersedes** D-047. **Amends** D-016, D-018, D-019, D-020, D-022, D-044, D-045, D-046 and
+  D-049; AGENTS.md's invariant "Recognizable-human synthesis requires a checksum-bound reference
+  and an approved, checksum-bound consent record with a matching subject and purpose" (now the
+  standing decision and the pinned subject); SECURITY.md; the design
+  (docs/design/VOICE-PLATFORM.md); README; docs/SPEECH_API.md, docs/FINETUNE.md,
+  docs/MODEL_FAMILIES.md, docs/REFERENCES_AND_DATASETS.md and docs/RUNBOOK.md; and
+  deploy/speech/README.md and deploy/host-manual/.

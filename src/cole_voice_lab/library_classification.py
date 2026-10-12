@@ -735,7 +735,7 @@ _RULES: Final = (
         "consent-history",
         "provenance/consents/history/{id}.{sha256}.json",
         "records",
-        owner="consent",
+        owner="consent (retired, D-050: kept as history, no longer written or read)",
         reason="earlier consent versions, each named by its own SHA-256 and written in place "
         "(created, then filled), so a pass binds each to the digest in its name",
         example=f"provenance/consents/history/cole-self-v1.{_EXAMPLE_SHA}.json",
@@ -745,8 +745,9 @@ _RULES: Final = (
         "consents",
         "provenance/consents/**",
         "records",
-        owner="consent",
-        reason="consent records (and any other file their directory holds)",
+        owner="consent (retired, D-050: kept as history, no longer written or read)",
+        reason="consent records written before D-050 (and any other file their directory "
+        "holds), copied as history",
         example="provenance/consents/cole-self-v1.json",
     ),
     _rule(

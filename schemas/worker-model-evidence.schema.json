@@ -39,7 +39,15 @@
       "type": "string"
     },
     "consent_sha256": {
-      "$ref": "#/$defs/Sha256"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "executed_code_evidence_path": {
       "maxLength": 4096,
@@ -138,7 +146,6 @@
     "executed_code_evidence_path",
     "executed_code_evidence_sha256",
     "reference_sha256",
-    "consent_sha256",
     "source_audio_sha256",
     "source_audio_size_bytes",
     "settings",

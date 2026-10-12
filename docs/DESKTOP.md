@@ -39,7 +39,7 @@ For an older development environment missing the declared build backend, add
 and wheel artifacts required by `scripts/verify`.
 
 An existing capture-host install's `assets` directory can be used directly.
-Opening the desktop does not start recording or approve consent. A microphone
+Opening the desktop does not start recording. A microphone
 is required only when beginning capture, so the library remains browsable when
 the UMIK-1 is disconnected.
 
@@ -330,7 +330,7 @@ Per-take history is canonical private evidence under
 The desktop also discovers validated finalized packages in `tmp` and `raw`.
 Copies of the same finalized package are counted once. History errors are shown
 explicitly; missing or changed evidence is never silently presented as “not yet
-recorded.” All existing raw, reference, consent, and transfer boundaries apply.
+recorded.” All existing raw, reference, and transfer boundaries apply.
 
 ## Physical acceptance
 

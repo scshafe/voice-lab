@@ -651,7 +651,7 @@ def verify_container(wheelhouse: Path) -> None:
                 "assert all(importlib.util.find_spec(n) is None for n in "
                 "('cryptography','torch','PySide6')); "
                 "assert not any(n.startswith(('cole_voice_lab.recording','cole_voice_lab.capture',"
-                "'cole_voice_lab.finetune','cole_voice_lab.dataset','cole_voice_lab.consent',"
+                "'cole_voice_lab.finetune','cole_voice_lab.dataset',"
                 "'cole_voice_lab.corpus','cole_voice_lab.worker',"
                 "'cole_voice_lab.storage_sealing')) "
                 "for n in sys.modules)",

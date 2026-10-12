@@ -1,8 +1,10 @@
 """Checksum-bound, byte-for-byte human reference publication.
 
 This module is intentionally a derived-data boundary.  It reads accepted raw
-sessions, approved consent, and human review evidence; it never writes beneath
-``raw/`` and never transforms the selected waveform.
+sessions and human review evidence; it never writes beneath ``raw/`` and never
+transforms the selected waveform. A reference is of Cole's own voice only
+(``COLE_SUBJECT``); it binds no consent record (D-050), though one published before
+keeps the binding it was written with.
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ from .canonical import (
     sha256_file,
     write_canonical_json,
 )
-from .consent import load_valid_consent
 from .diagnostic_roots import require_corpus_eligible_package
 from .errors import ContractError, SecurityError
 from .intake import ValidatedPackage, validate_capture_package
@@ -36,10 +37,12 @@ from .models import (
     AudioFileEvidence,
     AudioQcMetrics,
     AudioSpec,
-    ConsentRecord,
     ContractModel,
     Sha256,
     StableId,
+    historical_field,
+    reject_explicit_null,
+    require_cole_subject,
     utc_now,
 )
 from .paths import AssetLayout, confined_path, validate_relative_path
@@ -108,6 +111,8 @@ class BoundHeadphoneReview(ContractModel):
 
 
 class ConsentEvidenceBinding(ContractModel):
+    """A retired consent record's binding (D-050): only manifests written before carry one."""
+
     file: JsonEvidenceBinding
     consent_id: StableId
     purpose: Literal["private-zero-shot-evaluation", "private-fine-tuning"]
@@ -170,7 +175,7 @@ class ReferenceManifest(ContractModel):
     transformation: Literal["none-byte-for-byte-copy"] = "none-byte-for-byte-copy"
     source: AcceptedUtteranceBinding
     output: ReferenceFileBinding
-    consent: ConsentEvidenceBinding
+    consent: ConsentEvidenceBinding | None = historical_field()
     headphone_review: BoundHeadphoneReview
     provenance_statement: NonBlank = Field(max_length=4_096)
 
@@ -201,7 +206,8 @@ class ReferenceManifest(ContractModel):
             raise ValueError("reference and source byte counts must match")
         if self.output.audio != self.source.audio:
             raise ValueError("reference and source audio specifications must match")
-        if self.consent.purpose != self.purpose:
+        reject_explicit_null(self, "consent")
+        if self.consent is not None and self.consent.purpose != self.purpose:
             raise ValueError("reference consent purpose must match the reference purpose")
         if self.created_at < self.headphone_review.record.reviewed_at:
             raise ValueError("reference publication cannot predate headphone review")
@@ -362,39 +368,6 @@ def load_headphone_review(
     return BoundHeadphoneReview(file=binding, record=record)
 
 
-def load_consent_binding(
-    layout: AssetLayout,
-    *,
-    relative_path: str,
-    expected_sha256: str,
-    subject_id: str,
-    purpose: Literal["private-zero-shot-evaluation", "private-fine-tuning"],
-    at: datetime,
-) -> tuple[ConsentEvidenceBinding, ConsentRecord]:
-    relative = _require_prefix(relative_path, ("provenance", "consents"), "consent")
-    path = confined_path(layout.root, relative, must_exist=True)
-    binding = _json_binding(path, relative, expected_sha256)
-    record = load_valid_consent(
-        path,
-        expected_sha256=expected_sha256,
-        subject_id=subject_id,
-        purpose=purpose,
-        execution_boundary="tailnet-local-host",
-        at=at,
-    )
-    digest_after, size_after = sha256_file(path)
-    if digest_after != binding.sha256 or size_after != binding.size_bytes:
-        raise SecurityError("consent evidence changed while it was being validated")
-    return (
-        ConsentEvidenceBinding(
-            file=binding,
-            consent_id=record.consent_id,
-            purpose=purpose,
-        ),
-        record,
-    )
-
-
 def _copy_exact(source: Path, destination: Path, expected_sha256: str) -> int:
     source_flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
@@ -455,13 +428,12 @@ def _reference_directory_files(directory: Path) -> set[str]:
     return names
 
 
-def validate_reference_publication(
-    layout: AssetLayout,
-    directory: Path,
-    *,
-    at: datetime | None = None,
-) -> PublishedReference:
-    """Revalidate every source and copied byte behind a published reference."""
+def validate_reference_publication(layout: AssetLayout, directory: Path) -> PublishedReference:
+    """Revalidate every source and copied byte behind a published reference of Cole's.
+
+    Raises: ``SecurityError`` for a reference of any other subject (D-050) or bytes that no
+    longer match; ``ContractError`` for an invalid manifest.
+    """
 
     references_root = layout.directory("references").resolve(strict=True)
     candidate = directory.expanduser()
@@ -475,6 +447,7 @@ def validate_reference_publication(
     manifest = _read_canonical_model(manifest_path, ReferenceManifest)
     if candidate.name != manifest.reference_id:
         raise ContractError("reference directory name does not match its manifest ID")
+    require_cole_subject(manifest.source.subject_id, what="the reference")
 
     source = load_accepted_utterance(
         layout,
@@ -504,20 +477,6 @@ def validate_reference_publication(
         raise SecurityError("published reference headphone-review binding is stale")
     if review.record.reviewed_at < source.package.qc_report.generated_at:
         raise ContractError("headphone review cannot predate source QC")
-    validation_time = _aware_utc(at or utc_now())
-    consent, record = load_consent_binding(
-        layout,
-        relative_path=manifest.consent.file.path,
-        expected_sha256=manifest.consent.file.sha256,
-        subject_id=manifest.source.subject_id,
-        purpose="private-zero-shot-evaluation",
-        at=validation_time,
-    )
-    if consent != manifest.consent:
-        raise SecurityError("published reference consent binding is stale")
-    if record.effective_at is None or record.effective_at > manifest.created_at:
-        raise ContractError("consent was not effective when the reference was published")
-
     manifest_sha256, _ = sha256_file(manifest_path)
     return PublishedReference(
         directory=candidate,
@@ -532,15 +491,17 @@ def publish_reference(
     reference_id: str,
     raw_manifest_sha256: str,
     prompt_id: str,
-    consent_path: str,
-    consent_sha256: str,
     headphone_review_path: str,
     headphone_review_sha256: str,
     created_by: str,
     provenance_statement: str,
     clock: Callable[[], datetime] = utc_now,
 ) -> PublishedReference:
-    """Atomically publish one exact accepted utterance as a zero-shot reference."""
+    """Atomically publish one exact accepted utterance of Cole's as a zero-shot reference.
+
+    Raises: ``SecurityError`` for an utterance of any other subject (D-050), and for
+    evidence that does not match; ``ContractError`` for an invalid source or review.
+    """
 
     now = _aware_utc(clock())
     source = load_accepted_utterance(
@@ -548,6 +509,7 @@ def publish_reference(
         raw_manifest_sha256=raw_manifest_sha256,
         prompt_id=prompt_id,
     )
+    require_cole_subject(source.binding.subject_id, what="the reference's utterance")
     review = load_headphone_review(
         layout,
         relative_path=headphone_review_path,
@@ -556,16 +518,6 @@ def publish_reference(
     )
     if review.record.reviewed_at < source.package.qc_report.generated_at:
         raise ContractError("headphone review cannot predate source QC")
-    consent, record = load_consent_binding(
-        layout,
-        relative_path=consent_path,
-        expected_sha256=consent_sha256,
-        subject_id=source.binding.subject_id,
-        purpose="private-zero-shot-evaluation",
-        at=now,
-    )
-    if record.effective_at is None or record.effective_at > now:
-        raise SecurityError("zero-shot consent is not effective for this publication")
 
     output = ReferenceFileBinding(
         path=f"references/{reference_id}/{REFERENCE_AUDIO_NAME}",
@@ -579,13 +531,12 @@ def publish_reference(
         created_by=created_by,
         source=source.binding,
         output=output,
-        consent=consent,
         headphone_review=review,
         provenance_statement=provenance_statement,
     )
     destination = layout.directory("references") / desired.reference_id
     if destination.exists() or destination.is_symlink():
-        existing = validate_reference_publication(layout, destination, at=now)
+        existing = validate_reference_publication(layout, destination)
         comparable = desired.model_copy(update={"created_at": existing.manifest.created_at})
         if comparable != existing.manifest:
             raise SecurityError(f"reference ID collision: {desired.reference_id}")
@@ -622,7 +573,7 @@ def publish_reference(
         except OSError as error:
             if not destination.exists():
                 raise
-            existing = validate_reference_publication(layout, destination, at=now)
+            existing = validate_reference_publication(layout, destination)
             comparable = desired.model_copy(update={"created_at": existing.manifest.created_at})
             if comparable != existing.manifest:
                 raise SecurityError(f"reference ID collision: {desired.reference_id}") from error
@@ -634,7 +585,7 @@ def publish_reference(
             os.fsync(references_descriptor)
         finally:
             os.close(references_descriptor)
-        return validate_reference_publication(layout, destination, at=now)
+        return validate_reference_publication(layout, destination)
     finally:
         if not published and stage.exists():
             shutil.rmtree(stage)
@@ -651,7 +602,6 @@ __all__ = [
     "ReferenceFileBinding",
     "ReferenceManifest",
     "load_accepted_utterance",
-    "load_consent_binding",
     "load_headphone_review",
     "publish_reference",
     "validate_reference_publication",

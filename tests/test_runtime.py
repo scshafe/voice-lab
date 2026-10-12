@@ -827,8 +827,6 @@ def test_run_worker_uses_one_fresh_offline_subprocess(tmp_path: Path, monkeypatc
         sha256="a" * 64,
         transcript="Exact transcript.",
         subject_id="cole-self",
-        consent_path=str(tmp_path / "consent.json"),
-        consent_sha256="b" * 64,
     )
     request = ExperimentRequest(
         experiment_id="bakeoff-1",

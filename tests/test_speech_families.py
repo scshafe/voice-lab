@@ -187,8 +187,6 @@ def test_a_fingerprint_and_its_ledger_entry_are_of_one_family() -> None:
         "text_characters": 3,
         "release": {"release_id": "vr-0001", "release_sha256": "c" * 64},
         "model_family": "other",
-        "consent_id": "cole-self-v2",
-        "consent_sha256": "d" * 64,
         "outcome": "cancelled",
         "failure": None,
         "fingerprint": fingerprint(),

@@ -8,16 +8,13 @@ import subprocess
 import types
 import wave
 from dataclasses import replace
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
 from cole_voice_lab.canonical import sha256_file, write_canonical_json
 from cole_voice_lab.errors import ContractError, RuntimeUnavailableError, SecurityError
 from cole_voice_lab.models import (
-    ConsentRecord,
     EnvironmentEvidence,
     ExecutedCodeEvidence,
     ExperimentRequest,
@@ -64,29 +61,12 @@ def request_fixture(
     tmp_path: Path,
     *,
     timing_mode: str = "cold",
-    execution_boundaries: tuple[Literal["capture-host", "tailnet-local-host"], ...] = (
-        "tailnet-local-host",
-    ),
+    subject_id: str = "cole-self",
 ) -> ExperimentRequest:
     reference_path = (tmp_path / "reference.wav").resolve()
     if not reference_path.exists():
         write_tone(reference_path)
     reference_digest, _ = sha256_file(reference_path)
-    consent = ConsentRecord(
-        consent_id="cole-evaluation-v1",
-        subject_id="cole-self",
-        approved=True,
-        attestation="self-recorded-and-self-authorized",
-        allowed_purposes=("private-zero-shot-evaluation",),
-        allowed_execution_boundaries=execution_boundaries,
-        effective_at=datetime(2026, 1, 1, tzinfo=UTC),
-        expires_at=datetime(2099, 1, 1, tzinfo=UTC),
-    )
-    consent_path = (tmp_path / "consent.json").resolve()
-    if not consent_path.exists():
-        consent_digest = write_canonical_json(consent_path, consent)
-    else:
-        consent_digest, _ = sha256_file(consent_path)
     return ExperimentRequest(
         experiment_id="experiment-1",
         trial_id=f"trial-{timing_mode}",
@@ -98,9 +78,7 @@ def request_fixture(
             path=str(reference_path),
             sha256=reference_digest,
             transcript="A reference sentence.",
-            subject_id="cole-self",
-            consent_path=str(consent_path),
-            consent_sha256=consent_digest,
+            subject_id=subject_id,
         ),
         seed=17,
         model_id="example/model",
@@ -138,7 +116,7 @@ def fake_context(tmp_path: Path) -> WorkerContext:
     )
 
 
-def test_execute_request_binds_consent_reference_and_portable_evidence(tmp_path: Path) -> None:
+def test_execute_request_binds_reference_and_portable_evidence(tmp_path: Path) -> None:
     request = request_fixture(tmp_path)
     calls: list[Path | None] = []
 
@@ -175,9 +153,10 @@ def test_execute_request_binds_consent_reference_and_portable_evidence(tmp_path:
     executed_path = tmp_path / str(result.metadata["executed_code_evidence_path"])
     assert sha256_file(executed_path)[0] == result.metadata["executed_code_evidence_sha256"]
     ExecutedCodeEvidence.model_validate_json(executed_path.read_bytes())
-    WorkerModelEvidence.model_validate_json(
-        (tmp_path / str(result.metadata["model_evidence_path"])).read_bytes()
-    )
+    evidence_bytes = (tmp_path / str(result.metadata["model_evidence_path"])).read_bytes()
+    # No consent record is read or named (D-050).
+    assert WorkerModelEvidence.model_validate_json(evidence_bytes).consent_sha256 is None
+    assert b"consent" not in evidence_bytes and "consent_sha256" not in result.metadata
 
 
 def test_execute_request_rejects_executable_byte_drift(tmp_path: Path, monkeypatch) -> None:
@@ -305,10 +284,10 @@ def test_worker_rejects_tampered_reference_and_unknown_settings(tmp_path: Path) 
         )
 
 
-def test_worker_requires_tailnet_local_host_consent_boundary(tmp_path: Path) -> None:
-    request = request_fixture(tmp_path, execution_boundaries=("capture-host",))
+def test_worker_renders_only_a_reference_of_the_pinned_subject(tmp_path: Path) -> None:
+    request = request_fixture(tmp_path, subject_id="someone-else")
 
-    with pytest.raises(SecurityError, match="execution boundary tailnet-local-host"):
+    with pytest.raises(SecurityError, match="not 'cole-self'"):
         execute_request(
             fake_definition(),
             request,
@@ -316,6 +295,28 @@ def test_worker_requires_tailnet_local_host_consent_boundary(tmp_path: Path) -> 
             synthesize=lambda _model, _request, _context, _output: 0,
             context=fake_context(tmp_path),
         )
+
+
+def test_a_request_written_before_d050_names_a_consent_record_that_is_never_read(
+    tmp_path: Path,
+) -> None:
+    fresh = request_fixture(tmp_path)
+    reference = ReferenceEvidence.model_validate(
+        fresh.reference.model_dump(mode="python")
+        | {"consent_path": str(tmp_path / "absent-consent.json"), "consent_sha256": "c" * 64}
+    )
+    request = fresh.model_copy(update={"reference": reference})
+    result = execute_request(
+        fake_definition(),
+        request,
+        load=lambda _request, _context: object(),
+        synthesize=lambda _model, active_request, _context, output: (
+            write_tone(output) or active_request.seed
+        ),
+        context=fake_context(tmp_path),
+        synchronize=lambda: None,
+    )
+    assert result.ok and "consent_sha256" not in result.metadata
 
 
 def test_voice_conversion_source_is_bound_to_request_digest_and_size(tmp_path: Path) -> None:

@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel, ConfigDict
-from speech_fixtures import NOW, FakeBackend, Lab, approve_consent, build_lab, write_tone
+from speech_fixtures import NOW, FakeBackend, Lab, build_lab, finished_run, write_tone
 
 from cole_voice_lab import cli_models, model_comparison
 from cole_voice_lab.canonical import canonical_json_bytes
@@ -71,8 +71,7 @@ BUSY = GpuContention(
 
 @pytest.fixture
 def lab(tmp_path: Path) -> Lab:
-    made = build_lab(tmp_path, consent=False, release=False)
-    approve_consent(made.layout, purposes=("private-home-host-synthesis",))
+    made = build_lab(tmp_path, release=False)
     log = made.layout.root / FINETUNE_OUTPUT_ROOT / "finetune-a" / "train.log"
     log.write_text(
         "Epoch 120/120: 100%|█| 9/9 [00:50<00:00, 6.03s/update, loss=0.4, update=1080]\n"
@@ -89,7 +88,6 @@ def benchmark(lab: Lab, backend: Any | None = None, **options: Any) -> Any:
         lab.layout,
         "finetune-a",
         backend or FakeBackend(),
-        consent_id="cole-self-v1",
         work_directory=lab.root / "scratch" / ".model-benchmark-test",
         monotonic=lambda: next(ticks),
         **options,
@@ -170,16 +168,52 @@ def test_a_benchmark_notices_a_nondeterministic_backend(lab: Lab) -> None:
     assert benchmark(lab, FakeBackend(write=unseeded)).deterministic is False
 
 
-def test_a_benchmark_needs_its_consent_and_held_out_texts(tmp_path: Path, lab: Lab) -> None:
-    speech_only = build_lab(tmp_path / "speech-only", release=False)  # assistant speech only
-    with pytest.raises(VoiceReleaseError) as refused:
-        benchmark(speech_only)
-    assert refused.value.code == "not_designatable"
+def test_a_benchmark_needs_no_consent_but_the_pinned_subject_and_held_out_texts(
+    lab: Lab,
+) -> None:
+    # No consent record exists in the lab (D-050), and the benchmark names none.
+    assert not (lab.layout.root / "provenance/consents").exists()
+    measured = benchmark(lab)
+    assert (measured.consent_id, measured.consent_sha256) == (None, None)
+    assert "consent_id" not in measured.model_dump(mode="json")
+    # A run of another subject never renders, not even for a measurement.
+    finished_run(lab.layout, "finetune-other", subject_id="someone-else")
+    backend = FakeBackend()
+    with pytest.raises(VoiceReleaseError, match="pinned subject") as refused:
+        benchmark_run(
+            lab.layout,
+            "finetune-other",
+            backend,
+            now=NOW,
+            work_directory=lab.root / "scratch" / ".model-benchmark-other",
+            host=lambda: HOST,
+            contention=lambda: QUIET,
+        )
+    assert refused.value.code == "not_designatable" and backend.calls == []
     trained_on = ("And is there a third? " + BENCHMARK_TEXTS[0],)
     benchmark(lab, texts=trained_on)  # not a training text: fine
     dataset, _ = load_finetune_dataset(lab.layout, f"{FINETUNE_OUTPUT_ROOT}/finetune-a")
     with pytest.raises(ComparisonError, match="held out"):
         benchmark(lab, texts=(dataset.clips[0].text.upper(),))
+
+
+def test_a_comparison_recorded_under_a_consent_record_still_reads_byte_for_byte(lab: Lab) -> None:
+    # A benchmark recorded before D-050 named its consent record; the record still validates
+    # and keeps its bytes, and a binding given as null or half is refused.
+    stored = comparison(lab, 0, inference=benchmark(lab)).model_dump(mode="json")
+    stored["inference"] |= {"consent_id": "cole-self-v1", "consent_sha256": "c" * 64}
+    data = canonical_json_bytes(stored) + b"\n"
+    old = ModelComparison.model_validate_json(data)
+    assert old.inference is not None and old.inference.consent_id == "cole-self-v1"
+    assert canonical_json_bytes(old) + b"\n" == data
+    for broken in ({"consent_id": None, "consent_sha256": None}, {"consent_id": "cole-self-v1"}):
+        inference = {
+            key: value
+            for key, value in stored["inference"].items()
+            if key not in ("consent_id", "consent_sha256")
+        }
+        with pytest.raises(ValueError):
+            ModelComparison.model_validate({**stored, "inference": {**inference, **broken}})
 
 
 def test_scratch_that_cannot_be_removed_is_logged_and_leftovers_are_swept(
@@ -400,7 +434,7 @@ def test_the_cli_records_and_compares(
     monkeypatch.setattr(model_comparison, "host_fingerprint", lambda: HOST)
     monkeypatch.setattr(model_comparison, "gpu_contention", lambda: QUIET)
     slot = Path(lab.config.gpu_slot_root)
-    argv = [*base, "--benchmark", "--config", str(config), "--consent-id", "cole-self-v1"]
+    argv = [*base, "--benchmark", "--config", str(config)]
     # This test process has a network: the benchmark is refused outside the sandbox.
     monkeypatch.setattr(cli_models, "network_interfaces", lambda: ("eth0", "lo"))
     monkeypatch.setenv("VOICE_LAB_SANDBOX", "voice-lab-speech-benchmark")

@@ -871,9 +871,10 @@ Save As re-check the file against them. F5-TTS's temporary copy of the reference
 written inside the request's directory, not the system's temporary directory, and removed
 with the synthesis. A Save As copy is written outside the root, only
 where the operator chose, and never inside the library. Speak reads no consent
-record: D-019 records in-app speech as local listening by Cole and leaves that scope for
-Cole to confirm; every use beyond it keeps the lab's consent and transfer rules and, for
-speech beyond the lab, the voice release (D-045; promotion was retired by D-044).
+record: D-019 recorded in-app speech as local listening by Cole, and D-050 (2026-10-12)
+settles it with Cole's standing decision for his own voice; every use beyond it keeps the
+lab's transfer rules and, for speech beyond the lab, the voice release (D-045; promotion was
+retired by D-044).
 
 **Amended 2026-09-13 — SQLite descriptor ownership:** SQLite alone owns open
 database and sidecar descriptors. Checking their paths must not open and close an
@@ -1275,6 +1276,9 @@ separate, and D-019's local-listening consent question is still open.
 voice-release material. The consent, transfer and release policy is unchanged (D-044
 retired promotion; D-045 is the voice release); D-019 records
 that Speak reads no consent record and leaves that scope open for Cole to confirm.
+
+**Amended 2026-10-12 (D-050):** consent records are retired. Cole's standing decision
+permits his own voice for Speak and fine-tuning; nothing in the app needs a consent record.
 
 ## 16. Fine-tuning from the app
 

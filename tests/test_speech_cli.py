@@ -37,9 +37,11 @@ def test_designation_previews_then_writes_and_shows(
         root,
         "--run",
         "finetune-a",
-        "--consent-id",
-        "cole-self-v1",
     ]
+    # No consent record is named or needed (D-050): the option is gone.
+    with pytest.raises(SystemExit) as refused:
+        main([*base, "--designated-by", "Cole", "--consent-id", "cole-self-v1"])
+    assert refused.value.code == 2 and "--consent-id" in capsys.readouterr().err
     assert main([*base, "--designated-by", "Cole"]) == 0
     preview = capsys.readouterr().out
     assert '"written": false' in preview and "preview only" in preview

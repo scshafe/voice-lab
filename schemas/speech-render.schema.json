@@ -30,7 +30,6 @@
         "render_timeout",
         "queue_timeout",
         "voice_release_changed",
-        "consent_changed",
         "internal_error"
       ],
       "type": "string"
@@ -215,10 +214,26 @@
       "$ref": "#/$defs/StableId"
     },
     "consent_id": {
-      "$ref": "#/$defs/StableId"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "consent_sha256": {
-      "$ref": "#/$defs/Sha256"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "created_at": {
       "$ref": "#/$defs/UtcTimestamp"
@@ -330,8 +345,6 @@
     "text_characters",
     "release",
     "model_family",
-    "consent_id",
-    "consent_sha256",
     "outcome",
     "failure",
     "fingerprint",

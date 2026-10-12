@@ -86,7 +86,7 @@ vault like the ledger; D-049):
   CPU model and count, the memory, each GPU's PCI ids, name, driver and VRAM, the ROCm
   release, or MPS; `null` for a run trained before hosts were recorded), and the runtime
   identity;
-- **inference**, with `--benchmark --config /etc/voice-lab/speech.json --consent-id <id>`: the
+- **inference**, with `--benchmark --config /etc/voice-lab/speech.json`: the
   fixed, public, held-out text set `benchmark-v1` (six sentences; refused if any is a text the
   run trained on), rendered sentence by sentence through the same `SpeechBackend` port as the
   speech API, holding the GPU slot (kind `benchmark`). The seeds derive from the run, its
@@ -100,14 +100,14 @@ vault like the ledger; D-049):
   model is unloaded (every card's VRAM in use and the names of the other processes holding
   the ROCm device, never the benchmark itself or its resident worker, as far as an
   unprivileged process can see: the PC's llama-swap shares the card). The run is rendered as
-  an unwritten release preview, under an approved consent record for
-  `private-home-host-synthesis` on `home-host`; the audio is hashed in the benchmark's own
+  an unwritten release preview, so only a finished run of the pinned subject (`cole-self`)
+  renders, and no consent record is read (D-050); the audio is hashed in the benchmark's own
   scratch under the speech state (`state/speech/benchmark/`, never the lab, whose `tmp/`
   holds raw take originals) and deleted (scratch a killed benchmark left is swept by the next
   one, and a file that cannot be removed is logged), never kept or served. It works for the
   designated run and for any candidate run. **On the PC it runs only in its unit**, the
-  oneshot `voice-lab-speech-benchmark.service` (deploy/host-manual/; the run and the consent
-  id in `/etc/voice-lab/speech-benchmark.env`): the speech runner's fences, so no network and
+  oneshot `voice-lab-speech-benchmark.service` (deploy/host-manual/; the run in
+  `/etc/voice-lab/speech-benchmark.env`): the speech runner's fences, so no network and
   only the GPU's devices. The command refuses to render unless the unit's marker
   (`VOICE_LAB_SANDBOX=voice-lab-speech-benchmark`) is set and no network interface but
   loopback is visible, or `--i-render-outside-the-sandbox` is given (the record then says
@@ -182,8 +182,7 @@ records or the app's contracts before a second family exists:
   F5-TTS only.
 - **`run_f5_finetune`'s 24 kHz dataset**, `FINETUNE_SAMPLE_RATE_HZ` and the sample clip check
   are F5-TTS's own, reached only through its adapter.
-- Consent records are to be removed in a follow-up change after this one (the owner's
-  decision), so training adds no consent check here.
+- Training adds no consent check: consent records are retired (D-050).
 
 ## Candidates (unverified)
 

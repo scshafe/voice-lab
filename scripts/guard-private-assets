@@ -176,6 +176,7 @@ def _looks_like_repository_json_schema(relative: str, value: object) -> bool:
 def _private_record_kind(value: object) -> str | None:
     if not isinstance(value, dict):
         return None
+    # Consent records are retired (D-050), but those on disk stay private history.
     if (
         value.get("approved") is True
         and isinstance(value.get("consent_id"), str)
@@ -245,24 +246,10 @@ def _scan_json(relative: str, payload: bytes, origin: str, findings: set[str]) -
         return
 
     schema_version = value.get("schema_version") if isinstance(value, dict) else None
-    pending_public_consent = (
-        relative
-        in {
-            "cole_voice_lab/resources/consent.pending.json",
-            "templates/consent.pending.json",
-            "src/cole_voice_lab/resources/consent.pending.json",
-        }
-        and isinstance(value, dict)
-        and value.get("approved") is False
-        and value.get("attestation") == "pending-subject-attestation"
-        and value.get("effective_at") is None
-        and value.get("revoked_at") is None
-    )
     if (
         isinstance(schema_version, str)
         and schema_version.startswith("cole-voice-lab.")
         and not schema_version.startswith(PUBLIC_INSTANCE_SCHEMA_PREFIXES)
-        and not pending_public_consent
     ):
         findings.add(f"{origin}: private evidence JSON schema: {_display(relative)}")
 
@@ -277,11 +264,11 @@ def _scan_json(relative: str, payload: bytes, origin: str, findings: set[str]) -
                 findings.add(f"{origin}: voice-journey corpus manifest JSON: {_display(relative)}")
 
     private_record_kind = _private_record_kind(value)
-    if private_record_kind is not None and not pending_public_consent:
+    if private_record_kind is not None:
         findings.add(f"{origin}: {private_record_kind} record in JSON: {_display(relative)}")
 
     sensitive_key, private_path = _walk_json(value)
-    if sensitive_key and not pending_public_consent:
+    if sensitive_key:
         findings.add(f"{origin}: private evidence fields in JSON: {_display(relative)}")
     if private_path:
         findings.add(f"{origin}: private asset path in JSON: {_display(relative)}")

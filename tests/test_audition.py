@@ -197,21 +197,24 @@ def prompt_suite(*prompts: Prompt) -> PromptSuite:
     )
 
 
-def reference(assets: AssetLayout) -> ReferenceEvidence:
+def reference(assets: AssetLayout, *, historical: bool = False) -> ReferenceEvidence:
+    """A reference; ``historical`` adds the consent binding a plan written before D-050 had
+    (its record is never read, so none exists)."""
     reference_path = assets.directory("references") / "reference.wav"
     reference_path.write_bytes(b"checksum-bound reference fixture")
     reference_digest, _ = sha256_file(reference_path)
-    consent_path = assets.directory("provenance") / "consents" / "consent.json"
-    consent_path.parent.mkdir(mode=0o700, exist_ok=True)
-    consent_path.write_bytes(b"checksum-bound consent fixture")
-    consent_digest, _ = sha256_file(consent_path)
+    consent: dict[str, str] = {}
+    if historical:
+        consent = {
+            "consent_path": str(assets.root / "provenance/consents/cole-self-v1.json"),
+            "consent_sha256": "c" * 64,
+        }
     return ReferenceEvidence(
         path=str(reference_path),
         sha256=reference_digest,
         transcript="Exact reference transcript.",
         subject_id="cole-self",
-        consent_path=str(consent_path),
-        consent_sha256=consent_digest,
+        **consent,
     )
 
 
@@ -221,7 +224,13 @@ def performed_source(assets: AssetLayout) -> Path:
     return path
 
 
-def plan(tmp_path: Path, assets: AssetLayout, *, experiment_id: str = "audition-1") -> AuditionPlan:
+def plan(
+    tmp_path: Path,
+    assets: AssetLayout,
+    *,
+    experiment_id: str = "audition-1",
+    historical: bool = False,
+) -> AuditionPlan:
     heldout = prompt()
     return build_audition_plan(
         registry(),
@@ -229,7 +238,7 @@ def plan(tmp_path: Path, assets: AssetLayout, *, experiment_id: str = "audition-
         experiment_id=experiment_id,
         prompt_suite=prompt_suite(heldout),
         prompts=(heldout,),
-        references=(reference(assets),),
+        references=(reference(assets, historical=historical),),
         seeds=(7,),
         source_audio_by_prompt={heldout.prompt_id: performed_source(assets)},
         profile="smoke",
@@ -254,6 +263,8 @@ def write_tone(path: Path, *, sample_rate: int = 24_000) -> None:
 
 def successful_worker(invocation) -> ExperimentResult:
     output = Path(invocation.request.output_path)
+    stored_consent = invocation.request.reference.consent_sha256
+    consent = {} if stored_consent is None else {"consent_sha256": stored_consent}
     write_tone(output)
     inspection = inspect_pcm_wav(output)
     digest, size = sha256_file(output)
@@ -308,7 +319,7 @@ def successful_worker(invocation) -> ExperimentResult:
         "executed_code_evidence_path": f"evidence/{invocation.request.trial_id}.executed-code.json",
         "executed_code_evidence_sha256": code_sha256,
         "reference_sha256": invocation.request.reference.sha256,
-        "consent_sha256": invocation.request.reference.consent_sha256,
+        **consent,
         "source_audio_sha256": invocation.request.source_audio_sha256,
         "source_audio_size_bytes": invocation.request.source_audio_size_bytes,
         "settings": invocation.request.settings,
@@ -345,7 +356,7 @@ def successful_worker(invocation) -> ExperimentResult:
             ),
             "executed_code_evidence_sha256": code_sha256,
             "reference_sha256": invocation.request.reference.sha256,
-            "consent_sha256": invocation.request.reference.consent_sha256,
+            **consent,
             "source_audio_sha256": invocation.request.source_audio_sha256,
             "source_audio_size_bytes": invocation.request.source_audio_size_bytes,
             "runtime_package": runtime_package,
@@ -371,10 +382,10 @@ def successful_normalization(normalization_plan) -> NormalizationEvidence:
 
 
 def completed_record(
-    tmp_path: Path, monkeypatch, *, experiment_id: str
+    tmp_path: Path, monkeypatch, *, experiment_id: str, historical: bool = False
 ) -> tuple[AssetLayout, AuditionTrial, PersistedTrialResult]:
     assets = layout(tmp_path)
-    audition = plan(tmp_path, assets, experiment_id=experiment_id)
+    audition = plan(tmp_path, assets, experiment_id=experiment_id, historical=historical)
     monkeypatch.setattr("cole_voice_lab.audition.run_worker", successful_worker)
     monkeypatch.setattr("cole_voice_lab.audition.execute_normalization", successful_normalization)
     manifest = run_offline_audition(
@@ -498,8 +509,12 @@ def test_plan_persistence_confines_all_worker_paths(tmp_path: Path) -> None:
             assets, with_trial(direct, with_request(direct, reference_request))
         )
 
+    # A plan written before D-050 may name a consent record: never read, still confined.
     outside_consent = direct.request.reference.model_copy(
-        update={"consent_path": str((tmp_path / "outside-consent.json").resolve())}
+        update={
+            "consent_path": str((tmp_path / "outside-consent.json").resolve()),
+            "consent_sha256": "c" * 64,
+        }
     )
     consent_request = direct.request.model_copy(update={"reference": outside_consent})
     with pytest.raises(ContractError, match="consent evidence must remain"):
@@ -1121,6 +1136,7 @@ def test_persisted_executed_code_contract_rejects_digest_coherent_false_evidence
         ("code-revision", "model evidence changed binding for code_revision"),
         ("reference", "model evidence changed binding for reference_sha256"),
         ("consent", "model evidence changed binding for consent_sha256"),
+        ("consent-result", "names a consent record its evidence does not"),
         ("source", "model evidence changed binding for source_audio_sha256"),
         ("settings", "model evidence changed binding for settings"),
         ("model-manifest", "model evidence changed binding for model_manifest_sha256"),
@@ -1153,6 +1169,8 @@ def test_persisted_model_evidence_rejects_digest_coherent_rebinding(
         metadata["reference_sha256"] = "f" * 64
     elif tamper == "consent":
         model_payload["consent_sha256"] = "f" * 64
+        metadata["consent_sha256"] = "f" * 64
+    elif tamper == "consent-result":
         metadata["consent_sha256"] = "f" * 64
     elif tamper == "source":
         model_payload["source_audio_sha256"] = "f" * 64
@@ -1202,3 +1220,16 @@ def test_plan_revalidates_prompt_suite_digest_and_equal_direct_matrix(tmp_path: 
     missing_cell = tuple(trial for trial in audition.trials if trial.trial_id != qwen[0].trial_id)
     with pytest.raises(ValidationError, match="held-out matrix differs"):
         AuditionPlan.model_validate(audition.model_dump(mode="python") | {"trials": missing_cell})
+
+
+def test_a_trial_run_under_a_consent_record_before_d050_still_validates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Its request, model evidence and result all named the consent record's digest; they
+    # still agree, and the record itself is not read (here it does not exist).
+    assets, trial, record = completed_record(
+        tmp_path, monkeypatch, experiment_id="audition-model-historical", historical=True
+    )
+    assert record.worker_result.metadata["consent_sha256"] == "c" * 64
+    validate_persisted_trial_evidence(assets, trial, record)
+    assert not (assets.root / "provenance/consents").exists()

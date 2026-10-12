@@ -630,10 +630,10 @@ like Speak clips. The synthesizer writes 16-bit PCM explicitly.
 ## Not covered
 
 Samples and Speak clips are for listening. They are not accepted raw, not a reference
-publication, not a dataset manifest and not a voice release. The lab's transfer and
-consent-for-rendering rules are unchanged for any other use; speech for callers uses only
-a designated voice release (D-045, D-046). Neither
-`voice-lab finetune` nor the app (Fine-tune model or Speak) reads a consent record; D-019
-records that scope limit for local listening by Cole, pending Cole's confirmation. The app
+publication, not a dataset manifest and not a voice release. The lab's transfer rules are
+unchanged for any other use; speech for callers uses only a designated voice release
+(D-045, D-046). Neither `voice-lab finetune` nor the app (Fine-tune model or Speak) needs or
+reads a consent record: Cole's standing decision (D-050) permits his own voice for
+fine-tuning and listening on his own hardware, and consent records are retired. The app
 does not play the listening samples, offers no epoch override or other training option, and
 offers no step count, streaming or long-form synthesis on the Speak page.

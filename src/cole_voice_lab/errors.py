@@ -12,7 +12,7 @@ class ContractError(VoiceLabError):
 
 
 class SecurityError(VoiceLabError):
-    """A path, permission, consent, or transfer invariant failed."""
+    """A path, permission, subject, or transfer invariant failed."""
 
 
 class ExternalToolError(VoiceLabError):

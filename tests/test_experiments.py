@@ -35,8 +35,6 @@ def reference(tmp_path: Path) -> ReferenceEvidence:
         sha256="a" * 64,
         transcript="A clean and exact reference transcript.",
         subject_id="cole-self",
-        consent_path=str((tmp_path / "consent.json").resolve()),
-        consent_sha256="b" * 64,
     )
 
 

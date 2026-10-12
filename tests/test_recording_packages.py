@@ -683,8 +683,6 @@ def test_pending_committed_remove_blocks_all_raw_alias_use_without_repair(packag
                 ),
             ),
             prompt_suites={package.selected_suite.suite_id: package.selected_suite},
-            consent_path="provenance/consents/synthetic.json",
-            consent_sha256="b" * 64,
             created_by="synthetic-test",
         )
     assert pending.exists()  # Read-only eligibility never clears another executor's projection.

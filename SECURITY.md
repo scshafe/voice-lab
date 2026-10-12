@@ -26,11 +26,13 @@ weights, and recognizable synthetic outputs are biometric assets.
   schemas inside `schemas/*.schema.json` bypass instance inspection; an
   arbitrary `$schema`, `properties`, or `required` field cannot hide approved
   consent or provenance. No Git hook is installed automatically.
-- Reference audio and consent evidence are bound by digest in every experiment.
-  Consent validation also requires the exact execution boundary; offline model
-  workers require `tailnet-local-host`, so capture-only authorization cannot be
-  reused for synthesis. Synthesis on the home host's job runner requires `home-host`,
-  and speech for registered callers the purpose `private-assistant-speech` (D-047).
+- Reference audio is bound by digest in every experiment. Only Cole's own voice
+  is synthesized (D-050): the offline model workers, reference publication and
+  dataset building, voice release designation, the speech API and job runner, and
+  the model comparison's benchmark each refuse any subject but the pinned
+  `cole-self` (`models.COLE_SUBJECT`). No consent record is required or read; Cole's
+  standing decision is the permission, and consent records already on disk stay as
+  private history (the guard still treats an approved one as private evidence).
 - The default network policy is local/Tailnet-only. Model downloads may use the
   public network only with an explicit download flag; human audio never does.
 - Capture sync is bound to the reviewed mini Tailnet destination, private remote
@@ -124,15 +126,11 @@ with its own binding, approval, records and tokens; what follows holds for each.
   supplies HTTPS; no host port is published and Funnel is absent. The deployment
   policy permits only Cole's Mac to reach the tagged node's port 443 and gives
   that tag no outbound grant; existing broad rules must be reviewed at deployment.
-- Vault storage needs destination approval but no approved consent record: Cole's
-  own host holds opaque ciphertext and never synthesizes or runs a model.
-  `ConsentRecord.hosted_transfer_allowed` remains `Literal[False]`; hosted GPU
-  use still requires its own approval. D-019's separate question about consent
-  for local fine-tuning and Speak is answered by D-022 (2026-10-06): when they
-  move to the PC (design phase 5), both require an approved, checksum-bound
-  consent record for the `home-host` boundary; until then the Mac-local behaviour
-  is unchanged. Speak clips (`derived/speech/**`),
-  local vault records, locks, caches and unfinished runs stay on the Mac.
+- Vault storage needs destination approval and no consent record (consent records
+  are retired, D-050): Cole's own host holds opaque ciphertext and never
+  synthesizes or runs a model. Hosted GPU use still requires its own approval.
+  Speak clips (`derived/speech/**`), local vault records, locks, caches and
+  unfinished runs stay on the Mac.
 - D-020 permits the exact optional `vault` encryption dependency, hash-locked
   with `cffi` and `pycparser` in `requirements/vault-macos.txt`. Only
   `storage_sealing.py` imports `cryptography`. The frozen Mac service runtime
@@ -158,10 +156,11 @@ The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these co
 
 - Only Cole's current voice release speaks (D-045), and only a release of the subject the
   speech configuration pins (`subject_id`, `cole-self`): designation refuses another
-  subject's run or consent record, and the API and the job runner refuse another subject's
-  release. A changed run, model file or consent record refuses the render until Cole
+  subject's run (no caller can name another subject), and the API and the job runner refuse
+  another subject's release. A changed run or model file refuses the render until Cole
   designates again; before each sentence the job runner checks that the release is still
-  current and its consent still valid, so a revocation stops a render at its next sentence.
+  current, so a new designation stops a render at its next sentence. No consent record is
+  read (D-050).
 - Callers are listed in a root-owned caller registry with their token issuer, subject and
   audience, purposes, limits and webhook URL allowlist. A caller's machine token reaches
   the speech routes only, and a caller sees only its own jobs.
@@ -174,15 +173,16 @@ The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these co
   the job runner included, can read them, even as the `voice-lab` user. None is in
   configuration or Git. A webhook URL's path is compared with the allowlist after parsing,
   and one with a dot segment or a percent-encoded dot, slash or backslash is refused.
-- A caller sees a failure's code and one fixed sentence; paths, consent reasons and worker
-  errors stay in the job runner's journal.
+- A caller sees a failure's code and one fixed sentence; paths, a release's mismatch and
+  worker errors stay in the job runner's journal.
 - The API container only enqueues and serves finished files (whole sentences and the
   joined audio); the job runner and its resident model worker render with no network; the
   delivery unit reaches the tailnet only.
-- A model comparison's benchmark (D-049) renders a run only under an approved consent record
-  for `private-home-host-synthesis` on `home-host`, as an unwritten release preview; its
-  audio is hashed in the benchmark's own scratch under `state/speech/benchmark/` (never the
-  lab) and deleted, and its record holds digests and timings only. Like the job runner it renders with no network and only the GPU's devices:
+- A model comparison's benchmark (D-049) renders only a finished run of the pinned subject,
+  as an unwritten release preview, and reads no consent record (D-050); its audio is hashed
+  in the benchmark's own scratch under `state/speech/benchmark/` (never the lab) and deleted,
+  and its record holds digests and timings only. Like the job runner it renders with no
+  network and only the GPU's devices:
   on the PC it runs as `voice-lab-speech-benchmark.service` (deploy/host-manual/), whose
   fences are the runner's and which writes only the GPU slot, its own scratch under
   `state/speech/benchmark/` and `provenance/model-comparisons/`; never the lab's `tmp/`,
@@ -216,7 +216,9 @@ The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these co
 
 ## Revocation
 
-Revocation prevents new experiments and exports. It does not silently delete
+Cole withdraws the standing permission of D-050 by recording a new decision;
+stopping the speech units, or designating no release, stops rendering for callers
+at once. Revocation prevents new experiments and exports. It does not silently delete
 evidence or backups. Deletion is a separate, explicit, audited operation.
 An expired, missing or changed vault approval stops new uploads when the vault
 opens. The storage ports expose no delete operation: removing host data is a
