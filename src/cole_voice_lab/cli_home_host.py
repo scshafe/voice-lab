@@ -166,6 +166,7 @@ def _publish(options: argparse.Namespace) -> int:
             "accepted": [receipt.model_dump(mode="json") for receipt in summary.accepted],
             "refused": [record.model_dump(mode="json") for record in summary.refused],
             "deferred": summary.deferred,
+            "read_model": summary.read_model,
         }
     )
     return 0

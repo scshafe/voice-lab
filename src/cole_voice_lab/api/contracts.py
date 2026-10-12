@@ -91,6 +91,9 @@ type ApiErrorCode = Literal[
     "audio_expired",
     "range_not_satisfiable",
     "already_finished",
+    # the corpus routes (api/corpus_routes.py, docs/design/RECORDING-V1.md)
+    "catalog_unavailable",
+    "catalog_invalid",
     "internal_error",
 ]
 REFUSAL_CODES: Final[frozenset[str]] = frozenset(get_args(ApiErrorCode.__value__))

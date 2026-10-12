@@ -60,6 +60,8 @@
         "audio_expired",
         "range_not_satisfiable",
         "already_finished",
+        "catalog_unavailable",
+        "catalog_invalid",
         "internal_error"
       ],
       "type": "string"

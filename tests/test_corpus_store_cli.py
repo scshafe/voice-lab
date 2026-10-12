@@ -868,7 +868,10 @@ def test_init_without_a_seed_creates_an_empty_catalog_to_fill_publish_and_activa
     assert published["expected_seconds"] == 2.1  # 3 words: round(0.42 * 3 + 0.8, 1)
     activated = cli.json("catalog", "activate", *base, "--subject-id", SUBJECT, "--version", "1")
     assert activated["reference"] == published["reference"]
-    assert activated["takes_effect"] == "at the next launch of the recording app"
+    assert activated["takes_effect"] == (
+        "the API serves it now; voice-lab-desktop at its next session, the Swift app at its "
+        "next launch"
+    )
     listed = cli.json("catalog", "list", *base, "--subject-id", SUBJECT, "--json")
     assert listed["active"] == published["reference"] and listed["live_prompt_count"] == 1
 
