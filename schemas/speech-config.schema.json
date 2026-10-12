@@ -1,0 +1,244 @@
+{
+  "$defs": {
+    "AbsolutePath": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Issuer": {
+      "type": "string"
+    },
+    "SpeechCaller": {
+      "additionalProperties": false,
+      "description": "One registered caller: who its tokens say it is, what it may do, and its limits.",
+      "properties": {
+        "allowed_purposes": {
+          "items": {
+            "$ref": "#/$defs/SpeechPurpose"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "title": "Allowed Purposes",
+          "type": "array"
+        },
+        "audiences": {
+          "items": {
+            "$ref": "#/$defs/TokenValue"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Audiences",
+          "type": "array"
+        },
+        "caller_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "daily_character_budget": {
+          "default": 50000,
+          "maximum": 1000000,
+          "minimum": 1,
+          "title": "Daily Character Budget",
+          "type": "integer"
+        },
+        "issuer": {
+          "$ref": "#/$defs/Issuer"
+        },
+        "max_queued_jobs": {
+          "default": 4,
+          "maximum": 16,
+          "minimum": 1,
+          "title": "Max Queued Jobs",
+          "type": "integer"
+        },
+        "max_text_characters": {
+          "default": 2000,
+          "maximum": 2000,
+          "minimum": 1,
+          "title": "Max Text Characters",
+          "type": "integer"
+        },
+        "subject": {
+          "$ref": "#/$defs/TokenValue"
+        },
+        "webhook_secret_file": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "webhook_urls": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Webhook Urls",
+          "type": "array"
+        }
+      },
+      "required": [
+        "caller_id",
+        "issuer",
+        "subject",
+        "audiences",
+        "allowed_purposes"
+      ],
+      "title": "SpeechCaller",
+      "type": "object"
+    },
+    "SpeechPurpose": {
+      "const": "private-assistant-speech",
+      "type": "string"
+    },
+    "SpeechRuntime": {
+      "additionalProperties": false,
+      "description": "The F5-TTS runtime the job runner renders with (``None`` until it exists on the PC).",
+      "properties": {
+        "device": {
+          "default": "cuda",
+          "enum": [
+            "cuda",
+            "cpu"
+          ],
+          "title": "Device",
+          "type": "string"
+        },
+        "nfe_steps": {
+          "default": 32,
+          "maximum": 64,
+          "minimum": 4,
+          "title": "Nfe Steps",
+          "type": "integer"
+        },
+        "runtime_root": {
+          "$ref": "#/$defs/AbsolutePath"
+        }
+      },
+      "required": [
+        "runtime_root"
+      ],
+      "title": "SpeechRuntime",
+      "type": "object"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "TailnetSuffix": {
+      "type": "string"
+    },
+    "TokenValue": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[\\x21-\\x7e]+$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The whole speech configuration (docs/SPEECH_API.md \u00a74).",
+  "properties": {
+    "asset_root": {
+      "$ref": "#/$defs/AbsolutePath"
+    },
+    "audio_retention_hours": {
+      "default": 168,
+      "maximum": 720,
+      "minimum": 1,
+      "title": "Audio Retention Hours",
+      "type": "integer"
+    },
+    "callers": {
+      "items": {
+        "$ref": "#/$defs/SpeechCaller"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "title": "Callers",
+      "type": "array"
+    },
+    "consent_id": {
+      "$ref": "#/$defs/StableId",
+      "default": "cole-self-v1"
+    },
+    "gpu_busy_retry_seconds": {
+      "default": 600,
+      "maximum": 86400,
+      "minimum": 1,
+      "title": "Gpu Busy Retry Seconds",
+      "type": "integer"
+    },
+    "gpu_slot_root": {
+      "$ref": "#/$defs/AbsolutePath"
+    },
+    "queue_limit": {
+      "default": 32,
+      "maximum": 256,
+      "minimum": 1,
+      "title": "Queue Limit",
+      "type": "integer"
+    },
+    "queue_timeout_seconds": {
+      "default": 600,
+      "maximum": 3600,
+      "minimum": 10,
+      "title": "Queue Timeout Seconds",
+      "type": "integer"
+    },
+    "record_retention_days": {
+      "default": 30,
+      "maximum": 365,
+      "minimum": 1,
+      "title": "Record Retention Days",
+      "type": "integer"
+    },
+    "render_deadline_seconds": {
+      "default": 300,
+      "maximum": 3600,
+      "minimum": 10,
+      "title": "Render Deadline Seconds",
+      "type": "integer"
+    },
+    "runtime": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpeechRuntime"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.speech-config/v1",
+      "default": "cole-voice-lab.speech-config/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state_root": {
+      "$ref": "#/$defs/AbsolutePath"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId",
+      "default": "cole-self"
+    },
+    "tailnet_suffix": {
+      "$ref": "#/$defs/TailnetSuffix"
+    }
+  },
+  "required": [
+    "asset_root",
+    "state_root",
+    "gpu_slot_root",
+    "tailnet_suffix",
+    "callers"
+  ],
+  "title": "SpeechConfig",
+  "type": "object"
+}

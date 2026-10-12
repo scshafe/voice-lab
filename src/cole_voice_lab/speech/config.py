@@ -1,0 +1,218 @@
+"""The speech configuration and its caller registry (D-046, docs/SPEECH_API.md §4).
+
+@canonical speech.config -- one strict JSON file, ``/etc/voice-lab/speech.json`` on the PC,
+root-owned and readable by ``voice-lab``, read by the API, the job runner and the webhook
+delivery process. It holds no secret: a caller's webhook secret is a file named by path,
+which only the delivery process reads (``webhooks.read_secret``).
+
+A caller is a machine client of the identity provider. Its tokens' issuer, subject and
+audience are listed explicitly, because what the provider puts in a client-credentials
+token is read from a real one before the caller is registered.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Annotated, Final, Literal
+from urllib.parse import SplitResult, urlsplit
+
+from pydantic import AfterValidator, Field, StringConstraints, ValidationError, model_validator
+
+from ..canonical import open_regular_no_follow
+from ..errors import ContractError, VoiceLabError
+from ..models import ContractModel, StableId
+from ..paths import validate_absolute_path
+from ..recording_contracts import (
+    SPEECH_DEFAULT_NFE_STEPS,
+    SPEECH_MAX_NFE_STEPS,
+    SPEECH_MAX_TEXT_CHARACTERS,
+    SPEECH_MIN_NFE_STEPS,
+)
+
+SPEECH_CONFIG_SCHEMA: Final = "cole-voice-lab.speech-config/v1"
+MAX_CONFIG_BYTES: Final = 256 * 1024
+MAX_CALLERS: Final = 4
+MAX_WEBHOOK_URL_LENGTH: Final = 2048
+# The one purpose a caller of the speech API may invoke (D-047).
+type SpeechPurpose = Literal["private-assistant-speech"]
+
+_LABEL: Final = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_TAILNET_SUFFIX: Final = re.compile(rf"^(?:{_LABEL}\.)+ts\.net$")
+_HOST_LABEL: Final = re.compile(rf"^{_LABEL}$")
+_PATH: Final = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
+
+type AbsolutePath = Annotated[
+    str, StringConstraints(min_length=1, max_length=4096), AfterValidator(validate_absolute_path)
+]
+
+
+def _tailnet_suffix(value: str) -> str:
+    if len(value) > 253 or not _TAILNET_SUFFIX.fullmatch(value):
+        raise ValueError("the tailnet suffix is a lowercase name ending in .ts.net")
+    return value
+
+
+type TailnetSuffix = Annotated[str, AfterValidator(_tailnet_suffix)]
+
+
+def _issuer(value: str) -> str:
+    if not value.startswith("https://") or value.endswith("/") or len(value) > 512:
+        raise ValueError("an issuer is an https URL without a trailing slash")
+    return value
+
+
+type Issuer = Annotated[str, AfterValidator(_issuer)]
+type TokenValue = Annotated[
+    str, StringConstraints(min_length=1, max_length=256, pattern=r"^[\x21-\x7e]+$")
+]
+
+
+def webhook_url_problem(url: str, tailnet_suffix: str) -> str | None:
+    """Why ``url`` cannot be a webhook URL on this tailnet, or ``None`` when it can.
+
+    A webhook URL is ``https://<one label>.<tailnet suffix>[:port]/<path>``: no
+    credentials, no query, no fragment, no IP literal, nothing outside printable ASCII.
+    """
+    if len(url) > MAX_WEBHOOK_URL_LENGTH or not url.isascii() or not url.isprintable():
+        return "a webhook URL is printable ASCII of at most 2048 characters"
+    if any(character in url for character in " \\"):
+        return "a webhook URL has no space or backslash"
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return "a webhook URL must parse"
+    if parts.scheme != "https":
+        return "a webhook URL is https"
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        return "a webhook URL carries no credentials"
+    if parts.query or parts.fragment or "?" in url or "#" in url:
+        return "a webhook URL has no query or fragment"
+    host = parts.hostname or ""
+    if host != parts.netloc.split(":", 1)[0] or not host.endswith("." + tailnet_suffix):
+        return f"a webhook URL's host is a node under {tailnet_suffix}"
+    if not _HOST_LABEL.fullmatch(host.removesuffix("." + tailnet_suffix)):
+        return "a webhook URL's host is one node name under the tailnet suffix"
+    if port is not None and not 1 <= port <= 65535:
+        return "a webhook URL's port is 1 to 65535"
+    if not parts.path or not _PATH.fullmatch(parts.path):
+        return "a webhook URL has an absolute path"
+    if any(segment in {".", ".."} for segment in parts.path.split("/")):
+        return "a webhook URL's path has no dot segments"
+    return None
+
+
+def parse_webhook_url(url: str, tailnet_suffix: str) -> SplitResult:
+    """``url``'s parts once ``webhook_url_problem`` finds nothing wrong.
+
+    Raises: ``ValueError`` naming the problem.
+    """
+    problem = webhook_url_problem(url, tailnet_suffix)
+    if problem is not None:
+        raise ValueError(problem)
+    return urlsplit(url)
+
+
+class SpeechCaller(ContractModel):
+    """One registered caller: who its tokens say it is, what it may do, and its limits."""
+
+    caller_id: StableId
+    issuer: Issuer
+    subject: TokenValue
+    audiences: tuple[TokenValue, ...] = Field(min_length=1, max_length=4)
+    allowed_purposes: tuple[SpeechPurpose, ...] = Field(min_length=1, max_length=1)
+    webhook_urls: tuple[str, ...] = Field(default=(), max_length=8)
+    webhook_secret_file: AbsolutePath | None = None
+    max_queued_jobs: int = Field(default=4, ge=1, le=16)
+    max_text_characters: int = Field(default=SPEECH_MAX_TEXT_CHARACTERS, ge=1, le=2000)
+    daily_character_budget: int = Field(default=50_000, ge=1, le=1_000_000)
+
+    @model_validator(mode="after")
+    def _webhooks_need_a_secret(self) -> SpeechCaller:
+        if bool(self.webhook_urls) != (self.webhook_secret_file is not None):
+            raise ValueError("a caller with webhook URLs names a secret file, and only then")
+        if len(set(self.webhook_urls)) != len(self.webhook_urls):
+            raise ValueError("a caller lists each webhook URL once")
+        return self
+
+    def allows_callback(self, url: str) -> bool:
+        """Whether ``url`` equals one of the caller's webhook URLs or extends one by path."""
+        return any(
+            url == allowed or url.startswith(allowed.rstrip("/") + "/")
+            for allowed in self.webhook_urls
+        )
+
+
+class SpeechRuntime(ContractModel):
+    """The F5-TTS runtime the job runner renders with (``None`` until it exists on the PC)."""
+
+    runtime_root: AbsolutePath
+    device: Literal["cuda", "cpu"] = "cuda"
+    nfe_steps: int = Field(
+        default=SPEECH_DEFAULT_NFE_STEPS, ge=SPEECH_MIN_NFE_STEPS, le=SPEECH_MAX_NFE_STEPS
+    )
+
+
+class SpeechConfig(ContractModel):
+    """The whole speech configuration (docs/SPEECH_API.md §4)."""
+
+    schema_version: Literal["cole-voice-lab.speech-config/v1"] = SPEECH_CONFIG_SCHEMA
+    asset_root: AbsolutePath
+    state_root: AbsolutePath
+    gpu_slot_root: AbsolutePath
+    subject_id: StableId = "cole-self"
+    consent_id: StableId = "cole-self-v1"
+    tailnet_suffix: TailnetSuffix
+    audio_retention_hours: int = Field(default=168, ge=1, le=720)
+    record_retention_days: int = Field(default=30, ge=1, le=365)
+    queue_limit: int = Field(default=32, ge=1, le=256)
+    queue_timeout_seconds: int = Field(default=600, ge=10, le=3600)
+    render_deadline_seconds: int = Field(default=300, ge=10, le=3600)
+    gpu_busy_retry_seconds: int = Field(default=600, ge=1, le=86_400)
+    runtime: SpeechRuntime | None = None
+    callers: tuple[SpeechCaller, ...] = Field(min_length=1, max_length=MAX_CALLERS)
+
+    @model_validator(mode="after")
+    def _callers_are_distinct_and_tailnet_only(self) -> SpeechConfig:
+        ids = [caller.caller_id for caller in self.callers]
+        principals = [(caller.issuer, caller.subject) for caller in self.callers]
+        secrets = [caller.webhook_secret_file for caller in self.callers]
+        named_secrets = [path for path in secrets if path is not None]
+        if len(set(ids)) != len(ids) or len(set(principals)) != len(principals):
+            raise ValueError("callers have distinct ids and distinct issuer and subject pairs")
+        if len(set(named_secrets)) != len(named_secrets):
+            raise ValueError("callers never share a webhook secret file")
+        for caller in self.callers:
+            for url in caller.webhook_urls:
+                problem = webhook_url_problem(url, self.tailnet_suffix)
+                if problem is not None:
+                    raise ValueError(f"caller {caller.caller_id}: {problem}")
+        return self
+
+    def caller(self, caller_id: str) -> SpeechCaller | None:
+        return next((caller for caller in self.callers if caller.caller_id == caller_id), None)
+
+    @property
+    def state_path(self) -> Path:
+        return Path(self.state_root)
+
+
+def load_speech_config(path: Path) -> SpeechConfig:
+    """Read and validate the configuration at ``path`` (a regular file, never a link).
+
+    Raises: ``ContractError`` for a missing, oversized or invalid file.
+    """
+    try:
+        with open_regular_no_follow(path) as stream:
+            data = stream.read(MAX_CONFIG_BYTES + 1)
+    except (OSError, VoiceLabError) as error:
+        raise ContractError(
+            f"the speech configuration cannot be read as a regular file: {path}"
+        ) from error
+    if len(data) > MAX_CONFIG_BYTES:
+        raise ContractError(f"the speech configuration is larger than {MAX_CONFIG_BYTES} bytes")
+    try:
+        return SpeechConfig.model_validate_json(data)
+    except ValidationError as error:
+        raise ContractError(f"the speech configuration is invalid: {error}") from error

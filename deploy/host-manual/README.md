@@ -12,6 +12,24 @@ and the lane installs them like the others.
 | `voice-lab-vault-laptop.timer` → `voice-lab-vault-laptop.service` | `voice-lab vault push --destination laptop`, then `vault verify`: a sealed copy of the lab to the laptop's vault, then every file of the new head downloaded, decrypted and re-hashed (design §4.3, D-034); nightly at 02:30 | the tailnet only (`IPAddressAllow=100.64.0.0/10`; the tailscaled socket for the node's identity check) |
 | `voice-lab-vault-air.timer` → `voice-lab-vault-air.service` | `voice-lab vault push --destination air --memos-root /data/voice-lab/memos/phone --if-older-than 7d --skip-unreachable`, then `vault verify --if-unverified --skip-unreachable`: the offsite copy on the MacBook Air (design §4.3, phase 3). Hourly; a run does nothing while the copy is under a week old, and succeeds without sending anything when the Air's node is offline or does not answer (after the same node identity check every copy makes); an interrupted push resumes from the destination's journal; each generation is verified once | the tailnet only, as the laptop's |
 
+| `voice-lab-speech.path`, `.timer` → `voice-lab-speech.service` | `voice-lab speech run`: the speech job runner (docs/SPEECH_API.md §7, D-046). One pass over the queue: re-checks the voice release and its consent record, holds the GPU slot, renders, writes the ledger and the webhook event; then the retention sweep. Started when the API queues a job, and every 5 minutes | none (`PrivateNetwork=yes`); the GPU's `/dev/kfd` and DRM nodes only |
+| `voice-lab-speech-webhooks.path`, `.timer` → `voice-lab-speech-webhooks.service` | `voice-lab speech deliver`: signs and delivers ended jobs' webhooks to the callers' tailnet URLs, with retries (§8). Started when an event is queued, and every 30 seconds | the tailnet only, as the JWKS unit |
+
+The speech pair is here because infra's validator has no rule for GPU device access yet and
+because it is inert until the owner's steps in [`../speech/README.md`](../speech/README.md)
+are done; both services are conditioned on `/etc/voice-lab/speech.json`. Install them with:
+
+```sh
+sudo install -o root -g root -m 0644 deploy/host-manual/voice-lab-speech.service \
+  deploy/host-manual/voice-lab-speech.path deploy/host-manual/voice-lab-speech.timer \
+  deploy/host-manual/voice-lab-speech-webhooks.service \
+  deploy/host-manual/voice-lab-speech-webhooks.path \
+  deploy/host-manual/voice-lab-speech-webhooks.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now voice-lab-speech.path voice-lab-speech.timer \
+  voice-lab-speech-webhooks.path voice-lab-speech-webhooks.timer
+```
+
 The service user's egress table (written by the lane from infra's
 `stacks/voice-lab/host.conf`) applies to these units too: the vault's name,
 `voice-lab-vault.colobus-stargazer.ts.net:443`, is in its `HOST_EGRESS_TAILNET`, so the

@@ -1,0 +1,108 @@
+{
+  "$defs": {
+    "ClientRef": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    },
+    "JobId": {
+      "pattern": "^sp-[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``jobs/<id>/request.json``: the accepted request, without its text.",
+  "properties": {
+    "callback_url": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Callback Url"
+    },
+    "caller_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "client_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ClientRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "format": {
+      "const": "wav",
+      "title": "Format",
+      "type": "string"
+    },
+    "idempotency_key_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "job_id": {
+      "$ref": "#/$defs/JobId"
+    },
+    "request_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.speech-job/v1",
+      "default": "cole-voice-lab.speech-job/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "text_characters": {
+      "maximum": 2000,
+      "minimum": 1,
+      "title": "Text Characters",
+      "type": "integer"
+    },
+    "text_sha256": {
+      "$ref": "#/$defs/Sha256"
+    }
+  },
+  "required": [
+    "job_id",
+    "caller_id",
+    "created_at",
+    "format",
+    "callback_url",
+    "client_ref",
+    "idempotency_key_sha256",
+    "request_sha256",
+    "text_sha256",
+    "text_characters"
+  ],
+  "title": "SpeechJobRecord",
+  "type": "object"
+}

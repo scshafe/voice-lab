@@ -79,12 +79,18 @@ from .recording_takes import RECORDING_TAKE_SCHEMA_MODELS
 from .references import HeadphoneReviewEvidence, ReferenceManifest
 from .registry import CandidateConfiguration, ModelSourcesLock
 from .runtime import LocalSourceManifest, RecordingPythonRuntimeReceipt, RuntimeInstallReceipt
+from .speech.config import SpeechConfig
+from .speech.contracts import SPEECH_SCHEMA_MODELS
+from .speech.release import VoiceRelease
 from .storage_contracts import STORAGE_SCHEMA_MODELS
 
 # A ``**`` merge silently keeps the last value of a repeated name; tests/test_schema.py
 # refuses any name this literal would register twice.
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     **STORAGE_SCHEMA_MODELS,
+    **SPEECH_SCHEMA_MODELS,
+    "speech-config": SpeechConfig,
+    "voice-release": VoiceRelease,
     **VAULT_SUPERVISOR_SCHEMA_MODELS,
     **NATIVE_RECORDING_APPLICATION_SCHEMA_MODELS,
     "recording-python-runtime-receipt": RecordingPythonRuntimeReceipt,

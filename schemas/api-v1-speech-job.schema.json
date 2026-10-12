@@ -1,0 +1,246 @@
+{
+  "$defs": {
+    "ClientRef": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    },
+    "FailureCode": {
+      "enum": [
+        "runtime_unavailable",
+        "render_failed",
+        "render_timeout",
+        "queue_timeout",
+        "voice_release_changed",
+        "consent_changed",
+        "internal_error"
+      ],
+      "type": "string"
+    },
+    "JobId": {
+      "pattern": "^sp-[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "JobState": {
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "expired"
+      ],
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "SpeechAudio": {
+      "additionalProperties": false,
+      "description": "The rendered audio: what a caller checks the bytes it fetched against.",
+      "properties": {
+        "bytes": {
+          "minimum": 45,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "duration_ms": {
+          "minimum": 0,
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "format": {
+          "const": "wav",
+          "default": "wav",
+          "title": "Format",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "sha256",
+        "bytes",
+        "duration_ms",
+        "expires_at"
+      ],
+      "title": "SpeechAudio",
+      "type": "object"
+    },
+    "SpeechFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/FailureCode"
+        },
+        "detail": {
+          "maxLength": 2000,
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "detail"
+      ],
+      "title": "SpeechFailure",
+      "type": "object"
+    },
+    "SpeechLinks": {
+      "additionalProperties": false,
+      "properties": {
+        "audio": {
+          "title": "Audio",
+          "type": "string"
+        },
+        "cancel": {
+          "title": "Cancel",
+          "type": "string"
+        },
+        "self": {
+          "title": "Self",
+          "type": "string"
+        }
+      },
+      "required": [
+        "self",
+        "audio",
+        "cancel"
+      ],
+      "title": "SpeechLinks",
+      "type": "object"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A job as its caller sees it (the answer of ``POST`` and ``GET \u2026/{id}``).",
+  "properties": {
+    "audio": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpeechAudio"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "client_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ClientRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpeechFailure"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "format": {
+      "const": "wav",
+      "title": "Format",
+      "type": "string"
+    },
+    "id": {
+      "$ref": "#/$defs/JobId"
+    },
+    "links": {
+      "$ref": "#/$defs/SpeechLinks"
+    },
+    "queue_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Queue Ms"
+    },
+    "render_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Render Ms"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.speech-job/v1",
+      "default": "cole-voice-lab.api.speech-job/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state": {
+      "$ref": "#/$defs/JobState"
+    },
+    "text_characters": {
+      "minimum": 1,
+      "title": "Text Characters",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "state",
+    "client_ref",
+    "format",
+    "text_characters",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "queue_ms",
+    "render_ms",
+    "audio",
+    "error",
+    "links"
+  ],
+  "title": "SpeechJobStatus",
+  "type": "object"
+}

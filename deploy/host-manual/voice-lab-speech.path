@@ -1,0 +1,10 @@
+# Starts the speech job runner whenever the API queues a job (queue/<id> appears).
+[Unit]
+Description=voice-lab speech: watch the queue
+
+[Path]
+PathChanged=/data/voice-lab/state/speech/queue
+Unit=voice-lab-speech.service
+
+[Install]
+WantedBy=paths.target

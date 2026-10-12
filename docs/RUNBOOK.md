@@ -541,7 +541,25 @@ The voice that speaks is a **voice release**: one finished fine-tuned run of
 Cole's own voice that Cole designates himself, on the PC, by CLI (D-045). Speech
 for registered callers uses only the current release (D-046). The commands, the
 caller registry and the owner's steps are specified in
-[SPEECH_API.md](SPEECH_API.md); they are built in the increment that implements it.
+[SPEECH_API.md](SPEECH_API.md); deploying it is [deploy/speech/README.md](../deploy/speech/README.md).
+
+Designate on the PC, as `voice-lab`, after an approved consent record for
+`private-assistant-speech` on `home-host` exists. The first command previews; the second,
+which Cole runs, writes the next release (append-only; the history stays):
+
+```bash
+voice-lab voice release designate --asset-root /data/voice-lab/lab \
+  --run <finished run id> --designated-by Cole
+voice-lab voice release designate --asset-root /data/voice-lab/lab \
+  --run <finished run id> --designated-by Cole --i-designate-this-run
+voice-lab voice release show --asset-root /data/voice-lab/lab
+voice-lab voice release history --asset-root /data/voice-lab/lab
+```
+
+`--reference-prompt <prompt id>` chooses the reference clip (by default Speak's choice);
+`--blind-review <review id> --score-sheet-sha256 <digest>` attaches blind-review evidence.
+A render refuses once the release's checkpoint, reference clip or consent record changes,
+including a renewed consent record: designate again.
 
 ## 8. Conditional full corpus/fine-tuning
 

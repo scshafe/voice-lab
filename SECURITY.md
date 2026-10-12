@@ -152,7 +152,7 @@ Two limits are accepted rather than hidden:
 Mac procedures are in [docs/RUNBOOK.md](docs/RUNBOOK.md#9-library-vault); host
 hardening and deployment gates are in [deploy/vault/README.md](deploy/vault/README.md).
 
-## Speech for registered callers (designed, not yet built)
+## Speech for registered callers (built, not yet deployed)
 
 The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these controls:
 

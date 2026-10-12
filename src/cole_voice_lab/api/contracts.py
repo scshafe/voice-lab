@@ -73,6 +73,23 @@ type ApiErrorCode = Literal[
     "invalid_goal",
     "goal_not_found",
     "pair_not_found",
+    # the speech routes (speech/routes.py, docs/SPEECH_API.md §6)
+    "caller_not_registered",
+    "purpose_not_allowed",
+    "unsupported_format",
+    "callback_not_allowed",
+    "idempotency_conflict",
+    "voice_release_unavailable",
+    "consent_unavailable",
+    "gpu_busy",
+    "too_many_jobs",
+    "daily_budget_exhausted",
+    "queue_full",
+    "speech_not_found",
+    "audio_not_ready",
+    "audio_expired",
+    "range_not_satisfiable",
+    "already_finished",
     "internal_error",
 ]
 REFUSAL_CODES: Final[frozenset[str]] = frozenset(get_args(ApiErrorCode.__value__))

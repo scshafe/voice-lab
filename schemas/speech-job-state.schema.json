@@ -1,0 +1,166 @@
+{
+  "$defs": {
+    "FailureCode": {
+      "enum": [
+        "runtime_unavailable",
+        "render_failed",
+        "render_timeout",
+        "queue_timeout",
+        "voice_release_changed",
+        "consent_changed",
+        "internal_error"
+      ],
+      "type": "string"
+    },
+    "JobId": {
+      "pattern": "^sp-[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "JobState": {
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "expired"
+      ],
+      "type": "string"
+    },
+    "RenderedAudio": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "minimum": 45,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "const": 24000,
+          "default": 24000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "sha256",
+        "bytes",
+        "frames"
+      ],
+      "title": "RenderedAudio",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "SpeechFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/FailureCode"
+        },
+        "detail": {
+          "maxLength": 2000,
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "detail"
+      ],
+      "title": "SpeechFailure",
+      "type": "object"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``jobs/<id>/status.json``: where the job is (replaced atomically at each change).",
+  "properties": {
+    "audio": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RenderedAudio"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "audio_expires_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpeechFailure"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "job_id": {
+      "$ref": "#/$defs/JobId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.speech-job-state/v1",
+      "default": "cole-voice-lab.speech-job-state/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "state": {
+      "$ref": "#/$defs/JobState"
+    }
+  },
+  "required": [
+    "job_id",
+    "state"
+  ],
+  "title": "SpeechJobState",
+  "type": "object"
+}

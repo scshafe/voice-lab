@@ -1,0 +1,48 @@
+# The speech job runner (docs/SPEECH_API.md §7, D-046): one pass over the speech queue.
+# It claims each queued job, re-checks the voice release and its consent record, holds the
+# GPU slot, renders through the F5-TTS runtime (speech.worker, one process group per job),
+# writes the render ledger into the lab and queues the job's webhook event. It has no
+# network at all; webhooks leave from voice-lab-speech-webhooks.service.
+#
+# Installed by hand, not by the runner lane (README.md here): it needs the GPU's devices,
+# which infra's host-unit validator has no rule for yet, and it is inert until the owner's
+# steps of docs/SPEECH_API.md §11 are done (/etc/voice-lab/speech.json exists).
+[Unit]
+Description=voice-lab speech job runner: one pass (no network, GPU)
+ConditionPathExists=/etc/voice-lab/speech.json
+ConditionPathIsDirectory=/data/voice-lab/state/speech
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=voice-lab
+Group=voice-lab
+SupplementaryGroups=render video
+UMask=0077
+ExecStart=/opt/voice-lab/current/bin/voice-lab speech run --config /etc/voice-lab/speech.json
+TimeoutStartSec=1h
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ReadWritePaths=/data/voice-lab/lab /data/voice-lab/state/speech -/data/voice-lab/state/jobs
+ProtectHome=yes
+PrivateTmp=yes
+# The GPU (ROCm: /dev/kfd and the DRM render node), nothing else.
+DevicePolicy=closed
+DeviceAllow=/dev/kfd rw
+DeviceAllow=char-drm rw
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# Not MemoryDenyWriteExecute: torch compiles kernels at run time.

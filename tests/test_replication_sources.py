@@ -523,6 +523,8 @@ def add_lab_records(layout: AssetLayout) -> None:
         "provenance/pilot-gates/gate-1.json",
         "provenance/host-transfers/move-1.txt",
         "provenance/diagnostic-root.json",
+        "provenance/voice-releases/0001.json",
+        "provenance/speech-renders/sp-0123456789abcdef01234567.json",
     ):
         write_file(root, relative, mode=0o400)
     (root / "derived/datasets/pilot-1").chmod(0o500)
@@ -784,6 +786,8 @@ PLAN_DISPOSITIONS: Mapping[str, tuple[str, int | None, str | None]] = {
     "provenance/pilot-gates/gate-1.json": ("records", 0o400, "file"),
     "provenance/host-transfers/move-1.txt": ("records", 0o400, "file"),
     "provenance/diagnostic-root.json": ("records", 0o400, "file"),
+    "provenance/voice-releases/0001.json": ("records", 0o400, "file"),
+    "provenance/speech-renders/sp-0123456789abcdef01234567.json": ("records", 0o400, "file"),
     # The prompt database travels as its online backup.
     "provenance/corpus/corpus.sqlite3": ("prompt-database", 0o600, "sqlite-backup"),
     f"provenance/corpus/snapshots/{SHA}.json": ("prompt-database", 0o600, "file"),

@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "ClientRef": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    },
+    "IdempotencyKey": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "type": "string"
+    },
+    "SpeechFormat": {
+      "enum": [
+        "wav",
+        "ogg-opus"
+      ],
+      "type": "string"
+    },
+    "SpeechText": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``POST /api/v1/speech``: what to say, and how the caller wants to hear that it ended.",
+  "properties": {
+    "callback_url": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Callback Url"
+    },
+    "client_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ClientRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "format": {
+      "$ref": "#/$defs/SpeechFormat",
+      "default": "wav"
+    },
+    "idempotency_key": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IdempotencyKey"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.speech-request/v1",
+      "default": "cole-voice-lab.api.speech-request/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "text": {
+      "$ref": "#/$defs/SpeechText"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "SpeechRequest",
+  "type": "object"
+}

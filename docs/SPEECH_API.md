@@ -1,8 +1,10 @@
 # Speech API: Cole's voice for registered callers
 
-Status: **designed 2026-10-11** (D-044 to D-047). This document specifies the asynchronous
-speech API that the next increment implements; it describes nothing that runs yet. It is
-part of the voice platform design ([§3.6](design/VOICE-PLATFORM.md#36-speech-for-registered-callers)).
+Status: **built, not deployed** (designed 2026-10-11, D-044 to D-047). The code is in
+`src/cole_voice_lab/speech/` (`voice-lab voice release …`, `voice-lab speech …`,
+`serve --speech-config`); nothing runs on the PC until the owner's steps in
+[deploy/speech/README.md](../deploy/speech/README.md) are done. It is part of the voice
+platform design ([§3.6](design/VOICE-PLATFORM.md#36-speech-for-registered-callers)).
 
 The caller Cole has in mind is his own agent server, built later and outside this
 repository: it sends the text of a reply to voice-lab, gets back audio in Cole's cloned
@@ -475,7 +477,10 @@ Cole's 16-versus-32-step listening check decides the default steps (32 until the
 
 ## 11. Deployment and the owner's steps
 
-Written in the repository with the implementation, applied only by the owner:
+Written in the repository with the implementation, applied only by the owner (the
+procedure, with the commands: [deploy/speech/README.md](../deploy/speech/README.md); the
+stack and door changes: `deploy/speech/compose.speech.yaml`; the host units:
+`deploy/host-manual/voice-lab-speech*`):
 
 1. **Consent.** Approve a consent record naming `private-assistant-speech` and `home-host`
    (`consent preview`, then `consent approve-self`, RUNBOOK §1). Only Cole.

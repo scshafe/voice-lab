@@ -1,0 +1,255 @@
+{
+  "$defs": {
+    "FailureCode": {
+      "enum": [
+        "runtime_unavailable",
+        "render_failed",
+        "render_timeout",
+        "queue_timeout",
+        "voice_release_changed",
+        "consent_changed",
+        "internal_error"
+      ],
+      "type": "string"
+    },
+    "JobId": {
+      "pattern": "^sp-[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "RenderFingerprint": {
+      "additionalProperties": false,
+      "description": "What spoke: the model, its reference and the runtime, as the backend verified them.",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/StableId"
+        },
+        "checkpoint_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "device": {
+          "$ref": "#/$defs/StableId"
+        },
+        "nfe_steps": {
+          "maximum": 256,
+          "minimum": 1,
+          "title": "Nfe Steps",
+          "type": "integer"
+        },
+        "reference_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "runtime": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 16,
+          "title": "Runtime",
+          "type": "object"
+        },
+        "voice_lab_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Voice Lab Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "checkpoint_sha256",
+        "reference_sha256",
+        "backend",
+        "runtime",
+        "device",
+        "nfe_steps",
+        "voice_lab_version"
+      ],
+      "title": "RenderFingerprint",
+      "type": "object"
+    },
+    "RenderedAudio": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "minimum": 45,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "const": 24000,
+          "default": 24000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "sha256",
+        "bytes",
+        "frames"
+      ],
+      "title": "RenderedAudio",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "VoiceReleaseRef": {
+      "additionalProperties": false,
+      "properties": {
+        "release_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "release_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "release_id",
+        "release_sha256"
+      ],
+      "title": "VoiceReleaseRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``provenance/speech-renders/<job id>.json``: one render, for ever (never the text).",
+  "properties": {
+    "audio_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Audio Ms"
+    },
+    "caller_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "consent_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "consent_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FailureCode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fingerprint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RenderFingerprint"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "finished_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "job_id": {
+      "$ref": "#/$defs/JobId"
+    },
+    "outcome": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RenderedAudio"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "queue_ms": {
+      "minimum": 0,
+      "title": "Queue Ms",
+      "type": "integer"
+    },
+    "release": {
+      "$ref": "#/$defs/VoiceReleaseRef"
+    },
+    "render_ms": {
+      "minimum": 0,
+      "title": "Render Ms",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.speech-render/v1",
+      "default": "cole-voice-lab.speech-render/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "started_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "text_characters": {
+      "maximum": 2000,
+      "minimum": 1,
+      "title": "Text Characters",
+      "type": "integer"
+    },
+    "text_sha256": {
+      "$ref": "#/$defs/Sha256"
+    }
+  },
+  "required": [
+    "job_id",
+    "caller_id",
+    "text_sha256",
+    "text_characters",
+    "release",
+    "consent_id",
+    "consent_sha256",
+    "outcome",
+    "failure",
+    "fingerprint",
+    "output",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "queue_ms",
+    "render_ms",
+    "audio_ms"
+  ],
+  "title": "SpeechRenderRecord",
+  "type": "object"
+}

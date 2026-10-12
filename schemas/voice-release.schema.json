@@ -1,0 +1,151 @@
+{
+  "$defs": {
+    "BlindReviewRef": {
+      "additionalProperties": false,
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "score_sheet_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "review_id",
+        "score_sheet_sha256"
+      ],
+      "title": "BlindReviewRef",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One designation (docs/SPEECH_API.md \u00a73).",
+  "properties": {
+    "blind_review": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BlindReviewRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "checkpoint_path": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Checkpoint Path",
+      "type": "string"
+    },
+    "checkpoint_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "consent_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "consent_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "designated_by": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Designated By",
+      "type": "string"
+    },
+    "previous_release_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reference_path": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Reference Path",
+      "type": "string"
+    },
+    "reference_prompt_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "reference_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "reference_text_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "release_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_record_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "runtime": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "maxProperties": 16,
+      "title": "Runtime",
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.voice-release/v1",
+      "default": "cole-voice-lab.voice-release/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "maximum": 9999,
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "release_id",
+    "sequence",
+    "previous_release_sha256",
+    "subject_id",
+    "run_id",
+    "run_record_sha256",
+    "checkpoint_path",
+    "checkpoint_sha256",
+    "reference_prompt_id",
+    "reference_path",
+    "reference_sha256",
+    "reference_text_sha256",
+    "consent_id",
+    "consent_sha256",
+    "runtime",
+    "created_at",
+    "designated_by"
+  ],
+  "title": "VoiceRelease",
+  "type": "object"
+}

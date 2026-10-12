@@ -13,9 +13,12 @@ tailnet sidecar and the Pocket ID door. Phase 2 serves:
 - whatever its ``routes`` answer (``api/routing.py``): the journey routes
   (``journey_routes.py``, ``serve --journey``), after the bearer check for ``/api/``,
   and the read-only web view under ``/view/`` (``view/routes.py``), which checks the
-  door's forwarded identity or a bearer token itself.
+  door's forwarded identity or a bearer token itself;
+- with ``--speech-config``, ``/api/v1/speech`` (``speech/routes.py``, D-046): a
+  self-authenticating prefix, whose route checks the registered callers' machine tokens
+  itself instead of the desktop token check below.
 
-Every ``/api/`` request needs a bearer token that ``TokenVerifier`` accepts. Bodies are
+Every other ``/api/`` request needs a bearer token that ``TokenVerifier`` accepts. Bodies are
 bounded; JSON is validated as its contract; every refusal is ``ApiRefusal`` with a stable
 code; responses are canonical JSON with ``Cache-Control: no-store``. The access log names
 the method, the route, the status and the time, never a header or a token.
@@ -38,8 +41,11 @@ from urllib.parse import unquote, urlsplit
 from pydantic import BaseModel, Field, ValidationError
 
 from ..canonical import canonical_json_bytes
+from ..errors import VoiceLabError
 from ..models import ContractModel
 from ..paths import AssetLayout
+from ..speech.config import load_speech_config
+from ..speech.routes import SpeechRoutes, caller_policy
 from ..view.routes import ViewRoutes
 from .auth import AuthError, AuthPolicy, TokenVerifier, TrustedIssuer
 from .contracts import (
@@ -93,8 +99,10 @@ class ApiServer(ThreadingHTTPServer):
         log: bool = True,
         journey_intake: JourneyIntake | None = None,
         routes: Sequence[Route] = (),
+        self_authenticating: tuple[str, ...] = (),
     ) -> None:
         self.staging = staging
+        self.self_authenticating = self_authenticating
         self.journey_intake = journey_intake
         self.verifier = verifier
         self.meta = meta
@@ -105,13 +113,19 @@ class ApiServer(ThreadingHTTPServer):
 
 class _Refusal(Exception):
     def __init__(
-        self, status: int, code: ApiErrorCode, detail: str, received_bytes: int | None = None
+        self,
+        status: int,
+        code: ApiErrorCode,
+        detail: str,
+        received_bytes: int | None = None,
+        headers: tuple[tuple[str, str], ...] = (),
     ) -> None:
         super().__init__(detail)
         self.status = status
         self.code: ApiErrorCode = code
         self.detail = detail
         self.received_bytes = received_bytes
+        self.headers = headers
 
 
 class _Body(io.RawIOBase):
@@ -152,12 +166,16 @@ class _ApiHandler(BaseHTTPRequestHandler):
             elapsed = (time.monotonic() - self._started) * 1000
             sys.stderr.write(f"api {self.command} {self._route} {status} {elapsed:.0f}ms\n")
 
-    def _send(self, status: int, model: BaseModel) -> None:
+    def _send(
+        self, status: int, model: BaseModel, headers: tuple[tuple[str, str], ...] = ()
+    ) -> None:
         body = canonical_json_bytes(model) + b"\n"
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in headers:
+            self.send_header(name, value)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -176,6 +194,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 detail=refusal.detail,
                 received_bytes=refusal.received_bytes,
             ),
+            refusal.headers,
         )
 
     def _content_length(self) -> int | None:
@@ -222,7 +241,9 @@ class _ApiHandler(BaseHTTPRequestHandler):
         except StagingError as error:
             self._refuse(_Refusal(error.status, error.code, error.detail, error.received_bytes))
         except RouteRefusal as refusal:
-            self._refuse(_Refusal(refusal.status, refusal.code, refusal.detail))
+            self._refuse(
+                _Refusal(refusal.status, refusal.code, refusal.detail, headers=refusal.headers)
+            )
         except Exception as error:  # noqa: BLE001 (any other failure is the server's)
             self._refuse(_Refusal(500, "internal_error", type(error).__name__))
 
@@ -268,7 +289,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
         ):
             self._journey_intake(self.server.journey_intake, path)
             return
-        if api:
+        if api and not self._self_authenticating(path):
             self._authorize()
         if self._extension(parts.path, parts.query):
             return
@@ -330,6 +351,14 @@ class _ApiHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
         self._access_log(status)
+
+    def _self_authenticating(self, path: str) -> bool:
+        """Whether ``path`` belongs to a route that checks its own tokens (the speech routes,
+        whose machine callers never pass the global check)."""
+        return any(
+            path == prefix or path.startswith(prefix + "/")
+            for prefix in self.server.self_authenticating
+        )
 
     # -- extensions (api/routing.py) --------------------------------------------------------
 
@@ -448,9 +477,11 @@ def build_server(
     log: bool = True,
     routes: Sequence[Route] = (),
     verifier: TokenVerifier | None = None,
+    self_authenticating: tuple[str, ...] = (),
 ) -> ApiServer:
     """The server for ``config``, bound to ``address`` but not yet serving; ``verifier``
-    (default: one for ``config.auth``) is shared with routes that check tokens."""
+    (default: one for ``config.auth``) is shared with routes that check tokens, and the
+    paths under ``self_authenticating`` belong to routes that check their own."""
     layout = AssetLayout.validate(Path(config.asset_root))
     verifier = verifier or TokenVerifier(config.auth)
     return ApiServer(
@@ -464,7 +495,20 @@ def build_server(
         log=log,
         journey_intake=JourneyIntake(layout, verifier=verifier),
         routes=routes,
+        self_authenticating=self_authenticating,
     )
+
+
+def speech_routes(path: Path, *, issuer: str, jwks: str) -> SpeechRoutes:
+    """The speech routes for the configuration at ``path``; its callers must use ``issuer``.
+
+    Raises: ``ContractError`` for an invalid configuration, ``ValueError`` for callers of
+    another identity provider.
+    """
+    speech_config = load_speech_config(path)
+    if any(caller.issuer != issuer for caller in speech_config.callers):
+        raise ValueError("every speech caller uses the API's identity provider (--issuer)")
+    return SpeechRoutes(speech_config, TokenVerifier(caller_policy(speech_config, jwks)))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -486,6 +530,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=DEFAULT_PORT)
     serve.add_argument("--once", action="store_true", help="bind, report, and exit")
+    serve.add_argument(
+        "--speech-config",
+        type=Path,
+        help="serve /api/v1/speech for the callers this configuration registers (D-046)",
+    )
     add_journey_arguments(serve)
     options = parser.parse_args(argv)
     config = ApiServerConfig(
@@ -510,8 +559,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     verifier = TokenVerifier(config.auth)
     view = ViewRoutes(journey.store, verifier)
+    routes: tuple[Route, ...] = (journey, view)
+    self_authenticating: tuple[str, ...] = ()
+    if options.speech_config is not None:
+        try:
+            speech = speech_routes(options.speech_config, issuer=options.issuer, jwks=options.jwks)
+        except (OSError, ValueError, VoiceLabError) as error:
+            sys.stderr.write(f"error: {error}\n")
+            return 1
+        routes = (speech, *routes)  # first: it owns every path under its prefix
+        self_authenticating = (speech.prefix,)
     server = build_server(
-        config, (options.host, options.port), routes=(journey, view), verifier=verifier
+        config,
+        (options.host, options.port),
+        routes=routes,
+        verifier=verifier,
+        self_authenticating=self_authenticating,
     )
     sys.stderr.write(f"api serving on {options.host}:{server.server_address[1]}\n")
     summary = journey.describe()
