@@ -5,6 +5,55 @@
       "minLength": 1,
       "type": "string"
     },
+    "F5SpeechRuntime": {
+      "additionalProperties": false,
+      "description": "The F5-TTS runtime the job runner renders an ``f5-tts`` release with (D-048).",
+      "properties": {
+        "device": {
+          "default": "cuda",
+          "enum": [
+            "cuda",
+            "cpu"
+          ],
+          "title": "Device",
+          "type": "string"
+        },
+        "model_family": {
+          "const": "f5-tts",
+          "default": "f5-tts",
+          "title": "Model Family",
+          "type": "string"
+        },
+        "nfe_steps": {
+          "default": 32,
+          "maximum": 64,
+          "minimum": 4,
+          "title": "Nfe Steps",
+          "type": "integer"
+        },
+        "runtime_root": {
+          "$ref": "#/$defs/AbsolutePath"
+        },
+        "visible_devices": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9]{1,2}(,[0-9]{1,2}){0,3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Visible Devices"
+        }
+      },
+      "required": [
+        "runtime_root"
+      ],
+      "title": "F5SpeechRuntime",
+      "type": "object"
+    },
     "Issuer": {
       "type": "string"
     },
@@ -96,47 +145,17 @@
       "type": "string"
     },
     "SpeechRuntime": {
-      "additionalProperties": false,
-      "description": "The F5-TTS runtime the job runner renders with (``None`` until it exists on the PC).",
-      "properties": {
-        "device": {
-          "default": "cuda",
-          "enum": [
-            "cuda",
-            "cpu"
-          ],
-          "title": "Device",
-          "type": "string"
+      "discriminator": {
+        "mapping": {
+          "f5-tts": "#/$defs/F5SpeechRuntime"
         },
-        "nfe_steps": {
-          "default": 32,
-          "maximum": 64,
-          "minimum": 4,
-          "title": "Nfe Steps",
-          "type": "integer"
-        },
-        "runtime_root": {
-          "$ref": "#/$defs/AbsolutePath"
-        },
-        "visible_devices": {
-          "anyOf": [
-            {
-              "pattern": "^[0-9]{1,2}(,[0-9]{1,2}){0,3}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Visible Devices"
-        }
+        "propertyName": "model_family"
       },
-      "required": [
-        "runtime_root"
-      ],
-      "title": "SpeechRuntime",
-      "type": "object"
+      "oneOf": [
+        {
+          "$ref": "#/$defs/F5SpeechRuntime"
+        }
+      ]
     },
     "StableId": {
       "maxLength": 128,
@@ -174,10 +193,6 @@
       "minItems": 1,
       "title": "Callers",
       "type": "array"
-    },
-    "consent_id": {
-      "$ref": "#/$defs/StableId",
-      "default": "cole-self-v1"
     },
     "gpu_busy_retry_seconds": {
       "default": 600,

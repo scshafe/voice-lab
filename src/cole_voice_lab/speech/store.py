@@ -2,21 +2,30 @@
 
 @canonical speech.store -- ``state/speech/`` on the PC, owned by ``voice-lab``; directories
 0700, files 0600. The API container writes a job (``jobs/<id>/request.json`` without the
-text, ``input.json`` with it, ``status.json``) and then ``queue/<id>``, whose appearance
-starts the network-less job runner (a systemd path unit). Ownership of a job is one file,
-``jobs/<id>/claim``, created exclusively: the runner claims a job to render it, and a cancel
-claims a queued job to end it, so exactly one of them owns it and only the owner writes its
-state after that. A cancel that loses the race leaves ``jobs/<id>/cancel`` for the runner.
+text, ``input.json`` with it, ``status.json``) and then ``queue/<id>``, which the
+long-running, network-less job runner looks for (``voice-lab-speech.service`` polls the
+queue). Ownership of a job is one file, ``jobs/<id>/claim``, created exclusively: the runner
+claims a job to render it, and a cancel claims a queued job to end it, so exactly one of them
+owns it and only the owner writes its state after that. A cancel that loses the race leaves
+``jobs/<id>/cancel`` for the runner. A claim whose owner stopped before the job ended is
+found by the next runner pass (``orphaned_claims``): the runner's own claim on a job that
+never started is given back to the queue (``requeue``) until the job's queue time is up.
 
-When a job ends its text is deleted, its state is final, and (with a ``callback_url``) a
-webhook event is written to ``outbox/`` for the delivery process. ``sweep`` deletes audio
-after its retention (the job then reads ``expired``) and whole job records after theirs.
+The text and the request are named by keyed digests (HMAC-SHA256 under ``text-digest.key``,
+32 random bytes made once per install, 0600, in the state root: never in the asset root, so
+never in the vault), never by plain SHA-256; the render ledger keeps the same digest.
+
+When a job ends its text is deleted first, then its state is made final, and (with a
+``callback_url``) a webhook event is written to ``outbox/`` for the delivery process.
+``sweep`` deletes audio after its retention (the job then reads ``expired``), whole job
+records after theirs, and any text an interrupted ending left behind.
 """
 
 from __future__ import annotations
 
 import fcntl
 import hashlib
+import hmac
 import os
 import secrets
 import shutil
@@ -24,13 +33,13 @@ import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO, Final, Literal
 
 from ..api.contracts import ApiErrorCode
 from ..canonical import (
-    canonical_sha256,
+    canonical_json_bytes,
     open_regular_no_follow,
     write_canonical_json,
     write_new_private_file,
@@ -69,19 +78,31 @@ PARTIAL_AUDIO_NAME: Final = "render.wav.part"
 MAX_RECORD_BYTES: Final = 64 * 1024
 # A job directory that never got its state (a crash inside ``submit``) is removed after this.
 ABANDONED_SUBMIT: Final = timedelta(hours=1)
+# A cancel's claim older than this whose job is still queued: the API stopped in between.
+ABANDONED_CANCEL: Final = timedelta(minutes=1)
+TEXT_KEY_NAME: Final = "text-digest.key"
+TEXT_KEY_BYTES: Final = 32
 
 
 class SpeechRefusal(Exception):
-    """A refusal the API answers with a stable code (and, for 503, ``Retry-After``)."""
+    """A refusal the API answers with a stable code (and, for 503, ``Retry-After``; for 416,
+    ``Content-Range``)."""
 
     def __init__(
-        self, status: int, code: ApiErrorCode, detail: str, *, retry_after: int | None = None
+        self,
+        status: int,
+        code: ApiErrorCode,
+        detail: str,
+        *,
+        retry_after: int | None = None,
+        headers: tuple[tuple[str, str], ...] = (),
     ) -> None:
         super().__init__(detail)
         self.status = status
         self.code: ApiErrorCode = code
         self.detail = detail
         self.retry_after = retry_after
+        self.headers = headers
 
 
 class _IdempotencyEntry(ContractModel):
@@ -107,6 +128,28 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def keyed_digest(key: bytes, data: bytes) -> str:
+    """HMAC-SHA256 of ``data`` under the install's text key (hex)."""
+    return hmac.new(key, data, hashlib.sha256).hexdigest()
+
+
+def read_text_key(path: Path) -> bytes:
+    """The text key at ``path``: a private regular file of exactly ``TEXT_KEY_BYTES`` bytes.
+
+    Raises: ``SpeechRefusal`` 500 ``internal_error`` (never naming the key).
+    """
+    try:
+        with open_regular_no_follow(path) as stream:
+            if stat.S_IMODE(os.fstat(stream.fileno()).st_mode) & 0o077:
+                raise ValueError("open to others")
+            key = stream.read(TEXT_KEY_BYTES + 1)
+    except (OSError, ValueError, VoiceLabError) as error:
+        raise SpeechRefusal(500, "internal_error", "the speech state is unavailable") from error
+    if len(key) != TEXT_KEY_BYTES:
+        raise SpeechRefusal(500, "internal_error", "the speech state is unavailable")
+    return key
+
+
 class SpeechStore:
     """The job directories under one ``state_root``."""
 
@@ -118,9 +161,11 @@ class SpeechStore:
         self.idempotency_root = self.root / "idempotency"
         self.outbox_root = self.root / "outbox"
         self.webhooks_root = self.root / "webhooks"
+        self._text_key: bytes | None = None
 
     def ensure(self) -> None:
-        """Create the directories (0700); a link where one belongs is refused."""
+        """Create the directories (0700) and the text key; a link where one belongs is
+        refused."""
         for directory in (
             self.root,
             self.jobs_root,
@@ -132,7 +177,30 @@ class SpeechStore:
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             metadata = os.lstat(directory)
             if not stat.S_ISDIR(metadata.st_mode):
-                raise SpeechRefusal(500, "internal_error", f"{directory} is not a directory")
+                raise SpeechRefusal(500, "internal_error", "the speech state is unavailable")
+        key = self.root / TEXT_KEY_NAME
+        if not os.path.lexists(key):
+            try:
+                write_new_private_file(key, secrets.token_bytes(TEXT_KEY_BYTES))
+            except FileExistsError:
+                pass  # the API and the runner raced; the one that won made it
+
+    def text_key(self) -> bytes:
+        """The install's text key (read once).
+
+        Raises: ``SpeechRefusal`` 500 when it is missing or unsafe.
+        """
+        if self._text_key is None:
+            self._text_key = read_text_key(self.root / TEXT_KEY_NAME)
+        return self._text_key
+
+    def text_digest(self, text: str) -> str:
+        """The keyed digest the job record and the ledger name a text by."""
+        return keyed_digest(self.text_key(), text.encode("utf-8"))
+
+    def request_digest(self, request: SpeechRequest) -> str:
+        """The keyed digest of a whole request (its text included), for idempotency."""
+        return keyed_digest(self.text_key(), canonical_json_bytes(request))
 
     # -- paths -----------------------------------------------------------------------------
 
@@ -219,7 +287,8 @@ class SpeechStore:
         existing = self.load(_read(path, _IdempotencyEntry).job_id)
         if existing is None:
             return None
-        if existing.record.request_sha256 != canonical_sha256(request):
+        digest = self.request_digest(request)
+        if not hmac.compare_digest(existing.record.request_hmac_sha256, digest):
             raise SpeechRefusal(
                 409, "idempotency_conflict", "this idempotency key was used for a different request"
             )
@@ -234,7 +303,7 @@ class SpeechStore:
         Raises: ``SpeechRefusal`` 409 ``idempotency_conflict``, 429 ``too_many_jobs`` or
         ``daily_budget_exhausted``, 503 ``queue_full``.
         """
-        request_sha256 = canonical_sha256(request)
+        request_digest = self.request_digest(request)
         key_sha256 = (
             None if request.idempotency_key is None else _sha256_text(request.idempotency_key)
         )
@@ -276,8 +345,8 @@ class SpeechStore:
                 callback_url=request.callback_url,
                 client_ref=request.client_ref,
                 idempotency_key_sha256=key_sha256,
-                request_sha256=request_sha256,
-                text_sha256=_sha256_text(request.text),
+                request_hmac_sha256=request_digest,
+                text_hmac_sha256=self.text_digest(request.text),
                 text_characters=characters,
             )
             state = SpeechJobState(job_id=job_id, state="queued")
@@ -334,6 +403,54 @@ class SpeechStore:
         (self.queue_root / job_id).unlink(missing_ok=True)
         return True
 
+    def claim_owner(self, job_id: str) -> tuple[str, datetime] | None:
+        """Who claimed the job (``runner`` or ``cancel``) and when, or ``None`` when no one
+        has (an unreadable claim reads as the runner's, which recovery then re-checks)."""
+        path = self.job_directory(job_id) / "claim"
+        if not os.path.lexists(path):
+            return None
+        try:
+            with open_regular_no_follow(path) as stream:
+                owner = stream.read(16).decode("ascii", "replace")
+                modified = os.fstat(stream.fileno()).st_mtime
+        except (OSError, VoiceLabError):
+            return "runner", datetime.fromtimestamp(0, tz=UTC)
+        return ("cancel" if owner == "cancel" else "runner"), datetime.fromtimestamp(
+            modified, tz=UTC
+        )
+
+    def orphaned_claims(self, *, now: datetime) -> list[tuple[Job, str]]:
+        """Queued jobs that someone claimed but never ended, with the claim's owner.
+
+        Only the job runner calls this, under its lock, so a ``runner`` claim on a queued job
+        was left by a runner that stopped between its claim and the job's start. A ``cancel``
+        claim counts once it is ``ABANDONED_CANCEL`` old (the API ends the job right after it
+        claims it).
+        """
+        found: list[tuple[Job, str]] = []
+        for job in self.jobs():
+            if job.state.state != "queued":
+                continue
+            claimed = self.claim_owner(job.record.job_id)
+            if claimed is None:
+                continue
+            owner, at = claimed
+            if owner == "cancel" and now - at < ABANDONED_CANCEL:
+                continue
+            found.append((job, owner))
+        return found
+
+    def requeue(self, job_id: str) -> None:
+        """Give a claimed job that never started back to the queue (the runner's, under its
+        lock): the queue marker first, then the claim is removed."""
+        marker = self.queue_root / job_id
+        if not os.path.lexists(marker):
+            try:
+                write_new_private_file(marker, b"")
+            except FileExistsError:  # pragma: no cover - only the runner writes it back
+                pass
+        (self.job_directory(job_id) / "claim").unlink(missing_ok=True)
+
     def write_state(self, state: SpeechJobState) -> None:
         write_canonical_json(self.job_directory(state.job_id) / "status.json", state)
 
@@ -374,19 +491,24 @@ class SpeechStore:
         outcome: Literal["succeeded", "failed", "cancelled"],
         *,
         now: datetime,
-        failure: tuple[FailureCode, str] | None = None,
+        failure: FailureCode | None = None,
         audio: RenderedAudio | None = None,
     ) -> Job:
-        """End ``job`` (its owner only): final state, text deleted, webhook event queued."""
+        """End ``job`` (its owner only): text deleted, final state, webhook event queued.
+
+        The text goes first, so an ending that is interrupted never leaves it behind a final
+        state; the caller sees only ``failure``'s code and its fixed sentence
+        (``SpeechFailure.of``), never a path or a reason.
+        """
         job_id = job.record.job_id
+        directory = self.job_directory(job_id)
+        (directory / "input.json").unlink(missing_ok=True)
         state = SpeechJobState(
             job_id=job_id,
             state=outcome,
             started_at=job.state.started_at,
             finished_at=now,
-            error=None
-            if failure is None
-            else SpeechFailure(code=failure[0], detail=failure[1][:2000]),
+            error=None if failure is None else SpeechFailure.of(failure),
             segment_count=job.state.segment_count,
             segments=job.state.segments,
             audio=audio,
@@ -397,8 +519,6 @@ class SpeechStore:
             ),
         )
         self.write_state(state)
-        directory = self.job_directory(job_id)
-        (directory / "input.json").unlink(missing_ok=True)
         (directory / PARTIAL_AUDIO_NAME).unlink(missing_ok=True)
         for partial in (directory / SEGMENTS_DIRECTORY).glob(".*.part"):
             partial.unlink(missing_ok=True)
@@ -460,6 +580,8 @@ class SpeechStore:
                     records_removed += 1
                 continue
             state = job.state
+            if state.state in TERMINAL_STATES:
+                (directory / "input.json").unlink(missing_ok=True)  # an interrupted ending's
             if (
                 state.audio_expires_at is not None
                 and state.audio_expires_at <= now

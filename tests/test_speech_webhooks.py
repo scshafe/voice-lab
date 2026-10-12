@@ -1,7 +1,8 @@
 """Signed webhooks and their delivery (speech/webhooks.py, docs/SPEECH_API.md §8).
 
-The transport and the resolver are injected: no test connects anywhere. Signatures are
-checked against an independent implementation of the Standard Webhooks algorithm.
+The transport and the resolver are injected: no test connects anywhere (the deadline test
+talks to a socket pair in this process). Signatures are checked against an independent
+implementation of the Standard Webhooks algorithm.
 """
 
 from __future__ import annotations
@@ -9,8 +10,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import os
+import socket
+import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -21,13 +26,17 @@ from speech_fixtures import KEY, NOW, SECRET, FakeBackend, Lab, OnePass, build_l
 from cole_voice_lab.speech.contracts import SpeechRequest, WebhookDeliveryLog
 from cole_voice_lab.speech.store import SpeechStore
 from cole_voice_lab.speech.webhooks import (
+    CREDENTIAL_ID,
     RETRY_OFFSETS,
     Delivery,
     WebhookDispatcher,
     WebhookRefused,
     WebhookSecretError,
+    exchange,
     parse_secret,
     read_secret,
+    request_bytes,
+    secret_path,
     sign,
     tailnet_address,
     verify_signature,
@@ -247,7 +256,7 @@ def test_an_address_off_the_tailnet_is_never_contacted_and_is_retried(lab: Lab) 
     assert (log.outcome, log.attempts[0].error) == ("pending", "address-not-tailnet")
 
 
-@pytest.mark.parametrize("change", ["caller", "url", "secret"])
+@pytest.mark.parametrize("change", ["caller", "url"])
 def test_a_registry_change_refuses_the_event_without_sending(tmp_path: Path, change: str) -> None:
     lab = build_lab(tmp_path)
     job_id = ended_job(lab)
@@ -256,22 +265,106 @@ def test_a_registry_change_refuses_the_event_without_sending(tmp_path: Path, cha
     if change == "caller":
         other = caller(caller_id="other", subject="client-other")
         config = config.model_copy(update={"callers": (other,)})
-    elif change == "url":
+    else:
         moved = caller(webhook_urls=("https://agent.example-tailnet.ts.net/elsewhere",))
         config = config.model_copy(update={"callers": (moved,)})
-    else:
-        options["secret_reader"] = read_secret  # the configured file does not exist here
     transport = Recorder()
     lab.config = config
     dispatcher(lab, transport, Clock(), **options).deliver_due()
     assert transport.sent == []
     log = delivery_log(lab, job_id)
-    expected = {
-        "caller": "caller-not-registered",
-        "url": "url-not-allowed",
-        "secret": "secret-unavailable",
-    }
+    expected = {"caller": "caller-not-registered", "url": "url-not-allowed"}
     assert (log.outcome, log.attempts[0].error) == ("refused", expected[change])
+
+
+def test_a_missing_secret_is_retried_until_it_comes_back(lab: Lab) -> None:
+    job_id = ended_job(lab)
+    transport, clock = Recorder(), Clock()
+    missing = dispatcher(lab, transport, clock, secret_reader=read_secret)  # no file here
+    assert missing.deliver_due() == {f"msg_{job_id}": "pending"}
+    log = delivery_log(lab, job_id)
+    assert (log.outcome, log.attempts[0].error) == ("pending", "secret-unavailable")
+    assert transport.sent == []
+    clock.now = NOW + timedelta(seconds=30)
+    assert dispatcher(lab, transport, clock).deliver_due() == {f"msg_{job_id}": "delivered"}
+    assert len(transport.sent) == 1
+
+
+def test_in_the_unit_the_secret_is_read_from_its_credential(
+    lab: Lab, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured = lab.config.callers[0].webhook_secret_file
+    assert configured is not None
+    assert secret_path(configured, None) == Path(configured)
+    credentials = tmp_path / "credentials"
+    credentials.mkdir()
+    credential = credentials / f"{CREDENTIAL_ID}_agent-server"
+    credential.write_text(SECRET)
+    credential.chmod(0o400)
+    assert secret_path(configured, credentials) == credential
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(credentials))
+    job_id = ended_job(lab)
+    transport = Recorder()
+    delivered = dispatcher(lab, transport, Clock(), secret_reader=read_secret).deliver_due()
+    assert delivered == {f"msg_{job_id}": "delivered"}
+
+
+class DripPeer:
+    """A peer on a socket pair that answers one byte at a time, slower than the deadline."""
+
+    def __init__(self, answer: bytes, pause: float) -> None:
+        self.ours, self.theirs = socket.socketpair()
+        self.answer, self.pause = answer, pause
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self) -> None:
+        try:
+            self.theirs.recv(65536)
+            for byte in self.answer:
+                time.sleep(self.pause)
+                self.theirs.sendall(bytes([byte]))
+        except OSError:
+            pass
+
+    def close(self) -> None:
+        self.ours.close()
+        self.theirs.close()
+        self.thread.join(5)
+
+
+def test_an_attempt_has_a_total_deadline_whatever_the_peer_sends() -> None:
+    delivery = Delivery(
+        host="agent.example-tailnet.ts.net",
+        port=8443,
+        path="/hooks/voice-lab",
+        address=TAILNET_ADDRESS,
+        headers=(("webhook-id", "msg_x"),),
+        body=b"{}",
+    )
+    sent = request_bytes(delivery)
+    assert sent.startswith(b"POST /hooks/voice-lab HTTP/1.1\r\nHost: agent.example-tailnet")
+    assert b":8443\r\nContent-Length: 2\r\nConnection: close\r\nwebhook-id: msg_x\r\n\r\n{}" in sent
+    quick = DripPeer(b"HTTP/1.1 204 No Content\r\n\r\n", 0.0)
+    try:
+        assert exchange(quick.ours, sent, deadline=time.monotonic() + 5) == 204
+    finally:
+        quick.close()
+    # Each byte comes well within any per-socket timeout, but the whole never within 0.3 s.
+    slow = DripPeer(b"HTTP/1.1 200 OK\r\n\r\n", 0.05)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            exchange(slow.ours, sent, deadline=started + 0.3)
+    finally:
+        slow.close()
+    assert time.monotonic() - started < 2
+    garbage = DripPeer(b"SSH-2.0-nope\r\n", 0.0)
+    try:
+        with pytest.raises(http.client.HTTPException):
+            exchange(garbage.ours, sent, deadline=time.monotonic() + 5)
+    finally:
+        garbage.close()
 
 
 def test_only_this_process_events_are_adopted(lab: Lab) -> None:

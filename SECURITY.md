@@ -156,8 +156,12 @@ hardening and deployment gates are in [deploy/vault/README.md](deploy/vault/READ
 
 The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these controls:
 
-- Only Cole's current voice release speaks (D-045); a changed checkpoint, reference clip
-  or consent record refuses the render until Cole designates again.
+- Only Cole's current voice release speaks (D-045), and only a release of the subject the
+  speech configuration pins (`subject_id`, `cole-self`): designation refuses another
+  subject's run or consent record, and the API and the job runner refuse another subject's
+  release. A changed run, model file or consent record refuses the render until Cole
+  designates again; before each sentence the job runner checks that the release is still
+  current and its consent still valid, so a revocation stops a render at its next sentence.
 - Callers are listed in a root-owned caller registry with their token issuer, subject and
   audience, purposes, limits and webhook URL allowlist. A caller's machine token reaches
   the speech routes only, and a caller sees only its own jobs.
@@ -165,15 +169,21 @@ The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these co
   resolves the host, refuses any address outside the tailnet ranges, connects to the
   address it checked, follows no redirect, and uses short timeouts. Events carry no text
   and no audio, and are signed per caller (Standard Webhooks, HMAC-SHA256).
-- Webhook secrets are files referenced by path, readable only by the `voice-lab` user and
-  read only by the delivery process; the API never reads them, and none is in
-  configuration or Git.
+- Webhook secrets are root-owned files (0600) referenced by path; systemd hands them to the
+  delivery unit alone as credentials (`LoadCredential=`), so no other process, the API and
+  the job runner included, can read them, even as the `voice-lab` user. None is in
+  configuration or Git. A webhook URL's path is compared with the allowlist after parsing,
+  and one with a dot segment or a percent-encoded dot, slash or backslash is refused.
+- A caller sees a failure's code and one fixed sentence; paths, consent reasons and worker
+  errors stay in the job runner's journal.
 - The API container only enqueues and serves finished files (whole sentences and the
   joined audio); the job runner and its resident model worker render with no network; the
   delivery unit reaches the tailnet only.
-- The job's text is deleted when the job ends; the render ledger keeps its SHA-256 and
-  length. Rendered audio is kept 7 days by default, outside the asset root, so the vault
-  never copies it.
+- The job's text is deleted when the job ends, on every path, first. The job record and the
+  render ledger name it only by a keyed digest (HMAC-SHA256 under a 32-byte key made once per
+  install in the speech state, never in the asset root or the vault) and its length, so a
+  short reply cannot be recovered by hashing guesses. Rendered audio is kept 7 days by
+  default, outside the asset root, so the vault never copies it.
 
 ## Deliberately avoided
 

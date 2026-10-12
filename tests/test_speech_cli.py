@@ -13,6 +13,7 @@ from cole_voice_lab.canonical import canonical_json_bytes
 from cole_voice_lab.cli import main
 from cole_voice_lab.speech.contracts import SpeechRequest
 from cole_voice_lab.speech.routes import PREFIX
+from cole_voice_lab.speech.runner import EXIT_OUTDATED
 from cole_voice_lab.speech.store import SpeechStore
 
 
@@ -27,7 +28,17 @@ def test_designation_previews_then_writes_and_shows(
 ) -> None:
     lab = build_lab(tmp_path, release=False)
     root = str(lab.layout.root)
-    base = ["voice", "release", "designate", "--asset-root", root, "--run", "finetune-a"]
+    base = [
+        "voice",
+        "release",
+        "designate",
+        "--asset-root",
+        root,
+        "--run",
+        "finetune-a",
+        "--consent-id",
+        "cole-self-v1",
+    ]
     assert main([*base, "--designated-by", "Cole"]) == 0
     preview = capsys.readouterr().out
     assert '"written": false' in preview and "preview only" in preview
@@ -94,7 +105,24 @@ def test_the_host_passes_run_from_the_configuration(
     assert ended.state.error.code in {"runtime_unavailable", "queue_timeout"}
     assert main(["speech", "deliver", "--config", str(config)]) == 0
     delivered = json.loads(capsys.readouterr().out)
-    assert delivered[f"msg_{job.record.job_id}"] == "refused"  # no secret file on this host
+    # No secret file on this host: the attempt waits for it, as for any failed attempt.
+    assert delivered[f"msg_{job.record.job_id}"] == "pending"
+
+
+def test_a_runner_whose_release_link_moved_exits_for_systemd_to_restart_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lab = build_lab(tmp_path)
+    config = write_config(lab)
+    store = SpeechStore(lab.config)
+    store.ensure()
+    job, _ = store.submit(lab.config.callers[0], SpeechRequest(text="Hi."), now=NOW)
+    link = tmp_path / "current"
+    link.symlink_to(tmp_path / "a-pruned-release")
+    argv = ["speech", "run", "--config", str(config), "--release-link", str(link)]
+    assert main([*argv, "--once"]) == EXIT_OUTDATED == 75
+    assert "does not resolve" in capsys.readouterr().err
+    assert [queued.record.job_id for queued in store.queued()] == [job.record.job_id]
 
 
 def test_serve_adds_the_speech_routes_first(

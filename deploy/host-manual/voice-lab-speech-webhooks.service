@@ -3,9 +3,11 @@
 # must be on the caller's allowlist under the tailnet suffix and resolve to tailnet
 # addresses only; no redirect is followed. Retries at 0, 30 s, 2, 10, 30 and 60 minutes.
 #
-# Installed by hand with the speech job runner (README.md here). It reads the callers'
-# secret files, /etc/voice-lab/speech-webhook-secrets/<caller> (root:voice-lab 0640); the
-# API never does.
+# Installed by hand with the speech job runner (README.md here). The callers' secrets are
+# root-owned files, /etc/voice-lab/speech-webhook-secrets/<caller> (root:root 0600), which
+# systemd hands to this unit alone as credentials (LoadCredential=): the delivery process
+# reads $CREDENTIALS_DIRECTORY/speech-webhook-secrets_<caller>. No other process of the
+# voice-lab user (the API, the job runner) can read them.
 #
 # Network: the tailnet only, as the JWKS unit; the service user's egress table should also
 # name each caller's node:443 (infra host.conf HOST_EGRESS_TAILNET).
@@ -22,6 +24,7 @@ User=voice-lab
 Group=voice-lab
 UMask=0077
 ExecStart=/opt/voice-lab/current/bin/voice-lab speech deliver --config /etc/voice-lab/speech.json
+LoadCredential=speech-webhook-secrets:/etc/voice-lab/speech-webhook-secrets
 TimeoutStartSec=10min
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any

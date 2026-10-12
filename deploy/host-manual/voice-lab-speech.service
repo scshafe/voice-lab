@@ -10,6 +10,14 @@
 # Installed by hand, not by the runner lane (README.md here): it needs the GPU's devices,
 # which infra's host-unit validator has no rule for yet, and it is inert until the owner's
 # steps of docs/SPEECH_API.md §11 are done (/etc/voice-lab/speech.json exists).
+#
+# A deploy moves /opt/voice-lab/current but does not restart this unit (the lane does not
+# manage it). With --release-link the runner notices, before its next model load or once it
+# is idle, that its code is no longer the active release's, gives back the GPU slot and any
+# job it claimed, and exits 75, which Restart=on-failure turns into a start of the new code.
+#
+# It writes only the speech state, the GPU slot's lock and the render ledger: the ledger's
+# directory must exist before the unit starts (deploy/speech/README.md, step 8).
 [Unit]
 Description=voice-lab speech job runner and resident model (no network, GPU)
 ConditionPathExists=/etc/voice-lab/speech.json
@@ -22,7 +30,7 @@ User=voice-lab
 Group=voice-lab
 SupplementaryGroups=render video
 UMask=0077
-ExecStart=/opt/voice-lab/current/bin/voice-lab speech run --config /etc/voice-lab/speech.json
+ExecStart=/opt/voice-lab/current/bin/voice-lab speech run --config /etc/voice-lab/speech.json --release-link /opt/voice-lab/current
 Restart=on-failure
 RestartSec=10s
 TimeoutStopSec=30s
@@ -30,7 +38,7 @@ PrivateNetwork=yes
 IPAddressDeny=any
 RestrictAddressFamilies=AF_UNIX
 ProtectSystem=strict
-ReadWritePaths=/data/voice-lab/lab /data/voice-lab/state/speech -/data/voice-lab/state/jobs
+ReadWritePaths=/data/voice-lab/state/speech -/data/voice-lab/state/jobs /data/voice-lab/lab/provenance/speech-renders
 ProtectHome=yes
 PrivateTmp=yes
 # The GPU (ROCm: /dev/kfd and the DRM render node), nothing else.

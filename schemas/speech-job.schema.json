@@ -24,7 +24,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "``jobs/<id>/request.json``: the accepted request, without its text.",
+  "description": "``jobs/<id>/request.json``: the accepted request, without its text.\n\nThe text and the whole request are named by keyed digests (HMAC-SHA256 under the\ninstall's text key, ``store.TEXT_KEY_NAME``), never by plain SHA-256: a short reply\n(\"Yes.\") would otherwise be found again by hashing guesses.",
   "properties": {
     "callback_url": {
       "anyOf": [
@@ -72,7 +72,7 @@
     "job_id": {
       "$ref": "#/$defs/JobId"
     },
-    "request_sha256": {
+    "request_hmac_sha256": {
       "$ref": "#/$defs/Sha256"
     },
     "schema_version": {
@@ -87,7 +87,7 @@
       "title": "Text Characters",
       "type": "integer"
     },
-    "text_sha256": {
+    "text_hmac_sha256": {
       "$ref": "#/$defs/Sha256"
     }
   },
@@ -99,8 +99,8 @@
     "callback_url",
     "client_ref",
     "idempotency_key_sha256",
-    "request_sha256",
-    "text_sha256",
+    "request_hmac_sha256",
+    "text_hmac_sha256",
     "text_characters"
   ],
   "title": "SpeechJobRecord",

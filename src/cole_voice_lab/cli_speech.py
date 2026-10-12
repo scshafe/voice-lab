@@ -2,12 +2,15 @@
 
 @canonical cli_speech -- registered into ``voice-lab``'s parser by ``cli.build_parser``.
 ``voice release designate`` previews, then (with ``--i-designate-this-run``) writes, the
-next voice release (D-045): an act of judgement that is Cole's, never an agent's.
+next voice release (D-045): an act of judgement that is Cole's, never an agent's. It names
+the consent record explicitly and designates only the pinned subject's run (the
+configuration's ``subject_id`` with ``--config``, else ``cole-self``).
 ``voice release show|history`` print releases. ``speech run`` is the job runner with its
 resident model until SIGTERM (the host unit ``voice-lab-speech``, no network; ``--once``: one
-pass); ``speech deliver`` the webhook delivery
-pass (``voice-lab-speech-webhooks``, tailnet only); ``speech check-config`` validates a
-configuration and prints its callers without anything secret.
+pass); with ``--release-link`` it exits ``EXIT_OUTDATED`` once a deploy has moved that link
+off its own code, for systemd to start the new code. ``speech deliver`` is the webhook
+delivery pass (``voice-lab-speech-webhooks``, tailnet only); ``speech check-config``
+validates a configuration and prints its callers without anything secret.
 """
 
 from __future__ import annotations
@@ -23,10 +26,10 @@ from pathlib import Path
 from .errors import VoiceLabError
 from .models import utc_now
 from .paths import AssetLayout
-from .speech.backend import F5ResidentBackend
 from .speech.config import load_speech_config
-from .speech.release import BlindReviewRef, current_release, designate, history
-from .speech.runner import SpeechRunner
+from .speech.families import ReleaseBackend, family_ids
+from .speech.release import SPEECH_SUBJECT, BlindReviewRef, current_release, designate, history
+from .speech.runner import EXIT_OUTDATED, RunnerOutdated, SpeechRunner, release_code_check
 from .speech.webhooks import WebhookDispatcher
 
 
@@ -52,6 +55,9 @@ def _designate(options: argparse.Namespace) -> int:
             review_id=options.blind_review, score_sheet_sha256=options.score_sheet_sha256
         )
     )
+    subject = (
+        SPEECH_SUBJECT if options.config is None else load_speech_config(options.config).subject_id
+    )
     release, digest = designate(
         layout,
         run_id=options.run,
@@ -59,6 +65,7 @@ def _designate(options: argparse.Namespace) -> int:
         now=utc_now(),
         reference_prompt_id=options.reference_prompt,
         consent_id=options.consent_id,
+        subject_id=subject,
         blind_review=review,
         write=options.i_designate_this_run,
     )
@@ -92,21 +99,22 @@ def _history(options: argparse.Namespace) -> int:
 
 def _run(options: argparse.Namespace) -> int:
     config = load_speech_config(options.config)
-    backend = F5ResidentBackend(
-        config.runtime, state_root=Path(config.state_root), asset_root=Path(config.asset_root)
-    )
-    runner = SpeechRunner(config, backend)
-    if options.once:
-        try:
-            report = runner.run_pending()
-        finally:
-            runner.unload()
-        _print(asdict(report))
-        return 0
-    stopping = threading.Event()
-    for signum in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(signum, lambda *_: stopping.set())
-    runner.serve(stop=stopping.is_set)
+    check = None if options.release_link is None else release_code_check(options.release_link)
+    runner = SpeechRunner(config, ReleaseBackend(config), code_check=check)
+    try:
+        if options.once:
+            try:
+                report = runner.run_pending()
+            finally:
+                runner.unload()
+            _print(asdict(report))
+            return 0
+        stopping = threading.Event()
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(signum, lambda *_: stopping.set())
+        runner.serve(stop=stopping.is_set)
+    except RunnerOutdated:
+        return EXIT_OUTDATED
     return 0
 
 
@@ -130,6 +138,9 @@ def _check_config(options: argparse.Namespace) -> int:
                 for caller in config.callers
             ],
             "runtime_configured": config.runtime is not None,
+            "runtime_family": None if config.runtime is None else config.runtime.model_family,
+            "model_families": list(family_ids()),
+            "subject_id": config.subject_id,
             "audio_retention_hours": config.audio_retention_hours,
         }
     )
@@ -150,7 +161,14 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     designate_parser.add_argument("--run", required=True)
     designate_parser.add_argument("--designated-by", required=True)
     designate_parser.add_argument("--reference-prompt")
-    designate_parser.add_argument("--consent-id", default="cole-self-v1")
+    designate_parser.add_argument(
+        "--consent-id",
+        required=True,
+        help="the approved consent record for private-assistant-speech on home-host",
+    )
+    designate_parser.add_argument(
+        "--config", type=Path, help="the speech configuration whose subject_id is pinned"
+    )
     designate_parser.add_argument("--blind-review")
     designate_parser.add_argument("--score-sheet-sha256")
     designate_parser.add_argument("--i-designate-this-run", action="store_true")
@@ -171,6 +189,11 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     )
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--once", action="store_true", help="one pass, then unload and exit")
+    run.add_argument(
+        "--release-link",
+        type=Path,
+        help="the active release link (/opt/voice-lab/current): exit 75 once it moves away",
+    )
     run.set_defaults(handler=_run)
     deliver = speech_commands.add_parser(
         "deliver", help="one webhook delivery pass (host unit, tailnet only)"

@@ -34,7 +34,7 @@ from cole_voice_lab.finetune import FineTuneRun
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.speech.backend import SpeechBackendError
 from cole_voice_lab.speech.config import SpeechCaller, SpeechConfig
-from cole_voice_lab.speech.contracts import RenderFingerprint
+from cole_voice_lab.speech.contracts import F5RenderSettings, FileDigest, RenderFingerprint
 from cole_voice_lab.speech.release import VerifiedRelease, designate
 from cole_voice_lab.speech.routes import PREFIX, SpeechRoutes, caller_policy
 from cole_voice_lab.speech.runner import PassReport, SpeechRunner
@@ -150,12 +150,14 @@ class FakeBackend:
         self.loaded = True
         record = release.release
         return RenderFingerprint(
-            checkpoint_sha256=record.checkpoint_sha256,
-            reference_sha256=record.reference_sha256,
+            model_family=record.model_family,
             backend="fake",
+            files=tuple(FileDigest(role=item.role, sha256=item.sha256) for item in record.files),
             runtime={"fake": "1"},
             device="cpu",
-            nfe_steps=32,
+            native_sample_rate_hz=24_000,
+            seeded=True,
+            settings=F5RenderSettings(nfe_steps=32),
             voice_lab_version="test",
         )
 
@@ -198,7 +200,9 @@ class Lab:
     consent_sha256: str
 
     def designate(self, **options: Any) -> None:
-        designate(self.layout, run_id=self.run.run_id, designated_by="Cole", now=NOW, **options)
+        options.setdefault("consent_id", "cole-self-v1")
+        options.setdefault("run_id", self.run.run_id)
+        designate(self.layout, designated_by="Cole", now=NOW, **options)
 
 
 def build_lab(tmp_path: Path, *, consent: bool = True, release: bool = True, **config: Any) -> Lab:

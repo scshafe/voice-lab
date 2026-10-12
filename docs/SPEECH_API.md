@@ -1,6 +1,6 @@
 # Speech API: Cole's voice for registered callers
 
-Status: **built, not deployed** (designed 2026-10-11, D-044 to D-047). The code is in
+Status: **built, not deployed** (designed 2026-10-11, D-044 to D-048). The code is in
 `src/cole_voice_lab/speech/` (`voice-lab voice release …`, `voice-lab speech …`,
 `serve --speech-config`); nothing runs on the PC until the owner's steps in
 [deploy/speech/README.md](../deploy/speech/README.md) are done. It is part of the voice
@@ -45,10 +45,14 @@ Contents:
   and nothing else.
 - **Reproducible.** Sentences render sequentially with derived seeds; a rerun is
   byte-identical.
-- **No text at rest beyond the job.** The ledger holds the text's SHA-256 and length, never
-  the text. The job's input is deleted when the job ends.
-- **No secret in configuration or Git.** Webhook secrets are files referenced by path, read
-  only by the delivery process.
+- **No text at rest beyond the job.** The ledger holds the text's keyed digest (HMAC-SHA256
+  under a per-install key, §7) and its length, never the text. The job's input is deleted when
+  the job ends.
+- **No secret in configuration or Git.** Webhook secrets are root-only files referenced by
+  path, which systemd hands to the delivery unit alone.
+- **Model families** (D-048). The release, the backend port and the ledger are
+  family-neutral; F5-TTS is the one family registered today. Whatever a family renders
+  natively, the API's audio is 24 kHz mono 16-bit WAV.
 
 ## 2. The flow
 
@@ -77,33 +81,37 @@ caller GET /api/v1/speech/{id}/audio  (Range): the whole reply, if it wants it
 ## 3. The voice release
 
 A `voice-release` record (`cole-voice-lab.voice-release/v1`) in
-`provenance/voice-releases/<sequence>.json`, written once with mode 0400, never edited:
+`provenance/voice-releases/<sequence>.json`, written once with mode 0400, never edited. Its
+fields are common to every model family (D-048) except `model`, the family's own section:
 
 | Field | Meaning |
 | --- | --- |
 | `release_id` | `vr-<sequence>`, for example `vr-0001` |
 | `sequence`, `previous_release_sha256` | the append-only chain: the first release names none |
-| `subject_id` | the run's and the consent record's subject (`cole-self`) |
+| `subject_id` | the run's and the consent record's subject: the configuration's pinned `subject_id` (`cole-self`) |
+| `model_family` | the run's model family (`f5-tts`) |
 | `run_id`, `run_record_sha256` | the finished fine-tune run and the digest of its `run.json` |
-| `checkpoint_path`, `checkpoint_sha256` | the run's recorded `model_last.pt` |
-| `reference_prompt_id`, `reference_path`, `reference_sha256`, `reference_text_sha256` | the reference clip in the run's dataset, as the dataset recorded it |
+| `files` | every file the family needs, by role, with its path in the asset root and its SHA-256; for F5-TTS `checkpoint` (the run's recorded `model_last.pt`) and `reference` (the clip in the run's dataset) |
+| `model` | the family's section, tagged by `family`; for F5-TTS the reference prompt id, the SHA-256 of its transcript, and the runtime the run trained with (F5-TTS and torch versions, pretrained weights digest) |
 | `consent_id`, `consent_sha256` | the consent record at designation |
-| `runtime` | the run's runtime identity (F5-TTS and torch versions, pretrained weights digest) |
 | `blind_review` | optional: a review id and the score sheet's digest |
 | `created_at`, `designated_by` | when, and the name Cole gives |
 
-`voice-lab voice release designate --asset-root … --run <id> --designated-by <name>
-[--reference-prompt <id>] [--consent-id <id>] [--blind-review <id> --score-sheet-sha256 <sha>]`
-checks the run (finished, not archived, the subject of an approved consent record for
-`private-assistant-speech` on `home-host`), hashes the checkpoint and the reference clip
-against the run's records through the existing Speak seam (`finetune.resolve_speech_model`),
-and prints the record it would write; with `--i-designate-this-run` it writes it. `voice
-release show` prints the current one; `voice release history` lists them all. The newest
-record is current.
+`voice-lab voice release designate --asset-root … --run <id> --consent-id <id>
+--designated-by <name> [--config <speech.json>] [--reference-prompt <id>] [--blind-review
+<id> --score-sheet-sha256 <sha>]` asks the run's family which files it binds (F5-TTS resolves
+them through the existing Speak seam, `finetune.resolve_speech_model`), checks the run
+(finished, not archived, of the pinned subject: the configuration's `subject_id` with
+`--config`, else `cole-self`) and the named consent record (approved for
+`private-assistant-speech` on `home-host`, of the same subject), hashes every file against the
+run's records, and prints the record it would write; with `--i-designate-this-run` it writes
+it. `voice release show` prints the current one; `voice release history` lists them all. The
+newest record is current.
 
-A render refuses when the current release's checkpoint, reference clip or consent record no
-longer hashes to what the release names (`voice_release_changed`, `consent_changed`): rotating
-the consent record, even to renew it, means designating again.
+A render refuses when the current release is of another subject than the configuration
+pins, or its run, a file or its consent record no longer hashes to what the release names
+(`voice_release_changed`, `consent_changed`): rotating the consent record, even to renew it,
+means designating again.
 
 ## 4. Callers and the configuration
 
@@ -119,7 +127,6 @@ read the parts they need.
   "state_root": "/data/voice-lab/state/speech",
   "gpu_slot_root": "/data/voice-lab/state/jobs",
   "subject_id": "cole-self",
-  "consent_id": "cole-self-v1",
   "tailnet_suffix": "<tailnet>.ts.net",
   "audio_retention_hours": 168,
   "record_retention_days": 30,
@@ -128,7 +135,8 @@ read the parts they need.
   "segment_deadline_seconds": 120,
   "idle_unload_seconds": 900,
   "gpu_busy_retry_seconds": 600,
-  "runtime": {"runtime_root": "/data/voice-lab/lab/runtimes/f5-tts-rocm", "device": "cuda",
+  "runtime": {"model_family": "f5-tts",
+              "runtime_root": "/data/voice-lab/lab/runtimes/f5-tts-rocm", "device": "cuda",
               "nfe_steps": 32, "visible_devices": "0"},
   "callers": [
     {
@@ -147,16 +155,21 @@ read the parts they need.
 }
 ```
 
-Validation refuses: a duplicate caller id, subject or secret path; an empty audience list; an
-`http` webhook URL, one with credentials, a query or a fragment, or one whose host is not a
-single label under `tailnet_suffix`; a limit outside its bounds (`max_text_characters` 1–2,000,
+`subject_id` is the one subject whose release may speak; `runtime` names the runtime of the
+release's model family (`model_family`, D-048). Validation refuses: a duplicate caller id,
+subject, secret path or secret file name; an empty audience list; an `http` webhook URL, one
+with credentials, a query or a fragment, one whose host is not a single label under
+`tailnet_suffix`, or one whose path has a dot segment, an empty segment, or a percent-encoded
+dot, slash or backslash; a limit outside its bounds (`max_text_characters` 1–2,000,
 `max_queued_jobs` 1–16, `daily_character_budget` up to 1,000,000; `queue_limit` 1–256;
-retention 1 hour to 30 days); a relative path. At most four callers (one is expected).
+`audio_retention_hours` 1–720, that is 1 hour to 30 days; `record_retention_days` 1–365); a
+relative path. At most four callers (one is expected).
 
-A caller's `webhook_urls` are prefixes: a request's `callback_url` must equal one, or extend
-one with further path segments. The secret file is checked when the delivery process reads it:
-a regular file, not a link, not group-writable or world-readable, holding one
-`whsec_<base64>` secret of 24 to 64 bytes.
+A caller's `webhook_urls` are prefixes: a request's `callback_url` must name the same host and
+port (443 when none is given) and the same path segments, or extend them by whole segments
+(compared after parsing, never as strings). The secret file is checked when the delivery
+process reads it: a regular file, not a link, not group-writable or world-readable, holding
+one `whsec_<base64>` secret of 24 to 64 bytes.
 
 ## 5. Authentication
 
@@ -262,15 +275,18 @@ lists the sentences already rendered, in order. `audio` (the joined file) is pre
 job has succeeded. `error` is `{code, detail}` for `failed`; the codes are
 `runtime_unavailable` (no runtime for the PC, or it cannot start), `render_failed`,
 `render_timeout`, `queue_timeout`, `voice_release_changed`, `consent_changed` and
-`internal_error`. A job that fails or is cancelled part-way keeps the segments already
+`internal_error`. `detail` is one fixed sentence per code: what went wrong in particular (a
+path, a consent reason, a worker's error) is in the job runner's log on the PC, never in a
+status or a webhook. A job that fails or is cancelled part-way keeps the segments already
 published until retention.
 
 ### `GET /api/v1/speech/{id}/segments/{n}/audio`
 
 One finished sentence (`n` from 1), as soon as it is published: `200` with `audio/wav`
 (24 kHz, mono, 16-bit), `Content-Length` and `ETag: "<sha256>"`, or `206` for a single
-`Range`. `409 audio_not_ready` while it is not yet rendered, `410 audio_expired` after
-retention, `404` for an index beyond `segment_count`. `HEAD` answers the headers.
+`Range` (ranges as for the joined audio, below). `409 audio_not_ready` while it is not yet
+rendered, `410 audio_expired` after retention, `404` for an index beyond `segment_count`.
+`HEAD` answers the headers.
 
 ### `GET /api/v1/speech/{id}/events`
 
@@ -287,8 +303,8 @@ event: speech.succeeded
 data: {…the job's status…}
 ```
 
-Every published segment is sent once, in order; `Last-Event-ID: <n>` resumes after segment
-`n`. The stream ends with one terminal event (`speech.succeeded`, `speech.failed`,
+Every published segment is sent once, in order; `Last-Event-ID: <n>` (1 to 4 ASCII digits;
+anything else starts from the beginning) resumes after segment `n`. The stream ends with one terminal event (`speech.succeeded`, `speech.failed`,
 `speech.cancelled` or `speech.expired`) and is closed. A comment line is sent every 15 seconds
 while nothing happens, and the stream is closed after 10 minutes in any case (reconnect with
 `Last-Event-ID`; oauth2-proxy's upstream timeout is 600 s). It carries no audio and no text.
@@ -299,7 +315,9 @@ has finished.
 
 The whole reply, the segments joined in order (their PCM concatenated, no cross-fade), only
 when `succeeded`: `200` with `audio/wav`, `Content-Length` and `ETag: "<sha256>"`, or `206`
-for a single `Range: bytes=…` (`416` when unsatisfiable). `409 audio_not_ready` before,
+for a single `Range: bytes=…`; `416` with `Content-Range: bytes */<size>` when that one range
+cannot be satisfied. Several ranges, another unit or a malformed header are ignored and the
+whole file is answered `200` (RFC 9110 allows it). `409 audio_not_ready` before,
 `410 audio_expired` after retention, `404 speech_not_found` for a job that is not the
 caller's. `HEAD` answers the headers.
 
@@ -325,6 +343,9 @@ jobs/<id>/segments/0001.wav   each finished sentence, published by rename when c
 jobs/<id>/speech.wav          the joined audio, until retention removes it
 queue/<id>                    empty; the job runner looks for these
 idempotency/<caller>/<sha256 of the key>.json
+text-digest.key               32 random bytes, made once (0600): the key of the text's and the
+                              request's digests (HMAC-SHA256); never in the asset root, so
+                              never in the vault
 outbox/<event id>.json        a webhook event waiting for the delivery process
 webhooks/<event id>/          an event being delivered, with its delivery log
 resident/                     the resident model's private scratch (a converted reference
@@ -337,26 +358,43 @@ The ledger lives in the asset root (§9); the audio does not, so the vault never
 
 **Sentences and seeds.** The job runner splits the text into sentences (after `.`, `!`, `?`,
 `…` and their CJK forms followed by a space or the end, and at line breaks); a fragment under
-12 characters joins the next sentence, and a sentence too long for one F5-TTS pass (upstream's
-limit from the reference clip: its text's bytes per second times 22 s less the clip's
-length) is split at its last comma, semicolon or colon within the limit, else at a space. The
-job's seed is derived from the text's SHA-256, the release's digest and the flow steps; each
-sentence's seed from the job's seed and its index. Sentences render one after another, each
+12 characters joins the next sentence, and a sentence too long for one pass of the release's
+model is split at its last comma, semicolon or colon within the limit, else at a space. The
+limit is the family's (D-048): for F5-TTS upstream's limit from the reference clip, its text's
+bytes per second times 22 s less the clip's length. The job's seed is derived from the text's
+keyed digest, the release's digest and the digest of the render settings (for F5-TTS the flow
+steps); each sentence's seed from the job's seed and its index. Sentences render one after another, each
 seeded just before it renders, never through F5-TTS's thread pool, so a rerun of the same
 text with the same release and steps is byte-identical, sentence by sentence.
 
 **The job runner.** `voice-lab-speech.service`, a long-running host unit as `voice-lab` with
 `PrivateNetwork=yes` and only the GPU's devices (`/dev/kfd` and the DRM nodes, groups
-`render` and `video`). It looks for queued jobs every quarter second. For each, oldest first,
-it claims the job; re-reads the release and re-hashes what it names, and re-checks the consent
-record; holds the GPU slot; splits the text; renders each sentence through the narrow
-`SpeechBackend` port; checks each WAV (24 kHz, mono, 16-bit, complete) and publishes it
+`render` and `video`), writing only the speech state, the GPU slot's lock and the ledger's
+directory. It looks for queued jobs every quarter second. For each, oldest first, it claims
+the job; re-reads the release, refuses one of another subject, re-hashes what it names, and
+re-checks the consent record; holds the GPU slot; splits the text; renders each sentence
+through the narrow `SpeechBackend` port, checking before each one that the release is still
+the current one and its consent record still valid (so a revocation stops a render at its
+next sentence); checks each WAV (24 kHz, mono, 16-bit, complete) and publishes it
 (`status.json` lists it); joins them; writes the ledger entry, the final status and the outbox
-event; and deletes the input. It sweeps retention every few minutes. A cancel is honoured
-between sentences.
+event. The text is deleted on every ending, first. It sweeps retention every few minutes. A
+cancel is honoured between sentences, and ends a wait for the GPU slot at once.
 
-**The resident model worker.** The real backend keeps one model process in the runtime's
-interpreter (`f5_resident.py`, D-004's isolation) with the F5-TTS model, the vocoder and the
+Every error ends the job with a code (`internal_error` when nothing more precise fits); the
+particulars go to the unit's journal. A runner that stops leaves nothing owned for ever: at
+its next start (and every pass) a job it left `running` fails `internal_error`, and a job it
+had claimed but not started is queued again, or ends `cancelled` when a cancel asked for it,
+or `queue_timeout` once its queue time is up. A cancel's claim the API never finished is
+ended `cancelled` after a minute.
+
+**Deploys.** The unit runs `/opt/voice-lab/current/bin/voice-lab … --release-link
+/opt/voice-lab/current`. Before each model load, and when it is idle without a model, the
+runner checks that its own code is still in the release that link points at; when a deploy
+has moved it, it gives back the slot and any claimed job and exits 75, and systemd starts the
+new code (deploy/speech/README.md, "Deploys and the runner").
+
+**The resident model worker.** The real backend (F5-TTS's; each family has its own, D-048)
+keeps one model process in the runtime's interpreter (`f5_resident.py`, D-004's isolation) with the F5-TTS model, the vocoder and the
 current release's checkpoint and reference clip loaded. Requests and answers go over its
 stdin and stdout as JSON lines, the text included, never through a file. It is started for the
 first job, so the first job after an unload pays the cold start (about 20 s), and stopped:
@@ -424,18 +462,26 @@ minutes from its clock. The body is the same bytes on every attempt.
 
 **Delivery** (`voice-lab-speech-webhooks.service`, a host unit as `voice-lab`, network limited
 to the tailnet ranges as the JWKS unit is; started by a path unit on `outbox/` and a timer every
-30 seconds for retries). Each attempt, before connecting:
+30 seconds for retries). The callers' secrets are root-only files that systemd hands to this
+unit alone (`LoadCredential=`); it reads a caller's as
+`$CREDENTIALS_DIRECTORY/speech-webhook-secrets_<file name>`. Each attempt, before connecting:
 
-1. re-reads the configuration and refuses a URL that no longer matches the caller's allowlist;
-2. requires `https`, a host under `tailnet_suffix`, and no credentials;
+1. re-reads the configuration; a caller no longer registered, or a URL that no longer matches
+   the caller's allowlist or is no longer a valid tailnet webhook URL, ends the event
+   `refused`, never sent and never retried (the registry is the owner's word);
+2. reads the caller's secret: one missing, unreadable or malformed is retried like a failed
+   attempt (a secret being provisioned or rotated comes back);
 3. resolves the host and refuses unless every address is a tailnet address
    (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), then connects to the address it checked,
    verifying TLS for the host name, so a DNS change between check and connect cannot redirect
    it;
-4. sends one `POST` with a 5-second connect and 10-second total timeout, follows no redirect,
-   and reads at most 4 KiB of the answer, which it discards.
+4. sends one `POST`, follows no redirect, and reads the answer's status line (at most 4 KiB),
+   discarding the rest. An attempt has 5 seconds to connect and 10 seconds in all: each send
+   and receive gets only the time that is left, so a peer that answers a byte at a time cannot
+   hold it longer.
 
-A `2xx` answer delivers; `410` stops; anything else, a timeout, or a refusal above is retried.
+A `2xx` answer delivers; `410` stops; anything else, a timeout, an address off the tailnet or
+a missing secret is retried.
 Attempts are at 0, 30 s, 2 min, 10 min, 30 min and 60 min after the event: six attempts over an
 hour, then the event is given up. Each attempt appends to the event's delivery log: number,
 time, status code or error class, duration; never the secret, the signature or the body.
@@ -443,10 +489,13 @@ time, status code or error class, duration; never the secret, the signature or t
 ## 9. The render ledger and retention
 
 **The ledger.** `provenance/speech-renders/<job id>.json` (`cole-voice-lab.speech-render/v1`),
-written once by the job runner for every job it started rendering: job id, caller id, text
-SHA-256 and length in code points, release id and its record's digest, consent id and digest,
-the model and runtime fingerprint (checkpoint digest, reference digest, runtime identity,
-device, flow steps, voice-lab version), the job's seed, the number of sentences and each
+written once by the job runner for every job it started rendering: job id, caller id, the
+text's keyed digest (HMAC-SHA256 under the install's `text-digest.key`, so a short reply cannot
+be found by hashing guesses; a text can be checked against it on the PC) and its length in
+code points, release id and its record's digest, the model family, consent id and digest, the
+model and runtime fingerprint (the family, each loaded file's role and digest, the runtime
+identity, the device, the family's native sample rate, whether it is seeded, the family's
+render settings such as F5-TTS's flow steps, the voice-lab version), the job's seed, the number of sentences and each
 published sentence's digest, the outcome, the joined output's digest, size and duration when
 there is one, and the queue, render and audio durations. The vault copies it as a
 record (a classification rule is added with it); nothing removes it.
@@ -485,21 +534,27 @@ procedure, with the commands: [deploy/speech/README.md](../deploy/speech/README.
 stack and door changes: `deploy/speech/compose.speech.yaml`; the host units:
 `deploy/host-manual/voice-lab-speech*`):
 
-1. **Consent.** Approve a consent record naming `private-assistant-speech` and `home-host`
-   (`consent preview`, then `consent approve-self`, RUNBOOK §1). Only Cole.
+1. **Consent.** Approve a new consent record, `cole-self-v2`, naming
+   `private-assistant-speech` and `home-host` (`consent preview`, then `consent approve-self
+   --consent-id cole-self-v2`, RUNBOOK §1); `cole-self-v1` is approved already and cannot be
+   replaced. Only Cole.
 2. **The runtime.** Provision the ROCm F5-TTS runtime on the PC (torch 2.14.0+rocm7.2,
    torchcodec 0.16.0+cpu, from spike S-2; its hash-locked lock is a follow-up). Until then
    every job fails `runtime_unavailable`.
-3. **The voice release.** `voice-lab voice release designate --run <id>` on the PC.
+3. **The voice release.** `voice-lab voice release designate --run <id> --consent-id
+   cole-self-v2 --config /etc/voice-lab/speech.json` on the PC.
 4. **Pocket ID.** Create the caller's confidential client with `client_credentials`; read one
    token's claims locally to fill `subject` and `audiences`.
 5. **The configuration and secrets.** Write `/etc/voice-lab/speech.json`; create each
-   caller's webhook secret file and give the caller the same secret by a private channel.
+   caller's webhook secret file (root:root 0600) and give the caller the same secret by a
+   private channel.
 6. **The door and the stack.** The `EXTRA_JWT_ISSUERS` change and the read-only bind of
    `/etc/voice-lab/speech.json` into the API container (infra's `host.conf` grants binds).
-7. **Host units.** Install and enable `voice-lab-speech.service` (long-running, with the
-   resident worker) and `voice-lab-speech-webhooks.{path,service,timer}`; through the runner
-   lane's host-unit install once infra's validator accepts GPU devices.
+7. **Host units.** Create the ledger's directory, then install and enable
+   `voice-lab-speech.service` (long-running, with the resident worker) and
+   `voice-lab-speech-webhooks.{path,service,timer}` by hand; through the runner lane's
+   host-unit install once infra's validator accepts GPU devices and `LoadCredential=` (which
+   would also restart the runner on every deploy; until then it restarts itself).
 8. **The tailnet policy.** Allow the PC to reach each caller's node on 443 for webhooks, and
    the caller's node to reach `tag:voice-lab` on 443.
 
@@ -511,3 +566,6 @@ stack and door changes: `deploy/speech/compose.speech.yaml`; the host units:
   release, and a watermark (D-046: revisited before audio could reach anyone else).
 - Fine-tuning, auditions and Speak through `/api/v1/jobs` (phase 5); they will share the GPU
   slot defined here.
+- A second model family. The release, the backend port, the ledger and the configuration's
+  runtime are family-neutral (D-048, [MODEL_FAMILIES.md](MODEL_FAMILIES.md)); F5-TTS is the
+  only family registered.

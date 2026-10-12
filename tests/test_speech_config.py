@@ -55,10 +55,33 @@ def test_a_tailnet_webhook_url_is_accepted_with_or_without_a_port() -> None:
 
 def test_a_callback_must_equal_or_extend_an_allowed_url() -> None:
     registered = caller()
-    assert registered.allows_callback(HOOK)
-    assert registered.allows_callback(HOOK + "/conversation-1")
-    assert not registered.allows_callback(HOOK + "-other")
-    assert not registered.allows_callback(f"https://other.{TAILNET}/hooks/voice-lab")
+    assert registered.allows_callback(HOOK, TAILNET)
+    assert registered.allows_callback(HOOK + "/conversation-1", TAILNET)
+    assert registered.allows_callback(HOOK + "/", TAILNET)
+    assert registered.allows_callback(HOOK.replace(".ts.net/", ".ts.net:443/"), TAILNET)
+    assert not registered.allows_callback(HOOK + "-other", TAILNET)
+    assert not registered.allows_callback(f"https://other.{TAILNET}/hooks/voice-lab", TAILNET)
+    assert not registered.allows_callback(HOOK.replace(".ts.net/", ".ts.net:8443/"), TAILNET)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/hooks/voice-lab/%2e%2e/admin",
+        "/hooks/voice-lab/%2E./admin",
+        "/hooks/voice-lab/..%2fadmin",
+        "/hooks/voice-lab%2Fadmin",
+        "/hooks/voice-lab/%5c..",
+        "/hooks/voice-lab//admin",
+        "/hooks/voice-lab/%zz",
+        "/hooks/voice-lab/./x",
+    ],
+)
+def test_an_encoded_or_unnormalised_path_never_matches_the_allowlist(path: str) -> None:
+    # The allowlist names /hooks/voice-lab: a receiver decoding these would see another path.
+    url = f"https://agent.{TAILNET}{path}"
+    assert webhook_url_problem(url, TAILNET) is not None
+    assert not caller().allows_callback(url, TAILNET)
 
 
 @pytest.mark.parametrize(
@@ -148,3 +171,18 @@ def test_the_configuration_holds_no_secret_value() -> None:
     fields = set(SpeechConfig.model_json_schema()["$defs"]["SpeechCaller"]["properties"])
     assert "webhook_secret_file" in fields
     assert not {name for name in fields if "secret" in name} - {"webhook_secret_file"}
+
+
+def test_secret_file_names_are_distinct_credential_names(tmp_path: Path) -> None:
+    lab_layout = AssetLayout.initialize(tmp_path / "lab")
+    first = caller(webhook_secret_file="/etc/voice-lab/a/agent-server")
+    second = caller(
+        caller_id="other",
+        subject="client-other",
+        webhook_secret_file="/etc/voice-lab/b/agent-server",
+    )
+    with pytest.raises(ValidationError, match="file name"):
+        speech_config(tmp_path, lab_layout, callers=(first, second))
+    odd = caller(webhook_secret_file="/etc/voice-lab/secrets/agent server")
+    with pytest.raises(ValidationError, match="letters, digits"):
+        speech_config(tmp_path, lab_layout, callers=(odd,))

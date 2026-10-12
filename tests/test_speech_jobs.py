@@ -5,6 +5,8 @@ The backend is the fake of ``speech_fixtures`` (a generated tone); nothing here 
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import stat
@@ -15,10 +17,12 @@ from typing import Any
 import pytest
 from speech_fixtures import NOW, FakeBackend, Lab, OnePass, build_lab, caller, write_tone
 
-from cole_voice_lab.canonical import sha256_file, write_canonical_json
+import cole_voice_lab
+from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canonical_json
 from cole_voice_lab.consent import revoke_consent
 from cole_voice_lab.speech.backend import SpeechBackendError
 from cole_voice_lab.speech.contracts import (
+    FAILURE_DETAILS,
     GpuSlotHolder,
     SpeechJobState,
     SpeechRenderRecord,
@@ -37,9 +41,16 @@ from cole_voice_lab.speech.gpu import (
     withdraw_want,
 )
 from cole_voice_lab.speech.release import consent_path, current_release
-from cole_voice_lab.speech.runner import SpeechRunner, check_wav, ledger_path
+from cole_voice_lab.speech.runner import (
+    RunnerOutdated,
+    SpeechRunner,
+    check_wav,
+    ledger_path,
+    release_code_check,
+)
 from cole_voice_lab.speech.segments import job_seed, segment_seed
 from cole_voice_lab.speech.store import (
+    TEXT_KEY_NAME,
     Job,
     SpeechRefusal,
     SpeechStore,
@@ -200,8 +211,10 @@ def test_a_job_renders_sentence_by_sentence_and_joins_them(lab: Lab) -> None:
     assert ledger.output == ended.state.audio and ledger.audio_ms == 300
     assert ledger.segment_count == 3
     assert ledger.segment_sha256 == tuple(segment.sha256 for segment in ended.state.segments)
-    assert ledger.fingerprint is not None and ledger.fingerprint.nfe_steps == 32
-    assert ledger.seed == job_seed(job.record.text_sha256, release_digest, 32)
+    assert ledger.fingerprint is not None and ledger.fingerprint.settings.nfe_steps == 32
+    assert ledger.model_family == "f5-tts" == ledger.fingerprint.model_family
+    settings = canonical_sha256(ledger.fingerprint.settings)
+    assert ledger.seed == job_seed(job.record.text_hmac_sha256, release_digest, settings)
     assert [seed for _, seed in backend.calls] == [
         segment_seed(ledger.seed, index) for index in (1, 2, 3)
     ]
@@ -366,7 +379,7 @@ def test_the_runner_rechecks_the_release_and_the_consent(
     job = submit(lab)
     if damage == "release":
         release, _ = current_release(lab.layout)
-        (lab.layout.root / release.checkpoint_path).write_bytes(b"retrained")
+        (lab.layout.root / release.file("checkpoint").path).write_bytes(b"retrained")
     elif damage == "consent":
         release, _ = current_release(lab.layout)
         revoke_consent(
@@ -382,7 +395,9 @@ def test_the_runner_rechecks_the_release_and_the_consent(
     assert backend.calls == [] and not ledger_path(lab.layout, job.record.job_id).exists()
 
 
-def test_a_stale_job_times_out_and_an_orphan_fails(lab: Lab) -> None:
+def test_a_stale_job_times_out_and_an_orphan_fails(
+    lab: Lab, capsys: pytest.CaptureFixture[str]
+) -> None:
     stale = submit(lab)
     report = runner(lab, at=NOW + timedelta(minutes=11)).run_pending()
     assert report.outcomes == {stale.record.job_id: "failed"}
@@ -394,7 +409,13 @@ def test_a_stale_job_times_out_and_an_orphan_fails(lab: Lab) -> None:
     ended = store.load(orphan.record.job_id)
     assert report.outcomes == {orphan.record.job_id: "failed"}
     assert ended is not None and ended.state.error is not None
-    assert "stopped while it rendered" in ended.state.error.detail
+    # The caller reads a code and a fixed sentence; the particulars are the runner's log.
+    assert ended.state.error.model_dump() == {
+        "code": "internal_error",
+        "detail": "the job runner failed",
+    }
+    assert "stopped while it rendered" in capsys.readouterr().err
+    assert not (store.job_directory(orphan.record.job_id) / "input.json").exists()
 
 
 # -- the GPU slot -----------------------------------------------------------------------------
@@ -555,3 +576,285 @@ def test_a_job_state_is_consistent() -> None:
         SpeechJobState(job_id=job_id, state="succeeded", finished_at=NOW)
     with pytest.raises(ValueError, match="start time"):
         SpeechJobState(job_id=job_id, state="running")
+
+
+# -- review findings: nothing stays claimed, every path ends the job ------------------------
+
+
+def claimed_but_never_started(lab: Lab, text: str = "Claimed then lost.") -> Job:
+    """A job whose runner claimed it and was killed before it ran (in the slot wait, say)."""
+    job = submit(lab, text)
+    assert store_for(lab).claim(job.record.job_id, "runner")
+    return job
+
+
+def test_a_claimed_job_a_stopped_runner_left_is_queued_again_and_rendered(lab: Lab) -> None:
+    job = claimed_but_never_started(lab)
+    store = store_for(lab)
+    assert not (store.queue_root / job.record.job_id).exists()
+    report = runner(lab, at=NOW + timedelta(minutes=5)).run_pending()
+    assert report.outcomes == {job.record.job_id: "succeeded"}
+    assert not (store.job_directory(job.record.job_id) / "input.json").exists()
+
+
+@pytest.mark.parametrize(("cancel", "outcome"), [(False, "failed"), (True, "cancelled")])
+def test_a_claimed_job_past_its_queue_time_or_cancelled_is_ended(
+    lab: Lab, cancel: bool, outcome: str
+) -> None:
+    job = claimed_but_never_started(lab)
+    store = store_for(lab)
+    if cancel:
+        store.cancel(lab.config.callers[0], job.record.job_id, now=NOW)  # leaves the marker
+    later = NOW + timedelta(seconds=lab.config.queue_timeout_seconds + (0 if cancel else 1))
+    backend = FakeBackend()
+    report = runner(lab, backend, at=later).run_pending()
+    assert report.outcomes == {job.record.job_id: outcome}
+    ended = store.load(job.record.job_id)
+    assert ended is not None and backend.calls == []
+    if not cancel:
+        assert ended.state.error is not None and ended.state.error.code == "queue_timeout"
+    assert not (store.job_directory(job.record.job_id) / "input.json").exists()
+    # It no longer counts against the caller's limits or the queue.
+    assert not any(queued.record.job_id == job.record.job_id for queued in store.queued())
+
+
+def test_a_cancel_the_api_claimed_but_never_ended_is_ended_by_the_runner(lab: Lab) -> None:
+    job = submit(lab)
+    store = store_for(lab)
+    assert store.claim(job.record.job_id, "cancel")  # and then the API stopped
+    assert runner(lab).run_pending().outcomes == {}  # within the grace: the API may finish it
+    claim = store.job_directory(job.record.job_id) / "claim"
+    os.utime(claim, (0, 0))
+    assert runner(lab).run_pending().outcomes == {job.record.job_id: "cancelled"}
+
+
+def broken_release_directory(lab: Lab) -> None:
+    (lab.layout.root / "provenance/voice-releases/0001.json~").write_text("an editor's copy")
+
+
+@pytest.mark.parametrize(
+    ("damage", "code"),
+    [
+        ("stray-release-file", "voice_release_changed"),
+        ("prepare-oserror", "runtime_unavailable"),
+        ("prepare-unexpected", "internal_error"),
+        ("slot-unopenable", "internal_error"),
+        ("input-missing", "internal_error"),
+    ],
+)
+def test_any_error_ends_the_job_instead_of_leaving_it_claimed(
+    lab: Lab, damage: str, code: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    job = submit(lab)
+    store = store_for(lab)
+    backend = FakeBackend()
+    if damage == "stray-release-file":
+        broken_release_directory(lab)
+    elif damage == "prepare-oserror":
+
+        def unreadable(release: Any) -> Any:
+            raise PermissionError("the runtime cannot be read")
+
+        backend.prepare = unreadable  # type: ignore[method-assign]
+    elif damage == "prepare-unexpected":
+
+        def surprise(release: Any) -> Any:
+            raise RuntimeError("something nobody expected")
+
+        backend.prepare = surprise  # type: ignore[method-assign]
+    elif damage == "slot-unopenable":
+        slot = Path(lab.config.gpu_slot_root)
+        slot.parent.mkdir(parents=True, exist_ok=True)
+        slot.write_text("a file where the slot's directory belongs")
+    else:
+        (store.job_directory(job.record.job_id) / "input.json").unlink()
+    resident = runner(lab, backend)
+    report = resident.run_pending()
+    assert report.outcomes == {job.record.job_id: "failed"}
+    ended = store.load(job.record.job_id)
+    assert ended is not None and ended.state.error is not None
+    assert ended.state.error.code == code
+    assert ended.state.error.detail == FAILURE_DETAILS[code]
+    assert not (store.job_directory(job.record.job_id) / "input.json").exists()
+    assert not resident.lease.held
+    logged = capsys.readouterr().err
+    assert job.record.job_id in logged and "Hello there" not in logged
+
+
+def test_a_job_whose_ending_fails_too_is_recovered_by_the_next_pass(lab: Lab) -> None:
+    job = submit(lab)
+    broken_release_directory(lab)
+    resident = runner(lab)
+    original = resident.store.finish
+    calls = []
+
+    def finish_fails_twice(*args: Any, **kwargs: Any) -> Job:
+        calls.append(args)
+        if len(calls) <= 2:  # the job's own ending, then the internal_error ending
+            raise OSError("disk full")
+        return original(*args, **kwargs)
+
+    resident.store.finish = finish_fails_twice  # type: ignore[method-assign]
+    report = resident.run_pending()
+    assert report.outcomes == {job.record.job_id: "queued"}  # still claimed, still queued
+    later = NOW + timedelta(seconds=lab.config.queue_timeout_seconds)
+    report = runner(lab, at=later).run_pending()
+    assert report.outcomes == {job.record.job_id: "failed"}
+
+
+def test_a_cancel_ends_the_wait_for_the_gpu_slot(lab: Lab) -> None:
+    job = submit(lab)
+    store = store_for(lab)
+    holder = GpuSlotHolder(kind="finetune", job_id="finetune-1", started_at=NOW)
+    resident = runner(lab)
+    polls = []
+
+    def cancel_while_waiting(seconds: float) -> None:
+        polls.append(seconds)
+        if len(polls) == 2:
+            store.cancel(lab.config.callers[0], job.record.job_id, now=NOW)
+
+    resident.lease.acquire = (  # type: ignore[method-assign]
+        lambda holder, **options: GpuSlotLease.acquire(
+            resident.lease, holder, sleep=cancel_while_waiting, **options
+        )
+    )
+    with hold_slot(Path(lab.config.gpu_slot_root), holder, timeout_seconds=1):
+        report = resident.run_pending()
+    assert report.outcomes == {job.record.job_id: "cancelled"}
+    assert len(polls) == 2  # it stopped waiting at once, long before the queue limit
+
+
+# -- review findings: only the pinned subject, and consent checked per sentence ------------
+
+
+def test_a_release_of_another_subject_than_the_configuration_pins_never_renders(
+    tmp_path: Path,
+) -> None:
+    lab = build_lab(tmp_path)
+    job = submit(lab)
+    lab.config = lab.config.model_copy(update={"subject_id": "someone-else"})
+    backend = FakeBackend()
+    runner(lab, backend).run_pending()
+    ended = store_for(lab).load(job.record.job_id)
+    assert ended is not None and ended.state.error is not None
+    assert ended.state.error.code == "voice_release_changed" and backend.calls == []
+
+
+@pytest.mark.parametrize(
+    ("change", "code"), [("revoke", "consent_changed"), ("redesignate", "voice_release_changed")]
+)
+def test_a_revocation_or_a_new_release_stops_a_running_render_at_its_next_sentence(
+    lab: Lab, change: str, code: str
+) -> None:
+    job = submit(lab, THREE)
+    release, digest = current_release(lab.layout)
+
+    def change_after_the_first_sentence(index: int) -> None:
+        if index != 1:
+            return
+        if change == "revoke":
+            revoke_consent(
+                consent_path(lab.layout, release.consent_id),
+                expected_sha256=release.consent_sha256,
+                at=NOW - timedelta(minutes=1),
+            )
+        else:
+            lab.designate()
+
+    backend = FakeBackend(on_segment=change_after_the_first_sentence)
+    runner(lab, backend).run_pending()
+    ended = store_for(lab).load(job.record.job_id)
+    assert ended is not None and ended.state.error is not None
+    assert ended.state.error.code == code
+    assert len(backend.calls) == 1 and [s.index for s in ended.state.segments] == [1]
+    ledger = SpeechRenderRecord.model_validate_json(
+        ledger_path(lab.layout, job.record.job_id).read_bytes()
+    )
+    assert (ledger.outcome, ledger.failure, len(ledger.segment_sha256)) == ("failed", code, 1)
+
+
+# -- review findings: a deploy restarts the runner ---------------------------------------------
+
+
+def test_an_outdated_runner_claims_nothing_and_says_so(lab: Lab) -> None:
+    job = submit(lab)
+    resident = runner(lab)
+    resident.code_check = lambda: "the release moved"
+    with pytest.raises(RunnerOutdated):
+        resident.run_pending()
+    store = store_for(lab)
+    assert store.claim_owner(job.record.job_id) is None
+    assert (store.queue_root / job.record.job_id).exists()
+    with pytest.raises(RunnerOutdated):
+        resident.serve(stop=iter([False, True]).__next__, poll_seconds=0)
+
+
+def test_a_runner_outdated_just_before_its_model_loads_gives_the_job_back(lab: Lab) -> None:
+    job = submit(lab)
+    answers = iter([None, "the release moved"])
+    resident = runner(lab)
+    resident.code_check = lambda: next(answers)
+    with pytest.raises(RunnerOutdated):
+        resident.run_pending()
+    store = store_for(lab)
+    assert store.claim_owner(job.record.job_id) is None
+    assert [queued.record.job_id for queued in store.queued()] == [job.record.job_id]
+    assert (store.queue_root / job.record.job_id).exists() and not resident.lease.held
+
+
+def test_the_code_check_follows_the_release_link(tmp_path: Path) -> None:
+    package = Path(cole_voice_lab.__file__).resolve().parent
+    link = tmp_path / "current"
+    link.symlink_to(package.parent)
+    check = release_code_check(link)
+    assert check() is None
+    link.unlink()
+    link.symlink_to(tmp_path)
+    assert "not in the active release" in (check() or "")
+    link.unlink()
+    link.symlink_to(tmp_path / "pruned")
+    assert "does not resolve" in (check() or "")
+
+
+# -- review findings: the text is named by a keyed digest ---------------------------------------
+
+
+def test_the_text_is_named_by_a_keyed_digest_never_a_plain_hash(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path)
+    text = "Yes."
+    job = submit(lab, text)
+    runner(lab).run_pending()
+    store = store_for(lab)
+    key_path = store.root / TEXT_KEY_NAME
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600 and key_path.stat().st_size == 32
+    key = key_path.read_bytes()
+    plain = hashlib.sha256(text.encode()).hexdigest()
+    keyed = hmac.new(key, text.encode(), hashlib.sha256).hexdigest()
+    assert job.record.text_hmac_sha256 == keyed != plain
+    request = (store.job_directory(job.record.job_id) / "request.json").read_text()
+    ledger = ledger_path(lab.layout, job.record.job_id).read_text()
+    for record in (request, ledger):
+        assert plain not in record and keyed in record
+    assert not str(key_path).startswith(str(lab.layout.root))  # never in the asset root
+    # Another install, another key: the same text has another digest there.
+    other = build_lab(tmp_path / "other")
+    assert submit(other, text).record.text_hmac_sha256 != keyed
+    # A key that is open to others, or of the wrong size, is refused.
+    key_path.chmod(0o644)
+    refused("internal_error", lambda: SpeechStore(lab.config).text_key())
+    key_path.chmod(0o600)
+    key_path.write_bytes(b"short")
+    refused("internal_error", lambda: SpeechStore(lab.config).text_key())
+
+
+def test_an_ending_interrupted_after_the_state_leaves_no_text(lab: Lab) -> None:
+    job = submit(lab)
+    store = store_for(lab)
+    store.claim(job.record.job_id, "runner")
+    ended = store.finish(job, "cancelled", now=NOW)
+    text = store.job_directory(job.record.job_id) / "input.json"
+    write_canonical_json(text, {"job_id": job.record.job_id, "text": "left behind"})
+    assert ended.state.state == "cancelled"
+    store.sweep(now=NOW)
+    assert not text.exists()

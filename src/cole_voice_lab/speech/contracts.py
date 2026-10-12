@@ -5,6 +5,11 @@ Schemas ``api-v1-speech-*``), the webhook event, and the records written on disk
 (``speech-job``), its input (the text, deleted when the job ends), its state, the render
 ledger entry (``speech-render``), the webhook outbox entry and delivery log, and the GPU
 slot's holder. Every one is frozen and refuses unknown fields.
+
+The model-family part of a release and of a render (D-048) is a discriminated union on
+``family``: ``ReleaseModel`` (what a release binds beyond its files) and ``RenderSettings``
+(the settings a render used, which also seed it). F5-TTS (``f5-tts``) is the only member; a
+new family adds one member to each union and leaves every common field as it is.
 """
 
 from __future__ import annotations
@@ -27,6 +32,9 @@ type JobId = Annotated[str, StringConstraints(pattern=JOB_ID_PATTERN.pattern)]
 type SpeechFormat = Literal["wav", "ogg-opus"]
 type JobState = Literal["queued", "running", "succeeded", "failed", "cancelled", "expired"]
 TERMINAL_STATES: Final[frozenset[str]] = frozenset({"succeeded", "failed", "cancelled", "expired"})
+# The API's one audio format, whatever the family renders natively (D-048): 24 kHz mono 16-bit.
+API_SAMPLE_RATE_HZ: Final = 24_000
+F5_FAMILY: Final = "f5-tts"
 type FailureCode = Literal[
     "runtime_unavailable",
     "render_failed",
@@ -107,9 +115,27 @@ class SpeechAudio(ContractModel):
     expires_at: UtcTimestamp
 
 
+# What a caller is told of a failure: the code and one fixed sentence. The particulars
+# (paths, consent reasons, a worker's error) go to the job runner's own log only.
+FAILURE_DETAILS: Final[dict[str, str]] = {
+    "runtime_unavailable": "the speech runtime is not available on this host",
+    "render_failed": "a sentence could not be rendered",
+    "render_timeout": "a sentence took longer than its deadline",
+    "queue_timeout": "the job waited longer than the queue allows",
+    "voice_release_changed": "the voice release changed or cannot be used",
+    "consent_changed": "the consent for assistant speech is no longer valid",
+    "internal_error": "the job runner failed",
+}
+
+
 class SpeechFailure(ContractModel):
     code: FailureCode
     detail: str = Field(max_length=2000)
+
+    @classmethod
+    def of(cls, code: FailureCode) -> SpeechFailure:
+        """The failure a caller sees for ``code``: never a path or a reason."""
+        return cls(code=code, detail=FAILURE_DETAILS[code])
 
 
 class SpeechJobStatus(ContractModel):
@@ -156,7 +182,12 @@ class SpeechEvent(ContractModel):
 
 
 class SpeechJobRecord(ContractModel):
-    """``jobs/<id>/request.json``: the accepted request, without its text."""
+    """``jobs/<id>/request.json``: the accepted request, without its text.
+
+    The text and the whole request are named by keyed digests (HMAC-SHA256 under the
+    install's text key, ``store.TEXT_KEY_NAME``), never by plain SHA-256: a short reply
+    ("Yes.") would otherwise be found again by hashing guesses.
+    """
 
     schema_version: Literal["cole-voice-lab.speech-job/v1"] = "cole-voice-lab.speech-job/v1"
     job_id: JobId
@@ -166,8 +197,8 @@ class SpeechJobRecord(ContractModel):
     callback_url: str | None = Field(max_length=2048)
     client_ref: ClientRef | None
     idempotency_key_sha256: Sha256 | None
-    request_sha256: Sha256
-    text_sha256: Sha256
+    request_hmac_sha256: Sha256
+    text_hmac_sha256: Sha256
     text_characters: int = Field(ge=1, le=2000)
 
 
@@ -183,7 +214,7 @@ class RenderedAudio(ContractModel):
     sha256: Sha256
     bytes: int = Field(ge=45)
     frames: int = Field(ge=1)
-    sample_rate_hz: Literal[24_000] = 24_000
+    sample_rate_hz: Literal[24_000] = API_SAMPLE_RATE_HZ
 
 
 class SegmentAudio(RenderedAudio):
@@ -237,27 +268,93 @@ class VoiceReleaseRef(ContractModel):
     release_sha256: Sha256
 
 
-class RenderFingerprint(ContractModel):
-    """What spoke: the model, its reference and the runtime, as the backend verified them."""
+# -- model families (D-048) -------------------------------------------------------------------
 
-    checkpoint_sha256: Sha256
-    reference_sha256: Sha256
+
+class ReleaseFile(ContractModel):
+    """One file a release binds: its role in its family (``checkpoint``, ``reference``, a
+    speaker embedding…), its path relative to the asset root, and its SHA-256."""
+
+    role: StableId
+    path: str = Field(min_length=1, max_length=4096)
+    sha256: Sha256
+
+
+class FileDigest(ContractModel):
+    """A file a backend loaded, by role and digest (a render's fingerprint names no path)."""
+
+    role: StableId
+    sha256: Sha256
+
+
+class F5RuntimeRef(ContractModel):
+    """The F5-TTS runtime a run trained with, as its run record names it."""
+
+    f5_tts_version: str = Field(min_length=1, max_length=64)
+    torch_version: str = Field(min_length=1, max_length=64)
+    pretrained_sha256: Sha256
+
+
+class F5ReleaseModel(ContractModel):
+    """F5-TTS's part of a release: the reference clip's prompt and transcript, and the
+    runtime the run trained with. Its files are ``checkpoint`` (the run's ``model_last.pt``)
+    and ``reference`` (the clip in the run's dataset)."""
+
+    family: Literal["f5-tts"] = F5_FAMILY
+    reference_prompt_id: StableId
+    reference_text_sha256: Sha256
+    runtime: F5RuntimeRef
+
+
+class F5RenderSettings(ContractModel):
+    """What an F5-TTS render was asked for: its flow steps (D-046)."""
+
+    family: Literal["f5-tts"] = F5_FAMILY
+    nfe_steps: int = Field(ge=1, le=256)
+
+
+# One member per family; a new family adds its own (D-048).
+type ReleaseModel = Annotated[F5ReleaseModel, Field(discriminator="family")]
+type RenderSettings = Annotated[F5RenderSettings, Field(discriminator="family")]
+
+
+class RenderFingerprint(ContractModel):
+    """What spoke: the family, the files its backend loaded, the runtime and the settings.
+
+    ``native_sample_rate_hz`` is the rate the model renders at; the backend delivers
+    ``API_SAMPLE_RATE_HZ`` whatever it is. ``seeded`` says whether the family honours a seed
+    (a family that does not cannot promise byte-identical reruns).
+    """
+
+    model_family: StableId
     backend: StableId
+    files: tuple[FileDigest, ...] = Field(min_length=1, max_length=8)
     runtime: dict[str, str] = Field(max_length=16)
     device: StableId
-    nfe_steps: int = Field(ge=1, le=256)
+    native_sample_rate_hz: int = Field(ge=8_000, le=192_000)
+    seeded: bool
+    settings: RenderSettings
     voice_lab_version: str = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _one_family(self) -> RenderFingerprint:
+        if self.settings.family != self.model_family:
+            raise ValueError("a fingerprint's settings are its family's")
+        return self
 
 
 class SpeechRenderRecord(ContractModel):
-    """``provenance/speech-renders/<job id>.json``: one render, for ever (never the text)."""
+    """``provenance/speech-renders/<job id>.json``: one render, for ever (never the text; the
+    text's digest is keyed with the install's text key, so it can be checked against a text
+    on this host and guessed nowhere)."""
 
     schema_version: Literal["cole-voice-lab.speech-render/v1"] = "cole-voice-lab.speech-render/v1"
     job_id: JobId
     caller_id: StableId
-    text_sha256: Sha256
+    text_hmac_sha256: Sha256
     text_characters: int = Field(ge=1, le=2000)
     release: VoiceReleaseRef
+    model_family: StableId
     consent_id: StableId
     consent_sha256: Sha256
     outcome: Literal["succeeded", "failed", "cancelled"]
@@ -280,6 +377,8 @@ class SpeechRenderRecord(ContractModel):
             raise ValueError("only a render that succeeded names its output")
         if (self.outcome == "failed") != (self.failure is not None):
             raise ValueError("only a failed render names its failure")
+        if self.fingerprint is not None and self.fingerprint.model_family != self.model_family:
+            raise ValueError("a render's fingerprint is of the release's family")
         return self
 
 

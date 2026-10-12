@@ -1,0 +1,319 @@
+"""F5-TTS, the first model family of the speech path (D-045, D-046, D-048).
+
+@canonical speech.f5 -- ``F5_TTS`` is F5-TTS's entry in ``families``: a release of an F5-TTS
+run binds its ``checkpoint`` (the run's recorded ``model_last.pt``) and its ``reference``
+clip (a clip of the run's dataset, chosen as Speak chooses it), resolved through the existing
+Speak seam (``finetune.resolve_speech_model``); the segment limit is upstream's per-pass
+limit for that reference clip; the model renders 24 kHz mono, the API's own format, and
+honours a seed.
+
+``F5ResidentBackend`` keeps one resident worker (``f5_resident.py`` in the runtime's
+interpreter, ``speech.resident``) with the model, the vocoder and the release's checkpoint
+and reference clip loaded between jobs. It checks the runtime first through the existing
+seam (``finetune.describe_finetune_runtime``: the interpreter, F5-TTS and every pinned
+pretrained file), so a PC without its ROCm runtime fails ``runtime_unavailable`` before
+anything starts. A changed release restarts the worker; a segment past its deadline kills
+it (``render_timeout``).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import pwd
+import shutil
+from collections.abc import Callable
+from pathlib import Path
+from typing import Final
+
+from .. import __version__
+from ..finetune import (
+    FineTuneDigestCache,
+    FineTuneError,
+    FineTunePretrainedPins,
+    SpeechResolution,
+    describe_finetune_runtime,
+    resolve_speech_model,
+    synthesis_vocab_path,
+)
+from ..paths import AssetLayout
+from ..resources import resource_path
+from .backend import SpeechBackend, SpeechBackendError
+from .config import F5SpeechRuntime, SpeechConfig
+from .contracts import (
+    API_SAMPLE_RATE_HZ,
+    F5_FAMILY,
+    F5ReleaseModel,
+    F5RenderSettings,
+    F5RuntimeRef,
+    FailureCode,
+    FileDigest,
+    ReleaseFile,
+    RenderFingerprint,
+)
+from .release import DesignatedModel, FamilyCheck, VerifiedRelease, VoiceRelease, VoiceReleaseError
+from .resident import ResidentError, ResidentProcess
+
+RESIDENT_SCRIPT: Final = "f5_resident.py"
+RESIDENT_DIRECTORY: Final = "resident"
+CACHE_DIRECTORY: Final = "cache"
+STARTUP_SECONDS: Final = 300.0
+# F5-TTS renders at 24 kHz, the API's own rate: no resampling.
+F5_SAMPLE_RATE_HZ: Final = API_SAMPLE_RATE_HZ
+# Upstream's floor for a reference clip so long that its own formula gives almost nothing.
+MIN_SEGMENT_BYTES: Final = 50
+
+
+def max_segment_bytes(reference_text: str, reference_frames: int) -> int:
+    """F5-TTS 1.1.22's per-pass text limit for a reference clip (``utils_infer``'s formula:
+    the reference text's UTF-8 bytes per second times 22 s less the clip's length)."""
+    seconds = max(reference_frames / F5_SAMPLE_RATE_HZ, 0.1)
+    limit = int(len(reference_text.encode("utf-8")) / seconds * (22 - seconds))
+    return max(limit, MIN_SEGMENT_BYTES)
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _bound(resolution: SpeechResolution, run_id: str) -> DesignatedModel:
+    """What a release of ``resolution``'s run binds."""
+    run = resolution.run
+    if run is None or run.run_id != run_id:  # pragma: no cover - resolve never returns base here
+        raise ValueError(f"run {run_id} did not resolve to itself")
+    recorded = next((item for item in run.checkpoints if item.kind == "last"), None)
+    if recorded is None:
+        raise ValueError(f"fine-tune run {run_id} records no checkpoint")
+    reference = resolution.reference
+    return DesignatedModel(
+        subject_id=resolution.reference_run.subject_id,
+        files=(
+            ReleaseFile(role="checkpoint", path=recorded.relative_path, sha256=recorded.sha256),
+            ReleaseFile(
+                role="reference",
+                path=f"{resolution.dataset.dataset_root}/{reference.relative_path}",
+                sha256=reference.sha256,
+            ),
+        ),
+        model=F5ReleaseModel(
+            reference_prompt_id=reference.prompt_id,
+            reference_text_sha256=_sha256_text(reference.text),
+            runtime=F5RuntimeRef(
+                f5_tts_version=run.runtime.f5_tts_version,
+                torch_version=run.runtime.torch_version,
+                pretrained_sha256=run.runtime.pretrained_sha256,
+            ),
+        ),
+    )
+
+
+class F5Family:
+    """F5-TTS's entry in the family registry."""
+
+    family_id: Final = F5_FAMILY
+    native_sample_rate_hz: Final = F5_SAMPLE_RATE_HZ
+    seeded: Final = True
+
+    def designate(
+        self,
+        layout: AssetLayout,
+        run_id: str,
+        *,
+        reference_prompt_id: str | None,
+        digests: FineTuneDigestCache,
+    ) -> DesignatedModel:
+        return _bound(
+            resolve_speech_model(layout, run_id, reference_prompt_id=reference_prompt_id), run_id
+        )
+
+    def verify(
+        self, layout: AssetLayout, release: VoiceRelease, *, digests: FineTuneDigestCache
+    ) -> FamilyCheck:
+        model = release.model
+        resolution = resolve_speech_model(
+            layout, release.run_id, reference_prompt_id=model.reference_prompt_id
+        )
+        bound = _bound(resolution, release.run_id)
+        if (
+            {item.role: item for item in bound.files} != {item.role: item for item in release.files}
+            or bound.model != model
+            or bound.subject_id != release.subject_id
+        ):
+            raise VoiceReleaseError(
+                "release_changed", f"run {release.run_id} no longer records what the release binds"
+            )
+        reference = resolution.reference
+        return FamilyCheck(
+            max_segment_bytes=max_segment_bytes(reference.text, reference.frames),
+            state=resolution,
+        )
+
+    def backend(self, config: SpeechConfig) -> SpeechBackend:
+        return F5ResidentBackend(
+            config.runtime_for(F5_FAMILY),
+            state_root=Path(config.state_root),
+            asset_root=Path(config.asset_root),
+        )
+
+
+F5_TTS: Final = F5Family()
+
+
+def _environment(runtime: F5SpeechRuntime, state_root: Path) -> dict[str, str]:
+    """The resident worker's environment: this process's, offline, with writable caches
+    under the speech state (the host unit's home and system directories are read-only)."""
+    cache = state_root / CACHE_DIRECTORY
+    cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+    environment = {
+        **os.environ,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "HF_HUB_OFFLINE": "1",
+        "WANDB_MODE": "disabled",
+        "XDG_CACHE_HOME": str(cache),
+        "MIOPEN_USER_DB_PATH": str(cache / "miopen"),
+        "MIOPEN_CUSTOM_CACHE_DIR": str(cache / "miopen"),
+    }
+    environment.setdefault("HOME", pwd.getpwuid(os.getuid()).pw_dir)
+    if runtime.visible_devices is not None:
+        environment["HIP_VISIBLE_DEVICES"] = runtime.visible_devices
+    return environment
+
+
+class F5ResidentBackend:
+    """The resident F5-TTS backend over one runtime.
+
+    ``python`` and ``resident_script`` are test seams (a stand-in worker under this
+    interpreter), as ``pretrained_pin`` is for the runtime check; the shipped runner passes
+    none of them.
+    """
+
+    def __init__(
+        self,
+        runtime: F5SpeechRuntime | None,
+        *,
+        state_root: Path,
+        asset_root: Path,
+        pretrained_pin: FineTunePretrainedPins | None = None,
+        python: str | None = None,
+        resident_script: Path | None = None,
+        digests: FineTuneDigestCache | None = None,
+        startup_seconds: float = STARTUP_SECONDS,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self.runtime = runtime
+        self.state_root = state_root
+        self.asset_root = asset_root
+        self.pretrained_pin = pretrained_pin
+        self.python = python
+        self.resident_script = resident_script
+        self.digests = FineTuneDigestCache() if digests is None else digests
+        self.startup_seconds = startup_seconds
+        self.clock = clock
+        self._process: ResidentProcess | None = None
+        self._key: tuple[str, str, str] | None = None
+        self._fingerprint: RenderFingerprint | None = None
+
+    @property
+    def loaded(self) -> bool:
+        return self._process is not None and self._process.alive
+
+    def prepare(self, release: VerifiedRelease) -> RenderFingerprint:
+        runtime = self.runtime
+        if runtime is None:
+            raise SpeechBackendError(
+                "runtime_unavailable",
+                "no F5-TTS runtime is configured on this host (design phase 5, spike S-2)",
+            )
+        record = release.release
+        resolution = release.family_state
+        if record.model_family != F5_FAMILY or not isinstance(resolution, SpeechResolution):
+            raise SpeechBackendError("runtime_unavailable", "not an F5-TTS release")
+        checkpoint, reference = record.file("checkpoint"), record.file("reference")
+        key = (checkpoint.sha256, reference.sha256, runtime.device)
+        if self.loaded and self._key == key and self._fingerprint is not None:
+            return self._fingerprint
+        self.unload()
+        try:
+            described = describe_finetune_runtime(
+                Path(runtime.runtime_root),
+                pretrained_pin=self.pretrained_pin,
+                digests=self.digests,
+            )
+        except FineTuneError as error:
+            raise SpeechBackendError("runtime_unavailable", str(error)) from error
+        scratch = self.state_root / RESIDENT_DIRECTORY
+        shutil.rmtree(scratch, ignore_errors=True)
+        load = {
+            "checkpoint_path": str(release.files["checkpoint"]),
+            "vocab_path": str(synthesis_vocab_path(described)),
+            "vocoder_path": str(described.vocoder_path),
+            "use_ema": True,
+            "device": runtime.device,
+            "reference_audio_path": str(release.files["reference"]),
+            "reference_text": resolution.reference.text,
+            "work_directory": str(scratch),
+        }
+        python = self.python or str(described.python)
+        script = self.resident_script or resource_path(RESIDENT_SCRIPT)
+        options = {} if self.clock is None else {"clock": self.clock}
+        try:
+            self._process = ResidentProcess(
+                [python, "-B", str(script)],
+                load=load,
+                environment=_environment(runtime, self.state_root),
+                cwd=self.state_root,
+                startup_seconds=self.startup_seconds,
+                **options,
+            )
+        except ResidentError as error:
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise SpeechBackendError("runtime_unavailable", str(error)) from error
+        ready = self._process.ready
+        identity = described.identity
+        self._key = key
+        self._fingerprint = RenderFingerprint(
+            model_family=F5_FAMILY,
+            backend="f5-tts-resident",
+            files=tuple(FileDigest(role=item.role, sha256=item.sha256) for item in record.files),
+            runtime={
+                "f5_tts_version": str(ready.get("f5_tts_version", identity.f5_tts_version))[:64],
+                "torch_version": str(ready.get("torch_version", identity.torch_version))[:64],
+                "model_dtype": str(ready.get("model_dtype", "unknown"))[:64],
+                "python_sha256": identity.python_sha256,
+                "pretrained_sha256": identity.pretrained_sha256,
+            },
+            device=runtime.device,
+            native_sample_rate_hz=F5_SAMPLE_RATE_HZ,
+            seeded=True,
+            settings=F5RenderSettings(nfe_steps=runtime.nfe_steps),
+            voice_lab_version=__version__,
+        )
+        return self._fingerprint
+
+    def render_segment(
+        self, text: str, *, seed: int, output: Path, deadline_seconds: float
+    ) -> None:
+        process, runtime = self._process, self.runtime
+        if process is None or runtime is None or not process.alive:
+            raise SpeechBackendError("render_failed", "no resident worker is loaded")
+        try:
+            process.render(
+                text,
+                seed=seed,
+                nfe_steps=runtime.nfe_steps,
+                output=output,
+                deadline_seconds=deadline_seconds,
+            )
+        except ResidentError as error:
+            if not error.segment_only:
+                self.unload()
+            code: FailureCode = "render_timeout" if error.timed_out else "render_failed"
+            raise SpeechBackendError(code, str(error)) from error
+
+    def unload(self) -> None:
+        if self._process is not None:
+            self._process.close()
+        self._process = None
+        self._key = None
+        self._fingerprint = None
+        shutil.rmtree(self.state_root / RESIDENT_DIRECTORY, ignore_errors=True)

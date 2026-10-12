@@ -39,7 +39,7 @@ from ..paths import AssetLayout
 from .config import SpeechCaller, SpeechConfig, webhook_url_problem
 from .contracts import JOB_ID_PATTERN, TERMINAL_STATES, SpeechRequest
 from .gpu import busy_with_long_job
-from .release import VoiceReleaseError, current_release, require_release_consent
+from .release import VoiceReleaseError, current_release, require_release_consent, require_subject
 from .store import Job, SpeechRefusal, SpeechStore, open_audio, open_segment, to_status
 
 PREFIX: Final = "/api/v1/speech"
@@ -47,7 +47,8 @@ EVENTS_MAX_SECONDS: Final = 600.0
 KEEPALIVE_SECONDS: Final = 15.0
 _SEGMENT_INDEX: Final = re.compile(r"^[1-9][0-9]{0,3}$")
 MAX_BODY_BYTES: Final = 64 * 1024
-_RANGE: Final = re.compile(r"^bytes=(?P<start>\d{0,15})-(?P<end>\d{0,15})$")
+_RANGE: Final = re.compile(r"^bytes=(?P<start>[0-9]{0,15})-(?P<end>[0-9]{0,15})$")
+_LAST_EVENT_ID: Final = re.compile(r"^[0-9]{1,4}$")
 
 
 def caller_policy(config: SpeechConfig, jwks_path: str) -> AuthPolicy:
@@ -88,30 +89,50 @@ def _json(status: int, route: str, model: ContractModel) -> RouteResponse:
 
 
 def _refuse(refusal: SpeechRefusal) -> RouteRefusal:
-    headers = () if refusal.retry_after is None else (("Retry-After", str(refusal.retry_after)),)
+    headers = refusal.headers
+    if refusal.retry_after is not None:
+        headers = (*headers, ("Retry-After", str(refusal.retry_after)))
     return RouteRefusal(refusal.status, refusal.code, refusal.detail, headers)
+
+
+def _unsatisfiable(size: int, detail: str) -> SpeechRefusal:
+    return SpeechRefusal(
+        416, "range_not_satisfiable", detail, headers=(("Content-Range", f"bytes */{size}"),)
+    )
 
 
 def byte_range(header: str | None, size: int) -> tuple[int, int] | None:
     """The inclusive ``(start, end)`` of a single ``Range: bytes=…``, or ``None`` for all.
 
-    Raises: ``SpeechRefusal`` 416 ``range_not_satisfiable``.
+    Several ranges, another unit or a header that is not a byte range are answered with the
+    whole file (RFC 9110 lets a server ignore ``Range``); only a single byte range that the
+    file cannot satisfy is refused.
+    Raises: ``SpeechRefusal`` 416 ``range_not_satisfiable`` (with ``Content-Range: bytes
+    */<size>``).
     """
     if header is None:
         return None
     match = _RANGE.fullmatch(header.strip())
     if match is None or (not match["start"] and not match["end"]):
-        raise SpeechRefusal(416, "range_not_satisfiable", "one bytes=start-end range is served")
+        return None
     if not match["start"]:
         suffix = int(match["end"])
-        if suffix == 0:
-            raise SpeechRefusal(416, "range_not_satisfiable", "an empty suffix range")
+        if suffix == 0 or size == 0:
+            raise _unsatisfiable(size, "an empty suffix range")
         return max(0, size - suffix), size - 1
     start = int(match["start"])
     end = int(match["end"]) if match["end"] else size - 1
     if start >= size or end < start:
-        raise SpeechRefusal(416, "range_not_satisfiable", f"the audio is {size} bytes")
+        raise _unsatisfiable(size, f"the audio is {size} bytes")
     return start, min(end, size - 1)
+
+
+def last_event_id(header: str | None) -> int:
+    """The segment a resumed event stream follows: ``Last-Event-ID`` when it is 1 to 4 ASCII
+    digits, else 0 (from the start)."""
+    if header is None or not _LAST_EVENT_ID.fullmatch(header):
+        return 0
+    return int(header)
 
 
 class SpeechRoutes:
@@ -195,12 +216,13 @@ class SpeechRoutes:
         if action == "events":
             self._only(request, "GET")
             self.store.for_caller(caller, job_id)  # refused before the stream starts
+            resume = last_event_id(request.header("Last-Event-ID"))  # parsed before headers
             return RouteResponse(
                 status=200,
                 route="speech.events",
                 content_type="text/event-stream; charset=utf-8",
                 headers=(("X-Accel-Buffering", "no"),),
-                events=self._events(caller, job_id, request.header("Last-Event-ID")),
+                events=self._events(caller, job_id, resume),
             )
         if action == "cancel":
             self._only(request, "POST")
@@ -228,7 +250,7 @@ class SpeechRoutes:
             )
         if speech.callback_url is not None and (
             webhook_url_problem(speech.callback_url, self.config.tailnet_suffix) is not None
-            or not caller.allows_callback(speech.callback_url)
+            or not caller.allows_callback(speech.callback_url, self.config.tailnet_suffix)
         ):
             raise SpeechRefusal(
                 422, "callback_not_allowed", "the callback URL is not on this caller's allowlist"
@@ -240,12 +262,13 @@ class SpeechRoutes:
         try:
             layout = AssetLayout.validate(self.asset_root)
             release, _ = current_release(layout)
-        except (VoiceLabError, OSError) as error:
+            require_subject(release, self.config.subject_id)
+        except (VoiceLabError, OSError, ValueError) as error:
             raise SpeechRefusal(
-                503, "voice_release_unavailable", "no voice release is designated"
+                503, "voice_release_unavailable", "no usable voice release is designated"
             ) from error
         try:
-            require_release_consent(layout, release, at=now)
+            require_release_consent(layout, release, at=now, subject_id=self.config.subject_id)
         except VoiceReleaseError as error:
             raise SpeechRefusal(
                 503,
@@ -313,13 +336,10 @@ class SpeechRoutes:
 
     # -- events --------------------------------------------------------------------------------
 
-    def _events(
-        self, caller: SpeechCaller, job_id: str, last_event_id: str | None
-    ) -> Iterator[bytes]:
-        """``segment.ready`` for each published segment after ``Last-Event-ID``, then the
+    def _events(self, caller: SpeechCaller, job_id: str, sent: int) -> Iterator[bytes]:
+        """``segment.ready`` for each published segment after segment ``sent``, then the
         terminal event; a comment every ``KEEPALIVE_SECONDS``; closed after
         ``EVENTS_MAX_SECONDS`` in any case."""
-        sent = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
         started = last_beat = self.monotonic()
         yield b"retry: 2000\n\n"
         while True:

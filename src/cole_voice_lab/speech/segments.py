@@ -1,10 +1,11 @@
 """Sentences, seeds and the joined audio of a speech job (D-046, docs/SPEECH_API.md §7).
 
 @canonical speech.segments -- pure functions. ``split_sentences`` cuts a text into the
-segments the job runner renders one after another; ``max_segment_characters`` is upstream
-F5-TTS's one-pass limit for a reference clip; ``job_seed`` and ``segment_seed`` make every
-render reproducible (the same text, release and flow steps give the same seeds); and
-``join_wavs`` concatenates the finished segments' PCM into the whole reply.
+segments the job runner renders one after another, none longer than the release's family
+allows in one pass (``release.VerifiedRelease.max_segment_bytes``, D-048); ``job_seed`` and
+``segment_seed`` make every render reproducible (the same text, release and render settings
+give the same seeds); and ``join_wavs`` concatenates the finished segments' PCM into the
+whole reply.
 """
 
 from __future__ import annotations
@@ -16,11 +17,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
 
-SAMPLE_RATE_HZ: Final = 24_000
+from .contracts import API_SAMPLE_RATE_HZ
+
+SAMPLE_RATE_HZ: Final = API_SAMPLE_RATE_HZ
 # A fragment shorter than this ("Yes.", "OK.") joins the sentence after it.
 MIN_SEGMENT_CHARACTERS: Final = 12
-# Upstream's floor for a reference clip so long that its own formula gives almost nothing.
-MIN_MAX_CHARACTERS: Final = 50
 _TERMINAL: Final = "[.!?…。！？]"
 _CLOSER: Final = "[\"'”’)\\]]"
 _SENTENCE_END: Final = re.compile(
@@ -28,14 +29,6 @@ _SENTENCE_END: Final = re.compile(
 )
 _SOFT_BREAK: Final = re.compile(r"[,;:，；：]\s")
 _SEED_MASK: Final = 0x7FFFFFFF
-
-
-def max_segment_characters(reference_text: str, reference_frames: int) -> int:
-    """F5-TTS 1.1.22's per-pass text limit for a reference clip (``utils_infer``'s formula:
-    the reference text's UTF-8 bytes per second times 22 s less the clip's length)."""
-    seconds = max(reference_frames / SAMPLE_RATE_HZ, 0.1)
-    limit = int(len(reference_text.encode("utf-8")) / seconds * (22 - seconds))
-    return max(limit, MIN_MAX_CHARACTERS)
 
 
 def _split_long(sentence: str, limit: int) -> list[str]:
@@ -48,7 +41,7 @@ def _split_long(sentence: str, limit: int) -> list[str]:
         soft = [match.end() for match in _SOFT_BREAK.finditer(window)]
         cut = soft[-1] if soft else window.rfind(" ") + 1
         if cut <= 0:
-            cut = len(window)
+            cut = len(window) or 1  # a hard cut, never an empty one
         pieces.append(rest[:cut].strip())
         rest = rest[cut:].strip()
     if rest:
@@ -56,12 +49,12 @@ def _split_long(sentence: str, limit: int) -> list[str]:
     return [piece for piece in pieces if piece]
 
 
-def split_sentences(text: str, *, max_characters: int) -> list[str]:
+def split_sentences(text: str, *, max_bytes: int) -> list[str]:
     """``text`` as the segments the job runner renders, in order, none empty.
 
     Sentences end after ``.``, ``!``, ``?``, ``…`` (and their CJK forms) followed by white
     space, and at line breaks. A fragment under ``MIN_SEGMENT_CHARACTERS`` joins the next
-    sentence; a sentence longer than ``max_characters`` UTF-8 bytes is cut at its last comma,
+    sentence; a sentence longer than ``max_bytes`` UTF-8 bytes is cut at its last comma,
     semicolon or colon within the limit, else at its last space, else hard.
     """
     sentences = [part.strip() for part in _SENTENCE_END.split(text) if part and part.strip()]
@@ -81,7 +74,7 @@ def split_sentences(text: str, *, max_characters: int) -> list[str]:
             merged.append(carry)
     segments: list[str] = []
     for sentence in merged:
-        segments.extend(_split_long(sentence, max_characters))
+        segments.extend(_split_long(sentence, max_bytes))
     return segments
 
 
@@ -89,9 +82,11 @@ def _seed(material: str) -> int:
     return int(hashlib.sha256(material.encode("utf-8")).hexdigest()[:8], 16) & _SEED_MASK
 
 
-def job_seed(text_sha256: str, release_sha256: str, nfe_steps: int) -> int:
-    """The job's seed: the same text, release and flow steps always give the same one."""
-    return _seed(f"cole-voice-lab.speech-seed/v1:{text_sha256}:{release_sha256}:{nfe_steps}")
+def job_seed(text_digest: str, release_sha256: str, settings_sha256: str) -> int:
+    """The job's seed: the same text (its keyed digest), release and render settings (the
+    canonical digest of the family's ``RenderSettings``: F5-TTS's flow steps) always give the
+    same one."""
+    return _seed(f"cole-voice-lab.speech-seed/v2:{text_digest}:{release_sha256}:{settings_sha256}")
 
 
 def segment_seed(seed: int, index: int) -> int:

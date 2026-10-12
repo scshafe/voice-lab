@@ -216,8 +216,14 @@ def test_the_speech_units_stay_out_of_the_lanes_directory() -> None:
 
 def test_the_speech_runner_has_the_gpu_and_no_network() -> None:
     assert values(SPEECH, "Service", "ExecStart") == [
-        f"{BINARY} speech run --config {SPEECH_CONFIG}"
+        f"{BINARY} speech run --config {SPEECH_CONFIG} --release-link /opt/voice-lab/current"
     ]
+    # It writes the speech state, the GPU slot and the render ledger: not the rest of the lab.
+    assert values(SPEECH, "Service", "ReadWritePaths") == [
+        "/data/voice-lab/state/speech -/data/voice-lab/state/jobs "
+        "/data/voice-lab/lab/provenance/speech-renders"
+    ]
+    assert values(SPEECH, "Service", "ProtectSystem") == ["strict"]
     assert values(SPEECH, "Service", "PrivateNetwork") == ["yes"]
     assert values(SPEECH, "Service", "IPAddressDeny") == ["any"]
     assert values(SPEECH, "Service", "RestrictAddressFamilies") == ["AF_UNIX"]
@@ -241,7 +247,11 @@ def test_webhook_delivery_reaches_the_tailnet_and_nothing_else() -> None:
     assert values(WEBHOOKS, "Service", "IPAddressAllow") == TAILNET_ALLOWANCE
     assert values(WEBHOOKS, "Service", "PrivateDevices") == ["yes"]
     assert values(WEBHOOKS, "Service", "ReadWritePaths") == ["/data/voice-lab/state/speech"]
-    assert not {key for _, key, _ in settings(WEBHOOKS)} & CREDENTIAL_KEYS
+    # The callers' secrets reach this unit alone, as credentials from a root-only directory.
+    assert {key for _, key, _ in settings(WEBHOOKS)} & CREDENTIAL_KEYS == {"LoadCredential"}
+    assert values(WEBHOOKS, "Service", "LoadCredential") == [
+        "speech-webhook-secrets:/etc/voice-lab/speech-webhook-secrets"
+    ]
     assert values(MANUAL / "voice-lab-speech-webhooks.path", "Path", "PathChanged") == [
         "/data/voice-lab/state/speech/outbox"
     ]

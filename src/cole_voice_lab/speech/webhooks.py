@@ -12,12 +12,21 @@ base64-decoded part of the caller's ``whsec_`` secret). The body is the same byt
 attempt and carries no text and no audio.
 
 Before each attempt the URL is checked again against the caller's allowlist and the tailnet
-suffix; the host is resolved and every address must be a tailnet address; the connection
-goes to the address that was checked, with TLS verified for the host name; no redirect is
-followed; timeouts are short; at most 4 KiB of the answer is read and discarded. A ``2xx``
-delivers, ``410`` stops, anything else is retried at 0, 30 s, 2, 10, 30 and 60 minutes after
-the event, then given up. The delivery log keeps each attempt's number, time, status or
-error class and duration: never the secret, the signature or the body.
+suffix; a caller no longer registered, or a URL no longer allowed, ends the event
+``refused`` without sending (the registry is the owner's word). The caller's secret is read
+next: a missing or unreadable secret is retried like a failed attempt, since a secret being
+rotated or provisioned comes back. The host is resolved and every address must be a tailnet
+address; the connection goes to the address that was checked, with TLS verified for the host
+name; no redirect is followed; one attempt has 5 s to connect and 10 s in all, whatever the
+peer sends, after which it is abandoned; the status line is read (at most 4 KiB) and the rest
+discarded. A ``2xx`` delivers, ``410`` stops, anything else is retried at 0, 30 s, 2, 10, 30
+and 60 minutes after the event, then given up. The delivery log keeps each attempt's number,
+time, status or error class and duration: never the secret, the signature or the body.
+
+The secrets are root-owned files that only the delivery unit receives, through systemd's
+``LoadCredential=`` (``CREDENTIAL_ID``): in the unit, a caller's ``webhook_secret_file`` is
+read from ``$CREDENTIALS_DIRECTORY/<CREDENTIAL_ID>_<its file name>``; nowhere else can the
+``voice-lab`` user read it.
 """
 
 from __future__ import annotations
@@ -29,6 +38,7 @@ import hmac
 import http.client
 import ipaddress
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -48,6 +58,8 @@ from .contracts import DeliveryAttempt, WebhookDeliveryLog, WebhookOutboxEntry
 from .store import SpeechStore
 
 RETRY_OFFSETS: Final = (0, 30, 120, 600, 1800, 3600)
+# The delivery unit loads the secrets directory as credentials named <CREDENTIAL_ID>_<file>.
+CREDENTIAL_ID: Final = "speech-webhook-secrets"
 CONNECT_TIMEOUT_SECONDS: Final = 5.0
 TOTAL_TIMEOUT_SECONDS: Final = 10.0
 MAX_ANSWER_BYTES: Final = 4096
@@ -132,6 +144,14 @@ def verify_signature(
     )
 
 
+def secret_path(configured: str, credentials_directory: Path | None) -> Path:
+    """Where the delivery process reads a caller's secret: its systemd credential when the
+    unit received the secrets (``LoadCredential=``), else the configured file itself."""
+    if credentials_directory is None:
+        return Path(configured)
+    return credentials_directory / f"{CREDENTIAL_ID}_{Path(configured).name}"
+
+
 type Resolver = Callable[[str, int], Sequence[str]]
 
 
@@ -175,34 +195,77 @@ class Delivery:
     body: bytes
 
 
-class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    """An HTTPS connection to a checked address, with TLS verified for the host name."""
+_STATUS_LINE: Final = re.compile(rb"^HTTP/1\.[01] ([1-5][0-9]{2})(?: [^\r\n]*)?$")
 
-    def __init__(self, host: str, port: int, address: str, context: ssl.SSLContext) -> None:
-        super().__init__(host, port, timeout=CONNECT_TIMEOUT_SECONDS, context=context)
-        self._address = address
-        self._pinned_context = context
 
-    def connect(self) -> None:  # pragma: no cover - exercised against a real tailnet host only
-        raw = socket.create_connection((self._address, self.port), timeout=CONNECT_TIMEOUT_SECONDS)
-        raw.settimeout(TOTAL_TIMEOUT_SECONDS)
-        self.sock = self._pinned_context.wrap_socket(raw, server_hostname=self.host)
+class DeadlinePassed(TimeoutError):
+    """An attempt ran out of its total time."""
+
+
+def _remaining(deadline: float, monotonic: Callable[[], float]) -> float:
+    left = deadline - monotonic()
+    if left <= 0:
+        raise DeadlinePassed("the attempt ran out of time")
+    return left
+
+
+def request_bytes(delivery: Delivery) -> bytes:
+    """The one ``POST`` an attempt sends (``Connection: close``; no redirect is followed)."""
+    host = delivery.host if delivery.port == 443 else f"{delivery.host}:{delivery.port}"
+    lines = [
+        f"POST {delivery.path} HTTP/1.1",
+        f"Host: {host}",
+        f"Content-Length: {len(delivery.body)}",
+        "Connection: close",
+        *(f"{name}: {value}" for name, value in delivery.headers),
+    ]
+    return ("\r\n".join(lines) + "\r\n\r\n").encode("ascii") + delivery.body
+
+
+def exchange(
+    sock: socket.socket,
+    data: bytes,
+    *,
+    deadline: float,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> int:
+    """Send ``data`` on connected ``sock`` and read the answer's status code, all before
+    ``deadline``: each send and receive gets only the time that is left, so a peer that
+    answers a byte at a time cannot hold the attempt past it.
+
+    Raises: ``DeadlinePassed`` (or ``TimeoutError``) when time runs out; ``OSError``;
+    ``http.client.HTTPException`` for an answer that is not an HTTP/1 status line in 4 KiB.
+    """
+    sock.settimeout(_remaining(deadline, monotonic))
+    sock.sendall(data)
+    answer = b""
+    while b"\n" not in answer and len(answer) < MAX_ANSWER_BYTES:
+        sock.settimeout(_remaining(deadline, monotonic))
+        chunk = sock.recv(MAX_ANSWER_BYTES - len(answer))
+        if not chunk:
+            break
+        answer += chunk
+    match = _STATUS_LINE.match(answer.split(b"\n", 1)[0].rstrip(b"\r"))
+    if match is None:
+        raise http.client.BadStatusLine("the answer has no HTTP status line")
+    return int(match[1])
 
 
 def https_transport(delivery: Delivery) -> int:  # pragma: no cover - needs a tailnet peer
-    """POST ``delivery`` and return the status; redirects are never followed."""
-    connection = _PinnedHTTPSConnection(
-        delivery.host, delivery.port, delivery.address, ssl.create_default_context()
+    """POST ``delivery`` to its checked address, TLS verified for its host name, within
+    ``TOTAL_TIMEOUT_SECONDS`` in all; return the status. Redirects are never followed."""
+    deadline = time.monotonic() + TOTAL_TIMEOUT_SECONDS
+    raw = socket.create_connection(
+        (delivery.address, delivery.port), timeout=CONNECT_TIMEOUT_SECONDS
     )
     try:
-        connection.request(
-            "POST", delivery.path, body=delivery.body, headers=dict(delivery.headers)
-        )
-        response = connection.getresponse()
-        response.read(MAX_ANSWER_BYTES)
-        return response.status
+        # The handshake is bounded as a whole by the socket's timeout.
+        raw.settimeout(_remaining(deadline, time.monotonic))
+        context = ssl.create_default_context()
+        with context.wrap_socket(raw, server_hostname=delivery.host) as tls:
+            return exchange(tls, request_bytes(delivery), deadline=deadline)
     finally:
-        connection.close()
+        raw.close()
 
 
 type Transport = Callable[[Delivery], int]
@@ -220,6 +283,7 @@ class WebhookDispatcher:
         secret_reader: Callable[[Path], bytes] = read_secret,
         clock: Callable[[], datetime] = utc_now,
         monotonic: Callable[[], float] = time.monotonic,
+        credentials_directory: Path | None = None,
     ) -> None:
         self.config = config
         self.store = SpeechStore(config)
@@ -228,6 +292,9 @@ class WebhookDispatcher:
         self.secret_reader = secret_reader
         self.clock = clock
         self.monotonic = monotonic
+        if credentials_directory is None and os.environ.get("CREDENTIALS_DIRECTORY"):
+            credentials_directory = Path(os.environ["CREDENTIALS_DIRECTORY"])
+        self.credentials_directory = credentials_directory
 
     # -- the outbox ----------------------------------------------------------------------------
 
@@ -303,7 +370,7 @@ class WebhookDispatcher:
         caller = self.config.caller(entry.caller_id)
         if caller is None:
             raise WebhookRefused("caller-not-registered")
-        if not caller.allows_callback(entry.url):
+        if not caller.allows_callback(entry.url, self.config.tailnet_suffix):
             raise WebhookRefused("url-not-allowed")
         return caller
 
@@ -318,23 +385,18 @@ class WebhookDispatcher:
         try:
             caller = self._caller(entry)
             parts = parse_webhook_url(entry.url, self.config.tailnet_suffix)
-            assert caller.webhook_secret_file is not None
-            key = self.secret_reader(Path(caller.webhook_secret_file))
-        except (WebhookRefused, ValueError, WebhookSecretError) as refusal:
-            error = (
-                str(refusal)
-                if isinstance(refusal, WebhookRefused)
-                else (
-                    "secret-unavailable"
-                    if isinstance(refusal, WebhookSecretError)
-                    else "url-invalid"
-                )
-            )
+        except (WebhookRefused, ValueError) as refusal:
+            # The registry no longer allows this event: it is never sent.
+            error = str(refusal) if isinstance(refusal, WebhookRefused) else "url-invalid"
             final = "refused"
         else:
             host = parts.hostname or ""
             port = parts.port or 443
             try:
+                assert caller.webhook_secret_file is not None
+                key = self.secret_reader(
+                    secret_path(caller.webhook_secret_file, self.credentials_directory)
+                )
                 address = tailnet_address(host, port, self.resolver)
                 body = canonical_json_bytes(entry.event)
                 timestamp = int(now.timestamp())
@@ -353,6 +415,8 @@ class WebhookDispatcher:
                     body=body,
                 )
                 status = self.transport(delivery)
+            except WebhookSecretError:
+                error = "secret-unavailable"  # retried: a secret being provisioned comes back
             except WebhookRefused as refusal:
                 error = str(refusal)
             except (OSError, ssl.SSLError, http.client.HTTPException) as failure:

@@ -24,10 +24,11 @@ from speech_fixtures import NOW, Lab, OnePass, build_lab, finished_run
 from cole_voice_lab.canonical import sha256_file
 from cole_voice_lab.finetune import FineTuneDigestCache, FineTunePretrainedPins
 from cole_voice_lab.resources import resource_path
-from cole_voice_lab.speech.backend import F5ResidentBackend, SpeechBackendError
-from cole_voice_lab.speech.config import SpeechRuntime
+from cole_voice_lab.speech.backend import SpeechBackendError
+from cole_voice_lab.speech.config import F5SpeechRuntime
 from cole_voice_lab.speech.contracts import SpeechRenderRecord, SpeechRequest
-from cole_voice_lab.speech.release import current_release, designate, verify_release
+from cole_voice_lab.speech.f5 import F5ResidentBackend
+from cole_voice_lab.speech.release import current_release, verify_release
 from cole_voice_lab.speech.runner import check_wav, ledger_path
 from cole_voice_lab.speech.store import SpeechStore
 
@@ -110,7 +111,7 @@ def rig(tmp_path: Path) -> Iterator[Rig]:
     runtime, pin = stub_finetune_runtime(tmp_path.resolve() / "runtime")
     lab = build_lab(
         tmp_path,
-        runtime=SpeechRuntime(
+        runtime=F5SpeechRuntime(
             runtime_root=str(runtime), device="cpu", nfe_steps=16, visible_devices="0"
         ),
     )
@@ -135,22 +136,27 @@ def test_the_model_is_loaded_once_and_renders_each_segment(rig: Rig) -> None:
     fingerprint = backend.prepare(verified)
     assert backend.loaded
     release = verified.release
-    assert (fingerprint.checkpoint_sha256, fingerprint.reference_sha256) == (
-        release.checkpoint_sha256,
-        release.reference_sha256,
-    )
+    assert {item.role: item.sha256 for item in fingerprint.files} == {
+        "checkpoint": release.file("checkpoint").sha256,
+        "reference": release.file("reference").sha256,
+    }
     assert fingerprint.runtime["model_dtype"] == "torch.float16"
-    assert (fingerprint.backend, fingerprint.device, fingerprint.nfe_steps) == (
+    assert (fingerprint.backend, fingerprint.device, fingerprint.settings.nfe_steps) == (
         "f5-tts-resident",
         "cpu",
         16,
     )
+    assert (fingerprint.model_family, fingerprint.native_sample_rate_hz, fingerprint.seeded) == (
+        "f5-tts",
+        24_000,
+        True,
+    )
     load = rig.loaded["load"]
     root = rig.lab.layout.root
-    assert load["checkpoint_path"] == str(root / release.checkpoint_path)
-    assert load["reference_audio_path"] == str(root / release.reference_path)
+    assert load["checkpoint_path"] == str(root / release.file("checkpoint").path)
+    assert load["reference_audio_path"] == str(root / release.file("reference").path)
     assert load["vocoder_path"].endswith("pretrained/vocos-mel-24khz") and load["use_ema"] is True
-    assert load["reference_text"] == verified.resolution.reference.text
+    assert load["reference_text"] == verified.family_state.reference.text
     env = rig.loaded["env"]
     assert env["HIP_VISIBLE_DEVICES"] == "0" and env["HF_HUB_OFFLINE"] == "1"
     assert env["MIOPEN_USER_DB_PATH"].startswith(rig.lab.config.state_root)
@@ -178,7 +184,7 @@ def test_without_a_runtime_nothing_starts(rig: Rig, tmp_path: Path) -> None:
             verified
         ),
     )
-    missing = SpeechRuntime(runtime_root=str(tmp_path / "no-runtime"))
+    missing = F5SpeechRuntime(runtime_root=str(tmp_path / "no-runtime"))
     failure(
         "runtime_unavailable",
         lambda: F5ResidentBackend(
@@ -251,9 +257,9 @@ def test_a_new_release_restarts_the_worker(rig: Rig) -> None:
     rig.lab.designate()  # the same run again: the same files, so no restart
     assert backend.prepare(rig.verified()) == first and backend._process is process
     finished_run(rig.lab.layout, "finetune-b")
-    designate(rig.lab.layout, run_id="finetune-b", designated_by="Cole", now=NOW)
+    rig.lab.designate(run_id="finetune-b")
     third = backend.prepare(rig.verified())
-    assert backend._process is not process and third.checkpoint_sha256 != first.checkpoint_sha256
+    assert backend._process is not process and third.files != first.files
     backend.unload()
 
 
@@ -270,7 +276,7 @@ def test_a_job_runs_end_to_end_through_the_resident_worker(rig: Rig) -> None:
     ledger = SpeechRenderRecord.model_validate_json(
         ledger_path(lab.layout, job.record.job_id).read_bytes()
     )
-    assert ledger.fingerprint is not None and ledger.fingerprint.nfe_steps == 16
+    assert ledger.fingerprint is not None and ledger.fingerprint.settings.nfe_steps == 16
     assert ledger.fingerprint.runtime["torch_version"] == "2.14.0+rocm7.2"
 
 

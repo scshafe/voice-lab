@@ -35,7 +35,7 @@ from cole_voice_lab.consent import revoke_consent
 from cole_voice_lab.speech.contracts import GpuSlotHolder
 from cole_voice_lab.speech.gpu import hold_slot
 from cole_voice_lab.speech.release import consent_path, current_release
-from cole_voice_lab.speech.routes import byte_range, caller_policy, match_caller
+from cole_voice_lab.speech.routes import byte_range, caller_policy, last_event_id, match_caller
 from cole_voice_lab.speech.store import SpeechRefusal
 
 
@@ -112,6 +112,12 @@ def test_a_caller_submits_polls_and_fetches_its_audio(rig: SpeechRig) -> None:
     assert (status, rest) == (206, audio[40:])
     status, refusal = answer(rig, "GET", job["links"]["audio"], headers={"Range": "bytes=99999-"})
     assert (status, refusal["error"]) == (416, "range_not_satisfiable")
+    status, headers, _ = call(rig, "GET", job["links"]["audio"], headers={"Range": "bytes=99999-"})
+    assert headers["Content-Range"] == f"bytes */{len(audio)}"
+    status, headers, whole = call(
+        rig, "GET", job["links"]["audio"], headers={"Range": "bytes=0-1,4-5"}
+    )
+    assert (status, whole) == (200, audio) and "Content-Range" not in headers
     status, headers, empty = call(rig, "HEAD", job["links"]["audio"])
     assert status == 200 and empty == b"" and headers["Content-Length"] == str(len(audio))
     status, refusal = answer(rig, "POST", job["links"]["cancel"])
@@ -264,6 +270,14 @@ def test_without_a_release_or_consent_speech_is_unavailable(tmp_path: Path) -> N
         assert (status, refusal["error"]) == (503, "consent_unavailable")
 
 
+def test_a_release_of_another_subject_is_unavailable(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path, subject_id="someone-else")  # the configuration pins another
+    for rig in start_speech_rig(lab):
+        status, refusal = answer(rig, "POST", "/api/v1/speech", {"text": "Hi."})
+        assert (status, refusal["error"]) == (503, "voice_release_unavailable")
+        assert "cole-self" not in refusal["detail"]
+
+
 def test_cancel_through_the_api(rig: SpeechRig) -> None:
     status, job = answer(rig, "POST", "/api/v1/speech", {"text": "Never mind."})
     status, cancelled = answer(rig, "POST", job["links"]["cancel"])
@@ -287,9 +301,26 @@ def test_byte_ranges() -> None:
     assert byte_range("bytes=0-", 10) == (0, 9)
     assert byte_range("bytes=2-100", 10) == (2, 9)
     assert byte_range("bytes=-100", 10) == (0, 9)
-    for header in ("bytes=-0", "bytes=-", "bytes=5-2", "items=0-1", "bytes=0-1,3-4", "bytes=10-"):
-        with pytest.raises(SpeechRefusal):
+    # Several ranges, another unit or a malformed header: the whole file (RFC 9110).
+    for header in ("bytes=0-1,3-4", "items=0-1", "bytes=-", "bytes=x-1", "bytes=١-٢"):
+        assert byte_range(header, 10) is None
+    for header in ("bytes=-0", "bytes=5-2", "bytes=10-"):
+        with pytest.raises(SpeechRefusal) as refused:
             byte_range(header, 10)
+        assert refused.value.headers == (("Content-Range", "bytes */10"),)
+
+
+def test_last_event_id_is_ascii_digits_only() -> None:
+    assert [last_event_id(value) for value in (None, "", "3", "0012", "12345", "²", "١", "-1")] == [
+        0,
+        0,
+        3,
+        12,
+        0,
+        0,
+        0,
+        0,
+    ]
 
 
 def test_the_caller_policy_and_match(tmp_path: Path) -> None:
@@ -392,6 +423,15 @@ def test_the_event_stream_announces_segments_then_the_end(rig: SpeechRig) -> Non
     )
     assert status == 200 and headers["Content-Type"].startswith("text/event-stream")
     assert [event["id"] for event in parse_events(resumed)] == ["3", "end"]
+    status, _, unicode_digit = call(
+        rig, "GET", job["links"]["events"], headers={"Last-Event-ID": "²"}
+    )
+    assert status == 200 and [event["id"] for event in parse_events(unicode_digit)] == [
+        "1",
+        "2",
+        "3",
+        "end",
+    ]
     status, refusal = answer(rig, "GET", "/api/v1/speech/sp-000000000000000000000000/events")
     assert (status, refusal["error"]) == (404, "speech_not_found")
 
@@ -403,6 +443,6 @@ def test_the_event_stream_keeps_alive_and_ends_on_time(rig: SpeechRig) -> None:
     routes.monotonic = lambda: next(ticks)
     routes.sleep = lambda _: None
     registered = rig.lab.config.callers[0]
-    chunks = list(routes._events(registered, job["id"], None))
+    chunks = list(routes._events(registered, job["id"], 0))
     assert chunks[0].startswith(b"retry:") and b": keepalive\n\n" in chunks
     assert not any(b"event:" in chunk for chunk in chunks)

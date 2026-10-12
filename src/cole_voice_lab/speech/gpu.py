@@ -43,6 +43,10 @@ class GpuSlotTimeout(Exception):
     """The slot stayed held for longer than the caller would wait."""
 
 
+class GpuSlotAbandoned(Exception):
+    """The caller stopped waiting for the slot (a cancel arrived while it waited)."""
+
+
 def _open_lock(root: Path) -> int:
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     return os.open(root / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -156,10 +160,12 @@ class GpuSlotLease:
         timeout_seconds: float,
         sleep: Callable[[float], None] = time.sleep,
         poll_seconds: float = 0.5,
+        stop: Callable[[], bool] | None = None,
     ) -> None:
         """Take the slot for ``holder`` (no-op when already held).
 
-        Raises: ``GpuSlotTimeout`` when it stays held by another for ``timeout_seconds``.
+        Raises: ``GpuSlotTimeout`` when it stays held by another for ``timeout_seconds``;
+        ``GpuSlotAbandoned`` when ``stop()`` turns true while it waits.
         """
         if self._descriptor is not None:
             return
@@ -176,9 +182,16 @@ class GpuSlotLease:
             if waited >= timeout_seconds:
                 os.close(descriptor)
                 raise GpuSlotTimeout("the GPU slot stayed held")
+            if stop is not None and stop():
+                os.close(descriptor)
+                raise GpuSlotAbandoned("the wait for the GPU slot was abandoned")
             sleep(poll_seconds)
             waited += poll_seconds
-        write_canonical_json(self.root / HOLDER_NAME, holder)
+        try:
+            write_canonical_json(self.root / HOLDER_NAME, holder)
+        except BaseException:
+            os.close(descriptor)
+            raise
         self._descriptor = descriptor
 
     def release(self) -> None:

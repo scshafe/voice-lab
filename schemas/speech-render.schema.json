@@ -1,5 +1,28 @@
 {
   "$defs": {
+    "F5RenderSettings": {
+      "additionalProperties": false,
+      "description": "What an F5-TTS render was asked for: its flow steps (D-046).",
+      "properties": {
+        "family": {
+          "const": "f5-tts",
+          "default": "f5-tts",
+          "title": "Family",
+          "type": "string"
+        },
+        "nfe_steps": {
+          "maximum": 256,
+          "minimum": 1,
+          "title": "Nfe Steps",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "nfe_steps"
+      ],
+      "title": "F5RenderSettings",
+      "type": "object"
+    },
     "FailureCode": {
       "enum": [
         "runtime_unavailable",
@@ -12,31 +35,55 @@
       ],
       "type": "string"
     },
+    "FileDigest": {
+      "additionalProperties": false,
+      "description": "A file a backend loaded, by role and digest (a render's fingerprint names no path).",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/StableId"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "role",
+        "sha256"
+      ],
+      "title": "FileDigest",
+      "type": "object"
+    },
     "JobId": {
       "pattern": "^sp-[0-9a-f]{24}$",
       "type": "string"
     },
     "RenderFingerprint": {
       "additionalProperties": false,
-      "description": "What spoke: the model, its reference and the runtime, as the backend verified them.",
+      "description": "What spoke: the family, the files its backend loaded, the runtime and the settings.\n\n``native_sample_rate_hz`` is the rate the model renders at; the backend delivers\n``API_SAMPLE_RATE_HZ`` whatever it is. ``seeded`` says whether the family honours a seed\n(a family that does not cannot promise byte-identical reruns).",
       "properties": {
         "backend": {
           "$ref": "#/$defs/StableId"
         },
-        "checkpoint_sha256": {
-          "$ref": "#/$defs/Sha256"
-        },
         "device": {
           "$ref": "#/$defs/StableId"
         },
-        "nfe_steps": {
-          "maximum": 256,
-          "minimum": 1,
-          "title": "Nfe Steps",
-          "type": "integer"
+        "files": {
+          "items": {
+            "$ref": "#/$defs/FileDigest"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Files",
+          "type": "array"
         },
-        "reference_sha256": {
-          "$ref": "#/$defs/Sha256"
+        "model_family": {
+          "$ref": "#/$defs/StableId"
+        },
+        "native_sample_rate_hz": {
+          "maximum": 192000,
+          "minimum": 8000,
+          "title": "Native Sample Rate Hz",
+          "type": "integer"
         },
         "runtime": {
           "additionalProperties": {
@@ -46,6 +93,13 @@
           "title": "Runtime",
           "type": "object"
         },
+        "seeded": {
+          "title": "Seeded",
+          "type": "boolean"
+        },
+        "settings": {
+          "$ref": "#/$defs/RenderSettings"
+        },
         "voice_lab_version": {
           "maxLength": 64,
           "minLength": 1,
@@ -54,16 +108,31 @@
         }
       },
       "required": [
-        "checkpoint_sha256",
-        "reference_sha256",
+        "model_family",
         "backend",
+        "files",
         "runtime",
         "device",
-        "nfe_steps",
+        "native_sample_rate_hz",
+        "seeded",
+        "settings",
         "voice_lab_version"
       ],
       "title": "RenderFingerprint",
       "type": "object"
+    },
+    "RenderSettings": {
+      "discriminator": {
+        "mapping": {
+          "f5-tts": "#/$defs/F5RenderSettings"
+        },
+        "propertyName": "family"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/F5RenderSettings"
+        }
+      ]
     },
     "RenderedAudio": {
       "additionalProperties": false,
@@ -128,7 +197,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "``provenance/speech-renders/<job id>.json``: one render, for ever (never the text).",
+  "description": "``provenance/speech-renders/<job id>.json``: one render, for ever (never the text; the\ntext's digest is keyed with the install's text key, so it can be checked against a text\non this host and guessed nowhere).",
   "properties": {
     "audio_ms": {
       "anyOf": [
@@ -179,6 +248,9 @@
     },
     "job_id": {
       "$ref": "#/$defs/JobId"
+    },
+    "model_family": {
+      "$ref": "#/$defs/StableId"
     },
     "outcome": {
       "enum": [
@@ -247,16 +319,17 @@
       "title": "Text Characters",
       "type": "integer"
     },
-    "text_sha256": {
+    "text_hmac_sha256": {
       "$ref": "#/$defs/Sha256"
     }
   },
   "required": [
     "job_id",
     "caller_id",
-    "text_sha256",
+    "text_hmac_sha256",
     "text_characters",
     "release",
+    "model_family",
     "consent_id",
     "consent_sha256",
     "outcome",

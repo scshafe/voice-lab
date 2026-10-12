@@ -1322,6 +1322,15 @@ c4f22f64e9dd05ace20a2bef2a9b041f9792fa955fe731c2fa246be29336ff5d, `b-fp16.json`
 patch is not adopted. The PC's runtime lock (hash-locked, based on that freeze: torch
 2.14.0+rocm7.2, torchcodec 0.16.0+cpu) is a follow-up.
 
+Amended in review of the implementation (2026-10-11, before anything was deployed): the
+ledger and the job record name the text by a keyed digest (HMAC-SHA256 under a per-install key
+in the speech state) rather than a plain SHA-256, which a short reply's guess would match; a
+caller sees a failure's code and a fixed sentence, the particulars staying in the runner's
+journal; consent and the release are checked again before each sentence, so revocation stops
+a running render; a webhook whose secret is missing is retried rather than given up, while a
+caller or URL the registry no longer allows is refused for good; and an attempt has a total
+deadline of 10 seconds. docs/SPEECH_API.md has the details.
+
 ## D-047 — Consent for synthesis on the home host
 
 Recorded 2026-10-11 with D-044 to D-046, from Cole's decisions above and D-022.
@@ -1343,3 +1352,51 @@ Recorded 2026-10-11 with D-044 to D-046, from Cole's decisions above and D-022.
   three boundaries.
 - **Cole's step.** Approving a consent record stays Cole's own act (`consent preview`, then
   `consent approve-self`); no agent creates or approves one.
+
+## D-048 — Model families
+
+Cole asked on 2026-10-11: "make sure we have designed the backend such that we should
+theoretically be able to add multiple models to test with, assuming the audio corpus we are
+recording works for that type of model … This doesn't need to be done in a configurable way
+for the user, I just mean in terms of the code design, because ultimately, once we have a full
+corpus of 800ish recordings, i'll be curious to try out different models and compare their
+training time, inference time, and quality."
+
+The speech path stops assuming F5-TTS. F5-TTS stays the one family registered, and nothing
+about what speaks today changes.
+
+- **A model family** is one kind of fine-tunable TTS model. In the speech path it is an entry
+  in a small registry (`speech/families.py`) that gives the family's backend, its text
+  segmentation limit (the longest text its model takes in one pass), its native sample rate,
+  whether it honours a seed, and how a designated run's files are found and checked again.
+  The job runner and the routes know only the backend port and a verified release.
+- **The release is family-neutral.** A voice release names its `model_family`, binds the
+  run's `run.json`, and lists every file the family needs by role (`files`: for F5-TTS
+  `checkpoint` and `reference`), with a family-specific section (`model`, a union tagged by
+  `family`: for F5-TTS the reference prompt, its transcript's digest and the training
+  runtime). A family with no reference clip, with a speaker embedding or profile file, or
+  with no notion of flow steps fits without a change to the common fields: it adds a member to
+  the `model` union and one to the render settings' union. The render fingerprint and the
+  ledger entry name the family too, the files loaded by role and digest, the family's native
+  sample rate, whether it seeded, and its render settings (for F5-TTS the flow steps). The
+  job's seed is derived from the digest of those settings rather than from F5-TTS's flow steps.
+  No release or ledger record existed when the shapes changed, so their schema versions stay
+  `v1`.
+- **One output format.** Whatever a family renders natively, the API delivers 24 kHz mono
+  16-bit WAV (D-046's format): a backend whose model renders at another rate resamples in its
+  own runtime, and its fingerprint records the native rate. One format keeps the callers, the
+  segment checks and the joining simple, and a comparison of families' quality belongs to the
+  lab's bake-off and blind review, not to the assistant's API. A per-release rate was
+  considered and rejected for that reason.
+- **The corpus is model-neutral.** Takes are 48 kHz 24-bit mono with their prompt text; each
+  family derives its own training format from them (sample rate, normalisation, transcript
+  form), as the F5-TTS fine-tune does today with its 24 kHz dataset.
+- **Not configurable for the user.** Which family speaks is decided by designating a release
+  of it (D-045); the configuration only says where each family's runtime is (`runtime`, tagged
+  by `model_family`). There is no per-request choice of model.
+- **Adding a family** is one runtime lock, one training adapter, one speech backend and one
+  registry entry ([docs/MODEL_FAMILIES.md](docs/MODEL_FAMILIES.md)). Training and comparing
+  families (training time, inference time, quality) is the follow-up of this decision.
+- **Amends** D-045 (the release's fields: files by role and the family's section instead of
+  F5-TTS's checkpoint, reference and runtime fields) and D-046 (the segment limit is the
+  family's; the seed comes from the render settings' digest; the backend is the family's).

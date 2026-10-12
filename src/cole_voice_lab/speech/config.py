@@ -40,7 +40,11 @@ type SpeechPurpose = Literal["private-assistant-speech"]
 _LABEL: Final = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _TAILNET_SUFFIX: Final = re.compile(rf"^(?:{_LABEL}\.)+ts\.net$")
 _HOST_LABEL: Final = re.compile(rf"^{_LABEL}$")
+_SECRET_NAME: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _PATH: Final = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
+# A percent-escape is two hex digits, and never an encoded dot, slash or backslash: a
+# receiver that decodes them would see a path that the allowlist check did not.
+_BAD_ESCAPE: Final = re.compile(r"%(?![0-9A-Fa-f]{2})|%2[EeFf]|%5[Cc]")
 
 type AbsolutePath = Annotated[
     str, StringConstraints(min_length=1, max_length=4096), AfterValidator(validate_absolute_path)
@@ -98,9 +102,27 @@ def webhook_url_problem(url: str, tailnet_suffix: str) -> str | None:
         return "a webhook URL's port is 1 to 65535"
     if not parts.path or not _PATH.fullmatch(parts.path):
         return "a webhook URL has an absolute path"
-    if any(segment in {".", ".."} for segment in parts.path.split("/")):
+    if _BAD_ESCAPE.search(parts.path):
+        return "a webhook URL's path has no encoded dot, slash or backslash"
+    segments = parts.path.split("/")[1:]
+    if any(segment in {".", ".."} for segment in segments):
         return "a webhook URL's path has no dot segments"
+    if "" in segments[:-1]:
+        return "a webhook URL's path has no empty segments"
     return None
+
+
+def callback_target(url: str, tailnet_suffix: str) -> tuple[str, int, tuple[str, ...]] | None:
+    """A webhook URL as it is compared with an allowlist: its host, its port (443 when it
+    names none) and its path segments (a trailing slash dropped); ``None`` when it is not a
+    webhook URL on this tailnet."""
+    if webhook_url_problem(url, tailnet_suffix) is not None:
+        return None
+    parts = urlsplit(url)
+    segments = tuple(parts.path.split("/")[1:])
+    if segments and segments[-1] == "":
+        segments = segments[:-1]
+    return parts.hostname or "", parts.port or 443, segments
 
 
 def parse_webhook_url(url: str, tailnet_suffix: str) -> SplitResult:
@@ -136,17 +158,28 @@ class SpeechCaller(ContractModel):
             raise ValueError("a caller lists each webhook URL once")
         return self
 
-    def allows_callback(self, url: str) -> bool:
-        """Whether ``url`` equals one of the caller's webhook URLs or extends one by path."""
-        return any(
-            url == allowed or url.startswith(allowed.rstrip("/") + "/")
-            for allowed in self.webhook_urls
-        )
+    def allows_callback(self, url: str, tailnet_suffix: str) -> bool:
+        """Whether ``url`` is a webhook URL on the tailnet that equals one of the caller's, or
+        extends one by whole path segments (compared after parsing: host, port and segments)."""
+        target = callback_target(url, tailnet_suffix)
+        if target is None:
+            return False
+        host, port, segments = target
+        for allowed in self.webhook_urls:
+            known = callback_target(allowed, tailnet_suffix)
+            if (
+                known is not None
+                and (known[0], known[1]) == (host, port)
+                and segments[: len(known[2])] == known[2]
+            ):
+                return True
+        return False
 
 
-class SpeechRuntime(ContractModel):
-    """The F5-TTS runtime the job runner renders with (``None`` until it exists on the PC)."""
+class F5SpeechRuntime(ContractModel):
+    """The F5-TTS runtime the job runner renders an ``f5-tts`` release with (D-048)."""
 
+    model_family: Literal["f5-tts"] = "f5-tts"
     runtime_root: AbsolutePath
     device: Literal["cuda", "cpu"] = "cuda"
     # Flow steps: 32 until Cole compares 16 and 32 by ear (D-046); every ledger entry names it.
@@ -157,6 +190,11 @@ class SpeechRuntime(ContractModel):
     visible_devices: str | None = Field(default=None, pattern=r"^[0-9]{1,2}(,[0-9]{1,2}){0,3}$")
 
 
+# The runtime of the release's model family: one member per family (D-048). Choosing a family
+# is designating a release of it; the configuration only says where its runtime is.
+type SpeechRuntime = Annotated[F5SpeechRuntime, Field(discriminator="model_family")]
+
+
 class SpeechConfig(ContractModel):
     """The whole speech configuration (docs/SPEECH_API.md §4)."""
 
@@ -164,8 +202,9 @@ class SpeechConfig(ContractModel):
     asset_root: AbsolutePath
     state_root: AbsolutePath
     gpu_slot_root: AbsolutePath
+    # The one subject whose release may speak (AGENTS.md: never another subject). A release,
+    # and the consent record it names, of any other subject is refused.
     subject_id: StableId = "cole-self"
-    consent_id: StableId = "cole-self-v1"
     tailnet_suffix: TailnetSuffix
     audio_retention_hours: int = Field(default=168, ge=1, le=720)
     record_retention_days: int = Field(default=30, ge=1, le=365)
@@ -175,6 +214,12 @@ class SpeechConfig(ContractModel):
     idle_unload_seconds: int = Field(default=900, ge=10, le=86_400)
     gpu_busy_retry_seconds: int = Field(default=600, ge=1, le=86_400)
     runtime: SpeechRuntime | None = None
+
+    def runtime_for(self, family: str) -> SpeechRuntime | None:
+        """The configured runtime when it is ``family``'s, else ``None``."""
+        runtime = self.runtime
+        return runtime if runtime is not None and runtime.model_family == family else None
+
     callers: tuple[SpeechCaller, ...] = Field(min_length=1, max_length=MAX_CALLERS)
 
     @model_validator(mode="after")
@@ -185,8 +230,12 @@ class SpeechConfig(ContractModel):
         named_secrets = [path for path in secrets if path is not None]
         if len(set(ids)) != len(ids) or len(set(principals)) != len(principals):
             raise ValueError("callers have distinct ids and distinct issuer and subject pairs")
-        if len(set(named_secrets)) != len(named_secrets):
-            raise ValueError("callers never share a webhook secret file")
+        # The delivery unit receives the secrets as credentials named by file name.
+        names = [Path(path).name for path in named_secrets]
+        if len(set(names)) != len(names):
+            raise ValueError("callers never share a webhook secret file or its file name")
+        if not all(_SECRET_NAME.fullmatch(name) for name in names):
+            raise ValueError("a webhook secret file's name is letters, digits, '.', '_', '-'")
         for caller in self.callers:
             for url in caller.webhook_urls:
                 problem = webhook_url_problem(url, self.tailnet_suffix)
