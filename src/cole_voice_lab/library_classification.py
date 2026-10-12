@@ -392,7 +392,7 @@ _RULES: Final = (
         "experiments",
         "experiments{/**}",
         MAC_ONLY,
-        owner="audition and promotion",
+        owner="audition",
         reason="experiment outputs are not part of the library copy",
         example="experiments/run-1/result.json",
     ),

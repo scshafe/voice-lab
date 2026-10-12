@@ -232,7 +232,7 @@
     },
     "SpeechClip": {
       "additionalProperties": false,
-      "description": "One Speak request's result: what spoke, with which reference, and the clip it wrote.\n\nWritten last, as ``derived/speech/<operation_id>/speech.json`` beside the clip\n(``speech-01.wav``, 0600, 24 kHz 16-bit mono). ``model`` is ``base`` (the pinned\npretrained weights) or the fine-tuned run's id; the reference clip is\n``reference_prompt_id``'s normalized training copy in ``reference_run_id``'s dataset (the\nmodel's own run, or the newest finished run for ``base``). Relative paths only. A\nlistening aid: never a reference, dataset or promotion artifact.",
+      "description": "One Speak request's result: what spoke, with which reference, and the clip it wrote.\n\nWritten last, as ``derived/speech/<operation_id>/speech.json`` beside the clip\n(``speech-01.wav``, 0600, 24 kHz 16-bit mono). ``model`` is ``base`` (the pinned\npretrained weights) or the fine-tuned run's id; the reference clip is\n``reference_prompt_id``'s normalized training copy in ``reference_run_id``'s dataset (the\nmodel's own run, or the newest finished run for ``base``). Relative paths only. A\nlistening aid: never a reference, dataset or voice-release artifact.",
       "properties": {
         "checkpoint_sha256": {
           "$ref": "#/$defs/Sha256"

@@ -7,11 +7,13 @@
   "allowed_purposes": [
     "private-zero-shot-evaluation",
     "private-fine-tuning",
-    "private-chloe-speech-rendering"
+    "private-home-host-synthesis",
+    "private-assistant-speech"
   ],
   "allowed_execution_boundaries": [
     "capture-host",
-    "tailnet-local-host"
+    "tailnet-local-host",
+    "home-host"
   ],
   "hosted_transfer_allowed": false,
   "disclosure_required": true,

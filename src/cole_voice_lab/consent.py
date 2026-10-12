@@ -17,12 +17,17 @@ from .models import ConsentRecord, StableId, utc_now
 from .paths import AssetLayout
 from .resources import resource_path
 
+# The purposes a record can grant and a check can require (D-022, D-047). The retired
+# ``private-chloe-speech-rendering`` (D-044) is readable in a stored record and nothing more.
 Purpose = Literal[
     "private-zero-shot-evaluation",
     "private-fine-tuning",
-    "private-chloe-speech-rendering",
+    "private-home-host-synthesis",
+    "private-assistant-speech",
 ]
-ExecutionBoundary = Literal["capture-host", "tailnet-local-host"]
+# ``home-host`` is the host the standing home-host approval names (D-021, D-022): synthesis
+# and fine-tuning on the PC's job runner require it.
+ExecutionBoundary = Literal["capture-host", "tailnet-local-host", "home-host"]
 
 _STABLE_ID: TypeAdapter[StableId] = TypeAdapter(StableId)
 
@@ -90,12 +95,27 @@ def pending_template() -> ConsentRecord:
     return ConsentRecord.model_validate_json(template.read_bytes())
 
 
+def _is_untouched_pending(record: ConsentRecord) -> bool:
+    """A pending record as some template installed it: it authorizes nothing.
+
+    An asset root initialised before the template changed (2026-10-11, D-047) keeps its
+    pending record; approval rotates it with its exact digest like any other.
+    """
+    return (
+        not record.approved
+        and record.attestation == "pending-subject-attestation"
+        and record.effective_at is None
+        and record.expires_at is None
+        and record.revoked_at is None
+    )
+
+
 def install_pending_consent(layout: AssetLayout) -> tuple[Path, str]:
     record = pending_template()
     path = consent_record_path(layout, record.consent_id)
     if path.exists():
         existing, _, digest = _read_consent(path)
-        if existing != record:
+        if existing != record and not _is_untouched_pending(existing):
             raise SecurityError(
                 "refusing to replace an existing consent record; rotate with bound evidence"
             )

@@ -57,7 +57,7 @@ ExperimentPlan ──> isolated WorkerRequest/WorkerResult ──> normalization
                                        └── blinded listening package
                                                   │
                                                   ▼
-                                           Verdict + promotion
+                                Verdict (Cole); a run he designates is the voice release
 ```
 
 ## Storage and vault

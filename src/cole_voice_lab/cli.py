@@ -52,6 +52,8 @@ from .capture import (
     select_umik1_device,
 )
 from .consent import (
+    ExecutionBoundary,
+    Purpose,
     approve_self_consent,
     consent_record_path,
     install_pending_consent,
@@ -92,7 +94,6 @@ from .models import (
     utc_now,
 )
 from .paths import ASSET_DIRECTORIES, AssetLayout
-from .promotion import PromotionManifest, build_chloespeech_handoff, validate_promotion
 from .prompt_catalogs import BUILTIN_PROMPT_SUITE_SHA256, load_builtin_prompt_suite
 from .references import (
     HeadphoneReviewEvidence,
@@ -340,73 +341,14 @@ def _new_output_path(path: Path) -> Path:
         raise VoiceLabError(f"output parent must already exist: {output.parent}") from error
     parent_metadata = os.lstat(output.parent)
     if parent_metadata.st_uid != os.getuid() or stat.S_IMODE(parent_metadata.st_mode) & 0o077:
-        raise VoiceLabError(
-            "handoff output parent must be user-owned and inaccessible to group and other"
-        )
+        raise VoiceLabError("output parent must be user-owned and inaccessible to group and other")
     try:
         os.lstat(output)
     except FileNotFoundError:
         pass
     else:
-        raise VoiceLabError(f"refusing to overwrite existing handoff output: {output}")
+        raise VoiceLabError(f"refusing to overwrite existing output: {output}")
     return output
-
-
-def _write_new_canonical_json(path: Path, value: object) -> tuple[Path, str]:
-    """Write canonical private JSON to one new path without an overwrite window."""
-
-    output = _new_output_path(path)
-    payload = canonical_json_bytes(value) + b"\n"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        descriptor = os.open(output, flags, 0o600)
-    except FileExistsError as error:
-        raise VoiceLabError(f"refusing to overwrite existing handoff output: {output}") from error
-    except OSError as error:
-        raise VoiceLabError(f"cannot create handoff output {output}: {error}") from error
-
-    opened = os.fstat(descriptor)
-    descriptor_owned = True
-    try:
-        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
-            raise VoiceLabError("handoff output must be one regular non-hardlinked file")
-        os.fchmod(descriptor, 0o600)
-        stream = os.fdopen(descriptor, "wb", closefd=True)
-        descriptor_owned = False
-        with stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        if descriptor_owned:
-            os.close(descriptor)
-        try:
-            current = os.lstat(output)
-            if (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino):
-                output.unlink()
-        except FileNotFoundError:
-            pass
-        raise
-
-    try:
-        published = os.lstat(output)
-        if (
-            not stat.S_ISREG(published.st_mode)
-            or published.st_nlink != 1
-            or stat.S_IMODE(published.st_mode) != 0o600
-            or (published.st_dev, published.st_ino) != (opened.st_dev, opened.st_ino)
-        ):
-            raise VoiceLabError("handoff output changed during publication")
-        parent_descriptor = os.open(output.parent, os.O_RDONLY)
-        try:
-            os.fsync(parent_descriptor)
-        finally:
-            os.close(parent_descriptor)
-    except OSError as error:
-        raise VoiceLabError(f"cannot finalize handoff output {output}: {error}") from error
-    return output, hashlib.sha256(payload).hexdigest()
 
 
 def _prompt_suite_mappings(values: list[str]) -> dict[str, PromptSuite]:
@@ -3073,36 +3015,6 @@ def _blind_aggregate(options: argparse.Namespace) -> int:
     return 0
 
 
-def _promotion_validate(options: argparse.Namespace) -> int:
-    manifest = _read_bounded_contract(Path(options.manifest), PromotionManifest)
-    validation = validate_promotion(
-        manifest,
-        asset_root=_asset_root(options.asset_root),
-        as_of=options.as_of,
-    )
-    _json_print({"status": "pass", **validation.model_dump(mode="json")})
-    return 0
-
-
-def _promotion_handoff(options: argparse.Namespace) -> int:
-    requested_output = _new_output_path(Path(options.output))
-    manifest = _read_bounded_contract(Path(options.manifest), PromotionManifest)
-    handoff = build_chloespeech_handoff(
-        manifest,
-        asset_root=_asset_root(options.asset_root),
-        as_of=options.as_of,
-    )
-    output, output_sha256 = _write_new_canonical_json(requested_output, handoff)
-    _json_print(
-        {
-            "output_path": str(output),
-            "output_sha256": output_sha256,
-            "promotion_sha256": handoff.promotion_sha256,
-        }
-    )
-    return 0
-
-
 def _consent_install(options: argparse.Namespace) -> int:
     layout = AssetLayout.validate(_asset_root(options.asset_root))
     path, digest = install_pending_consent(layout)
@@ -4178,17 +4090,13 @@ def _add_consent_scope_arguments(parser: argparse.ArgumentParser) -> None:
         "--purpose",
         action="append",
         required=True,
-        choices=(
-            "private-zero-shot-evaluation",
-            "private-fine-tuning",
-            "private-chloe-speech-rendering",
-        ),
+        choices=get_args(Purpose),
     )
     parser.add_argument(
         "--execution-boundary",
         action="append",
         required=True,
-        choices=("capture-host", "tailnet-local-host"),
+        choices=get_args(ExecutionBoundary),
     )
     parser.add_argument("--expires-at", type=_aware_datetime, required=True)
 
@@ -4921,26 +4829,6 @@ def build_parser() -> argparse.ArgumentParser:
     blind_aggregate.add_argument("--asset-root")
     blind_aggregate.add_argument("--score-sheet", required=True)
     blind_aggregate.set_defaults(handler=_blind_aggregate)
-
-    promotion = commands.add_parser(
-        "promotion", help="validate promotion evidence and export a ChloeSpeech handoff"
-    )
-    promotion_commands = promotion.add_subparsers(dest="promotion_command", required=True)
-    promotion_validate = promotion_commands.add_parser(
-        "validate", help="deeply revalidate one schema-authored promotion manifest"
-    )
-    promotion_validate.add_argument("--asset-root", required=True)
-    promotion_validate.add_argument("--manifest", type=Path, required=True)
-    promotion_validate.add_argument("--as-of", type=_aware_datetime)
-    promotion_validate.set_defaults(handler=_promotion_validate)
-    promotion_handoff = promotion_commands.add_parser(
-        "handoff", help="validate and write one new canonical ChloeSpeech handoff"
-    )
-    promotion_handoff.add_argument("--asset-root", required=True)
-    promotion_handoff.add_argument("--manifest", type=Path, required=True)
-    promotion_handoff.add_argument("--output", type=Path, required=True)
-    promotion_handoff.add_argument("--as-of", type=_aware_datetime)
-    promotion_handoff.set_defaults(handler=_promotion_handoff)
 
     consent = commands.add_parser("consent", help="manage machine-readable self-consent")
     consent_commands = consent.add_subparsers(dest="consent_command", required=True)

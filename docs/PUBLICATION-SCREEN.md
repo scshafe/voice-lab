@@ -41,6 +41,11 @@ tree; history is as screened.
   arguments (`/Users/<user>/…` or `/home/<user>/…`), so `DEFAULT_REMOTE_ROOT` is
   gone too. The tests use a synthetic account. `/Users/cole` remains only in
   documentation examples (`deploy/README.md`, the Mini install steps), cosmetic.
+- **Changed 2026-10-11 (D-044):** ChloeSpeech is retired. `docs/CHLOESPEECH_HANDOFF.md`
+  and `src/cole_voice_lab/promotion.py` are deleted, and the consent purpose
+  `private-chloe-speech-rendering` is retired (still readable in stored records), so the
+  "Chloe" mentions in §4.1 below now survive only in history, `DECISIONS.md` and the consent
+  model's retired value.
 - **Still open, optional:**
   - the `coles-macbook-pro` and `coles-macbook-air` hostnames in tests and one
     example;

@@ -377,15 +377,22 @@ class ConsentRecord(ContractModel):
         "self-recorded-and-self-authorized",
         "pending-subject-attestation",
     ]
+    # ``private-chloe-speech-rendering`` is retired (D-044, D-047): records written before
+    # 2026-10-11 (every pending record ``assets init`` installed) still parse, so they can be
+    # rotated into approval or revoked, but no check asks for it and nothing grants it.
     allowed_purposes: tuple[
         Literal[
             "private-zero-shot-evaluation",
             "private-fine-tuning",
+            "private-home-host-synthesis",
+            "private-assistant-speech",
             "private-chloe-speech-rendering",
         ],
         ...,
     ]
-    allowed_execution_boundaries: tuple[Literal["capture-host", "tailnet-local-host"], ...]
+    allowed_execution_boundaries: tuple[
+        Literal["capture-host", "tailnet-local-host", "home-host"], ...
+    ]
     hosted_transfer_allowed: Literal[False] = False
     disclosure_required: Literal[True] = True
     effective_at: datetime | None = None

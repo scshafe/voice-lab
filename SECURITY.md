@@ -29,7 +29,8 @@ weights, and recognizable synthetic outputs are biometric assets.
 - Reference audio and consent evidence are bound by digest in every experiment.
   Consent validation also requires the exact execution boundary; offline model
   workers require `tailnet-local-host`, so capture-only authorization cannot be
-  reused for synthesis.
+  reused for synthesis. Synthesis on the home host's job runner requires `home-host`,
+  and speech for registered callers the purpose `private-assistant-speech` (D-047).
 - The default network policy is local/Tailnet-only. Model downloads may use the
   public network only with an explicit download flag; human audio never does.
 - Capture sync is bound to the reviewed mini Tailnet destination, private remote
@@ -40,7 +41,10 @@ weights, and recognizable synthetic outputs are biometric assets.
   digest, purpose, retention terms, and expiry. Under D-028 the platform uses no
   hosted GPU and no cloud or paid service at all; the rule stays as a rule.
 - Synthetic output must retain provenance and be disclosed as synthetic when it
-  leaves private evaluation.
+  leaves private evaluation. Speech rendered for a registered caller is private use:
+  it reaches only Cole's own devices, and its provenance is the render ledger and the
+  output digest. No watermark is applied for now; this and disclosure are revisited
+  before rendered audio could reach anyone else (D-046).
 - Capture-kit creation is offline by default. Public-network dependency fetching
   requires `--allow-network`; runtime dependencies and the application wheel are
   exact-versioned and hash-locked inside the resulting bundle.
@@ -148,6 +152,29 @@ Two limits are accepted rather than hidden:
 Mac procedures are in [docs/RUNBOOK.md](docs/RUNBOOK.md#9-library-vault); host
 hardening and deployment gates are in [deploy/vault/README.md](deploy/vault/README.md).
 
+## Speech for registered callers (designed, not yet built)
+
+The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these controls:
+
+- Only Cole's current voice release speaks (D-045); a changed checkpoint, reference clip
+  or consent record refuses the render until Cole designates again.
+- Callers are listed in a root-owned caller registry with their token issuer, subject and
+  audience, purposes, limits and webhook URL allowlist. A caller's machine token reaches
+  the speech routes only, and a caller sees only its own jobs.
+- Webhook URLs are `https` on hosts under the tailnet suffix only. The delivery process
+  resolves the host, refuses any address outside the tailnet ranges, connects to the
+  address it checked, follows no redirect, and uses short timeouts. Events carry no text
+  and no audio, and are signed per caller (Standard Webhooks, HMAC-SHA256).
+- Webhook secrets are files referenced by path, readable only by the `voice-lab` user and
+  read only by the delivery process; the API never reads them, and none is in
+  configuration or Git.
+- The API container only enqueues and serves finished files (whole sentences and the
+  joined audio); the job runner and its resident model worker render with no network; the
+  delivery unit reaches the tailnet only.
+- The job's text is deleted when the job ends; the render ledger keeps its SHA-256 and
+  length. Rendered audio is kept 7 days by default, outside the asset root, so the vault
+  never copies it.
+
 ## Deliberately avoided
 
 - Voice-authentication phrases in the recording script.
@@ -156,7 +183,10 @@ hardening and deployment gates are in [deploy/vault/README.md](deploy/vault/READ
 - Network-exposed, background, or auto-started capture-console services.
   The separately approved, tailnet-only vault stores ciphertext and is not a
   capture console or synthesis endpoint.
-- Long-running synthesis endpoints.
+- An always-on synthesis endpoint, audio streamed while it is being synthesized, or a
+  synthesis endpoint reachable beyond the tailnet. Synthesis is a queued job for
+  registered callers whose finished sentences may be fetched as they complete (D-046),
+  amending "long-running synthesis endpoints" here.
 - Secrets, OAuth tokens, host credentials, or private host keys in configuration.
   Vault bindings name keychain or credential items; server configuration contains token hashes,
   never raw tokens or encryption keys.

@@ -2,9 +2,11 @@
 
 ## Outcome
 
-Produce evidence sufficient to choose a local voice system for Cole and hand it
-to ChloeSpeech without leaking biometric media, corrupting source recordings,
-or confusing runtime/model differences with voice quality.
+Produce evidence sufficient to choose a local voice system for Cole and speak
+with it, as the voice release he designates, without leaking biometric media,
+corrupting source recordings, or confusing runtime/model differences with voice
+quality. (Until 2026-10-11 the outcome was a handoff to ChloeSpeech, retired by
+D-044.)
 
 ## Scope
 
@@ -18,17 +20,18 @@ or confusing runtime/model differences with voice quality.
 - Reproducible experiment plans, identical direct-TTS trials, separate
   voice-conversion trials, audio normalization, optional ASR/speaker metrics,
   static blind review, and a machine-readable verdict.
-- A one-way, hash-pinned ChloeSpeech promotion manifest.
+- A checksum-bound voice release designated by Cole, and speech for registered
+  tailnet callers (D-045, D-046; docs/SPEECH_API.md).
 
 ## Non-goals for v0.1
 
-- A public or unauthenticated synthesis service.
+- A public, unauthenticated or always-on synthesis service, or audio streamed while it is
+  synthesized.
 - Uploading biometric media to a hosted model service.
 - Automatic acceptance of a full training corpus before the pilot quality gate.
 - Pretending direct TTS and performed-source voice conversion are identical
   experimental conditions.
 - Fine-tuning before zero-shot cloning has been measured.
-- Editing ChloeSpeech as a hidden side effect.
 
 ## Verification gates
 
@@ -44,8 +47,8 @@ or confusing runtime/model differences with voice quality.
    held-out prompts, and enough free disk for the selected candidate.
 6. Blind ordering is deterministic but hides candidate identity; reveal and
    aggregation are reproducible from saved scoring evidence.
-7. The ChloeSpeech export validates its reference/model/provenance digests and
-   performs no copy or consumer mutation without a separate command.
+7. A render uses only the current voice release and refuses when its checkpoint,
+   reference or consent digest no longer matches; every render is in the ledger.
 8. An independent review reports no unresolved high-severity finding.
 
 ## Progress rule

@@ -34,11 +34,13 @@ Consent is least-privilege and checksum-rotated. First preview the exact scope:
 
 Then Cole—not an agent—runs `consent approve-self` with those same scope flags,
 the preview's `scope_sha256`, the pending record's SHA-256 from `assets init`,
-and `--i-am-the-subject-and-authorize`. Fine-tuning and ChloeSpeech rendering
-use later, separate previews/approvals; zero-shot approval does not imply them.
-Each consumer validates its actual boundary: any capture-side consumer must
-request `capture-host`, while reference publication, datasets, and offline
-synthesis on the mini request `tailnet-local-host`. A record lacking the
+and `--i-am-the-subject-and-authorize`. Fine-tuning, Speak on the home host and
+speech for registered callers use later, separate previews/approvals
+(`private-fine-tuning`, `private-home-host-synthesis`, `private-assistant-speech`;
+D-022, D-047); zero-shot approval does not imply them. Each consumer validates its
+actual boundary: any capture-side consumer must request `capture-host`, reference
+publication, datasets, and offline synthesis on the mini request
+`tailnet-local-host`, and the PC's job runner requests `home-host`. A record lacking the
 requested boundary fails closed even when its subject, purpose, digest, and
 dates are otherwise valid.
 
@@ -529,72 +531,17 @@ not need access to the sibling `private/reveal.json`. Never serve the package
 root: doing so would expose the reveal. `public/` does **not** authorize Internet
 sharing.
 
-## 7. Promotion
+## 7. Voice release
 
-Promotion v2 requires the canonical sealed blind-package manifest, the exact v2
-score sheet, and a promotion listening-summary record that binds both file
-digests. Validation reruns blind-package verification and score aggregation,
-rejects direct-TTS ties, and requires the promoted candidate to be the sole
-highest-overall-mean direct-TTS candidate. The verdict binds one full winning
-reveal entry; that entry must occur exactly once and reproduce the exact
-plan/run/result/request/trial/candidate/reference chain. The winning-run record
-also binds the same consent, model/code revisions, environment evidence,
-normalized output, and realized watermark evidence. A handwritten
-`blind_review_completed` assertion is never promotion evidence.
+Promotion and the ChloeSpeech handoff were retired on 2026-10-11 (D-044); the
+`promotion` commands and their record schemas are gone. Blind review (section 6)
+stays the way to compare candidates and runs.
 
-The promotion model lock must also bind the exact winning
-`WorkerModelEvidence`, every primary/auxiliary immutable source manifest, and
-the complete re-hashed artifact inventory. Provider ID, checksum-derived voice,
-and provider settings are deterministically projected from that verified trial;
-do not type or relabel them after review. Unsupported candidate/provider
-projections fail closed. Regenerate earlier v2 draft records that lack these
-bindings.
-
-Promotion enforces the full evidence chronology from plan and completed result
-through run manifest, blind package, score sheet, verdict, and promotion. All
-three blind-package creation timestamps must agree. Directly and indirectly
-bound evidence must remain regular, non-symlink, single-link files. Both public
-promotion APIs take a detached, fully revalidated snapshot, so mutating nested
-Pydantic containers or using unvalidated `model_copy(update=...)` is rejected.
-
-The experiment retains both engine-native and common-normalized audio; the
-promotion names exactly one checksum-bound reviewed normalized output.
-Export a ChloeSpeech handoff without copying files or changing a consumer. The
-eventual render must author an actual spoken synthetic disclosure cue and
-persistent disclosure metadata.
-
-An MLX Chatterbox win is not automatically compatible with ChloeSpeech's
-official Chatterbox adapter: the reviewed provider projection is `mlx-audio`,
-and MLX evidence says `watermarked=false`. Add/review a dedicated MLX provider,
-or add an official pinned-runtime reproduction as a new candidate and repeat
-the blind review. Promotion v2 cannot substitute an unreviewed post-hoc render;
-never relabel MLX output as an official watermarked render.
-
-The CLI deliberately does not author or infer the listening summary, verdict,
-winning-run, or `PromotionManifest`. Create and review those strict records from
-the saved evidence using the repository schemas
-(`schemas/promotion-listening-summary.schema.json`,
-`schemas/lab-verdict.schema.json`, `schemas/winning-run.schema.json`, and
-`schemas/promotion-manifest.schema.json`). Then validate the completed manifest
-and export exactly one handoff:
-
-```bash
-voice-lab promotion validate --asset-root <mini-private-root> \
-  --manifest <private-path>/promotion.json
-
-install -d -m 0700 <private-export-directory>
-voice-lab promotion handoff --asset-root <mini-private-root> \
-  --manifest <private-path>/promotion.json \
-  --output <private-export-directory>/chloespeech-handoff.json
-```
-
-Use `--as-of <aware-timestamp>` only for a deliberately time-pinned replay;
-normal operation validates at current UTC. The manifest is read through a
-bounded no-follow path. The handoff destination must not exist, its existing
-parent directory must be owned by the current user with no group/world mode
-bits, and the new canonical JSON is mode `0600`. Retain the printed
-`output_sha256` and `promotion_sha256`. This export does not copy audio, choose
-a winner, alter provider evidence, or mutate a ChloeSpeech installation.
+The voice that speaks is a **voice release**: one finished fine-tuned run of
+Cole's own voice that Cole designates himself, on the PC, by CLI (D-045). Speech
+for registered callers uses only the current release (D-046). The commands, the
+caller registry and the owner's steps are specified in
+[SPEECH_API.md](SPEECH_API.md); they are built in the increment that implements it.
 
 ## 8. Conditional full corpus/fine-tuning
 

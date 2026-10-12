@@ -169,14 +169,13 @@ Those earlier synthetic acceptance checks did not open a microphone or play audi
 
 The pilot-to-bake-off code path is implemented and verified with synthetic
 fixtures: capture, transfer planning, intake, consent, references, datasets,
-candidate/source locks, isolated workers, normalization, blinded review, and
-ChloeSpeech handoff validation/export. The CLI now persists and resumes the
-all-candidate audition matrix, runs one candidate at a time, deeply validates a
-schema-authored promotion manifest, exclusively writes a canonical private
-handoff, and provides digest-confirmed model-cache eviction for the constrained
-mini. It does not author the human listening summary, verdict, winning-run, or
-promotion manifest. Real voice trials begin only after Cole records and
-personally approves the pilot scope.
+candidate/source locks, isolated workers, normalization and blinded review. The
+CLI persists and resumes the all-candidate audition matrix, runs one candidate at
+a time, and provides digest-confirmed model-cache eviction for the constrained
+mini. It does not author the human listening verdict. Real voice trials begin
+only after Cole records and personally approves the pilot scope. (Promotion and
+the ChloeSpeech handoff were removed on 2026-10-11, D-044; the voice release and
+the speech API replace them, D-045 and D-046.)
 
 The capture-console increment is implemented and synthetic-tested end to end.
 `voice-lab capture console` wraps the resumable native-FFmpeg take engine with
@@ -232,7 +231,5 @@ a real cold/warm smoke. No release claim treats lock resolution as that smoke.
 - Install the verified application wheel non-editably under the content-addressed
   mini release root, seal its install receipt, and only then render/load intake.
 - Run candidate downloads/renders explicitly and sequentially.
-- Author and review the schema-bound promotion records from real blind-review
-  evidence, then run `promotion validate` and retain its promotion digest.
-- Export the handoff into a private destination and review ChloeSpeech provider
-  compatibility before any consumer-side render.
+- Approve a consent record for `private-assistant-speech` on `home-host`, designate
+  a voice release, and register a speech caller (docs/SPEECH_API.md §11).

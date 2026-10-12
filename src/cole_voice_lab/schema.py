@@ -56,14 +56,6 @@ from .models import (
     WorkerModelEvidence,
 )
 from .native_recording_application import NATIVE_RECORDING_APPLICATION_SCHEMA_MODELS
-from .promotion import (
-    ChloeSpeechHandoff,
-    HumanReferenceProvenanceRecord,
-    LabVerdictRecord,
-    PromotionListeningSummaryRecord,
-    PromotionManifest,
-    WinningRunRecord,
-)
 from .recording_analysis import RECORDING_ANALYSIS_SCHEMA_MODELS
 from .recording_contracts import CORPUS_SCHEMA_MODELS, RECORDING_SCHEMA_MODELS
 from .recording_discovery import RecordingDiscoveryCheckpoint
@@ -140,7 +132,6 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "capture-ready": ReadyMarker,
     "capture-rejected-takes": RejectedTakeLog,
     "capture-desktop-session": DesktopSessionEvidence,
-    "chloe-speech-handoff": ChloeSpeechHandoff,
     "consent": ConsentRecord,
     "dataset-manifest": DatasetManifest,
     "dataset-selection": DatasetSelectionDocument,
@@ -153,20 +144,15 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "fine-tuning-transfer-plan": FineTuningTransferPlan,
     "headphone-review": HeadphoneReviewEvidence,
     "hosted-transfer-approval": HostedTransferApproval,
-    "human-reference-provenance": HumanReferenceProvenanceRecord,
     "intake-receipt": IntakeReceipt,
-    "lab-verdict": LabVerdictRecord,
     "local-source-manifest": LocalSourceManifest,
     "model-lock-entry": ModelLockEntry,
     "model-sources-lock": ModelSourcesLock,
     "pilot-gate": PilotGateApproval,
-    "promotion-manifest": PromotionManifest,
-    "promotion-listening-summary": PromotionListeningSummaryRecord,
     "prompt-suite": PromptSuite,
     "qc-report": QcReport,
     "reference-manifest": ReferenceManifest,
     "runtime-install-receipt": RuntimeInstallReceipt,
-    "winning-run": WinningRunRecord,
     "worker-model-evidence": WorkerModelEvidence,
 }
 

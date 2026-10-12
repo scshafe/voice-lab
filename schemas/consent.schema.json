@@ -12,7 +12,8 @@
       "items": {
         "enum": [
           "capture-host",
-          "tailnet-local-host"
+          "tailnet-local-host",
+          "home-host"
         ],
         "type": "string"
       },
@@ -24,6 +25,8 @@
         "enum": [
           "private-zero-shot-evaluation",
           "private-fine-tuning",
+          "private-home-host-synthesis",
+          "private-assistant-speech",
           "private-chloe-speech-rendering"
         ],
         "type": "string"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
@@ -371,3 +372,90 @@ def test_consent_history_rejects_symlink_directory(tmp_path: Path) -> None:
         consent._preserve_consent_version(path, digest, path.read_bytes())
 
     assert sha256_file(path)[0] == digest
+
+
+# The pending record every ``assets init`` installed before 2026-10-11 (D-044, D-047).
+_PRE_D047_PENDING = b"""{
+  "schema_version": "cole-voice-lab.consent/v1",
+  "consent_id": "cole-self-v1",
+  "subject_id": "cole-self",
+  "approved": false,
+  "attestation": "pending-subject-attestation",
+  "allowed_purposes": [
+    "private-zero-shot-evaluation",
+    "private-fine-tuning",
+    "private-chloe-speech-rendering"
+  ],
+  "allowed_execution_boundaries": ["capture-host", "tailnet-local-host"],
+  "hosted_transfer_allowed": false,
+  "disclosure_required": true,
+  "effective_at": null,
+  "expires_at": null,
+  "revoked_at": null
+}
+"""
+
+
+def test_the_pending_template_names_the_home_host_purposes() -> None:
+    template = pending_template()
+    assert "private-chloe-speech-rendering" not in template.allowed_purposes
+    assert {"private-home-host-synthesis", "private-assistant-speech"} <= set(
+        template.allowed_purposes
+    )
+    assert "home-host" in template.allowed_execution_boundaries
+
+
+def test_an_earlier_pending_record_is_kept_and_rotates_into_approval(tmp_path: Path) -> None:
+    layout = AssetLayout.initialize(tmp_path / "private" / "voice-assets")
+    path = consent.consent_record_path(layout, "cole-self-v1")
+    path.write_bytes(_PRE_D047_PENDING)
+    old_digest = sha256_file(path)[0]
+
+    assert install_pending_consent(layout) == (path, old_digest)
+    assert path.read_bytes() == _PRE_D047_PENDING
+
+    now = datetime(2026, 10, 11, 12, tzinfo=UTC)
+    _, digest = approve_self_consent(
+        layout,
+        acknowledgement=True,
+        purposes=("private-assistant-speech",),
+        execution_boundaries=("home-host",),
+        expires_at=now + timedelta(days=30),
+        expected_current_sha256=old_digest,
+        now=now,
+    )
+    assert (path.parent / "history" / f"{path.stem}.{old_digest}.json").read_bytes() == (
+        _PRE_D047_PENDING
+    )
+    record = load_valid_consent(
+        path,
+        expected_sha256=digest,
+        subject_id="cole-self",
+        purpose="private-assistant-speech",
+        execution_boundary="home-host",
+        at=now + timedelta(seconds=1),
+    )
+    assert record.allowed_execution_boundaries == ("home-host",)
+    with pytest.raises(SecurityError, match="execution boundary tailnet-local-host"):
+        load_valid_consent(
+            path,
+            expected_sha256=digest,
+            subject_id="cole-self",
+            purpose="private-assistant-speech",
+            execution_boundary="tailnet-local-host",
+            at=now + timedelta(seconds=1),
+        )
+    with pytest.raises(SecurityError, match="purpose private-home-host-synthesis"):
+        load_valid_consent(
+            path,
+            expected_sha256=digest,
+            subject_id="cole-self",
+            purpose="private-home-host-synthesis",
+            execution_boundary="home-host",
+            at=now + timedelta(seconds=1),
+        )
+
+
+def test_the_retired_purpose_is_readable_but_never_granted() -> None:
+    assert "private-chloe-speech-rendering" not in get_args(consent.Purpose)
+    assert "home-host" in get_args(consent.ExecutionBoundary)

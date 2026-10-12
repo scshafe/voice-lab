@@ -4,7 +4,8 @@
 
 Build a private, reproducible laboratory for recording Cole's voice, accepting
 recordings onto the Mac mini, comparing local voice-cloning systems, and
-promoting a winning, hash-pinned voice into ChloeSpeech.
+speaking with the one voice release Cole designates, for callers he registers
+(D-044 to D-047).
 
 ## Invariants
 
@@ -42,8 +43,20 @@ promoting a winning, hash-pinned voice into ChloeSpeech.
   from direct text-to-speech.
 - Blind listening is the primary decision signal. Automatic metrics are
   diagnostics, not a substitute for listening.
-- ChloeSpeech remains the production rendering boundary. This lab exports
-  manifests; it does not mutate ChloeSpeech or a consumer's catalog.
+- voice-lab is the speech engine; ChloeSpeech is retired (D-044). Speech outside
+  the lab's bake-off and listening tools uses only Cole's current voice release: a
+  checksum-bound record of one finished fine-tuned run of his own voice that Cole
+  designates by CLI (D-045). Never the base weights, a zero-shot reference, another
+  subject or an undesignated run.
+- Speech synthesis over the API is a queued job in the one GPU slot for registered
+  tailnet callers, completed asynchronously (polling, a per-job event stream of finished
+  sentence segments, or a signed terminal webhook); never an always-on synthesis endpoint,
+  audio streamed while it is synthesized, or a public endpoint. Sentences render
+  sequentially with derived seeds, so reruns are byte-identical. It needs an approved consent record for
+  `private-assistant-speech` on `home-host`. Rendered audio leaves the PC only to a
+  registered caller, is deleted after its retention, and every render is in the
+  append-only render ledger, which holds the text's digest, never the text (D-046,
+  D-047; docs/SPEECH_API.md).
 
 ## Working agreement
 
