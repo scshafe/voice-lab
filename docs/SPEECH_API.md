@@ -83,12 +83,14 @@ A `voice-release` record (`cole-voice-lab.voice-release/v1`) in
 | `blind_review` | optional: a review id and the score sheet's digest |
 | `created_at`, `designated_by` | when, and the name Cole gives |
 
-`voice-lab voice release designate --asset-root … --run <id> [--reference-prompt <id>]
---designated-by <name>` checks the run (finished, not archived, the subject of an approved
-consent record for `private-assistant-speech` on `home-host`), hashes the checkpoint and the
-reference clip against the run's records through the existing Speak seam
-(`finetune.resolve_speech_model`), and writes the next record. `voice release show` prints
-the current one; `voice release history` lists them all. The newest record is current.
+`voice-lab voice release designate --asset-root … --run <id> --designated-by <name>
+[--reference-prompt <id>] [--consent-id <id>] [--blind-review <id> --score-sheet-sha256 <sha>]`
+checks the run (finished, not archived, the subject of an approved consent record for
+`private-assistant-speech` on `home-host`), hashes the checkpoint and the reference clip
+against the run's records through the existing Speak seam (`finetune.resolve_speech_model`),
+and prints the record it would write; with `--i-designate-this-run` it writes it. `voice
+release show` prints the current one; `voice release history` lists them all. The newest
+record is current.
 
 A render refuses when the current release's checkpoint, reference clip or consent record no
 longer hashes to what the release names (`voice_release_changed`, `consent_changed`): rotating
@@ -108,12 +110,14 @@ read the parts they need.
   "state_root": "/data/voice-lab/state/speech",
   "gpu_slot_root": "/data/voice-lab/state/jobs",
   "subject_id": "cole-self",
+  "consent_id": "cole-self-v1",
   "tailnet_suffix": "<tailnet>.ts.net",
   "audio_retention_hours": 168,
   "record_retention_days": 30,
   "queue_limit": 32,
   "queue_timeout_seconds": 600,
   "render_deadline_seconds": 300,
+  "gpu_busy_retry_seconds": 600,
   "runtime": {"runtime_root": "/data/voice-lab/lab/runtimes/f5-tts-rocm", "device": "cuda", "nfe_steps": 32},
   "callers": [
     {
@@ -206,20 +210,22 @@ with a stable code, and every answer is `Cache-Control: no-store`.
   body answers `409 idempotency_conflict`. Keys live as long as the job's record.
 - `client_ref`: optional, at most 200 characters, echoed in status and webhooks; never logged.
 
-Answer `202`:
+Answer `202` with the job's status, the same body as `GET …/{id}` below:
 
 ```json
-{"id": "sp-3c0f…", "state": "queued", "created_at": "…",
+{"id": "sp-3c0f…", "state": "queued", "created_at": "…", "client_ref": "conversation-12/turn-7",
  "links": {"self": "/api/v1/speech/sp-3c0f…", "audio": "/api/v1/speech/sp-3c0f…/audio",
-           "cancel": "/api/v1/speech/sp-3c0f…/cancel"}}
+           "cancel": "/api/v1/speech/sp-3c0f…/cancel"}, …}
 ```
 
-Checks, in order, each with its refusal: the token and caller (`401 unauthorized`,
-`403 caller_not_registered`); the caller may invoke `private-assistant-speech`
-(`403 purpose_not_allowed`); the body (`413`, `422 invalid_request`, `422 unsupported_format`,
-`422 callback_not_allowed`); idempotency (`200` replay, `409`); a current voice release whose
-files still hash (`503 voice_release_unavailable`); a valid consent record
-(`503 consent_unavailable`); a long job holding the GPU slot (`503 gpu_busy`, with
+Checks, in order, each with its refusal: the token (`401 unauthorized` without one, or for
+one whose signature, lifetime, issuer, subject or audience is not a registered caller's) and
+the caller (`403 caller_not_registered` when the claims match no single caller); the caller
+may invoke `private-assistant-speech` (`403 purpose_not_allowed`); the body (`413`,
+`422 invalid_request`, `422 unsupported_format`, `422 callback_not_allowed`); idempotency
+(`200` replay, `409`); a current voice release (`503 voice_release_unavailable`; its files
+are re-hashed by the job runner before every render, not by the API); the consent record the
+release names, unchanged and valid (`503 consent_unavailable`); a long job holding the GPU slot (`503 gpu_busy`, with
 `Retry-After`); the caller's queued jobs (`429 too_many_jobs`), its daily characters (UTC day,
 `429 daily_budget_exhausted`), and the queue in all (`503 queue_full`).
 
@@ -232,6 +238,10 @@ files still hash (`503 voice_release_unavailable`); a valid consent record
  "audio": {"sha256": "…", "bytes": 581644, "duration_ms": 12116, "expires_at": "…"},
  "error": null, "links": {…}}
 ```
+
+Any other path or method under `/api/v1/speech` answers `404 not_found` or
+`405 method_not_allowed`; the speech route owns the whole prefix, so no other route sees a
+request that skipped the global token check.
 
 States: `queued` → `running` → `succeeded` | `failed` | `cancelled`; a succeeded job becomes
 `expired` once its audio is deleted. `error` is `{code, detail}` for `failed`; the codes are
@@ -267,11 +277,14 @@ jobs/<id>/input.json     the text; deleted when the job ends
 jobs/<id>/claim          created exclusively by whoever owns the job (runner, or a cancel)
 jobs/<id>/cancel         a cancel request for a running job
 jobs/<id>/status.json    the job's state, replaced atomically
+jobs/<id>/render.wav.part  the render being written (the job runner's)
 jobs/<id>/speech.wav     the audio, until retention removes it
 queue/<id>               empty; its appearance starts the job runner (a path unit)
 idempotency/<caller>/<sha256 of the key>.json
 outbox/<event id>.json   a webhook event waiting for the delivery process
 webhooks/<event id>/     an event being delivered, with its delivery log
+trusted-digests.json     digests the job runner verified (the checkpoint is re-hashed only
+                         when its file changes, as Speak's digest cache does)
 ```
 
 The ledger lives in the asset root (§9); the audio does not, so the vault never sees it.
