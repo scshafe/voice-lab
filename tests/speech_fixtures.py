@@ -214,6 +214,30 @@ class Lab:
         designate(self.layout, designated_by="Cole", now=NOW, **options)
 
 
+def designate_another_subject(lab: Lab) -> None:
+    """Make the current release another subject's: a finished run and an approved consent
+    record of ``someone-else``, designated as such (the configuration cannot pin them)."""
+    finished_run(lab.layout, "finetune-other", subject_id="someone-else")
+    approve_self_consent(
+        lab.layout,
+        acknowledgement=True,
+        purposes=("private-assistant-speech",),
+        execution_boundaries=("home-host",),
+        expires_at=NOW + timedelta(days=30),
+        subject_id="someone-else",
+        consent_id="someone-else-v1",
+        now=NOW - timedelta(days=1),
+    )
+    designate(
+        lab.layout,
+        run_id="finetune-other",
+        designated_by="Cole",
+        now=NOW,
+        consent_id="someone-else-v1",
+        subject_id="someone-else",
+    )
+
+
 def build_lab(tmp_path: Path, *, consent: bool = True, release: bool = True, **config: Any) -> Lab:
     root = tmp_path.resolve()
     layout = AssetLayout.initialize(root / "lab")

@@ -29,6 +29,7 @@ from ..recording_contracts import (
     SPEECH_MAX_TEXT_CHARACTERS,
     SPEECH_MIN_NFE_STEPS,
 )
+from .release import SPEECH_SUBJECT
 
 SPEECH_CONFIG_SCHEMA: Final = "cole-voice-lab.speech-config/v1"
 MAX_CONFIG_BYTES: Final = 256 * 1024
@@ -41,10 +42,16 @@ _LABEL: Final = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _TAILNET_SUFFIX: Final = re.compile(rf"^(?:{_LABEL}\.)+ts\.net$")
 _HOST_LABEL: Final = re.compile(rf"^{_LABEL}$")
 _SECRET_NAME: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_PATH: Final = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
-# A percent-escape is two hex digits, and never an encoded dot, slash or backslash: a
-# receiver that decodes them would see a path that the allowlist check did not.
-_BAD_ESCAPE: Final = re.compile(r"%(?![0-9A-Fa-f]{2})|%2[EeFf]|%5[Cc]")
+# No ``;``: a receiver that reads path parameters (``/hooks/..;/admin``) would see a path that
+# the allowlist check did not.
+_PATH: Final = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,=:@%/-]*$")
+# A percent-escape is two hex digits, and never an encoded dot, slash, semicolon or
+# backslash: a receiver that decodes them would see a path that the allowlist check did not.
+_BAD_ESCAPE: Final = re.compile(r"%(?![0-9A-Fa-f]{2})|%2[EeFf]|%3[Bb]|%5[Cc]")
+
+# Only Cole's stable subject id (``release.SPEECH_SUBJECT``; a test holds the two equal): the
+# configuration cannot name another subject (D-045).
+type SpeechSubject = Literal["cole-self"]
 
 type AbsolutePath = Annotated[
     str, StringConstraints(min_length=1, max_length=4096), AfterValidator(validate_absolute_path)
@@ -76,7 +83,8 @@ def webhook_url_problem(url: str, tailnet_suffix: str) -> str | None:
     """Why ``url`` cannot be a webhook URL on this tailnet, or ``None`` when it can.
 
     A webhook URL is ``https://<one label>.<tailnet suffix>[:port]/<path>``: no
-    credentials, no query, no fragment, no IP literal, nothing outside printable ASCII.
+    credentials, no query, no fragment, no IP literal, nothing outside printable ASCII, and
+    a path without dot segments, empty segments or path parameters (``;``).
     """
     if len(url) > MAX_WEBHOOK_URL_LENGTH or not url.isascii() or not url.isprintable():
         return "a webhook URL is printable ASCII of at most 2048 characters"
@@ -100,10 +108,12 @@ def webhook_url_problem(url: str, tailnet_suffix: str) -> str | None:
         return "a webhook URL's host is one node name under the tailnet suffix"
     if port is not None and not 1 <= port <= 65535:
         return "a webhook URL's port is 1 to 65535"
+    if ";" in parts.path:
+        return "a webhook URL's path has no path parameters (';')"
     if not parts.path or not _PATH.fullmatch(parts.path):
         return "a webhook URL has an absolute path"
     if _BAD_ESCAPE.search(parts.path):
-        return "a webhook URL's path has no encoded dot, slash or backslash"
+        return "a webhook URL's path has no encoded dot, slash, semicolon or backslash"
     segments = parts.path.split("/")[1:]
     if any(segment in {".", ".."} for segment in segments):
         return "a webhook URL's path has no dot segments"
@@ -202,9 +212,10 @@ class SpeechConfig(ContractModel):
     asset_root: AbsolutePath
     state_root: AbsolutePath
     gpu_slot_root: AbsolutePath
-    # The one subject whose release may speak (AGENTS.md: never another subject). A release,
-    # and the consent record it names, of any other subject is refused.
-    subject_id: StableId = "cole-self"
+    # The one subject whose release may speak (AGENTS.md: never another subject), pinned in
+    # code to ``SPEECH_SUBJECT``. A release, and the consent record it names, of any other
+    # subject is refused.
+    subject_id: SpeechSubject = SPEECH_SUBJECT
     tailnet_suffix: TailnetSuffix
     audio_retention_hours: int = Field(default=168, ge=1, le=720)
     record_retention_days: int = Field(default=30, ge=1, le=365)

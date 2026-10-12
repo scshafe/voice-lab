@@ -15,7 +15,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from speech_fixtures import NOW, FakeBackend, Lab, OnePass, build_lab, caller, write_tone
+from speech_fixtures import (
+    NOW,
+    FakeBackend,
+    Lab,
+    OnePass,
+    build_lab,
+    caller,
+    designate_another_subject,
+    write_tone,
+)
 
 import cole_voice_lab
 from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canonical_json
@@ -42,6 +51,7 @@ from cole_voice_lab.speech.gpu import (
 )
 from cole_voice_lab.speech.release import consent_path, current_release
 from cole_voice_lab.speech.runner import (
+    RunnerBusy,
     RunnerOutdated,
     SpeechRunner,
     check_wav,
@@ -733,7 +743,7 @@ def test_a_release_of_another_subject_than_the_configuration_pins_never_renders(
 ) -> None:
     lab = build_lab(tmp_path)
     job = submit(lab)
-    lab.config = lab.config.model_copy(update={"subject_id": "someone-else"})
+    designate_another_subject(lab)  # after the job was accepted
     backend = FakeBackend()
     runner(lab, backend).run_pending()
     ended = store_for(lab).load(job.record.job_id)
@@ -792,7 +802,7 @@ def test_an_outdated_runner_claims_nothing_and_says_so(lab: Lab) -> None:
 
 def test_a_runner_outdated_just_before_its_model_loads_gives_the_job_back(lab: Lab) -> None:
     job = submit(lab)
-    answers = iter([None, "the release moved"])
+    answers = iter([None, None, "the release moved"])  # the pass, the claim, the load
     resident = runner(lab)
     resident.code_check = lambda: next(answers)
     with pytest.raises(RunnerOutdated):
@@ -858,3 +868,292 @@ def test_an_ending_interrupted_after_the_state_leaves_no_text(lab: Lab) -> None:
     assert ended.state.state == "cancelled"
     store.sweep(now=NOW)
     assert not text.exists()
+
+
+# -- second review: a busy runner restarts after a deploy, between jobs -------------------------
+
+
+def test_a_busy_runner_restarts_between_jobs_once_a_deploy_moved_its_code(lab: Lab) -> None:
+    backend = FakeBackend()
+    deployed = {"now": False}
+    checks: list[bool] = []
+
+    def check() -> str | None:
+        checks.append(backend.loaded)
+        return "the release moved" if deployed["now"] else None
+
+    resident = SpeechRunner(
+        lab.config, backend, clock=lambda: NOW, slot_poll_seconds=0.01, code_check=check
+    )
+    first = submit(lab, "One.")
+    assert resident.run_pending(sweep=False).outcomes == {first.record.job_id: "succeeded"}
+    assert backend.loaded and resident.lease.held
+    # A deploy lands while the model is resident: the next pass checks anyway.
+    deployed["now"] = True
+    second = submit(lab, "Two.")
+    with pytest.raises(RunnerOutdated):
+        resident.run_pending(sweep=False)
+    assert True in checks  # checked while a model was loaded
+    assert not backend.loaded and not resident.lease.held and backend.unloads == 1
+    store = store_for(lab)
+    assert store.claim_owner(second.record.job_id) is None
+    assert [queued.record.job_id for queued in store.queued()] == [second.record.job_id]
+
+
+def test_a_deploy_mid_job_lets_the_job_finish_and_then_restarts(lab: Lab) -> None:
+    deployed = {"now": False}
+
+    def deploy_during_the_first_sentence(index: int) -> None:
+        if index == 1:
+            deployed["now"] = True
+
+    backend = FakeBackend(on_segment=deploy_during_the_first_sentence)
+    resident = SpeechRunner(
+        lab.config,
+        backend,
+        clock=lambda: NOW,
+        slot_poll_seconds=0.01,
+        code_check=lambda: "the release moved" if deployed["now"] else None,
+    )
+    rendering = submit(lab, THREE)
+    waiting, _ = store_for(lab).submit(
+        lab.config.callers[0], SpeechRequest(text="Next."), now=NOW + timedelta(seconds=1)
+    )
+    with pytest.raises(RunnerOutdated):
+        resident.run_pending(sweep=False)
+    store = store_for(lab)
+    ended = store.load(rendering.record.job_id)
+    # Never mid-sentence, never mid-job: every sentence rendered and the job succeeded.
+    assert ended is not None and ended.state.state == "succeeded"
+    assert len(backend.calls) == 3 and ledger_path(lab.layout, rendering.record.job_id).exists()
+    assert store.claim_owner(waiting.record.job_id) is None
+    assert [queued.record.job_id for queued in store.queued()] == [waiting.record.job_id]
+    assert not backend.loaded and not resident.lease.held
+
+
+def test_serve_restarts_with_a_model_loaded(lab: Lab) -> None:
+    backend = FakeBackend()
+    deployed = {"now": False}
+    resident = SpeechRunner(
+        lab.config,
+        backend,
+        clock=lambda: NOW,
+        slot_poll_seconds=0.01,
+        code_check=lambda: "the release moved" if deployed["now"] else None,
+    )
+    job = submit(lab, "One.")
+    passes = iter([False, False, True])
+
+    def stop() -> bool:
+        if backend.loaded:
+            deployed["now"] = True  # deployed while the model is resident and idle
+        return next(passes)
+
+    with pytest.raises(RunnerOutdated):
+        resident.serve(stop=stop, poll_seconds=0)
+    ended = store_for(lab).load(job.record.job_id)
+    assert ended is not None and ended.state.state == "succeeded"
+    assert not backend.loaded and not resident.lease.held
+    # The instance lock went with it: a pass by hand (of the new code) may run now.
+    assert SpeechRunner(lab.config, FakeBackend(), clock=lambda: NOW).run_once().outcomes == {}
+
+
+# -- second review: a second runner instance never stalls the queue -----------------------------
+
+
+def test_a_pass_by_hand_is_refused_while_the_runner_unit_runs(lab: Lab) -> None:
+    job = submit(lab)
+    service = SpeechRunner(lab.config, FakeBackend(), clock=lambda: NOW)
+    held = service._instance_lock()  # the unit, between passes
+    assert held is not None
+    by_hand = SpeechRunner(lab.config, FakeBackend(), clock=lambda: NOW, slot_poll_seconds=0.01)
+    try:
+        with pytest.raises(RunnerBusy, match="another speech runner is running"):
+            by_hand.run_once()
+        store = store_for(lab)
+        assert store.claim_owner(job.record.job_id) is None and not by_hand.lease.held
+        # A unit that starts while a pass by hand runs waits for it (here: until stopped).
+        stops = iter([False, True])
+        late = SpeechRunner(lab.config, FakeBackend(), clock=lambda: NOW)
+        late.serve(stop=lambda: next(stops), poll_seconds=0)
+        assert [queued.record.job_id for queued in store.queued()] == [job.record.job_id]
+    finally:
+        os.close(held)
+    assert by_hand.run_once().outcomes == {job.record.job_id: "succeeded"}
+    assert not by_hand.lease.held and not by_hand.backend.loaded
+
+
+# -- second review: recovery honours a cancel ---------------------------------------------------
+
+
+def test_a_running_job_with_a_cancel_recovers_as_cancelled(
+    lab: Lab, capsys: pytest.CaptureFixture[str]
+) -> None:
+    job = submit(lab)
+    store = store_for(lab)
+    assert store.claim(job.record.job_id, "runner")
+    store.mark_running(job, now=NOW, segment_count=1)
+    store.cancel(lab.config.callers[0], job.record.job_id, now=NOW)  # the marker only
+    report = runner(lab).run_pending(sweep=False)
+    ended = store.load(job.record.job_id)
+    assert report.outcomes == {job.record.job_id: "cancelled"}
+    assert ended is not None and ended.state.state == "cancelled" and ended.state.error is None
+    assert "stopped while it rendered; cancelled" in capsys.readouterr().err
+
+
+# -- second review: nothing is served without its ledger entry ----------------------------------
+
+
+def test_a_ledger_failure_deletes_the_segments_too(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    job = submit(lab, THREE)
+    resident = runner(lab)
+
+    def no_ledger(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("the ledger's directory is gone")
+
+    monkeypatch.setattr(resident, "_ledger", no_ledger)
+    assert resident.run_pending(sweep=False).outcomes == {job.record.job_id: "failed"}
+    store = store_for(lab)
+    ended = store.load(job.record.job_id)
+    assert ended is not None and ended.state.error is not None
+    assert ended.state.error.code == "internal_error"
+    assert ended.state.segments == () and ended.state.audio is None
+    assert ended.state.audio_expires_at is None and ended.state.segment_count == 3
+    directory = store.job_directory(job.record.job_id)
+    assert (
+        not (directory / "segments").exists() and not store.audio_path(job.record.job_id).exists()
+    )
+    refused("not_found", lambda: open_segment(store, ended, 1))
+    refused("audio_not_ready", lambda: open_audio(store, ended))
+    assert "the ledger entry could not be written" in capsys.readouterr().err
+
+
+def test_withdrawing_audio_deletes_the_files_even_when_the_state_cannot_be_written(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = submit(lab, THREE)
+    store = store_for(lab)
+    runner(lab).run_pending(sweep=False)
+    done = store.load(job.record.job_id)
+    assert done is not None and done.state.segments
+
+    def no_state(_state: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "write_state", no_state)
+    with pytest.raises(OSError, match="disk full"):
+        store.withdraw_audio(done)
+    directory = store.job_directory(job.record.job_id)
+    assert (
+        not (directory / "segments").exists() and not store.audio_path(job.record.job_id).exists()
+    )
+
+
+# -- second review: the text key's failures are logged and repairable ---------------------------
+
+
+def test_an_unusable_text_key_is_logged_with_its_reason_and_left_for_the_operator(
+    lab: Lab,
+) -> None:
+    submit(lab)  # a job exists
+    store = store_for(lab)
+    key = store.root / TEXT_KEY_NAME
+    key.unlink()
+    key.write_bytes(b"")
+    key.chmod(0o600)
+    logged: list[str] = []
+    fresh = SpeechStore(lab.config, log=logged.append)
+    fresh.ensure()
+    fresh.ensure()  # the same problem is logged once
+    assert len(logged) == 1 and "is 0 bytes, not 32 bytes" in logged[0]
+    assert "deploy/speech/README.md" in logged[0]
+    assert key.read_bytes() == b""  # never replaced here
+    refusal = refused(
+        "internal_error",
+        lambda: fresh.submit(lab.config.callers[0], SpeechRequest(text="Hi."), now=NOW),
+    )
+    assert refusal.status == 500 and "bytes" not in refusal.detail  # the reason is the log's
+    assert len(logged) == 2 and "is 0 bytes" in logged[1]
+    # Other problems, each named.
+    key.write_bytes(b"x" * 40)
+    assert "is longer, not 32 bytes" in _key_problem(lab)
+    key.write_bytes(bytes(32))
+    key.chmod(0o640)
+    assert "open to group or others (mode 0640" in _key_problem(lab)
+    key.unlink()
+    key.symlink_to(store.root / "elsewhere")
+    assert "not a regular file" in _key_problem(lab)
+    key.unlink()
+    key.mkdir()
+    assert "not a regular file" in _key_problem(lab)
+    key.rmdir()
+    # The repair (deploy/speech/README.md): remove it; the next start makes a new one.
+    logged.clear()
+    fresh = SpeechStore(lab.config, log=logged.append)
+    fresh.ensure()
+    assert len(key.read_bytes()) == 32
+    assert len(logged) == 1 and "was missing while 1 job record(s) exist" in logged[0]
+    assert submit(lab, "Again.").record.text_hmac_sha256
+
+
+def _key_problem(lab: Lab) -> str:
+    logged: list[str] = []
+    SpeechStore(lab.config, log=logged.append).ensure()
+    assert len(logged) == 1
+    return logged[0]
+
+
+def test_a_missing_key_is_made_quietly_on_a_new_install(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path)
+    logged: list[str] = []
+    SpeechStore(lab.config, log=logged.append).ensure()
+    store = store_for(lab)
+    assert len(store.text_key()) == 32 and logged == []
+    logged_unreadable: list[str] = []
+    store = SpeechStore(lab.config, log=logged_unreadable.append)
+    (store.root / TEXT_KEY_NAME).unlink()
+    refused("internal_error", store.text_key)
+    assert "is missing" in logged_unreadable[0]
+
+
+def test_an_idempotency_key_made_under_a_lost_text_key_answers_clearly(lab: Lab) -> None:
+    first = submit(lab, "Same.", idempotency_key="k-1")
+    store = store_for(lab)
+    (store.root / TEXT_KEY_NAME).unlink()
+    fresh = SpeechStore(lab.config, log=lambda _message: None)
+    fresh.ensure()  # a new key
+    refusal = refused(
+        "idempotency_key_unverifiable",
+        lambda: fresh.submit(
+            lab.config.callers[0], SpeechRequest(text="Same.", idempotency_key="k-1"), now=NOW
+        ),
+    )
+    assert refusal.status == 409 and "new idempotency key" in refusal.detail
+    # A new key is answered as usual, and the old job is untouched.
+    again, created = fresh.submit(
+        lab.config.callers[0], SpeechRequest(text="Same.", idempotency_key="k-2"), now=NOW
+    )
+    assert created and again.record.job_id != first.record.job_id
+    assert fresh.load(first.record.job_id) is not None
+
+
+def test_an_idempotency_entry_without_a_key_id_is_compared_as_before(lab: Lab) -> None:
+    first = submit(lab, "Same.", idempotency_key="k-1")
+    store = store_for(lab)
+    entries = list((store.idempotency_root / "agent-server").iterdir())
+    assert len(entries) == 1
+    recorded = json.loads(entries[0].read_text())
+    assert recorded["text_key_id"] == store.text_key_id() != store.text_key().hex()
+    write_canonical_json(entries[0], {"job_id": first.record.job_id})  # an older entry
+    replay, created = store.submit(
+        lab.config.callers[0], SpeechRequest(text="Same.", idempotency_key="k-1"), now=NOW
+    )
+    assert not created and replay.record.job_id == first.record.job_id
+    refused(
+        "idempotency_conflict",
+        lambda: store.submit(
+            lab.config.callers[0], SpeechRequest(text="Other.", idempotency_key="k-1"), now=NOW
+        ),
+    )

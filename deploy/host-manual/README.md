@@ -60,6 +60,7 @@ sudo systemctl enable --now voice-lab-vault-air.timer
 The units run `/opt/voice-lab/current/bin/voice-lab`, the release the lane activates, so
 a deploy updates the code each oneshot run uses; only the unit text is installed by hand. The
 long-running speech runner is not restarted by a deploy: it restarts itself (it exits 75 once
-`/opt/voice-lab/current` no longer holds its code; `../speech/README.md`, "Deploys and the
-runner"), until the lane can own the unit. Rollback and
+`/opt/voice-lab/current` no longer holds its code, after the job in hand; `../speech/README.md`,
+"Deploys and the runner"), until the lane can own the unit. A pass by hand (`speech run
+--once`) is refused while the unit runs (`../speech/README.md`, "One pass by hand"). Rollback and
 the credentials: `../host/README.md` and RUNBOOK §9 "The PC (phase 2)".

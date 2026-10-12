@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from pydantic import ValidationError
@@ -15,10 +15,12 @@ from cole_voice_lab.errors import ContractError
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.speech.config import (
     SpeechConfig,
+    SpeechSubject,
     load_speech_config,
     parse_webhook_url,
     webhook_url_problem,
 )
+from cole_voice_lab.speech.release import SPEECH_SUBJECT
 
 
 @pytest.mark.parametrize(
@@ -75,6 +77,11 @@ def test_a_callback_must_equal_or_extend_an_allowed_url() -> None:
         "/hooks/voice-lab//admin",
         "/hooks/voice-lab/%zz",
         "/hooks/voice-lab/./x",
+        "/hooks/voice-lab/..;/admin",
+        "/hooks/voice-lab;/admin",
+        "/hooks/voice-lab/x;jsessionid=1",
+        "/hooks/voice-lab/..%3b/admin",
+        "/hooks/voice-lab/..%3B/admin",
     ],
 )
 def test_an_encoded_or_unnormalised_path_never_matches_the_allowlist(path: str) -> None:
@@ -186,3 +193,27 @@ def test_secret_file_names_are_distinct_credential_names(tmp_path: Path) -> None
     odd = caller(webhook_secret_file="/etc/voice-lab/secrets/agent server")
     with pytest.raises(ValidationError, match="letters, digits"):
         speech_config(tmp_path, lab_layout, callers=(odd,))
+
+
+# -- second review ------------------------------------------------------------------------------
+
+
+def test_a_path_parameter_never_passes_the_allowlist(tmp_path: Path) -> None:
+    # A receiver that reads path parameters would resolve /hooks/voice-lab/..;/admin to /admin.
+    base = HOOK.rstrip("/")
+    assert not caller().allows_callback(base + "/..;/admin", TAILNET)
+    assert "path parameters" in (webhook_url_problem(base + "/..;/admin", TAILNET) or "")
+    assert "semicolon" in (webhook_url_problem(base + "/..%3B/admin", TAILNET) or "")
+    layout = AssetLayout.initialize(tmp_path / "lab")
+    with pytest.raises(ValidationError, match="path parameters"):
+        speech_config(tmp_path, layout, callers=(caller(webhook_urls=(base + ";v=1",)),))
+
+
+def test_the_speaking_subject_is_pinned_in_code(tmp_path: Path) -> None:
+    assert get_args(SpeechSubject.__value__) == (SPEECH_SUBJECT,) == ("cole-self",)
+    layout = AssetLayout.initialize(tmp_path / "lab")
+    assert speech_config(tmp_path, layout).subject_id == SPEECH_SUBJECT
+    assert speech_config(tmp_path, layout, subject_id="cole-self").subject_id == SPEECH_SUBJECT
+    for other in ("someone-else", "cole-self-2", "Cole-Self"):
+        with pytest.raises(ValidationError, match="cole-self"):
+            speech_config(tmp_path, layout, subject_id=other)

@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
-from speech_fixtures import NOW, Lab, build_lab
+from speech_fixtures import NOW, FakeBackend, Lab, build_lab
 
 from cole_voice_lab.api import server as server_module
 from cole_voice_lab.canonical import canonical_json_bytes
 from cole_voice_lab.cli import main
 from cole_voice_lab.speech.contracts import SpeechRequest
 from cole_voice_lab.speech.routes import PREFIX
-from cole_voice_lab.speech.runner import EXIT_OUTDATED
+from cole_voice_lab.speech.runner import EXIT_OUTDATED, SpeechRunner
 from cole_voice_lab.speech.store import SpeechStore
 
 
@@ -163,3 +164,22 @@ def test_serve_adds_the_speech_routes_first(
     assert "identity provider" in capsys.readouterr().err
     argv[-1] = str(tmp_path / "missing.json")
     assert server_module.main(argv) == 1
+
+
+def test_a_pass_by_hand_is_refused_while_the_runner_unit_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lab = build_lab(tmp_path)
+    config = write_config(lab)
+    store = SpeechStore(lab.config)
+    store.ensure()
+    job, _ = store.submit(lab.config.callers[0], SpeechRequest(text="Hi."), now=NOW)
+    held = SpeechRunner(lab.config, FakeBackend())._instance_lock()  # the unit's
+    assert held is not None
+    try:
+        assert main(["speech", "run", "--config", str(config), "--once"]) == 2
+        assert "another speech runner is running" in capsys.readouterr().err
+        assert [queued.record.job_id for queued in store.queued()] == [job.record.job_id]
+        assert store.claim_owner(job.record.job_id) is None
+    finally:
+        os.close(held)

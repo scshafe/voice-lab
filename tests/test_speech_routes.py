@@ -26,16 +26,24 @@ from speech_fixtures import (
     build_lab,
     caller,
     caller_token,
+    designate_another_subject,
     start_speech_rig,
 )
 
 from cole_voice_lab.api.contracts import REFUSAL_CODES
+from cole_voice_lab.api.routing import RouteRefusal, RouteRequest
 from cole_voice_lab.canonical import sha256_file
 from cole_voice_lab.consent import revoke_consent
 from cole_voice_lab.speech.contracts import GpuSlotHolder
 from cole_voice_lab.speech.gpu import hold_slot
 from cole_voice_lab.speech.release import consent_path, current_release
-from cole_voice_lab.speech.routes import byte_range, caller_policy, last_event_id, match_caller
+from cole_voice_lab.speech.routes import (
+    MAX_EVENT_STREAMS,
+    byte_range,
+    caller_policy,
+    last_event_id,
+    match_caller,
+)
 from cole_voice_lab.speech.store import SpeechRefusal
 
 
@@ -271,7 +279,8 @@ def test_without_a_release_or_consent_speech_is_unavailable(tmp_path: Path) -> N
 
 
 def test_a_release_of_another_subject_is_unavailable(tmp_path: Path) -> None:
-    lab = build_lab(tmp_path, subject_id="someone-else")  # the configuration pins another
+    lab = build_lab(tmp_path)
+    designate_another_subject(lab)  # the configuration pins cole-self, in code
     for rig in start_speech_rig(lab):
         status, refusal = answer(rig, "POST", "/api/v1/speech", {"text": "Hi."})
         assert (status, refusal["error"]) == (503, "voice_release_unavailable")
@@ -446,3 +455,74 @@ def test_the_event_stream_keeps_alive_and_ends_on_time(rig: SpeechRig) -> None:
     chunks = list(routes._events(registered, job["id"], 0))
     assert chunks[0].startswith(b"retry:") and b": keepalive\n\n" in chunks
     assert not any(b"event:" in chunk for chunk in chunks)
+
+
+# -- second review ------------------------------------------------------------------------------
+
+
+def test_the_caller_policy_logs_the_audiences_it_drops(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path, release=False)
+    callers = tuple(
+        caller(
+            caller_id=f"c{number}",
+            subject=f"s{number}",
+            audiences=tuple(f"aud-{number}-{index}" for index in range(3)),
+            webhook_urls=(),
+            webhook_secret_file=None,
+        )
+        for number in range(3)
+    )
+    logged: list[str] = []
+    config = lab.config.model_copy(update={"callers": callers})
+    policy = caller_policy(config, "/jwks.json", log=logged.append)
+    assert len(policy.issuers[0].audiences) == 8
+    assert len(logged) == 1
+    assert "9 audiences" in logged[0] and "the other 1" in logged[0] and "c2" in logged[0]
+    assert "c0" not in logged[0] and "aud-" not in logged[0]
+    quiet: list[str] = []
+    caller_policy(lab.config, "/jwks.json", log=quiet.append)
+    assert quiet == []
+
+
+def _events_request(path: str) -> RouteRequest:
+    token = f"Bearer {caller_token()}"
+    return RouteRequest(
+        method="GET",
+        path=path,
+        query="",
+        header=lambda name: token if name == "Authorization" else None,
+        content_length=None,
+        read_body=lambda _limit: b"",
+    )
+
+
+def test_a_caller_holds_at_most_four_event_streams(rig: SpeechRig) -> None:
+    _, job = answer(rig, "POST", "/api/v1/speech", {"text": "Wait for me."})
+    routes = rig.routes
+    request = _events_request(job["links"]["events"])
+    streams = [routes(request) for _ in range(MAX_EVENT_STREAMS)]
+    assert MAX_EVENT_STREAMS == 4 and routes.open_streams("agent-server") == 4
+    with pytest.raises(RouteRefusal) as refusal:
+        routes(request)
+    assert (refusal.value.status, refusal.value.code) == (429, "too_many_streams")
+    assert "too_many_streams" in REFUSAL_CODES
+    # Over HTTP too, before any header of a stream is sent.
+    status, body = answer(rig, "GET", job["links"]["events"])
+    assert (status, body["error"]) == (429, "too_many_streams")
+    # A stream the server closes gives its place back, once, even if it never started.
+    first = streams[0]
+    assert first is not None and first.events is not None
+    close = first.events.close
+    close()
+    close()
+    assert routes.open_streams("agent-server") == 3
+    # One that ends (the job ended) does too.
+    run_jobs(rig)
+    second = streams[1]
+    assert second is not None and second.events is not None
+    assert b"event: speech.succeeded" in b"".join(second.events)
+    assert routes.open_streams("agent-server") == 2
+    for response in streams[2:]:
+        assert response is not None and response.events is not None
+        response.events.close()
+    assert routes.open_streams("agent-server") == 0
