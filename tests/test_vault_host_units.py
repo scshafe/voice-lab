@@ -289,10 +289,15 @@ def test_the_benchmark_runs_in_the_speech_runners_sandbox() -> None:
     ):
         assert values(BENCHMARK, "Service", key) == values(SPEECH, "Service", key), key
     assert not {key for _, key, _ in settings(BENCHMARK)} & CREDENTIAL_KEYS
-    # It writes the GPU slot, its own speech scratch, the lab's tmp/ and the comparisons only.
+    # It writes the GPU slot (optional, as the runner's), its own scratch under the speech
+    # state and the comparisons only: never the lab's tmp/, which holds raw take originals.
     assert values(BENCHMARK, "Service", "ReadWritePaths") == [
-        "/data/voice-lab/state/jobs /data/voice-lab/state/speech/benchmark "
-        f"{LAB}/tmp {LAB}/provenance/model-comparisons"
+        "-/data/voice-lab/state/jobs /data/voice-lab/state/speech/benchmark "
+        f"{LAB}/provenance/model-comparisons"
+    ]
+    assert "-/data/voice-lab/state/jobs" in values(SPEECH, "Service", "ReadWritePaths")[0].split()
+    assert values(BENCHMARK, "Service", "Environment") == [
+        "VOICE_LAB_SANDBOX=voice-lab-speech-benchmark"
     ]
     assert values(BENCHMARK, "Unit", "ConditionPathExists") == [
         SPEECH_CONFIG,

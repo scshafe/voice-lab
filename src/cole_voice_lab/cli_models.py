@@ -11,10 +11,14 @@ review side by side, and what keeps them from comparing like with like.
 
 A benchmark renders Cole's voice, so it renders only inside the speech unit's sandbox: no
 network and only the GPU's devices. On the PC that is the oneshot unit
-``voice-lab-speech-benchmark.service`` (deploy/host-manual/); the command refuses to
-render in a process that has a network interface other than loopback unless
-``--i-render-outside-the-sandbox`` says the operator accepts it (the record then says so).
-Synthetic audio never leaves the run's scratch: the benchmark keeps digests and timings only.
+``voice-lab-speech-benchmark.service`` (deploy/host-manual/), which sets
+``VOICE_LAB_SANDBOX=voice-lab-speech-benchmark``. The command refuses to render unless that
+marker is set and the process sees no network interface but loopback, or
+``--i-render-outside-the-sandbox`` says the operator accepts it (the record then says
+``sandboxed: false``). ``sandboxed: true`` means exactly those two observations; it is not
+proof of the unit's other fences (a shell under ``unshare -rn`` with the marker set passes).
+The rendered audio stays in the benchmark's scratch under the speech state and is deleted:
+the benchmark keeps digests and timings only.
 """
 
 from __future__ import annotations
@@ -53,6 +57,8 @@ from .speech.gpu import hold_slot, want_slot, withdraw_want
 OUTSIDE_THE_SANDBOX: Final = "--i-render-outside-the-sandbox"
 BENCHMARK_STATE: Final = "benchmark"
 NET_DEVICES: Final = Path("/proc/self/net/dev")
+SANDBOX_MARKER: Final = "VOICE_LAB_SANDBOX"
+BENCHMARK_UNIT: Final = "voice-lab-speech-benchmark"
 
 
 def _print(value: object) -> None:
@@ -78,8 +84,11 @@ def network_interfaces(path: Path = NET_DEVICES) -> tuple[str, ...]:
 
 
 def in_speech_sandbox(interfaces: Callable[[], tuple[str, ...]] | None = None) -> bool:
-    """Whether this process has no network but loopback, as the speech units run
-    (``PrivateNetwork=yes``); a host whose interfaces cannot be listed is not one."""
+    """Whether this process was started by the benchmark unit (its environment marker) and
+    has no network but loopback (``PrivateNetwork=yes``); a host whose interfaces cannot be
+    listed is not one. Not proof of the unit's other fences (the module's docstring)."""
+    if os.environ.get(SANDBOX_MARKER) != BENCHMARK_UNIT:
+        return False
     try:
         return set((interfaces or network_interfaces)()) <= {"lo"}
     except OSError:
@@ -119,8 +128,8 @@ def _record(options: argparse.Namespace) -> int:
     sandboxed = in_speech_sandbox()
     if options.benchmark and not sandboxed and not options.outside_the_sandbox:
         raise VoiceLabError(
-            "a benchmark renders Cole's voice and runs only in the speech unit's sandbox (no "
-            "network): start voice-lab-speech-benchmark.service (deploy/host-manual/), "
+            "a benchmark renders Cole's voice and runs only in its unit's sandbox (no network): "
+            "start voice-lab-speech-benchmark.service (deploy/host-manual/), "
             f"or pass {OUTSIDE_THE_SANDBOX} to accept rendering here"
         )
     review = _review(layout, options)
@@ -139,8 +148,9 @@ def _record(options: argparse.Namespace) -> int:
         try:
             with hold_slot(slot, holder, timeout_seconds=options.slot_timeout):
                 withdraw_want(slot)
-                scratch = layout.directory("tmp") / f"{SCRATCH_PREFIX}{identifier}"
-                sweep_benchmark_scratch(layout, keep=scratch)
+                # Rendered segments stay under the speech state, never in the lab.
+                scratch = state / f"{SCRATCH_PREFIX}{identifier}"
+                sweep_benchmark_scratch(state, keep=scratch)
                 try:
                     inference = benchmark_run(
                         layout,

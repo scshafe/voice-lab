@@ -185,20 +185,49 @@ def withdraw_want(root: Path) -> None:
 
 def _stale_reason(
     path: Path, now: datetime, alive: Callable[[int], bool], boot: Callable[[], str]
-) -> str | None:
+) -> tuple[str | None, tuple[int, int]]:
+    """Why the want at ``path`` is stale (``None``: it is not), and the identity (device,
+    inode) of the file that was judged."""
+    with open_regular_no_follow(path) as stream:
+        metadata = os.fstat(stream.fileno())
+        identity = (metadata.st_dev, metadata.st_ino)
+        data = stream.read(MAX_HOLDER_BYTES)
     try:
-        with open_regular_no_follow(path) as stream:
-            want = GpuSlotWant.model_validate_json(stream.read(MAX_HOLDER_BYTES))
+        want = GpuSlotWant.model_validate_json(data)
     except Exception:  # noqa: BLE001 (another writer's marker, or one written by hand)
-        age = now.timestamp() - path.lstat().st_mtime
-        return f"unreadable and {int(age)} s old" if age > UNREADABLE_WANT_SECONDS else None
+        age = now.timestamp() - metadata.st_mtime
+        return (f"unreadable and {int(age)} s old" if age > UNREADABLE_WANT_SECONDS else None), (
+            identity
+        )
     if want.boot_id != boot():
-        return f"{want.holder.kind} {want.holder.job_id} wanted it before the host rebooted"
-    if not alive(want.pid):
-        return f"{want.holder.kind} {want.holder.job_id}'s process {want.pid} is gone"
-    if want.expires_at <= now:
-        return f"{want.holder.kind} {want.holder.job_id} is past its wait"
-    return None
+        reason = f"{want.holder.kind} {want.holder.job_id} wanted it before the host rebooted"
+    elif not alive(want.pid):
+        reason = f"{want.holder.kind} {want.holder.job_id}'s process {want.pid} is gone"
+    elif want.expires_at <= now:
+        reason = f"{want.holder.kind} {want.holder.job_id} is past its wait"
+    else:
+        reason = None
+    return reason, identity
+
+
+def _unlink_if_same(path: Path, identity: tuple[int, int]) -> bool:
+    """Remove ``path`` only while it is still the file judged stale: it is first moved aside
+    (atomically), and a want written meanwhile is put back, never removed."""
+    aside = path.with_name(f".{path.name}.stale-{os.getpid()}-{time.monotonic_ns()}")
+    try:
+        os.rename(path, aside)
+    except FileNotFoundError:
+        return False
+    metadata = os.lstat(aside)
+    if (metadata.st_dev, metadata.st_ino) == identity:
+        os.unlink(aside)
+        return True
+    try:
+        os.link(aside, path)  # a newer want: restore it unless yet another replaced it
+    except FileExistsError:
+        pass
+    os.unlink(aside)
+    return False
 
 
 def slot_wanted(
@@ -208,15 +237,28 @@ def slot_wanted(
     alive: Callable[[int], bool] = process_alive,
     boot: Callable[[], str] = boot_id,
 ) -> bool:
-    """Whether a long job is waiting for the slot; a stale want is removed (and logged)."""
+    """Whether a long job is waiting for the slot; a stale want is removed (and logged), but
+    only that file: a want written while it was judged stays."""
     path = root / WANTED_NAME
+    moment = utc_now() if now is None else now
     try:
-        reason = _stale_reason(path, utc_now() if now is None else now, alive, boot)
+        reason, identity = _stale_reason(path, moment, alive, boot)
     except FileNotFoundError:
         return False
+    except Exception:  # noqa: BLE001 (not a regular file: judged by its age, as unreadable)
+        try:
+            metadata = os.lstat(path)
+        except FileNotFoundError:
+            return False
+        age = moment.timestamp() - metadata.st_mtime
+        reason = (
+            f"not a regular file and {int(age)} s old" if age > UNREADABLE_WANT_SECONDS else None
+        )
+        identity = (metadata.st_dev, metadata.st_ino)
     if reason is None:
         return True
-    path.unlink(missing_ok=True)
+    if not _unlink_if_same(path, identity):
+        return os.path.lexists(path)  # a newer want replaced it meanwhile: it counts
     print(f"voice-lab gpu slot: removed a stale want ({reason})", file=sys.stderr, flush=True)
     return False
 

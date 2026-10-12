@@ -14,9 +14,15 @@
 #   journalctl -u voice-lab-speech-benchmark.service
 #
 # It waits for the GPU slot as a long job (kind `benchmark`; the speech runner yields once
-# its queue is empty), renders, hashes and deletes the audio in the lab's tmp/, and writes one
+# its queue is empty), renders, hashes and deletes the audio in its own scratch under
+# state/speech/benchmark/ (never the lab, whose tmp/ holds raw take originals), and writes one
 # record under the lab's provenance/model-comparisons/<run id>/ (digests and timings only).
 # Without the file the unit does not start.
+#
+# Unlike the runner it needs no --release-link, no exit 75/78 and no long TimeoutStopSec: each
+# start runs the code /opt/voice-lab/current holds then, once. A stop kills the whole unit, its
+# resident worker included (it is in the unit's cgroup); nothing is recorded, the next
+# benchmark sweeps the scratch it left, and its want of the GPU slot goes stale with it.
 #
 # Installed by hand, not by the runner lane, for the speech runner's reason: it needs the
 # GPU's devices (README.md here). A fixed name, not a template: infra's host-unit validator
@@ -36,16 +42,18 @@ Group=voice-lab
 SupplementaryGroups=render video
 UMask=0077
 EnvironmentFile=/etc/voice-lab/speech-benchmark.env
+# The marker the command requires before it renders (with no network but loopback).
+Environment=VOICE_LAB_SANDBOX=voice-lab-speech-benchmark
 ExecStart=/opt/voice-lab/current/bin/voice-lab families record --asset-root /data/voice-lab/lab --run ${VOICE_LAB_BENCHMARK_RUN} --benchmark --config /etc/voice-lab/speech.json --consent-id ${VOICE_LAB_BENCHMARK_CONSENT_ID}
 TimeoutStartSec=2h
 PrivateNetwork=yes
 IPAddressDeny=any
 RestrictAddressFamilies=AF_UNIX
 ProtectSystem=strict
-# The GPU slot's lock and markers, the backend's own scratch and caches (not the speech
-# runner's: speech/benchmark/, made before the first start, README.md here),
-# the scratch for the rendered segments, and the comparison records.
-ReadWritePaths=/data/voice-lab/state/jobs /data/voice-lab/state/speech/benchmark /data/voice-lab/lab/tmp /data/voice-lab/lab/provenance/model-comparisons
+# The GPU slot's lock and markers (optional, as for the runner), the backend's own scratch,
+# caches and rendered segments (not the speech runner's: state/speech/benchmark/, made before
+# the first start, README.md here), and the comparison records. Not the lab's tmp/.
+ReadWritePaths=-/data/voice-lab/state/jobs /data/voice-lab/state/speech/benchmark /data/voice-lab/lab/provenance/model-comparisons
 ProtectHome=yes
 PrivateTmp=yes
 # The GPU (ROCm: /dev/kfd and the DRM render node), nothing else.

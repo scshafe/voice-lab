@@ -97,3 +97,30 @@ def test_the_boot_and_the_process_are_read_without_privileges(
     assert not process_alive(12345)
     monkeypatch.setattr(os, "kill", foreign)
     assert process_alive(12345)  # another user's process is alive
+
+
+def test_a_want_written_while_a_stale_one_is_judged_is_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gpu, "boot_id", lambda: "boot-1")
+    want_slot(tmp_path, HOLDER, wait_seconds=600, now=NOW)
+    fresh = GpuSlotHolder(kind="benchmark", job_id="mc-2", started_at=NOW)
+
+    def replaced_meanwhile(pid: int) -> bool:
+        # The old want's process is gone, and a new job writes its want right then.
+        want_slot(tmp_path, fresh, wait_seconds=600, now=NOW)
+        return False
+
+    assert wanted(tmp_path, alive=replaced_meanwhile)  # the new want counts
+    kept = GpuSlotWant.model_validate_json((tmp_path / WANTED_NAME).read_bytes())
+    assert kept.holder == fresh
+    assert sorted(path.name for path in tmp_path.iterdir()) == [WANTED_NAME]
+
+
+def test_a_marker_that_is_not_a_file_is_judged_by_its_age(tmp_path: Path) -> None:
+    (tmp_path / "elsewhere").write_text("x", encoding="ascii")
+    (tmp_path / WANTED_NAME).symlink_to(tmp_path / "elsewhere")
+    now = datetime.fromtimestamp((tmp_path / WANTED_NAME).lstat().st_mtime, tz=UTC)
+    assert wanted(tmp_path, now=now + timedelta(minutes=5))
+    assert not wanted(tmp_path, now=now + timedelta(hours=2))
+    assert not os.path.lexists(tmp_path / WANTED_NAME) and (tmp_path / "elsewhere").exists()

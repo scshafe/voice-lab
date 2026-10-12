@@ -9,6 +9,7 @@ corpus and samples record as the code before model families (c43d6ba) wrote them
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import wave
@@ -18,6 +19,7 @@ from typing import Any
 
 import pre_model_families_records as golden
 import pytest
+from finetune_speech_runs import write_wav
 from pydantic import BaseModel, ValidationError
 from speech_fixtures import START, finished_run
 from test_pilot_v2_coverage import SUBJECT, released_pilot_v2
@@ -543,3 +545,40 @@ def test_the_log_tail_reads_progress_with_the_familys_parser(tmp_path: Path) -> 
 
     progress = FineTuneLogTail(layout, "run-a", parse=parse).read()
     assert progress is not None and progress.update == 7 and seen == ["step 7 of 9\n"]
+
+
+def _strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [item for key, inner in value.items() for item in (*_strings(key), *_strings(inner))]
+    if isinstance(value, list):
+        return [item for inner in value for item in _strings(inner)]
+    return []
+
+
+def test_the_golden_records_hold_only_synthetic_digests_and_paths(tmp_path: Path) -> None:
+    # Every digest is a repeated digit or one recomputed here from the test helpers' own
+    # synthetic bytes (clip, checkpoint, catalog, prompts, the records themselves); every
+    # absolute path is under /synthetic. So nothing in them came from an asset root.
+    clip = tmp_path / "clip.wav"
+    write_wav(clip)
+    catalog = released_pilot_v2()
+    records = [
+        json.loads(data) for data in (golden.RUN, golden.DATASET, golden.CORPUS, golden.SAMPLES)
+    ]
+    synthetic = {
+        hashlib.sha256(clip.read_bytes()).hexdigest(),
+        hashlib.sha256(b"fine-tuned weights of finetune-golden").hexdigest(),
+        canonical_sha256(catalog),
+        *(canonical_sha256(prompt) for prompt in catalog.prompts),
+        canonical_sha256(FineTuneDataset.model_validate_json(golden.DATASET)),
+        canonical_sha256(FineTuneCorpus.model_validate_json(golden.CORPUS)),
+    }
+    strings = [item for record in records for item in _strings(record)]
+    digests = [item for item in strings if re.fullmatch(r"[0-9a-f]{64}", item)]
+    assert len(digests) >= 10
+    for digest in digests:
+        assert digest in synthetic or len(set(digest)) == 1, digest
+    absolute = [item for item in strings if item.startswith("/")]
+    assert absolute and all(item.startswith("/synthetic/") for item in absolute), absolute

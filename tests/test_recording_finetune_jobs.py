@@ -30,6 +30,7 @@ from test_pilot_v2_coverage import native_coverage as native_coverage
 from test_recording_packages import analyzer_build as analyzer_build
 from test_recording_packages import package_rig as package_rig
 from test_recording_service import build_identity, handshake, read_response, request
+from test_training_families import write_family_run
 
 import cole_voice_lab.recording_finetune_jobs as jobs_module
 from cole_voice_lab.canonical import canonical_sha256, write_canonical_json
@@ -2279,3 +2280,21 @@ def test_a_real_service_reports_a_job_it_recovered_before_the_handshake(
         process.stdout.close()
         assert process.stderr is not None
         process.stderr.close()
+
+
+def test_the_apps_runs_and_speak_gate_are_the_families_speak_renders(
+    library: Library, jobs: Any
+) -> None:
+    # A finished run of a family Speak cannot render is never the app's latest run, never one
+    # of its choices, and never makes "no finished run" false (D-049).
+    queue, events, supervisors = jobs
+    supervisor = supervise(library, queue, events, supervisors)
+    write_family_run(library.layout, "double-b", 20)
+    reply = status(supervisor)
+    assert reply.latest_run is None and reply.finished_runs == ()
+    assert reply.latest_run_error is None and supervisor._no_finished_run()
+    _write_run(library.layout, "finetune-a")  # F5-TTS, finished before the other family's
+    reply = status(supervisor)
+    assert reply.latest_run is not None and reply.latest_run.run_id == "finetune-a"
+    assert [run.run_id for run in reply.finished_runs] == ["finetune-a"]
+    assert reply.latest_run.model_family == "f5-tts" and not supervisor._no_finished_run()

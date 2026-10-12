@@ -40,10 +40,15 @@ def tree(tmp_path: Path) -> Path:
     write(root / "sys/module/amdgpu/version", "6.12.0\n")
     write(root / "sys/class/drm/card0-DP-1/status", "connected\n")  # a connector, not a card
     write(root / "opt/rocm/.info/version", "7.0.0-1\n")
-    for pid, name in ((101, "llama-server"), (202, "python3"), (303, "")):
+    for pid, name in ((101, "llama-server"), (202, "python3"), (303, ""), (404, "python3.12")):
         (root / f"sys/class/kfd/kfd/proc/{pid}").mkdir(parents=True)
         if name:
             write(root / f"proc/{pid}/comm", name + "\n")
+    # 404 is the benchmark's resident worker: a grandchild of 202 through 250.
+    write(root / "proc/404/stat", "404 (python3.12) S 250 404 1 0 -1")
+    write(root / "proc/250/stat", "250 (sh (wrapped)) S 202 250 1 0 -1")
+    write(root / "proc/101/stat", "101 (llama-server) S 1 101 1 0 -1")
+    write(root / "proc/303/stat", "303 () S")
     return root
 
 
@@ -93,7 +98,14 @@ def test_this_machine_can_be_read() -> None:
 def test_the_gpus_other_users_are_listed(tree: Path) -> None:
     seen = gpu_contention(root=tree, own_pid=202)
     assert (seen.vram_used_bytes, seen.vram_total_bytes) == (5 * 2**30, 16 * 2**30)
+    # Neither this process nor its descendants (the resident worker, 404) are other users.
     assert seen.gpu_processes == ("llama-server", "pid 303")
+    assert gpu_contention(root=tree, own_pid=999).gpu_processes == (
+        "llama-server",
+        "pid 303",
+        "python3",
+        "python3.12",
+    )
 
 
 def test_a_runs_training_host_is_recorded_and_read(tree: Path, tmp_path: Path) -> None:

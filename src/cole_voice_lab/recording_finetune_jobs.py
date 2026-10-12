@@ -64,6 +64,7 @@ from .errors import ContractError, SecurityError, VoiceLabError
 from .finetune import (
     FINETUNE_OUTPUT_ROOT,
     MAX_TRUSTED_DIGESTS,
+    SPEAK_FAMILIES,
     AbsolutePath,
     FineTuneDigestCache,
     FineTuneError,
@@ -1401,9 +1402,10 @@ class FineTuneSupervisor:
         """Whether a runtime is configured, the active job's live progress and the finished runs.
 
         Never waits for recovery: a job being recovered is reported running with the message
-        ``Checking the last fine-tune``. Finished runs (``finished_finetune_runs``, newest
-        first; the latest is the first; a run whose records are unchanged since the last
-        reply is not read again) that cannot be resolved are reported as
+        ``Checking the last fine-tune``. Finished runs of the families Speak renders
+        (``finetune.SPEAK_FAMILIES``, F5-TTS; ``finished_finetune_runs``, newest first; the
+        latest is the first; a run whose records are unchanged since the last reply is not
+        read again) that cannot be resolved are reported as
         ``latest_run_error`` (its ``FineTuneError`` code; an unsafe path as
         RECORDING.SOURCE_CHANGED, a file-system failure as RECORDING.WRITE_FAILED), so
         ``active`` is always answered and a new job can still start.
@@ -1418,7 +1420,10 @@ class FineTuneSupervisor:
         runs: tuple[FineTuneRunSummary, ...] = ()
         latest_run_error: RecordingError | None = None
         try:
-            runs = finished_finetune_runs(self.queue.layout, summaries=self._summaries)
+            # The app's runs are Speak's choices: F5-TTS's, as Speak's latest and base.
+            runs = finished_finetune_runs(
+                self.queue.layout, summaries=self._summaries, families=SPEAK_FAMILIES
+            )
         except FineTuneError as failure:
             latest_run_error = _latest_run_error(failure.code, failure)
         except (SecurityError, ValueError) as failure:
@@ -1509,7 +1514,7 @@ class FineTuneSupervisor:
         again and names the failure.
         """
         try:
-            return not finished_finetune_run_ids(self.queue.layout)
+            return not finished_finetune_run_ids(self.queue.layout, families=SPEAK_FAMILIES)
         except (FineTuneError, SecurityError, OSError):
             return False
 

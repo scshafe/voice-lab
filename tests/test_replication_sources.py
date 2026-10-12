@@ -486,7 +486,6 @@ def add_lab_records(layout: AssetLayout) -> None:
         f"tmp/.intake-pilot-001-{os.getpid()}/manifest.json",
         f"tmp/.reference-neutral-{HEX16}/reference.wav",
         f"tmp/.dataset-pilot-{HEX16}/manifest.json",
-        "tmp/.model-benchmark-mc-20261012t120000z-0a1b2c/0001.wav",
         f"tmp/.transfer-plan-plan-1-{HEX16}/manifest.json",
         f"tmp/blind-review-1-{HEX16}/clip-01.wav",
         "incoming/pilot-001/READY",

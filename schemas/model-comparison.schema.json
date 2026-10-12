@@ -441,70 +441,38 @@
     },
     "QualityLink": {
       "additionalProperties": false,
-      "description": "The blind review that judged a run: its id and the score sheet's digest, verified\nagainst the sealed review package, and the run's scores in it when it was a candidate.",
+      "description": "The blind review that judged a run: its id and the score sheet's digest, verified\nagainst the sealed review package, and the run's scores in it (a review that did not\nscore the run is never linked to it).",
       "properties": {
         "candidate_id": {
-          "anyOf": [
-            {
-              "maxLength": 128,
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Candidate Id"
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Candidate Id",
+          "type": "string"
         },
         "means": {
-          "anyOf": [
-            {
-              "additionalProperties": {
-                "type": "number"
-              },
-              "maxProperties": 16,
-              "propertyNames": {
-                "$ref": "#/$defs/StableId"
-              },
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Means"
+          "additionalProperties": {
+            "type": "number"
+          },
+          "maxProperties": 16,
+          "propertyNames": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Means",
+          "type": "object"
         },
         "overall_mean": {
-          "anyOf": [
-            {
-              "maximum": 5.0,
-              "minimum": 1.0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Overall Mean"
+          "maximum": 5.0,
+          "minimum": 1.0,
+          "title": "Overall Mean",
+          "type": "number"
         },
         "review_id": {
           "$ref": "#/$defs/StableId"
         },
         "sample_count": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Sample Count"
+          "minimum": 1,
+          "title": "Sample Count",
+          "type": "integer"
         },
         "score_sheet_sha256": {
           "$ref": "#/$defs/Sha256"
@@ -512,7 +480,11 @@
       },
       "required": [
         "review_id",
-        "score_sheet_sha256"
+        "score_sheet_sha256",
+        "candidate_id",
+        "sample_count",
+        "overall_mean",
+        "means"
       ],
       "title": "QualityLink",
       "type": "object"

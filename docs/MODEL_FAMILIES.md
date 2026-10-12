@@ -96,24 +96,29 @@ vault like the ledger; D-049):
   the backend measured it (F5-TTS's worker: `torch.cuda.max_memory_allocated`, its own
   tensors since it started, not the allocator's reserve or other processes), whether a rerun
   of the first segment is byte-identical, the host's fingerprint, whether it ran in the
-  sandbox, and, as advisory fields, the GPU's other users before the load and after the last
-  segment (every card's VRAM in use and the names of the other processes holding the ROCm
-  device, as far as an unprivileged process can see: the PC's llama-swap shares the card).
-  The run is rendered as an unwritten release preview, under an approved consent record for
-  `private-home-host-synthesis` on `home-host`; the audio is hashed in the asset root's
-  `tmp/` and deleted (scratch a killed benchmark left is swept by the next one, and a file
-  that cannot be removed is logged), never kept or served. It works for the designated run
-  and for any candidate run. **On the PC it runs only in the speech unit's sandbox**, as the
+  sandbox, and, as advisory fields, the GPU's other users before the load and after the
+  model is unloaded (every card's VRAM in use and the names of the other processes holding
+  the ROCm device, never the benchmark itself or its resident worker, as far as an
+  unprivileged process can see: the PC's llama-swap shares the card). The run is rendered as
+  an unwritten release preview, under an approved consent record for
+  `private-home-host-synthesis` on `home-host`; the audio is hashed in the benchmark's own
+  scratch under the speech state (`state/speech/benchmark/`, never the lab, whose `tmp/`
+  holds raw take originals) and deleted (scratch a killed benchmark left is swept by the next
+  one, and a file that cannot be removed is logged), never kept or served. It works for the
+  designated run and for any candidate run. **On the PC it runs only in its unit**, the
   oneshot `voice-lab-speech-benchmark.service` (deploy/host-manual/; the run and the consent
-  id in `/etc/voice-lab/speech-benchmark.env`): no network and only the GPU's devices. The
-  command refuses to render in a process with any network interface but loopback unless
-  `--i-render-outside-the-sandbox` is given, and the record says `sandboxed: false`;
+  id in `/etc/voice-lab/speech-benchmark.env`): the speech runner's fences, so no network and
+  only the GPU's devices. The command refuses to render unless the unit's marker
+  (`VOICE_LAB_SANDBOX=voice-lab-speech-benchmark`) is set and no network interface but
+  loopback is visible, or `--i-render-outside-the-sandbox` is given (the record then says
+  `sandboxed: false`). `sandboxed: true` records exactly those two observations, not the
+  unit's other fences: a shell under `unshare -rn` with the marker set would pass;
 - **quality**, with `--blind-review <id> --score-sheet <path> --score-sheet-sha256 <digest>`:
   a link to the blind review that judged the run, made from the score sheet itself: its
   digest must be the one given, it must be that review's, and it must verify against the
-  sealed review package (`blind.aggregate_scores`). When the review scored the run (candidate
-  id: the run id, or `--review-candidate`) the link carries its sample count, mean per
-  dimension and overall mean. Blind listening stays the decision signal; the numbers are
+  sealed review package (`blind.aggregate_scores`), and the review must have scored the run
+  (candidate id: the run id, or `--review-candidate`); a review that did not is never linked.
+  The link carries the run's sample count, mean per dimension and overall mean. Blind listening stays the decision signal; the numbers are
   diagnostics.
 
 `voice-lab families compare [--run <id> …]` prints `rows`, one per run composed from its
@@ -170,15 +175,15 @@ records or the app's contracts before a second family exists:
   without a reference clip, or with other settings, needs that record generalised (its
   reference fields optional, its settings a union tagged by family) when it is added.
 - **The app's fine-tune** (`recording_finetune_jobs`) trains `APP_TRAINING_FAMILY`, F5-TTS: its
-  intent names no family, its progress parser and pin seam are F5-TTS's, and its run list
-  offers every finished run to Speak, which refuses another family's by name.
+  intent names no family, its progress parser and pin seam are F5-TTS's, and the runs its
+  status lists (the latest and Speak's choices) and Speak's "no finished run" check are
+  F5-TTS's runs only (`SPEAK_FAMILIES`).
 - **Speak** (`synthesize_speech`, `resolve_speech_model`) and **`finetune synthesize`** render
   F5-TTS only.
 - **`run_f5_finetune`'s 24 kHz dataset**, `FINETUNE_SAMPLE_RATE_HZ` and the sample clip check
   are F5-TTS's own, reached only through its adapter.
-- **Fine-tuning has no consent check** (`private-fine-tuning`): Mac-local training is D-019's
-  listening tool; D-022 requires an approved record once training runs on the home host
-  (design phase 5).
+- Consent records are to be removed in a follow-up change after this one (the owner's
+  decision), so training adds no consent check here.
 
 ## Candidates (unverified)
 

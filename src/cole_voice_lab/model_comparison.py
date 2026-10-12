@@ -15,13 +15,14 @@
   a rerun renders the same: load time, time to the first segment, real-time factor, peak
   accelerator memory with how the backend measured it, whether a rerun of a segment is
   byte-identical, the host's fingerprint, and an advisory snapshot of the GPU's other users
-  before and after. The run is rendered as an unwritten release preview
+  before the load and after the unload. The run is rendered as an unwritten release preview
   (``speech.release.designate(write=False)``) under an approved consent record for
-  ``private-home-host-synthesis`` on ``home-host``; the audio is hashed and deleted, never
-  kept or served. On the PC it runs in the speech unit's sandbox (``cli_models``);
+  ``private-home-host-synthesis`` on ``home-host``; the audio is hashed in the benchmark's
+  scratch under the speech state (never the lab) and deleted, never kept or served. On the PC
+  it runs in the benchmark unit (``cli_models``);
 - **quality** (optional): a link to the blind review that judged it, made only from the score
-  sheet itself (its digest must match, and it must verify against the sealed review package),
-  with the run's summary score when the review scored it; blind listening stays the decision
+  sheet itself (its digest must match, it must verify against the sealed review package, and
+  it must have scored the run), with the run's scores; blind listening stays the decision
   signal (AGENTS.md).
 
 ``comparison_rows`` composes, per run, the newest training summary, the newest benchmark and
@@ -185,20 +186,23 @@ class InferenceBenchmark(ContractModel):
     # loaded and after the last segment, as far as an unprivileged process can see.
     contention_before: GpuContention
     contention_after: GpuContention
+    # Only loopback was visible and the benchmark unit's marker was set (cli_models): a claim
+    # about the process's network and how it was started, not proof of the unit's fences.
     sandboxed: bool
     segments: tuple[SegmentTiming, ...] = Field(min_length=1, max_length=256)
 
 
 class QualityLink(ContractModel):
     """The blind review that judged a run: its id and the score sheet's digest, verified
-    against the sealed review package, and the run's scores in it when it was a candidate."""
+    against the sealed review package, and the run's scores in it (a review that did not
+    score the run is never linked to it)."""
 
     review_id: StableId
     score_sheet_sha256: Sha256
-    candidate_id: str | None = Field(default=None, min_length=1, max_length=128)
-    sample_count: int | None = Field(default=None, ge=1)
-    overall_mean: float | None = Field(default=None, ge=1.0, le=5.0, allow_inf_nan=False)
-    means: dict[StableId, float] | None = Field(default=None, max_length=16)
+    candidate_id: str = Field(min_length=1, max_length=128)
+    sample_count: int = Field(ge=1)
+    overall_mean: float = Field(ge=1.0, le=5.0, allow_inf_nan=False)
+    means: dict[StableId, float] = Field(max_length=16)
 
 
 class ModelComparison(ContractModel):
@@ -319,10 +323,10 @@ def remove_scratch(directory: Path) -> None:
         shutil.rmtree(directory, onexc=_log_removal)
 
 
-def sweep_benchmark_scratch(layout: AssetLayout, *, keep: Path | None = None) -> tuple[str, ...]:
-    """Remove scratch a killed benchmark left in the asset root's ``tmp/`` (call it holding
-    the GPU slot, so no other benchmark is running). Returns the names removed."""
-    scratch = layout.directory("tmp")
+def sweep_benchmark_scratch(scratch: Path, *, keep: Path | None = None) -> tuple[str, ...]:
+    """Remove the scratch a killed benchmark left in ``scratch`` (the benchmark's own
+    directory under the speech state, never the lab; call it holding the GPU slot, so no
+    other benchmark is running). Returns the names removed."""
     try:
         names = sorted(name for name in os.listdir(scratch) if name.startswith(SCRATCH_PREFIX))
     except FileNotFoundError:
@@ -357,10 +361,13 @@ def benchmark_run(
 ) -> InferenceBenchmark:
     """Render ``texts`` with run ``run_id`` through ``backend`` and measure it.
 
-    The caller holds the GPU slot and unloads the backend afterwards. ``work_directory`` is
-    private scratch for the rendered segments (created here, removed before returning; a
-    file that cannot be removed is logged, never ignored). ``sandboxed`` records whether it
-    ran in the speech unit's sandbox; ``host`` and ``contention`` are test seams.
+    The caller holds the GPU slot. The backend is unloaded here once the last segment is
+    measured, before the GPU's other users are looked at again (its resident worker holds the
+    device while loaded). ``work_directory`` is private scratch for the rendered segments,
+    outside the lab (the CLI's is under the speech state; created here, removed before
+    returning; a file that cannot be removed is logged, never ignored). ``sandboxed`` records
+    whether it ran in the benchmark unit's sandbox (``cli_models.in_speech_sandbox``);
+    ``host`` and ``contention`` are test seams.
     Raises: ``VoiceReleaseError`` ``not_designatable`` when the run or the consent record does
     not allow it; ``ComparisonError`` when a text is not held out; ``SpeechBackendError``.
     """
@@ -435,6 +442,7 @@ def benchmark_run(
             )
             deterministic = check_wav(again).sha256 == timings[0].sha256
         peak = backend.peak_memory()
+        backend.unload()
         after = snapshot()
     finally:
         remove_scratch(work_directory)
@@ -652,9 +660,9 @@ def blind_review_link(
     """The link to blind review ``review_id``, from its score sheet itself.
 
     The sheet's digest must be ``score_sheet_sha256``, it must be review ``review_id``'s, and
-    it must verify against the sealed review package (``blind.aggregate_scores``). The run's
-    scores are carried when the review scored candidate ``candidate_id`` (default: the run's
-    id; one named explicitly must be there).
+    it must verify against the sealed review package (``blind.aggregate_scores``), and it must
+    have scored the run as candidate ``candidate_id`` (default: the run's id), whose scores
+    the link carries.
     Raises: ``ComparisonError``; ``ContractError``/``SecurityError`` from the package check.
     """
     if hashlib.sha256(score_sheet).hexdigest() != score_sheet_sha256:
@@ -678,9 +686,10 @@ def blind_review_link(
         None,
     )
     if found is None:
-        if candidate_id is not None:
-            raise ComparisonError(f"review {review_id} scored no candidate {candidate_id}")
-        return QualityLink(review_id=review_id, score_sheet_sha256=score_sheet_sha256)
+        hint = "" if candidate_id is not None else " (name its candidate with --review-candidate)"
+        raise ComparisonError(
+            f"review {review_id} scored no candidate {wanted}: it did not judge run {run_id}{hint}"
+        )
     means = cast(dict[str, float], found["means"])
     return QualityLink(
         review_id=review_id,

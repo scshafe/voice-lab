@@ -9,6 +9,9 @@ any committed JSON shaped like run evidence. Never regenerate them with today's 
 point is that today's code reads and re-serializes what the old code wrote.
 """
 
+# Not .json files on purpose: scripts/guard-private-assets refuses committed JSON shaped like
+# run evidence, and these are synthetic (tests/test_training_families.py checks every digest
+# and absolute path in them).
 from __future__ import annotations
 
 from typing import Final

@@ -197,10 +197,31 @@ def host_fingerprint(
     )
 
 
+def _parent(pid: int, root: Path, read: Reader) -> int | None:
+    stat = read(root / f"proc/{pid}/stat")
+    if stat is None or ")" not in stat:
+        return None
+    fields = stat.rsplit(")", 1)[1].split()
+    return _integer(fields[1]) if len(fields) > 1 else None
+
+
+def _descends_from(pid: int, ancestor: int, root: Path, read: Reader) -> bool:
+    """Whether ``pid`` is ``ancestor`` or one of its descendants (``/proc/<pid>/stat``)."""
+    current: int | None = pid
+    for _ in range(64):
+        if current is None or current <= 1:
+            return False
+        if current == ancestor:
+            return True
+        current = _parent(current, root, read)
+    return False
+
+
 def gpu_contention(
     *, root: Path = Path("/"), read: Reader = _read, own_pid: int | None = None
 ) -> GpuContention:
-    """The GPU's other users now, as far as this process can see (advisory)."""
+    """The GPU's other users now, as far as this process can see (advisory): this process
+    and its descendants (a backend's resident worker) are never counted."""
     used: list[int] = []
     total: list[int] = []
     for card in _cards(root):
@@ -220,7 +241,9 @@ def gpu_contention(
         processes = None
     else:
         names = (
-            _text(read(root / f"proc/{pid}/comm"), 64) or f"pid {pid}" for pid in pids if pid != me
+            _text(read(root / f"proc/{pid}/comm"), 64) or f"pid {pid}"
+            for pid in pids
+            if not _descends_from(pid, me, root, read)
         )
         processes = tuple(sorted(names))[:64]
     return GpuContention(

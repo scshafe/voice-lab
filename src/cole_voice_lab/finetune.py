@@ -2494,19 +2494,20 @@ def finished_finetune_runs(
     limit: int = MAX_FINISHED_RUNS,
     output_root: str = FINETUNE_OUTPUT_ROOT,
     summaries: FineTuneSummaryCache | None = None,
+    families: frozenset[str] | None = None,
 ) -> tuple[FineTuneRunSummary, ...]:
     """The newest ``limit`` finished runs, newest first (``finished_finetune_run_ids``).
 
     The recording service's fine-tune status lists them for the Speak page's model choice.
     Params: ``summaries`` reuses the summaries of runs whose records are unchanged (``None``
-    reads every run).
+    reads every run); ``families`` keeps only runs of those model families (``None``: all).
     Returns: their summaries (``finetune_run_summary``).
     Raises: ``ValueError`` when ``limit`` is below 1; as ``finished_finetune_run_ids``, and
     as ``finetune_run_summary`` for each listed run.
     """
     if limit < 1:
         raise ValueError("list at least one finished run")
-    run_ids = finished_finetune_run_ids(layout, output_root=output_root)[:limit]
+    run_ids = finished_finetune_run_ids(layout, output_root=output_root, families=families)[:limit]
     run_roots = tuple(f"{output_root}/{run_id}" for run_id in run_ids)
     if summaries is not None:
         return summaries.summaries(layout, run_roots)

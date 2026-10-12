@@ -26,8 +26,9 @@ or its subtree); ``{a|b}`` (one of the literal alternatives); and the named part
 ``{sha256}``, ``{hex16}``, ``{hex32}``, ``{group}`` (a 32- or 64-hex group token), ``{id}``
 (a stable id) and ``{segment}`` (any one segment).
 
-This module imports only the standard library and the package's ``errors``, ``paths``,
-``storage_contracts`` and ``storage_ports`` modules.
+This module imports only the standard library and the package's ``errors``, ``models`` (for
+``F5_FAMILY``; ``storage_contracts`` imports it anyway), ``paths``, ``storage_contracts`` and
+``storage_ports`` modules.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Final, Literal, NamedTuple, get_args
 
+from .models import F5_FAMILY
 from .paths import validate_relative_path
 from .storage_contracts import FileClass
 from .storage_ports import storage_error
@@ -222,19 +224,21 @@ def _rule(
 # One entry per family, equal to its adapter's ``training.TrainingAdapter.pinned_weight_pattern``
 # (tests/test_training_families.py holds the two equal); this module cannot import the adapters.
 PINNED_WEIGHT_FILES: Final[Mapping[str, str]] = MappingProxyType(
-    {"f5-tts": "pretrained_*.safetensors"}
+    {F5_FAMILY: "pretrained_*.safetensors"}
 )
 
 
 def pinned_weight_rule_name(family: str) -> str:
     """The classification rule of ``family``'s pinned-weight link (F5-TTS's keeps its name)."""
     return (
-        "fine-tune-pretrained-link" if family == "f5-tts" else f"fine-tune-pretrained-link-{family}"
+        "fine-tune-pretrained-link"
+        if family == F5_FAMILY
+        else f"fine-tune-pretrained-link-{family}"
     )
 
 
 def _pinned_weight_rule(family: str, name: str) -> ClassificationRule:
-    if family == "f5-tts":
+    if family == F5_FAMILY:
         example = "derived/finetune/run-1/checkpoints/pretrained_model_1250000.safetensors"
     else:
         example = f"derived/finetune/run-1/checkpoints/{name.replace('*', 'base')}"
@@ -463,14 +467,6 @@ _RULES: Final = (
         owner="references",
         reason="a reference being published",
         example=f"tmp/.reference-neutral-{_EXAMPLE_HEX16}/reference.wav",
-    ),
-    _rule(
-        "model-benchmark-scratch",
-        "tmp/.model-benchmark-*{/**}",
-        MAC_ONLY,
-        owner="model_comparison",
-        reason="a benchmark's rendered segments, hashed and deleted when it ends (D-049)",
-        example="tmp/.model-benchmark-mc-20261012t120000z-0a1b2c/0001.wav",
     ),
     _rule(
         "dataset-staging",

@@ -90,7 +90,7 @@ def benchmark(lab: Lab, backend: Any | None = None, **options: Any) -> Any:
         "finetune-a",
         backend or FakeBackend(),
         consent_id="cole-self-v1",
-        work_directory=lab.layout.root / "tmp" / ".model-benchmark-test",
+        work_directory=lab.root / "scratch" / ".model-benchmark-test",
         monotonic=lambda: next(ticks),
         **options,
     )
@@ -125,7 +125,15 @@ def test_a_training_summary_reads_the_runs_records_log_and_host(lab: Lab) -> Non
 def test_a_benchmark_renders_the_held_out_set_through_the_port(lab: Lab) -> None:
     backend = FakeBackend(peak=1_600_000_000)
     seen = iter((QUIET, BUSY))
-    result = benchmark(lab, backend, contention=lambda: next(seen), sandboxed=True)
+    loaded_at_snapshot: list[bool] = []
+
+    def contention() -> GpuContention:
+        loaded_at_snapshot.append(backend.loaded)
+        return next(seen)
+
+    result = benchmark(lab, backend, contention=contention, sandboxed=True)
+    # Before the load and after the unload: the benchmark's own worker is never counted.
+    assert loaded_at_snapshot == [False, False] and backend.unloads == 1
     assert result.fingerprint.model_family == "f5-tts" and not result.designated
     assert len({timing.text_index for timing in result.segments}) == len(BENCHMARK_TEXTS)
     # One tick per clock read: loading took 1 s, each segment 1 s, 0.1 s of audio each.
@@ -140,7 +148,7 @@ def test_a_benchmark_renders_the_held_out_set_through_the_port(lab: Lab) -> None
     assert (result.host, result.contention_before, result.contention_after) == (HOST, QUIET, BUSY)
     assert result.sandboxed
     assert backend.calls[-1] == backend.calls[0]  # the rerun of the first segment
-    assert not (lab.layout.root / "tmp" / ".model-benchmark-test").exists()
+    assert not (lab.root / "scratch" / ".model-benchmark-test").exists()
     assert history(lab.layout) == []  # a preview, never a release
 
 
@@ -177,7 +185,7 @@ def test_a_benchmark_needs_its_consent_and_held_out_texts(tmp_path: Path, lab: L
 def test_scratch_that_cannot_be_removed_is_logged_and_leftovers_are_swept(
     lab: Lab, caplog: pytest.LogCaptureFixture
 ) -> None:
-    scratch = lab.layout.root / "tmp"
+    scratch = lab.root / "state" / "speech" / "benchmark"
     stuck = scratch / ".model-benchmark-stuck"
     (stuck / "inner").mkdir(parents=True)
     (stuck / "inner" / "0001.wav").write_bytes(b"x")
@@ -192,10 +200,11 @@ def test_scratch_that_cannot_be_removed_is_logged_and_leftovers_are_swept(
     keep.mkdir()
     (scratch / ".model-benchmark-killed").mkdir()
     (scratch / "other").mkdir()
-    removed = sweep_benchmark_scratch(lab.layout, keep=keep)
+    removed = sweep_benchmark_scratch(scratch, keep=keep)
     assert removed == (".model-benchmark-killed", ".model-benchmark-stuck")
     assert keep.exists() and (scratch / "other").exists() and not stuck.exists()
     remove_scratch(scratch / ".model-benchmark-absent")  # nothing there: nothing to do
+    assert sweep_benchmark_scratch(lab.root / "absent") == ()
 
 
 def test_compare_composes_each_runs_newest_training_benchmark_and_review(lab: Lab) -> None:
@@ -207,7 +216,14 @@ def test_compare_composes_each_runs_newest_training_benchmark_and_review(lab: La
         record_comparison(lab.layout, first)
     measured = comparison(lab, 1, inference=benchmark(lab))
     record_comparison(lab.layout, measured)
-    review = QualityLink(review_id="review-1", score_sheet_sha256="a" * 64, overall_mean=4.2)
+    review = QualityLink(
+        review_id="review-1",
+        score_sheet_sha256="a" * 64,
+        candidate_id="finetune-a",
+        sample_count=6,
+        overall_mean=4.2,
+        means={"likeness": 4.2},
+    )
     judged = comparison(lab, 2, quality=review)  # recorded after the benchmark, without one
     record_comparison(lab.layout, judged)
     records = read_comparisons(lab.layout)
@@ -327,12 +343,21 @@ def test_a_review_link_is_made_from_the_verified_score_sheet(
     broken = b'{"synthetic": true}'
     with pytest.raises(ComparisonError, match="not a score sheet"):
         link(data=broken, score_sheet_sha256=hashlib.sha256(broken).hexdigest())
-    assert link(run_id="finetune-b").overall_mean is None  # reviewed, but not this run
-    with pytest.raises(ComparisonError, match="no candidate"):
+    # A review that did not score the run is never linked to it.
+    with pytest.raises(ComparisonError, match="did not judge run finetune-b.*--review-candidate"):
+        link(run_id="finetune-b")
+    with pytest.raises(ComparisonError, match="no candidate nobody"):
         link(candidate_id="nobody")
 
 
-def test_in_speech_sandbox_means_no_network_but_loopback(tmp_path: Path) -> None:
+def test_in_speech_sandbox_means_the_units_marker_and_no_network_but_loopback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("VOICE_LAB_SANDBOX", raising=False)
+    assert not cli_models.in_speech_sandbox(lambda: ("lo",))  # `unshare -rn` alone: no
+    monkeypatch.setenv("VOICE_LAB_SANDBOX", "something-else")
+    assert not cli_models.in_speech_sandbox(lambda: ("lo",))
+    monkeypatch.setenv("VOICE_LAB_SANDBOX", "voice-lab-speech-benchmark")
     assert cli_models.in_speech_sandbox(lambda: ("lo",))
     assert not cli_models.in_speech_sandbox(lambda: ("eth0", "lo"))
 
@@ -378,19 +403,24 @@ def test_the_cli_records_and_compares(
     argv = [*base, "--benchmark", "--config", str(config), "--consent-id", "cole-self-v1"]
     # This test process has a network: the benchmark is refused outside the sandbox.
     monkeypatch.setattr(cli_models, "network_interfaces", lambda: ("eth0", "lo"))
+    monkeypatch.setenv("VOICE_LAB_SANDBOX", "voice-lab-speech-benchmark")
     assert main(argv) == 2
     assert "--i-render-outside-the-sandbox" in capsys.readouterr().err and not seen
     assert main([*argv, "--i-render-outside-the-sandbox"]) == 0
     outside = json.loads(capsys.readouterr().out)
     assert outside["inference"]["sandboxed"] is False
     monkeypatch.setattr(cli_models, "network_interfaces", lambda: ("lo",))
-    leftover = lab.layout.root / "tmp" / ".model-benchmark-killed"
-    leftover.mkdir()
+    state = Path(lab.config.state_root) / "benchmark"
+    leftover = state / ".model-benchmark-killed"
+    leftover.mkdir(parents=True)
+    lab_tmp = sorted((lab.layout.root / "tmp").iterdir())
     assert main(argv) == 0
     benchmarked = json.loads(capsys.readouterr().out)
     assert benchmarked["inference"]["deterministic"] is True
     assert benchmarked["inference"]["sandboxed"] is True and not leftover.exists()
-    assert seen[1][1].unloads == 1 and not slot_wanted(slot) and current_holder(slot) is None
+    # Its segments never touched the lab's tmp/ (raw take originals live there).
+    assert sorted((lab.layout.root / "tmp").iterdir()) == lab_tmp
+    assert seen[1][1].unloads == 2 and not slot_wanted(slot) and current_holder(slot) is None
     # The benchmark's backend keeps its scratch apart from the speech runner's.
     assert seen[1][0].state_root == str(Path(lab.config.state_root) / "benchmark")
 
@@ -401,7 +431,14 @@ def test_the_cli_records_and_compares(
         cli_models,
         "blind_review_link",
         lambda layout, review_id, raw, **options: (
-            QualityLink(review_id=review_id, score_sheet_sha256=options["score_sheet_sha256"])
+            QualityLink(
+                review_id=review_id,
+                score_sheet_sha256=options["score_sheet_sha256"],
+                candidate_id="finetune-a",
+                sample_count=6,
+                overall_mean=3.5,
+                means={"likeness": 3.5},
+            )
             if raw == data
             else pytest.fail("the sheet was not read")
         ),
