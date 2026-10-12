@@ -10,6 +10,7 @@ Tests use a fake that writes synthetic audio.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -29,6 +30,15 @@ class SpeechBackendError(VoiceLabError):
         super().__init__(detail)
         self.code: BackendFailure = code
         self.detail = detail
+
+
+@dataclass(frozen=True, slots=True)
+class PeakMemory:
+    """The most accelerator memory a loaded model used, and how the backend measured it (a
+    process's own allocations and a whole card's use are different numbers)."""
+
+    bytes: int
+    method: str
 
 
 class SpeechBackend(Protocol):
@@ -54,9 +64,10 @@ class SpeechBackend(Protocol):
         """
         ...
 
-    def peak_memory_bytes(self) -> int | None:
-        """The most accelerator memory the loaded model has used, when the backend can tell
-        (for the model comparison's benchmark, docs/MODEL_FAMILIES.md); else ``None``."""
+    def peak_memory(self) -> PeakMemory | None:
+        """The most accelerator memory the loaded model has used and how that was measured,
+        when the backend can tell (for the model comparison's benchmark,
+        docs/MODEL_FAMILIES.md); else ``None``."""
         ...
 
     def unload(self) -> None:

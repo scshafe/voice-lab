@@ -93,6 +93,7 @@ from cole_voice_lab.recording_contracts import (
 from cole_voice_lab.recording_index import RecordingIndex
 from cole_voice_lab.recording_takes import RecordingTakeStore
 from cole_voice_lab.storage_binding import open_catalog_editor, open_catalog_reader
+from cole_voice_lab.training import F5TrainingAdapter
 
 SPOKEN_PROMPT_COUNT = 34
 
@@ -1612,7 +1613,7 @@ def test_pipeline_reports_its_stages_and_releases_the_link_when_training_fails(
             FineTuneHyperparameters(epochs=1),
             run_id="stages",
             allow_missing=True,
-            pretrained_pin=pin,
+            adapter=F5TrainingAdapter(pretrained_pin=pin),
             progress=steps.append,
         )
     assert failure.value.code == "FINETUNE.TRAINING_FAILED"

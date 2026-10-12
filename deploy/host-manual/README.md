@@ -13,6 +13,7 @@ and the lane installs them like the others.
 | `voice-lab-vault-air.timer` → `voice-lab-vault-air.service` | `voice-lab vault push --destination air --memos-root /data/voice-lab/memos/phone --if-older-than 7d --skip-unreachable`, then `vault verify --if-unverified --skip-unreachable`: the offsite copy on the MacBook Air (design §4.3, phase 3). Hourly; a run does nothing while the copy is under a week old, and succeeds without sending anything when the Air's node is offline or does not answer (after the same node identity check every copy makes); an interrupted push resumes from the destination's journal; each generation is verified once | the tailnet only, as the laptop's |
 
 | `voice-lab-speech.service` | `voice-lab speech run`: the long-running speech job runner (docs/SPEECH_API.md §7, D-046). Re-checks the voice release and its consent record, holds the GPU slot, renders each job sentence by sentence through the resident worker of the release's model family (F5-TTS today; kept loaded between jobs, unloaded after 15 idle minutes or when a long GPU job wants the slot), publishes each sentence, writes the ledger and the webhook event; sweeps retention. Writes only the speech state, the GPU slot's lock and `lab/provenance/speech-renders/`. Exits 75 for systemd to restart it once a deploy has moved `/opt/voice-lab/current` off its code (after the job in hand), and 78, not restarted, when that link is missing or dangling | none (`PrivateNetwork=yes`); the GPU's `/dev/kfd` and DRM nodes only |
+| `voice-lab-speech-benchmark.service` | `voice-lab families record --benchmark`, started by hand for the run named in `/etc/voice-lab/speech-benchmark.env` (with the consent id it renders under): the model comparison's benchmark (docs/MODEL_FAMILIES.md, D-049). Waits for the GPU slot as a long job, renders the held-out text set through the run's family's backend, hashes and deletes the audio, writes one comparison record. The runner's fences; writes only the GPU slot, `state/speech/benchmark/`, the lab's `tmp/` and `provenance/model-comparisons/` | none (`PrivateNetwork=yes`); the GPU's `/dev/kfd` and DRM nodes only |
 | `voice-lab-speech-webhooks.path`, `.timer` → `voice-lab-speech-webhooks.service` | `voice-lab speech deliver`: signs and delivers ended jobs' webhooks to the callers' tailnet URLs, with retries (§8). Started when an event is queued, and every 30 seconds. Receives the callers' secrets as credentials (`LoadCredential=`) from the root-only `/etc/voice-lab/speech-webhook-secrets/` | the tailnet only, as the JWKS unit |
 
 The speech pair is here because infra's validator has no rule for GPU device access yet and
@@ -29,6 +30,19 @@ sudo install -o root -g root -m 0644 deploy/host-manual/voice-lab-speech.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now voice-lab-speech.service \
   voice-lab-speech-webhooks.path voice-lab-speech-webhooks.timer
+```
+
+The benchmark unit is installed beside them and never enabled; each benchmark is one start
+(its directories must exist first, as the ledger's does):
+
+```sh
+sudo -u voice-lab install -d -m 0700 /data/voice-lab/state/speech/benchmark \
+  /data/voice-lab/lab/provenance/model-comparisons
+sudo install -o root -g root -m 0644 deploy/host-manual/voice-lab-speech-benchmark.service \
+  /etc/systemd/system/
+sudo systemctl daemon-reload
+sudoedit /etc/voice-lab/speech-benchmark.env  # VOICE_LAB_BENCHMARK_RUN=, _CONSENT_ID=
+sudo systemctl start voice-lab-speech-benchmark.service
 ```
 
 The service user's egress table (written by the lane from infra's

@@ -182,7 +182,14 @@ The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these co
 - A model comparison's benchmark (D-049) renders a run only under an approved consent record
   for `private-home-host-synthesis` on `home-host`, as an unwritten release preview; its
   audio is hashed in the asset root's `tmp/` and deleted, and its record holds digests and
-  timings only.
+  timings only. Like the job runner it renders with no network and only the GPU's devices:
+  on the PC it runs as `voice-lab-speech-benchmark.service` (deploy/host-manual/), whose
+  fences are the runner's and which writes only the GPU slot, its own scratch under
+  `state/speech/benchmark/`, the lab's `tmp/` and `provenance/model-comparisons/`.
+  `voice-lab families record --benchmark` refuses to render in a process with any network
+  interface but loopback; `--i-render-outside-the-sandbox` is the operator's explicit
+  acceptance of rendering Cole's voice in an unfenced shell, and the record keeps
+  `sandboxed: false`.
 - The job's text is deleted when the job ends, on every path, first. The job record and the
   render ledger name it only by a keyed digest (HMAC-SHA256 under a 32-byte key made once per
   install in the speech state, never in the asset root or the vault) and its length, so a

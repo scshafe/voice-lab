@@ -1420,6 +1420,25 @@ time, inference time, and quality."
   (load time, time to first audio, real-time factor, peak memory, determinism), and an optional
   link to the blind review that judged the run. Quality stays blind listening's (AGENTS.md);
   the numbers are diagnostics.
+- **Family-neutral common code.** A family builds its own settings (training and listening)
+  from options, chooses its own reference clip, owns its runtime's pins, and declares the
+  pinned-weight link the vault records by pin; the pipeline holds the hyperparameters, the
+  adapter and the options to one family before it reads the corpus, and a run's
+  hyperparameters and runtime must be of one family. Speak renders F5-TTS runs only, so its
+  `latest` and `base` never pick another family's run. What still has F5-TTS's shape is listed
+  in docs/MODEL_FAMILIES.md.
+- **A fair comparison.** Training and benchmarks record the host they ran on (CPU, memory,
+  GPUs with driver and VRAM, ROCm or MPS); `families compare` composes each run's newest
+  training summary, benchmark and review and flags runs on another corpus, unlike hosts and a
+  GPU shared with another process (an advisory read without privileges). Benchmark seeds come
+  from the run, its files' digests, the text set and the render settings, so reruns render
+  the same. Peak memory names how it was measured. A review link is made from the score sheet
+  itself, verified against the sealed review package.
+- **Benchmarks render in the speech runner's sandbox.** On the PC a benchmark is one start of
+  `voice-lab-speech-benchmark.service` (no network, only the GPU's devices); the command
+  refuses to render where any network interface but loopback exists unless
+  `--i-render-outside-the-sandbox` accepts it, and the record says so. A long job's want of
+  the GPU slot names its process, boot and wait, and goes stale when any of them is gone.
 
 Recommended in this decision, for Cole to confirm in review:
 

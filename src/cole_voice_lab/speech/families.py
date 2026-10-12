@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Protocol
 from ..errors import VoiceLabError
 from ..finetune import FINETUNE_OUTPUT_ROOT, FineTuneDigestCache, require_finished_run
 from ..paths import AssetLayout
-from .backend import SpeechBackend, SpeechBackendError
+from .backend import PeakMemory, SpeechBackend, SpeechBackendError
 from .contracts import RenderFingerprint
 
 if TYPE_CHECKING:
@@ -153,8 +153,8 @@ class ReleaseBackend:
             text, seed=seed, output=output, deadline_seconds=deadline_seconds
         )
 
-    def peak_memory_bytes(self) -> int | None:
-        return None if self._backend is None else self._backend.peak_memory_bytes()
+    def peak_memory(self) -> PeakMemory | None:
+        return None if self._backend is None else self._backend.peak_memory()
 
     def unload(self) -> None:
         if self._backend is not None:

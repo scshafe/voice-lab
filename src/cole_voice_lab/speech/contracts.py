@@ -20,7 +20,7 @@ from typing import Annotated, Final, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, StringConstraints, model_validator
 
-from ..models import ContractModel, Sha256, StableId, has_hidden_control
+from ..models import F5_FAMILY, ContractModel, Sha256, StableId, has_hidden_control
 from ..recording_contracts import SpeechText, UtcTimestamp
 
 JOB_ID_PATTERN: Final = re.compile(r"^sp-[0-9a-f]{24}$")
@@ -34,7 +34,6 @@ type JobState = Literal["queued", "running", "succeeded", "failed", "cancelled",
 TERMINAL_STATES: Final[frozenset[str]] = frozenset({"succeeded", "failed", "cancelled", "expired"})
 # The API's one audio format, whatever the family renders natively (D-048): 24 kHz mono 16-bit.
 API_SAMPLE_RATE_HZ: Final = 24_000
-F5_FAMILY: Final = "f5-tts"
 type FailureCode = Literal[
     "runtime_unavailable",
     "render_failed",
@@ -431,6 +430,21 @@ class GpuSlotHolder(ContractModel):
     expected_end_at: UtcTimestamp | None = None
 
 
+class GpuSlotWant(ContractModel):
+    """``gpu-slot.wanted``: a long job waiting for the slot, and how to tell it is gone.
+
+    The want is stale, and is removed by whoever reads it, when its process is not alive,
+    the host booted since it was written, or it is past ``expires_at`` (the longest the job
+    said it would wait for the lock, plus a minute).
+    """
+
+    schema_version: Literal["cole-voice-lab.gpu-slot-want/v1"] = "cole-voice-lab.gpu-slot-want/v1"
+    holder: GpuSlotHolder
+    pid: int = Field(ge=1)
+    boot_id: str = Field(min_length=1, max_length=64)
+    expires_at: UtcTimestamp
+
+
 def event_type(state: str) -> EventType:
     """The webhook event type of a job that ended in ``state``."""
     if state == "succeeded":
@@ -454,4 +468,5 @@ SPEECH_SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "speech-webhook-event": WebhookOutboxEntry,
     "speech-webhook-delivery": WebhookDeliveryLog,
     "gpu-slot-holder": GpuSlotHolder,
+    "gpu-slot-want": GpuSlotWant,
 }

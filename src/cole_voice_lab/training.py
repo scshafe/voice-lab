@@ -1,34 +1,40 @@
-"""Training model families on the corpus: the adapter port and F5-TTS's adapter (D-048).
+"""Training model families on the corpus: the adapter port and F5-TTS's adapter (D-049).
 
 @canonical training -- a model family's training is one ``TrainingAdapter``: it builds the
+family's settings (``hyperparameters``, ``listening_settings``) from options, builds the
 family's dataset from a corpus selection (its sample rate, normalisation and transcript form;
 the corpus itself, 48 kHz 24-bit mono takes with their prompt text, belongs to no family),
 describes and checks the family's isolated runtime (one hash-locked environment with pinned
 weights, D-004), launches the training there and records the run (``finetune.FineTuneRun``,
 with the runtime's identity), finds the checkpoints it wrote, reads its progress from the
-training log, and makes the listening samples. ``finetune.run_finetune_pipeline`` and the
-command line go through the adapter of the hyperparameters' family (``adapter_for``);
-``run_family`` names the family of a stored run.
+training log, and makes the listening samples, choosing their reference itself when the
+family has one. ``finetune.run_finetune_pipeline`` and the command line go through the
+adapter of the hyperparameters' family (``adapter_for``); ``require_trains`` holds a given
+adapter to them before anything is read; ``run_family`` names the family of a stored run.
 
 F5-TTS is the first adapter (``F5_TRAINING``), over the existing F5-TTS functions of
 ``finetune``: its records, files and behaviour are those of every run trained so far. A run's
 family is read from its hyperparameters: F5-TTS's keep their own schema
 (``FineTuneHyperparameters``), another family's name themselves (``FamilyHyperparameters``).
-Adding a family: docs/MODEL_FAMILIES.md.
+Adding a family, and what common code still holds of F5-TTS's shape: docs/MODEL_FAMILIES.md.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, Protocol
+
+from pydantic import BaseModel, Field
 
 from .errors import VoiceLabError
 from .finetune import (
     FINETUNE_DEFAULT_SAMPLE_TEXTS,
     FINETUNE_FFMPEG,
     FINETUNE_SAMPLE_RATE_HZ,
+    F5Device,
     FamilyHyperparameters,
     FineTuneCheckpoint,
     FineTuneCorpus,
@@ -45,12 +51,13 @@ from .finetune import (
     release_finetune_runtime_link,
     run_checkpoints,
     run_f5_finetune,
+    run_model_family,
     synthesize_finetune_samples,
 )
+from .finetune import hyperparameters_family as hyperparameters_family
+from .models import F5_FAMILY, ContractModel, StableId
 from .paths import AssetLayout
 from .recording_contracts import FINETUNE_MAX_EPOCHS
-
-F5_FAMILY: Final = "f5-tts"
 
 
 class UnknownTrainingFamily(VoiceLabError):
@@ -166,6 +173,30 @@ class TrainingAdapter(Protocol):
     @property
     def dataset_sample_rate_hz(self) -> int: ...
 
+    @property
+    def pinned_weight_pattern(self) -> str:
+        """The name (a glob) of the link to the runtime's pinned pretrained weights that
+        training leaves in a run's ``checkpoints/``: the vault records it by its pin and never
+        uploads it (``library_classification.PINNED_WEIGHT_FILES`` holds the same)."""
+        ...
+
+    def hyperparameters(
+        self, options: Mapping[str, object]
+    ) -> FineTuneHyperparameters | FamilyHyperparameters:
+        """The family's training settings: its defaults with ``options`` (by field name).
+
+        Raises: ``pydantic.ValidationError`` for an option the family does not have or a value
+        out of its bounds.
+        """
+        ...
+
+    def listening_settings(self, options: Mapping[str, object]) -> BaseModel:
+        """The family's listening-sample settings: its defaults with ``options``.
+
+        Raises: ``pydantic.ValidationError`` as ``hyperparameters``.
+        """
+        ...
+
     def normalise_text(self, text: str) -> str:
         """A prompt's text as the family's dataset holds it.
 
@@ -174,11 +205,7 @@ class TrainingAdapter(Protocol):
         ...
 
     def describe_runtime(
-        self,
-        runtime_root: Path,
-        *,
-        pretrained_pin: FineTunePretrainedPins | None,
-        digests: FineTuneDigestCache,
+        self, runtime_root: Path, *, digests: FineTuneDigestCache
     ) -> TrainingRuntime:
         """Bind the family's isolated runtime: interpreter, packages, pinned weights.
 
@@ -187,7 +214,8 @@ class TrainingAdapter(Protocol):
         ...
 
     def runtime_link(self, runtime: TrainingRuntime, run_id: str) -> Path | None:
-        """A pointer the runtime keeps into the run while it trains (released on failure)."""
+        """A pointer the runtime keeps into the run while it trains, which whoever stops the
+        training releases (``None`` for a family whose runtime keeps none)."""
         ...
 
     def release_runtime_link(self, link: Path, checkpoints: Path) -> bool: ...
@@ -231,16 +259,51 @@ class TrainingAdapter(Protocol):
         runtime: TrainingRuntime,
         run_root: str,
         *,
-        reference_prompt_id: str,
         texts: tuple[str, ...],
-        use_ema: bool,
-        nfe_steps: int,
-        device: Literal["mps", "cpu"],
+        settings: BaseModel,
         digests: FineTuneDigestCache,
-    ) -> ListeningSamples: ...
+    ) -> ListeningSamples:
+        """The fine-tuned and base samples of ``texts``, with ``settings`` (this family's
+        ``listening_settings``). A family with a reference clip chooses it here (F5-TTS: the
+        settings' prompt, else the dataset's first clip).
+
+        Raises: ``UnknownTrainingFamily`` for another family's settings; the family's
+        ``FineTuneError``.
+        """
+        ...
+
+
+def require_trains(
+    adapter: TrainingAdapter,
+    hyperparameters: FineTuneHyperparameters | FamilyHyperparameters,
+) -> None:
+    """Refuse ``adapter`` for hyperparameters of another family or model.
+
+    Raises: ``UnknownTrainingFamily``.
+    """
+    family = hyperparameters_family(hyperparameters)
+    if family != adapter.family_id:
+        raise UnknownTrainingFamily(
+            f"the {adapter.family_id} adapter cannot train {family} hyperparameters"
+        )
+    if hyperparameters.model_name not in adapter.model_names:
+        raise UnknownTrainingFamily(
+            f"{adapter.family_id} does not train {hyperparameters.model_name}"
+        )
 
 
 # -- F5-TTS ------------------------------------------------------------------------------------
+
+
+class F5ListeningSettings(ContractModel):
+    """How F5-TTS's listening samples are made: the reference clip's prompt (``None``: the
+    dataset's first clip), EMA or raw weights, flow steps, and the device."""
+
+    family: Literal["f5-tts"] = F5_FAMILY
+    reference_prompt_id: StableId | None = None
+    use_ema: bool = True
+    nfe_steps: int = Field(default=32, ge=1, le=256)
+    device: F5Device = "mps"
 
 
 def _f5_runtime(runtime: TrainingRuntime) -> FineTuneRuntime:
@@ -250,11 +313,26 @@ def _f5_runtime(runtime: TrainingRuntime) -> FineTuneRuntime:
 
 
 class F5TrainingAdapter:
-    """F5-TTS: ``finetune``'s F5-TTS dataset, runtime, launcher and synthesizer."""
+    """F5-TTS: ``finetune``'s F5-TTS dataset, runtime, launcher and synthesizer.
+
+    ``pretrained_pin`` substitutes the pretrained-file pins the runtime is checked against
+    (a test seam; ``None`` is ``finetune_pretrained_pins()``).
+    """
 
     family_id: Final = F5_FAMILY
     model_names: Final = frozenset({"F5TTS_v1_Base"})
     dataset_sample_rate_hz: Final = FINETUNE_SAMPLE_RATE_HZ
+    # ``run_f5_finetune`` hard-links the pinned weights as ``pretrained_<their name>``.
+    pinned_weight_pattern: Final = "pretrained_*.safetensors"
+
+    def __init__(self, *, pretrained_pin: FineTunePretrainedPins | None = None) -> None:
+        self.pretrained_pin = pretrained_pin
+
+    def hyperparameters(self, options: Mapping[str, object]) -> FineTuneHyperparameters:
+        return FineTuneHyperparameters.model_validate(dict(options))
+
+    def listening_settings(self, options: Mapping[str, object]) -> F5ListeningSettings:
+        return F5ListeningSettings.model_validate(dict(options))
 
     def normalise_text(self, text: str) -> str:
         # F5-TTS takes the prompt as written (its tokenizer does the rest); its metadata.csv
@@ -266,14 +344,10 @@ class F5TrainingAdapter:
         return text
 
     def describe_runtime(
-        self,
-        runtime_root: Path,
-        *,
-        pretrained_pin: FineTunePretrainedPins | None,
-        digests: FineTuneDigestCache,
+        self, runtime_root: Path, *, digests: FineTuneDigestCache
     ) -> TrainingRuntime:
         return describe_finetune_runtime(
-            runtime_root, pretrained_pin=pretrained_pin, digests=digests
+            runtime_root, pretrained_pin=self.pretrained_pin, digests=digests
         )
 
     def runtime_link(self, runtime: TrainingRuntime, run_id: str) -> Path | None:
@@ -330,14 +404,14 @@ class F5TrainingAdapter:
         runtime: TrainingRuntime,
         run_root: str,
         *,
-        reference_prompt_id: str,
         texts: tuple[str, ...] = FINETUNE_DEFAULT_SAMPLE_TEXTS,
-        use_ema: bool = True,
-        nfe_steps: int = 32,
-        device: Literal["mps", "cpu"] = "mps",
+        settings: BaseModel,
         digests: FineTuneDigestCache,
     ) -> ListeningSamples:
+        if not isinstance(settings, F5ListeningSettings):
+            raise UnknownTrainingFamily("F5-TTS samples with F5ListeningSettings")
         described = _f5_runtime(runtime)
+        reference = settings.reference_prompt_id or dataset.clips[0].prompt_id
 
         def samples(label: str, checkpoint: Path, ema: bool) -> FineTuneSampleSet:
             return synthesize_finetune_samples(
@@ -347,16 +421,16 @@ class F5TrainingAdapter:
                 checkpoint,
                 f"{run_root}/samples/{label}",
                 label=label,
-                reference_prompt_id=reference_prompt_id,
+                reference_prompt_id=reference,
                 texts=texts,
                 use_ema=ema,
-                nfe_steps=nfe_steps,
-                device=device,
+                nfe_steps=settings.nfe_steps,
+                device=settings.device,
                 digests=digests,
             )
 
         finetuned = samples(
-            "finetuned", layout.root / run_root / "checkpoints" / "model_last.pt", use_ema
+            "finetuned", layout.root / run_root / "checkpoints" / "model_last.pt", settings.use_ema
         )
         return ListeningSamples(
             finetuned=finetuned, base=samples("base", described.pretrained_path, True)
@@ -389,15 +463,6 @@ def training_adapter(family_id: str) -> TrainingAdapter:
     return adapter
 
 
-def hyperparameters_family(
-    hyperparameters: FineTuneHyperparameters | FamilyHyperparameters,
-) -> str:
-    """The family a set of hyperparameters trains: F5-TTS's own schema, or the named one."""
-    if isinstance(hyperparameters, FineTuneHyperparameters):
-        return F5_FAMILY
-    return hyperparameters.family
-
-
 def adapter_for(
     hyperparameters: FineTuneHyperparameters | FamilyHyperparameters,
 ) -> TrainingAdapter:
@@ -406,13 +471,10 @@ def adapter_for(
     Raises: ``UnknownTrainingFamily``.
     """
     adapter = training_adapter(hyperparameters_family(hyperparameters))
-    if hyperparameters.model_name not in adapter.model_names:
-        raise UnknownTrainingFamily(
-            f"{adapter.family_id} does not train {hyperparameters.model_name}"
-        )
+    require_trains(adapter, hyperparameters)
     return adapter
 
 
 def run_family(run: FineTuneRun) -> str:
     """The model family stored run ``run`` trained (every run so far: F5-TTS)."""
-    return hyperparameters_family(run.hyperparameters)
+    return run_model_family(run)

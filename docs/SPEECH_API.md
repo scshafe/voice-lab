@@ -453,18 +453,30 @@ The existing `voice-lab-jobs` unit is the journey watcher (CPU, no GPU devices) 
 unchanged; speech gets its own unit so that its devices and residency do not widen the
 watcher's.
 
-**The GPU slot.** One slot, shared with every GPU job (fine-tuning, auditions and Speak, when
-phase 5 brings them to the PC): an exclusive lock on `state/jobs/.gpu-slot.lock` and a holder
-record `state/jobs/gpu-slot.json` naming the kind, the job, when it started and its expected
-end. The rules:
+**The GPU slot.** One slot, shared with every GPU job (the model comparison's benchmarks now,
+D-049; fine-tuning, auditions and Speak when phase 5 brings them to the PC): an exclusive lock
+on `state/jobs/.gpu-slot.lock` and a holder record `state/jobs/gpu-slot.json` naming the kind
+(`speech`, `benchmark`, `finetune`, `audition` or `speak`), the job, when it started and its
+expected end. The rules:
 
 - Nothing preempts a holder.
 - The resident speech worker holds the slot (kind `speech`) while its model is loaded.
-- A long job that wants the slot writes `state/jobs/gpu-slot.wanted` and waits for the lock.
-  The speech worker yields (unloads and releases the slot) as soon as no speech job is in hand
-  and none is queued; queued speech goes first, so a long job waits for the speech queue to
-  drain, never for the idle timeout. While the marker is there and the queue is empty, speech
-  does not take the slot again.
+- A long job (every kind but `speech`) that wants the slot writes `state/jobs/gpu-slot.wanted`
+  (`GpuSlotWant`: its holder, its process id, the boot it was written in, and when its wait
+  for the lock ends) and waits for the lock. The speech worker yields (unloads and releases
+  the slot) as soon as no speech job is in hand and none is queued; queued speech goes first,
+  so a long job waits for the speech queue to drain, never for the idle timeout. While the
+  marker is there and the queue is empty, speech does not take the slot again. A marker whose
+  process is gone, that was written before the host last booted, or that is past its wait
+  plus a minute is stale: the runner removes it and logs why, so a killed job never keeps
+  speech off the GPU (one that cannot be read counts for an hour from its last change).
+- A benchmark (`voice-lab families record --benchmark`, kind `benchmark`) renders a run
+  through the same `SpeechBackend` port as the runner: `prepare`, `render_segment`,
+  `peak_memory` (the most accelerator memory the loaded model used and how the backend
+  measured it; F5-TTS's worker reports torch's `max_memory_allocated`, `None` where it cannot
+  tell), and `unload`. It runs in its own oneshot unit with the runner's fences
+  (`voice-lab-speech-benchmark.service`), with its own resident scratch under
+  `state/speech/benchmark/` (docs/MODEL_FAMILIES.md).
 - While a long job holds the slot, `POST` answers `503 gpu_busy` with `Retry-After` from the
   holder's expected end (10 minutes when it gives none), so an assistant answers in text rather
   than waiting hours. Speech already queued waits, and fails `queue_timeout` if it has not

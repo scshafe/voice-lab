@@ -62,10 +62,12 @@ from .errors import ContractError, SecurityError, VoiceLabError
 from .library_classification import (
     CORPUS_DATABASE_PATH,
     FILE_CLASSES,
+    PINNED_WEIGHT_FILES,
     ClassificationRule,
     RestoreMode,
     classify,
     matching_rules,
+    pinned_weight_rule_name,
     rule_named,
     subtree_stays_on_mac,
 )
@@ -1386,7 +1388,7 @@ class ReferenceSource:
 def _fine_tune_rules() -> frozenset[str]:
     return frozenset(
         {
-            "fine-tune-pretrained-link",
+            *(pinned_weight_rule_name(family) for family in PINNED_WEIGHT_FILES),
             "fine-tune-archive-records",
             "fine-tune-removal-history",
             "fine-tune-run",

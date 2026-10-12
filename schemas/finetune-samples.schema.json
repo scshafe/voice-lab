@@ -1,5 +1,13 @@
 {
   "$defs": {
+    "F5Device": {
+      "enum": [
+        "mps",
+        "cpu",
+        "cuda"
+      ],
+      "type": "string"
+    },
     "FineTuneSample": {
       "additionalProperties": false,
       "properties": {
@@ -71,12 +79,7 @@
       "$ref": "#/$defs/UtcTimestamp"
     },
     "device": {
-      "enum": [
-        "mps",
-        "cpu"
-      ],
-      "title": "Device",
-      "type": "string"
+      "$ref": "#/$defs/F5Device"
     },
     "label": {
       "$ref": "#/$defs/StableId"

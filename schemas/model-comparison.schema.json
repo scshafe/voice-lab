@@ -1,20 +1,89 @@
 {
   "$defs": {
-    "BlindReviewRef": {
+    "Accelerator": {
       "additionalProperties": false,
+      "description": "One GPU the kernel lists (``/sys/class/drm/cardN/device``), or Apple's MPS.",
       "properties": {
-        "review_id": {
-          "$ref": "#/$defs/StableId"
+        "device_id": {
+          "anyOf": [
+            {
+              "maxLength": 16,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device Id"
         },
-        "score_sheet_sha256": {
-          "$ref": "#/$defs/Sha256"
+        "driver": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Driver"
+        },
+        "driver_version": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Driver Version"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "vendor_id": {
+          "anyOf": [
+            {
+              "maxLength": 16,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vendor Id"
+        },
+        "vram_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vram Bytes"
         }
       },
-      "required": [
-        "review_id",
-        "score_sheet_sha256"
-      ],
-      "title": "BlindReviewRef",
+      "title": "Accelerator",
       "type": "object"
     },
     "F5RenderSettings": {
@@ -58,9 +127,161 @@
       "title": "FileDigest",
       "type": "object"
     },
+    "GpuContention": {
+      "additionalProperties": false,
+      "description": "Advisory: the GPU's other users at one moment, as far as an unprivileged process sees.\n\n``vram_used_bytes`` is every card's VRAM in use (amdgpu's ``mem_info_vram_used``, all\nprocesses together); ``gpu_processes`` the names of the other processes that hold the\nROCm device (``/sys/class/kfd/kfd/proc``), ``None`` when that cannot be listed.",
+      "properties": {
+        "gpu_processes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Gpu Processes"
+        },
+        "vram_total_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Vram Total Bytes"
+        },
+        "vram_used_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Vram Used Bytes"
+        }
+      },
+      "required": [
+        "vram_used_bytes",
+        "vram_total_bytes",
+        "gpu_processes"
+      ],
+      "title": "GpuContention",
+      "type": "object"
+    },
+    "HostFingerprint": {
+      "additionalProperties": false,
+      "description": "The machine a measurement ran on (every field read without privileges, or ``None``).",
+      "properties": {
+        "accelerators": {
+          "items": {
+            "$ref": "#/$defs/Accelerator"
+          },
+          "maxItems": 8,
+          "title": "Accelerators",
+          "type": "array"
+        },
+        "cpu_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cpu Count"
+        },
+        "cpu_model": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cpu Model"
+        },
+        "machine": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Machine",
+          "type": "string"
+        },
+        "memory_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Memory Bytes"
+        },
+        "mps": {
+          "title": "Mps",
+          "type": "boolean"
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "rocm_version": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Rocm Version"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.host-fingerprint/v1",
+          "default": "cole-voice-lab.host-fingerprint/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "system": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "System",
+          "type": "string"
+        }
+      },
+      "required": [
+        "system",
+        "machine",
+        "cpu_model",
+        "cpu_count",
+        "memory_bytes",
+        "accelerators",
+        "rocm_version",
+        "mps",
+        "recorded_at"
+      ],
+      "title": "HostFingerprint",
+      "type": "object"
+    },
     "InferenceBenchmark": {
       "additionalProperties": false,
-      "description": "How a run renders the fixed text set through the speech backend port.",
+      "description": "How a run renders the fixed text set through the speech backend port.\n\n``seed_basis_sha256`` is what the seeds derive from (the run, its files' digests), with\nthe text set's digest and the render settings' digest: none of it changes between reruns,\nso a rerun renders the same segments. ``release_sha256`` is the preview's digest, which\ndoes (it is dated), and is kept only as evidence of what was checked.",
       "properties": {
         "audio_ms": {
           "minimum": 1,
@@ -72,6 +293,12 @@
         },
         "consent_sha256": {
           "$ref": "#/$defs/Sha256"
+        },
+        "contention_after": {
+          "$ref": "#/$defs/GpuContention"
+        },
+        "contention_before": {
+          "$ref": "#/$defs/GpuContention"
         },
         "designated": {
           "title": "Designated",
@@ -96,22 +323,23 @@
           "title": "First Segment Ms",
           "type": "integer"
         },
+        "host": {
+          "$ref": "#/$defs/HostFingerprint"
+        },
         "load_ms": {
           "minimum": 0,
           "title": "Load Ms",
           "type": "integer"
         },
-        "peak_memory_bytes": {
+        "peak_memory": {
           "anyOf": [
             {
-              "minimum": 0,
-              "type": "integer"
+              "$ref": "#/$defs/MeasuredPeak"
             },
             {
               "type": "null"
             }
-          ],
-          "title": "Peak Memory Bytes"
+          ]
         },
         "real_time_factor": {
           "minimum": 0.0,
@@ -125,6 +353,13 @@
           "minimum": 0,
           "title": "Render Ms",
           "type": "integer"
+        },
+        "sandboxed": {
+          "title": "Sandboxed",
+          "type": "boolean"
+        },
+        "seed_basis_sha256": {
+          "$ref": "#/$defs/Sha256"
         },
         "segments": {
           "items": {
@@ -152,6 +387,7 @@
       },
       "required": [
         "text_set_sha256",
+        "seed_basis_sha256",
         "release_sha256",
         "designated",
         "consent_id",
@@ -163,11 +399,38 @@
         "render_ms",
         "audio_ms",
         "real_time_factor",
-        "peak_memory_bytes",
+        "peak_memory",
         "deterministic",
+        "host",
+        "contention_before",
+        "contention_after",
+        "sandboxed",
         "segments"
       ],
       "title": "InferenceBenchmark",
+      "type": "object"
+    },
+    "MeasuredPeak": {
+      "additionalProperties": false,
+      "description": "Peak accelerator memory and how the backend measured it (a process's own allocations\nand a whole card's use are different numbers; compare like with like).",
+      "properties": {
+        "bytes": {
+          "minimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "method": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bytes",
+        "method"
+      ],
+      "title": "MeasuredPeak",
       "type": "object"
     },
     "ModelName": {
@@ -175,6 +438,84 @@
       "minLength": 1,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
       "type": "string"
+    },
+    "QualityLink": {
+      "additionalProperties": false,
+      "description": "The blind review that judged a run: its id and the score sheet's digest, verified\nagainst the sealed review package, and the run's scores in it when it was a candidate.",
+      "properties": {
+        "candidate_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Candidate Id"
+        },
+        "means": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "maxProperties": 16,
+              "propertyNames": {
+                "$ref": "#/$defs/StableId"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Means"
+        },
+        "overall_mean": {
+          "anyOf": [
+            {
+              "maximum": 5.0,
+              "minimum": 1.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Overall Mean"
+        },
+        "review_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "sample_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Count"
+        },
+        "score_sheet_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "review_id",
+        "score_sheet_sha256"
+      ],
+      "title": "QualityLink",
+      "type": "object"
     },
     "RenderFingerprint": {
       "additionalProperties": false,
@@ -350,6 +691,17 @@
           "title": "Epochs",
           "type": "integer"
         },
+        "host": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HostFingerprint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "model_family": {
           "$ref": "#/$defs/StableId"
         },
@@ -434,7 +786,7 @@
     "quality": {
       "anyOf": [
         {
-          "$ref": "#/$defs/BlindReviewRef"
+          "$ref": "#/$defs/QualityLink"
         },
         {
           "type": "null"

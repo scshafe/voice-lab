@@ -25,6 +25,9 @@ type StableId = Annotated[
     str,
     StringConstraints(pattern=r"^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$", max_length=128),
 ]
+# The first model family's id (D-048, D-049): F5-TTS. The one definition; the training
+# adapter (``training``), the speech family (``speech.f5``) and their contracts import it.
+F5_FAMILY: Final = "f5-tts"
 type CandidateId = Annotated[
     str,
     StringConstraints(pattern=r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$", max_length=80),

@@ -8,11 +8,14 @@ reads takes directly from the library; lab packages, intake, dataset manifests a
 pilot gate are not involved. Module: `src/cole_voice_lab/finetune.py` (`@canonical
 finetune`). Decisions: D-016, D-018, D-019.
 
-F5-TTS is the first model family (D-048). The pipeline's dataset, runtime, training and
-samples are its training adapter's (`src/cole_voice_lab/training.py`), so another family can
-be trained on the same corpus selection; what a run cost and how it renders are recorded with
+F5-TTS is the first model family (D-048). The pipeline's settings, dataset, runtime, training
+and samples are its training adapter's (`src/cole_voice_lab/training.py`, D-049), so another
+family can be trained on the same corpus selection: `finetune dataset`, `train` and `run` take
+`--family` (default `f5-tts`, the only one registered), and every run records the host it
+trained on (`training-host.json`). What a run cost and how it renders are recorded with
 `voice-lab families record` and compared with `voice-lab families compare` (D-049,
-[MODEL_FAMILIES.md](MODEL_FAMILIES.md)). Everything below is F5-TTS's.
+[MODEL_FAMILIES.md](MODEL_FAMILIES.md)). Everything below is F5-TTS's; `finetune synthesize`
+is F5-TTS's only.
 
 ## The corpus
 
@@ -183,6 +186,7 @@ instead of 6), and light checkpoints without optimizer state. It refuses `--log_
 | `--learning-rate` | 1e-5 | rarely |
 | `--batch-frames` | 3200 | 1600 if `footprint <pid>` exceeds about 12 GB |
 | `--nfe-steps` (samples) | 32 | 16 for a quick listen |
+| `--device` (samples) | `mps` | `cpu`, or `cuda` on the PC (ROCm answers to torch's `cuda`) |
 | `--reference-prompt-id` | first corpus clip | any clip in the corpus |
 
 Run one training job at a time and no other heavy work on the machine while it runs.

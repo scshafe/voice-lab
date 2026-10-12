@@ -67,7 +67,6 @@ from .finetune import (
     AbsolutePath,
     FineTuneDigestCache,
     FineTuneError,
-    FineTuneHyperparameters,
     FineTunePipelineStep,
     FineTunePretrainedPins,
     FineTuneRuntimeProbe,
@@ -87,7 +86,7 @@ from .finetune import (
     run_finetune_pipeline,
     synthesize_speech,
 )
-from .models import ContractModel, Sha256, StableId, utc_now
+from .models import F5_FAMILY, ContractModel, Sha256, StableId, utc_now
 from .paths import AssetLayout, confined_path
 from .recording_contracts import (
     MAX_CONTROL_FRAME_BYTES,
@@ -125,9 +124,18 @@ from .recording_takes import (
     write_recording_evidence,
 )
 from .storage_binding import open_catalog_reader
-from .training import FineTuneTrainingProgress, parse_training_progress
+from .training import (
+    F5TrainingAdapter,
+    FineTuneTrainingProgress,
+    TrainingAdapter,
+    parse_training_progress,
+    training_adapter,
+)
 
 FINETUNE_JOBS_ROOT: Final = "provenance/finetune-jobs"
+# The model family the app's fine-tune trains (D-049): its intent names none, and its worker's
+# pretrained-pin test seam is F5-TTS's.
+APP_TRAINING_FAMILY: Final = F5_FAMILY
 FINETUNE_WORKER_MODULE: Final = "cole_voice_lab.recording_finetune_jobs"
 # A run's dataset, packed copy, checkpoints and samples need several GiB.
 FINETUNE_MIN_FREE_BYTES: Final = 8 * 1024**3  # 8 GiB
@@ -1690,7 +1698,10 @@ class FineTuneSupervisor:
 
     def _run_job(self, job: FineTuneJob, intent: FineTuneJobIntent) -> None:
         assert job.run_id is not None
-        epochs = intent.command.epochs or FineTuneHyperparameters().epochs
+        epochs = (
+            intent.command.epochs
+            or training_adapter(APP_TRAINING_FAMILY).hyperparameters({}).epochs
+        )
         tracker = FineTuneProgressTracker(
             job.operation_id, job.run_id, epochs, interval=self.progress_interval
         )
@@ -2382,10 +2393,15 @@ def run_finetune_worker_request(
             with open_catalog_reader(layout) as store:
                 _, reference = store.active_catalog(intent.subject_id)
         snapshot = read_catalog_snapshot(layout, reference)
-        hyperparameters = (
-            FineTuneHyperparameters()
-            if intent.command.epochs is None
-            else FineTuneHyperparameters(epochs=intent.command.epochs)
+        # The app trains its family (its intent names none); the adapter makes its settings.
+        # The worker's pin seam (tests only) is F5-TTS's, the app's family.
+        adapter: TrainingAdapter = (
+            training_adapter(APP_TRAINING_FAMILY)
+            if request.pretrained_pin is None
+            else F5TrainingAdapter(pretrained_pin=request.pretrained_pin)
+        )
+        hyperparameters = adapter.hyperparameters(
+            {} if intent.command.epochs is None else {"epochs": intent.command.epochs}
         )
 
         def progress(step: FineTunePipelineStep) -> None:
@@ -2410,7 +2426,7 @@ def run_finetune_worker_request(
                     run_id=request.run_id,
                     allow_missing=intent.command.allow_missing,
                     reference=reference,
-                    pretrained_pin=request.pretrained_pin,
+                    adapter=adapter,
                     progress=progress,
                 )
                 break

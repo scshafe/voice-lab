@@ -39,7 +39,7 @@ import stat
 import subprocess
 import threading
 import wave
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -71,6 +71,7 @@ from .catalog_ports import CorpusSnapshotSecurityError
 from .corpus_store import require_referenced_snapshot
 from .errors import SecurityError, VoiceLabError
 from .models import (
+    F5_FAMILY,
     SILENT_PROMPT_CATEGORIES,
     ContractModel,
     Prompt,
@@ -113,6 +114,9 @@ from .recording_library import RecordingLibrary
 from .recording_takes import TAKE_PROVENANCE_ROOT, RecordingTakeStore
 from .resources import resource_path
 from .storage_contracts import LibraryId
+
+if TYPE_CHECKING:
+    from .training import TrainingAdapter
 
 FINETUNE_CORPUS_SCHEMA: Final = "cole-voice-lab.finetune-corpus/v1"
 FINETUNE_HYPERPARAMETERS_SCHEMA: Final = "cole-voice-lab.finetune-hyperparameters/v1"
@@ -320,12 +324,12 @@ class FineTuneHyperparameters(ContractModel):
 type ModelName = Annotated[
     str, StringConstraints(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ]
-# A family's training copies may have their own rate (D-048); F5-TTS's are 24 kHz.
+# A family's training copies may have their own rate (D-049); F5-TTS's are 24 kHz.
 type TrainingSampleRate = Annotated[int, Field(ge=8_000, le=192_000)]
 
 
 class FamilyHyperparameters(ContractModel):
-    """Training settings of a model family other than F5-TTS (D-048).
+    """Training settings of a model family other than F5-TTS (D-049).
 
     F5-TTS's runs keep ``FineTuneHyperparameters`` (its own schema version, so the two are
     told apart and every stored run reads as it did). ``settings`` holds the family's own
@@ -340,6 +344,12 @@ class FamilyHyperparameters(ContractModel):
     epochs: int = Field(ge=1, le=FINETUNE_MAX_EPOCHS)
     learning_rate: float = Field(gt=0.0, le=1.0, allow_inf_nan=False)
     settings: dict[StableId, int | float | str | bool] = Field(default_factory=dict, max_length=64)
+
+    @model_validator(mode="after")
+    def _not_f5(self) -> FamilyHyperparameters:
+        if self.family == F5_FAMILY:
+            raise ValueError("F5-TTS's settings are FineTuneHyperparameters")
+        return self
 
 
 type RunHyperparameters = Annotated[
@@ -391,7 +401,7 @@ class FineTuneRuntimeIdentity(ContractModel):
 
 
 class FamilyRuntimeIdentity(ContractModel):
-    """The isolated runtime a family other than F5-TTS trained in (D-048): its interpreter,
+    """The isolated runtime a family other than F5-TTS trained in (D-049): its interpreter,
     its packages' versions, the pinned pretrained weights it started from, and the device.
 
     F5-TTS's runs keep ``FineTuneRuntimeIdentity``; ``family`` tells the two apart, so every
@@ -408,8 +418,26 @@ class FamilyRuntimeIdentity(ContractModel):
     pretrained_sha256: Sha256
     device: str | None = Field(default=None, min_length=1, max_length=128)
 
+    @model_validator(mode="after")
+    def _not_f5(self) -> FamilyRuntimeIdentity:
+        if self.family == F5_FAMILY:
+            raise ValueError("F5-TTS's runtime identity is FineTuneRuntimeIdentity")
+        return self
+
 
 type RunRuntimeIdentity = FineTuneRuntimeIdentity | FamilyRuntimeIdentity
+
+
+def hyperparameters_family(hyperparameters: FineTuneHyperparameters | FamilyHyperparameters) -> str:
+    """The family a set of hyperparameters trains: F5-TTS's own schema, or the one it names."""
+    if isinstance(hyperparameters, FineTuneHyperparameters):
+        return F5_FAMILY
+    return hyperparameters.family
+
+
+def runtime_family(identity: FineTuneRuntimeIdentity | FamilyRuntimeIdentity) -> str:
+    """The family whose runtime ``identity`` describes."""
+    return F5_FAMILY if isinstance(identity, FineTuneRuntimeIdentity) else identity.family
 
 
 class FineTuneCheckpoint(ContractModel):
@@ -445,7 +473,14 @@ class FineTuneRun(ContractModel):
             raise ValueError("a finished or failed run carries its finish time; a running one none")
         if (self.status == "failed") != (self.error is not None):
             raise ValueError("failed runs name their error; other runs carry none")
+        if hyperparameters_family(self.hyperparameters) != runtime_family(self.runtime):
+            raise ValueError("a run trains its hyperparameters' family in that family's runtime")
         return self
+
+
+def run_model_family(run: FineTuneRun) -> str:
+    """The model family stored run ``run`` trained (every run so far: F5-TTS)."""
+    return hyperparameters_family(run.hyperparameters)
 
 
 class FineTuneArchivedFile(ContractModel):
@@ -1440,6 +1475,36 @@ def _failed_run(
     )
 
 
+def require_f5_dataset(layout: AssetLayout, dataset: FineTuneDataset) -> None:
+    """Refuse a dataset F5-TTS cannot train on: one not at 24 kHz, in its record or in a clip's
+    record or WAV header (a family with another rate builds its own dataset, D-049).
+
+    Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED naming the first clip that differs.
+    """
+    if dataset.sample_rate_hz != FINETUNE_SAMPLE_RATE_HZ:
+        raise FineTuneError(
+            "FINETUNE.SOURCE_CHANGED",
+            f"F5-TTS trains on a {FINETUNE_SAMPLE_RATE_HZ} Hz dataset; this one is "
+            f"{dataset.sample_rate_hz} Hz",
+        )
+    root = confined_path(layout.root, dataset.dataset_root, must_exist=True)
+    for clip in dataset.clips:
+        try:
+            rate = clip.sample_rate_hz
+            if rate == FINETUNE_SAMPLE_RATE_HZ:
+                _, rate, _, _ = _wav_frames(confined_path(root, clip.relative_path))
+        except (OSError, wave.Error, EOFError) as error:
+            raise FineTuneError(
+                "FINETUNE.SOURCE_CHANGED", f"dataset clip {clip.relative_path}: {error}"
+            ) from error
+        if rate != FINETUNE_SAMPLE_RATE_HZ:
+            raise FineTuneError(
+                "FINETUNE.SOURCE_CHANGED",
+                f"dataset clip {clip.relative_path} is {rate} Hz; F5-TTS trains on "
+                f"{FINETUNE_SAMPLE_RATE_HZ} Hz",
+            )
+
+
 def run_f5_finetune(
     layout: AssetLayout,
     dataset: FineTuneDataset,
@@ -1461,9 +1526,12 @@ def run_f5_finetune(
     except through it), hard-links the pinned pretrained weights there so finetune_cli copies
     nothing, and streams the trainer's output to ``<run_root>/train.log``. ``run.json`` is
     written with status ``running`` before launch and rewritten ``finished`` or ``failed``.
+    The dataset must be F5-TTS's: 24 kHz, as recorded for it and for every clip, and as every
+    clip's WAV header says (FINETUNE.SOURCE_CHANGED before anything is written).
     Raises FINETUNE.TRAINING_FAILED after writing the failed record.
     """
     layout = AssetLayout.validate(layout.root)
+    require_f5_dataset(layout, dataset)
     run_directory = confined_path(layout.root, run_root)
     run_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     checkpoints = run_directory / "checkpoints"
@@ -1567,6 +1635,11 @@ class FineTuneSample(ContractModel):
     text: str = Field(min_length=1, max_length=2_000)
 
 
+# Where F5-TTS synthesizes: the Mac's GPU, the CPU, or the PC's GPU as the speech runtime
+# names it (ROCm answers to torch's ``cuda`` device).
+type F5Device = Literal["mps", "cpu", "cuda"]
+
+
 class FineTuneSampleSet(ContractModel):
     """Listening samples generated from one checkpoint with one reference clip; not accepted raw."""
 
@@ -1578,7 +1651,7 @@ class FineTuneSampleSet(ContractModel):
     checkpoint_sha256: Sha256
     use_ema: bool
     nfe_steps: int = Field(ge=1, le=256)
-    device: Literal["mps", "cpu"]
+    device: F5Device
     reference_prompt_id: StableId
     reference_audio_sha256: Sha256
     samples: tuple[FineTuneSample, ...] = Field(min_length=1, max_length=1_000)
@@ -1788,7 +1861,7 @@ def synthesize_finetune_samples(
     texts: tuple[str, ...] = FINETUNE_DEFAULT_SAMPLE_TEXTS,
     use_ema: bool = True,
     nfe_steps: int = 32,
-    device: Literal["mps", "cpu"] = "mps",
+    device: F5Device = "mps",
     synthesizer: Path | None = None,
     digests: FineTuneDigestCache | None = None,
     clock: Callable[[], datetime] = utc_now,
@@ -1963,9 +2036,10 @@ def mark_finetune_run_failed(
 class FineTunePipelineStep:
     """One stage change of ``run_finetune_pipeline``.
 
-    ``runtime_link`` is the runtime's ``ckpts/<run id>`` path once the runtime is described
-    (from the ``dataset`` stage on): whoever stops the run releases it with
-    ``release_finetune_runtime_link``.
+    ``runtime_link`` is the adapter's pointer from the runtime into the run once the runtime
+    is described (from the ``dataset`` stage on; F5-TTS's ``ckpts/<run id>``, ``None`` for a
+    family whose runtime keeps none): whoever stops the run releases it with the adapter's
+    ``release_runtime_link`` (F5-TTS's: ``release_finetune_runtime_link``).
     """
 
     stage: FineTuneStage
@@ -1996,32 +2070,33 @@ def run_finetune_pipeline(
     reference: CatalogReference | None = None,
     output_root: str = FINETUNE_OUTPUT_ROOT,
     ffmpeg: Path = FINETUNE_FFMPEG,
-    reference_prompt_id: str | None = None,
     sample_texts: tuple[str, ...] = FINETUNE_DEFAULT_SAMPLE_TEXTS,
-    use_ema: bool = True,
-    nfe_steps: int = 32,
-    device: Literal["mps", "cpu"] = "mps",
-    pretrained_pin: FineTunePretrainedPins | None = None,
+    listening: Mapping[str, object] | None = None,
+    adapter: TrainingAdapter | None = None,
     progress: Callable[[FineTunePipelineStep], None] | None = None,
 ) -> FineTunePipelineResult:
     """Select → describe the runtime → materialize → train → sample (fine-tuned and base).
 
     The one fine-tune chain: ``voice-lab finetune run`` and the recording service's job
-    worker both call it. Each step after the selection is the training adapter's of the
-    hyperparameters' model family (``training.adapter_for``, D-048: F5-TTS today).
-    Everything is written under ``<output_root>/<run_id>/``: the dataset in ``dataset/``,
-    the run in ``run.json``/``train.log``/``checkpoints/``, and the
-    listening samples in ``samples/finetuned`` (``model_last.pt``, EMA unless ``use_ema`` is
-    false) and ``samples/base`` (the pinned pretrained weights, EMA). ``progress`` hears each
-    stage as it starts: ``selecting`` (corpus and runtime), ``dataset``, ``training``,
-    ``sampling``. A failed or interrupted training releases the runtime's ``ckpts/<run_id>``
-    link before the error propagates; a finished one keeps it.
+    worker both call it. It selects the corpus itself and does each later step through the
+    training adapter of the hyperparameters' model family (``training.adapter_for``, D-049:
+    F5-TTS today). Everything is written under ``<output_root>/<run_id>/``: the training
+    host's fingerprint in ``training-host.json``, the dataset in ``dataset/``, the run in
+    ``run.json``/``train.log``/``checkpoints/``, and the listening samples in
+    ``samples/finetuned`` and ``samples/base`` (the adapter's: for F5-TTS ``model_last.pt``
+    and the pinned pretrained weights). ``progress`` hears each stage as it starts:
+    ``selecting`` (corpus and runtime), ``dataset``, ``training``, ``sampling``. A failed or
+    interrupted training releases the runtime's link into the run (``runtime_link``) before
+    the error propagates; a finished one keeps it.
     Params: ``catalog``/``reference``/``subject_id`` as ``select_finetune_corpus``;
-    ``allow_missing`` as ``require_complete_corpus``; ``reference_prompt_id`` names the
-    reference clip (default: the dataset's first); ``pretrained_pin`` substitutes the
-    pretrained-file pins (tests only; ``None`` is ``finetune_pretrained_pins()``).
+    ``allow_missing`` as ``require_complete_corpus``; ``listening`` the family's listening
+    options (F5-TTS: ``reference_prompt_id``, ``use_ema``, ``nfe_steps``, ``device``; the
+    family's defaults when ``None``); ``adapter`` the training adapter (``None``: the
+    hyperparameters' family's; one given must train them).
     Returns: the corpus, dataset, finished run and both sample sets.
-    Raises: every ``FineTuneError`` of the steps it chains (FINETUNE.CORPUS_INCOMPLETE,
+    Raises: ``UnknownTrainingFamily`` or ``pydantic.ValidationError`` before anything is read
+    when the hyperparameters, the adapter and the listening options are not of one family;
+    every ``FineTuneError`` of the steps it chains (FINETUNE.CORPUS_INCOMPLETE,
     FINETUNE.RUNTIME_UNAVAILABLE, FINETUNE.PRETRAINED_MISMATCH, FINETUNE.EMPTY_CORPUS,
     FINETUNE.TRAINING_FAILED, FINETUNE.RUNTIME_FAILED, ...); ``CorpusSnapshotSecurityError``
     as ``select_finetune_corpus``.
@@ -2031,17 +2106,24 @@ def run_finetune_pipeline(
         if progress is not None:
             progress(FineTunePipelineStep(stage=stage, run_id=run_id, runtime_link=link))
 
-    from .training import adapter_for
+    from .host_fingerprint import record_training_host
+    from .training import adapter_for, require_trains
 
-    adapter = adapter_for(hyperparameters)
+    # Every family check comes first: a mismatch fails before the corpus is read or hashed.
+    if adapter is None:
+        adapter = adapter_for(hyperparameters)
+    else:
+        require_trains(adapter, hyperparameters)
+    settings = adapter.listening_settings(listening or {})
     report("selecting", None)
     corpus = select_finetune_corpus(layout, catalog, subject_id, reference=reference)
     require_complete_corpus(corpus, allow_missing=allow_missing)
     # The base samples reuse the weights' digest the runtime check just verified.
     digests = FineTuneDigestCache()
-    runtime = adapter.describe_runtime(runtime_root, pretrained_pin=pretrained_pin, digests=digests)
+    runtime = adapter.describe_runtime(runtime_root, digests=digests)
     link = adapter.runtime_link(runtime, run_id)
     run_root = f"{output_root}/{run_id}"
+    record_training_host(layout, run_root)
     report("dataset", link)
     dataset = adapter.build_dataset(layout, corpus, f"{run_root}/dataset", ffmpeg=ffmpeg)
     report("training", link)
@@ -2062,16 +2144,7 @@ def run_finetune_pipeline(
         raise
     report("sampling", link)
     samples = adapter.listening_samples(
-        layout,
-        dataset,
-        runtime,
-        run_root,
-        reference_prompt_id=reference_prompt_id or dataset.clips[0].prompt_id,
-        texts=sample_texts,
-        use_ema=use_ema,
-        nfe_steps=nfe_steps,
-        device=device,
-        digests=digests,
+        layout, dataset, runtime, run_root, texts=sample_texts, settings=settings, digests=digests
     )
     return FineTunePipelineResult(
         corpus=corpus, dataset=dataset, run=run, finetuned=samples.finetuned, base=samples.base
@@ -2239,6 +2312,7 @@ def finetune_run_summary(layout: AssetLayout, run_root: str) -> FineTuneRunSumma
         return FineTuneRunSummary(
             run_id=run.run_id,
             run_root=run.run_root,
+            model_family=run_model_family(run),
             status=run.status,
             started_at=run.started_at,
             finished_at=run.finished_at,
@@ -2264,14 +2338,18 @@ _RUN_DIRECTORY_NAME: TypeAdapter[StableId] = TypeAdapter(StableId)
 
 
 def finished_finetune_run_ids(
-    layout: AssetLayout, *, output_root: str = FINETUNE_OUTPUT_ROOT
+    layout: AssetLayout,
+    *,
+    output_root: str = FINETUNE_OUTPUT_ROOT,
+    families: frozenset[str] | None = None,
 ) -> tuple[str, ...]:
     """Every finished run under ``<output_root>``, newest first: the one run ordering.
 
     Every real directory whose name is a stable id and that holds a ``run.json`` is a run
     (a ``finetune dataset`` directory without one is not). Newest means the latest
     ``finished_at``; equal times are ordered by run id, the greater first. Only ``run.json``
-    files are read, so this is cheap.
+    files are read, so this is cheap. ``families`` keeps only the runs of those model
+    families (``None``: every run).
     Returns: the run ids.
     Raises: ``FineTuneError`` FINETUNE.SOURCE_CHANGED when any ``run.json`` is unreadable,
     invalid or names another run or directory; ``SecurityError`` when ``output_root`` has a
@@ -2298,7 +2376,9 @@ def finished_finetune_run_ids(
                     "FINETUNE.SOURCE_CHANGED",
                     f"fine-tune record {path} names run {run.run_id} at {run.run_root}",
                 )
-            if run.status != "finished":
+            if run.status != "finished" or (
+                families is not None and run_model_family(run) not in families
+            ):
                 continue
             assert run.finished_at is not None  # FineTuneRun: finished runs are dated
             finished.append((run.finished_at, run.run_id))
@@ -2666,6 +2746,11 @@ class SpeechResolution:
         return None if self.run is None else self.run.run_id
 
 
+# The model families Speak (and the speech path's F5-TTS seam, which resolves through here)
+# can render: ``latest`` and ``base`` never pick a run of another family.
+SPEAK_FAMILIES: Final = frozenset({F5_FAMILY})
+
+
 def _no_finished_run(message: str) -> FineTuneError:
     return FineTuneError("FINETUNE.NO_FINISHED_RUN", message)
 
@@ -2688,26 +2773,30 @@ def resolve_speech_model(
     reference_prompt_id: str | None = None,
     output_root: str = FINETUNE_OUTPUT_ROOT,
 ) -> SpeechResolution:
-    """Resolve a Speak model choice and its reference clip.
+    """Resolve a Speak model choice and its reference clip: F5-TTS's, the one family Speak and
+    this resolver render (``SPEAK_FAMILIES``).
 
-    ``latest`` is the first of ``finished_finetune_run_ids``; ``base`` is the pinned
-    pretrained weights with the reference from that same newest finished run (a reference
-    needs recorded audio); anything else names a finished run. The reference is
-    ``reference_prompt_id``'s clip in the reference run's dataset, else the first
-    reference-candidate prompt with a clip there (``speech_reference_candidates``), else the
-    run's first clip.
+    ``latest`` is the first of ``finished_finetune_run_ids`` among F5-TTS runs; ``base`` is
+    the pinned pretrained weights with the reference from that same newest finished F5-TTS
+    run (a reference needs recorded audio); anything else names a finished F5-TTS run. A run
+    of another family is never chosen for ``latest`` or ``base``, and naming one is refused.
+    The reference is ``reference_prompt_id``'s clip in the reference run's dataset, else the
+    first reference-candidate prompt with a clip there (``speech_reference_candidates``), else
+    the run's first clip.
     Returns: the resolution; every record in it was read and bound here.
-    Raises: ``FineTuneError`` FINETUNE.NO_FINISHED_RUN when no run has finished (whatever
-    was chosen) or the named run is missing or not finished; FINETUNE.RUN_ARCHIVED when the
-    run that would speak is archived (``base`` is not, it only borrows the newest run's
-    reference clip); FINETUNE.REFERENCE_MISSING when
+    Raises: ``FineTuneError`` FINETUNE.NO_FINISHED_RUN when no F5-TTS run has finished
+    (whatever was chosen) or the named run is missing, not finished or of another family;
+    FINETUNE.RUN_ARCHIVED when the run that would speak is archived (``base`` is not, it
+    only borrows the newest run's reference clip); FINETUNE.REFERENCE_MISSING when
     ``reference_prompt_id`` has no clip in the reference run's dataset;
     FINETUNE.SOURCE_CHANGED as ``finished_finetune_run_ids`` and
     ``load_finetune_run_inputs``; ``SecurityError`` for a symlinked run directory;
     ``ValueError`` when ``model`` is neither keyword nor a stable id.
     """
     if model in {"latest", "base"}:
-        run_ids = finished_finetune_run_ids(layout, output_root=output_root)
+        run_ids = finished_finetune_run_ids(
+            layout, output_root=output_root, families=SPEAK_FAMILIES
+        )
         if not run_ids:
             raise _no_finished_run(
                 "no fine-tuned model has finished yet; fine-tune once before using Speak"
@@ -2730,6 +2819,11 @@ def resolve_speech_model(
         )
     if run.status != "finished":
         raise _no_finished_run(f"fine-tune run {run_id} is {run.status}, not finished")
+    if run_model_family(run) not in SPEAK_FAMILIES:
+        raise _no_finished_run(
+            f"fine-tune run {run_id} is a {run_model_family(run)} run; Speak renders F5-TTS "
+            "runs only"
+        )
     # ``base`` speaks with the pinned pretrained weights and only borrows this run's dataset
     # clip as its reference, and a removal never takes the dataset; only the run itself
     # cannot speak without its checkpoints.

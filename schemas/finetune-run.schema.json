@@ -2,7 +2,7 @@
   "$defs": {
     "FamilyHyperparameters": {
       "additionalProperties": false,
-      "description": "Training settings of a model family other than F5-TTS (D-048).\n\nF5-TTS's runs keep ``FineTuneHyperparameters`` (its own schema version, so the two are\ntold apart and every stored run reads as it did). ``settings`` holds the family's own\noptions, passed to its training adapter as they are.",
+      "description": "Training settings of a model family other than F5-TTS (D-049).\n\nF5-TTS's runs keep ``FineTuneHyperparameters`` (its own schema version, so the two are\ntold apart and every stored run reads as it did). ``settings`` holds the family's own\noptions, passed to its training adapter as they are.",
       "properties": {
         "epochs": {
           "maximum": 10000,
@@ -64,7 +64,7 @@
     },
     "FamilyRuntimeIdentity": {
       "additionalProperties": false,
-      "description": "The isolated runtime a family other than F5-TTS trained in (D-048): its interpreter,\nits packages' versions, the pinned pretrained weights it started from, and the device.\n\nF5-TTS's runs keep ``FineTuneRuntimeIdentity``; ``family`` tells the two apart, so every\nstored run reads, and re-serializes, exactly as before.",
+      "description": "The isolated runtime a family other than F5-TTS trained in (D-049): its interpreter,\nits packages' versions, the pinned pretrained weights it started from, and the device.\n\nF5-TTS's runs keep ``FineTuneRuntimeIdentity``; ``family`` tells the two apart, so every\nstored run reads, and re-serializes, exactly as before.",
       "properties": {
         "device": {
           "anyOf": [

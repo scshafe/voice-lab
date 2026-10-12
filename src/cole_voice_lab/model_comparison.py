@@ -3,27 +3,36 @@
 @canonical model_comparison -- one write-once record per measurement of a fine-tuned run,
 ``provenance/model-comparisons/<run id>/<comparison id>.json`` (0400; D-049):
 
-- **training**: the run's family and trainer model, its dataset (digest, clips, seconds, rate),
-  epochs and the last update its log reports, the wall time from its run record, the device
-  (from the runtime identity when the family records it, else as the operator names it), and
-  the runtime's identity;
+- **training**: the run's family and trainer model, its corpus and dataset (digests, clips,
+  seconds, rate), epochs and the last update its log reports, the wall time from its run
+  record, the device (from the runtime identity when the family records it, else as the
+  operator names it), the training host's fingerprint when the run recorded one
+  (``host_fingerprint``), and the runtime's identity;
 - **inference** (optional): a benchmark on a fixed held-out text set (``BENCHMARK_TEXTS``,
   none of which may be a text the run trained on), rendered through the same
-  ``SpeechBackend`` port the speech API uses, sentence by sentence with derived seeds: load
-  time, time to the first segment, real-time factor, peak accelerator memory when the
-  backend reports it, and whether a rerun of a segment is byte-identical. The run is
-  rendered as an unwritten release preview (``speech.release.designate(write=False)``) under
-  an approved consent record for ``private-home-host-synthesis`` on ``home-host``; the audio
-  is hashed and deleted, never kept or served;
-- **quality** (optional): a link to the blind review that judged it (its id and score-sheet
-  digest), which stays the decision signal (AGENTS.md: blind listening first).
+  ``SpeechBackend`` port the speech API uses, sentence by sentence with seeds derived from
+  stable inputs only (the run, its files' digests, the text set and the render settings), so
+  a rerun renders the same: load time, time to the first segment, real-time factor, peak
+  accelerator memory with how the backend measured it, whether a rerun of a segment is
+  byte-identical, the host's fingerprint, and an advisory snapshot of the GPU's other users
+  before and after. The run is rendered as an unwritten release preview
+  (``speech.release.designate(write=False)``) under an approved consent record for
+  ``private-home-host-synthesis`` on ``home-host``; the audio is hashed and deleted, never
+  kept or served. On the PC it runs in the speech unit's sandbox (``cli_models``);
+- **quality** (optional): a link to the blind review that judged it, made only from the score
+  sheet itself (its digest must match, and it must verify against the sealed review package),
+  with the run's summary score when the review scored it; blind listening stays the decision
+  signal (AGENTS.md).
 
-``comparison_rows`` flattens the newest record of each run for the command line
+``comparison_rows`` composes, per run, the newest training summary, the newest benchmark and
+the newest review, each with when it was recorded, and flags runs trained on another corpus
 (``voice-lab families compare``).
 """
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
 import secrets
 import shutil
@@ -31,10 +40,11 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from pydantic import Field, ValidationError, model_validator
 
+from .blind import ScoreSheet, aggregate_scores
 from .canonical import (
     canonical_json_bytes,
     canonical_sha256,
@@ -51,6 +61,13 @@ from .finetune import (
     load_finetune_dataset,
     require_finished_run,
 )
+from .host_fingerprint import (
+    GpuContention,
+    HostFingerprint,
+    gpu_contention,
+    host_fingerprint,
+    training_host,
+)
 from .models import ContractModel, Sha256, StableId
 from .paths import AssetLayout, confined_path
 from .recording_contracts import UtcTimestamp
@@ -58,7 +75,7 @@ from .speech.backend import SpeechBackend
 from .speech.contracts import API_SAMPLE_RATE_HZ, RenderFingerprint
 from .speech.release import (
     SPEECH_SUBJECT,
-    BlindReviewRef,
+    VoiceRelease,
     VoiceReleaseError,
     current_release,
     designate,
@@ -87,6 +104,9 @@ BENCHMARK_TEXTS: Final = (
 )
 MAX_TRAINING_LOG_BYTES: Final = 64 * 1024
 MAX_RECORD_BYTES: Final = 256 * 1024
+MAX_SCORE_SHEET_BYTES: Final = 4 * 1024 * 1024
+SCRATCH_PREFIX: Final = ".model-benchmark-"
+LOG: Final = logging.getLogger(__name__)
 
 
 class ComparisonError(VoiceLabError):
@@ -112,6 +132,7 @@ class TrainingSummary(ContractModel):
     updates: int | None = Field(ge=0)
     wall_seconds: float = Field(ge=0.0, allow_inf_nan=False)
     device: str | None = Field(min_length=1, max_length=128)
+    host: HostFingerprint | None = None
     runtime: dict[str, str] = Field(max_length=24)
 
 
@@ -126,11 +147,26 @@ class SegmentTiming(ContractModel):
     sha256: Sha256
 
 
+class MeasuredPeak(ContractModel):
+    """Peak accelerator memory and how the backend measured it (a process's own allocations
+    and a whole card's use are different numbers; compare like with like)."""
+
+    bytes: int = Field(ge=0)
+    method: str = Field(min_length=1, max_length=512)
+
+
 class InferenceBenchmark(ContractModel):
-    """How a run renders the fixed text set through the speech backend port."""
+    """How a run renders the fixed text set through the speech backend port.
+
+    ``seed_basis_sha256`` is what the seeds derive from (the run, its files' digests), with
+    the text set's digest and the render settings' digest: none of it changes between reruns,
+    so a rerun renders the same segments. ``release_sha256`` is the preview's digest, which
+    does (it is dated), and is kept only as evidence of what was checked.
+    """
 
     text_set: Literal["benchmark-v1"] = BENCHMARK_TEXT_SET
     text_set_sha256: Sha256
+    seed_basis_sha256: Sha256
     release_sha256: Sha256
     designated: bool
     consent_id: StableId
@@ -142,9 +178,27 @@ class InferenceBenchmark(ContractModel):
     render_ms: int = Field(ge=0)
     audio_ms: int = Field(ge=1)
     real_time_factor: float = Field(ge=0.0, allow_inf_nan=False)
-    peak_memory_bytes: int | None = Field(ge=0)
+    peak_memory: MeasuredPeak | None
     deterministic: bool | None
+    host: HostFingerprint
+    # Advisory: the GPU's other users (llama-swap shares the PC's card) before the model
+    # loaded and after the last segment, as far as an unprivileged process can see.
+    contention_before: GpuContention
+    contention_after: GpuContention
+    sandboxed: bool
     segments: tuple[SegmentTiming, ...] = Field(min_length=1, max_length=256)
+
+
+class QualityLink(ContractModel):
+    """The blind review that judged a run: its id and the score sheet's digest, verified
+    against the sealed review package, and the run's scores in it when it was a candidate."""
+
+    review_id: StableId
+    score_sheet_sha256: Sha256
+    candidate_id: str | None = Field(default=None, min_length=1, max_length=128)
+    sample_count: int | None = Field(default=None, ge=1)
+    overall_mean: float | None = Field(default=None, ge=1.0, le=5.0, allow_inf_nan=False)
+    means: dict[StableId, float] | None = Field(default=None, max_length=16)
 
 
 class ModelComparison(ContractModel):
@@ -157,7 +211,7 @@ class ModelComparison(ContractModel):
     created_at: UtcTimestamp
     training: TrainingSummary
     inference: InferenceBenchmark | None = None
-    quality: BlindReviewRef | None = None
+    quality: QualityLink | None = None
 
     @model_validator(mode="after")
     def _one_run(self) -> ModelComparison:
@@ -186,7 +240,8 @@ def training_summary(
     """What finished run ``run_id`` cost to train, from its records and its log.
 
     Raises: ``FineTuneError`` for a missing, invalid or unfinished run;
-    ``UnknownTrainingFamily`` for a family this build cannot read.
+    ``UnknownTrainingFamily`` for a family this build cannot read; ``VoiceLabError`` for a
+    training-host record that is not one.
     """
     run_root = f"{FINETUNE_OUTPUT_ROOT}/{run_id}"
     run = require_finished_run(layout, run_root, run_id)
@@ -224,6 +279,7 @@ def training_summary(
         updates=None if progress is None else progress.update,
         wall_seconds=round((run.finished_at - run.started_at).total_seconds(), 3),
         device=device,
+        host=training_host(layout, run_root),
         runtime=runtime,
     )
 
@@ -240,6 +296,48 @@ def _milliseconds(seconds: float) -> int:
     return max(0, round(seconds * 1000))
 
 
+def seed_basis(release: VoiceRelease) -> str:
+    """What a benchmark's seeds derive from: the run and the digests of the files it renders
+    with (never the preview's date or sequence, so a rerun gets the same seeds)."""
+    return canonical_sha256(
+        {
+            "basis": "cole-voice-lab.benchmark-seed/v1",
+            "run_id": release.run_id,
+            "model_family": release.model_family,
+            "files": sorted([item.role, item.sha256] for item in release.files),
+        }
+    )
+
+
+def _log_removal(function: Callable[..., object], path: str, error: BaseException) -> None:
+    LOG.warning("could not remove benchmark scratch %s: %s", path, error)
+
+
+def remove_scratch(directory: Path) -> None:
+    """Remove a benchmark's scratch directory; whatever cannot be removed is logged."""
+    if os.path.lexists(directory):
+        shutil.rmtree(directory, onexc=_log_removal)
+
+
+def sweep_benchmark_scratch(layout: AssetLayout, *, keep: Path | None = None) -> tuple[str, ...]:
+    """Remove scratch a killed benchmark left in the asset root's ``tmp/`` (call it holding
+    the GPU slot, so no other benchmark is running). Returns the names removed."""
+    scratch = layout.directory("tmp")
+    try:
+        names = sorted(name for name in os.listdir(scratch) if name.startswith(SCRATCH_PREFIX))
+    except FileNotFoundError:
+        return ()
+    removed: list[str] = []
+    for name in names:
+        path = scratch / name
+        if keep is not None and path == keep:
+            continue
+        LOG.warning("removing the scratch a stopped benchmark left: %s", name)
+        remove_scratch(path)
+        removed.append(name)
+    return tuple(removed)
+
+
 def benchmark_run(
     layout: AssetLayout,
     run_id: str,
@@ -253,11 +351,16 @@ def benchmark_run(
     segment_deadline_seconds: float = 120.0,
     monotonic: Callable[[], float] = time.monotonic,
     digests: FineTuneDigestCache | None = None,
+    sandboxed: bool = False,
+    host: Callable[[], HostFingerprint] | None = None,
+    contention: Callable[[], GpuContention] | None = None,
 ) -> InferenceBenchmark:
     """Render ``texts`` with run ``run_id`` through ``backend`` and measure it.
 
     The caller holds the GPU slot and unloads the backend afterwards. ``work_directory`` is
-    private scratch for the rendered segments (created here, removed before returning).
+    private scratch for the rendered segments (created here, removed before returning; a
+    file that cannot be removed is logged, never ignored). ``sandboxed`` records whether it
+    ran in the speech unit's sandbox; ``host`` and ``contention`` are test seams.
     Raises: ``VoiceReleaseError`` ``not_designatable`` when the run or the consent record does
     not allow it; ``ComparisonError`` when a text is not held out; ``SpeechBackendError``.
     """
@@ -283,11 +386,15 @@ def benchmark_run(
     if os.path.lexists(work_directory):
         raise ComparisonError(f"{work_directory} already exists")
     work_directory.mkdir(mode=0o700, parents=True)
+    machine = (host or host_fingerprint)()
+    snapshot = contention or gpu_contention
+    before = snapshot()
+    basis = seed_basis(release)
     try:
         started = monotonic()
         fingerprint = backend.prepare(verified)
         load_seconds = monotonic() - started
-        seed = job_seed(text_set_sha256(texts), digest, canonical_sha256(fingerprint.settings))
+        seed = job_seed(text_set_sha256(texts), basis, canonical_sha256(fingerprint.settings))
         timings: list[SegmentTiming] = []
         render_seconds = 0.0
         first: tuple[str, int, Path] | None = None
@@ -327,12 +434,14 @@ def benchmark_run(
                 first[0], seed=first[1], output=again, deadline_seconds=segment_deadline_seconds
             )
             deterministic = check_wav(again).sha256 == timings[0].sha256
-        peak = backend.peak_memory_bytes()
+        peak = backend.peak_memory()
+        after = snapshot()
     finally:
-        shutil.rmtree(work_directory, ignore_errors=True)
+        remove_scratch(work_directory)
     audio_ms = sum(item.audio_ms for item in timings)
     return InferenceBenchmark(
         text_set_sha256=text_set_sha256(texts),
+        seed_basis_sha256=basis,
         release_sha256=digest,
         designated=designated,
         consent_id=release.consent_id,
@@ -344,8 +453,12 @@ def benchmark_run(
         render_ms=_milliseconds(render_seconds),
         audio_ms=max(audio_ms, 1),
         real_time_factor=round(render_seconds / max(audio_ms / 1000, 0.001), 4),
-        peak_memory_bytes=peak,
+        peak_memory=None if peak is None else MeasuredPeak(bytes=peak.bytes, method=peak.method),
         deterministic=deterministic,
+        host=machine,
+        contention_before=before,
+        contention_after=after,
+        sandboxed=sandboxed,
         segments=tuple(timings),
     )
 
@@ -392,44 +505,188 @@ def read_comparisons(layout: AssetLayout, run_ids: tuple[str, ...] = ()) -> list
     return sorted(found, key=lambda item: (item.created_at, item.comparison_id))
 
 
+def _when(record: ModelComparison | None) -> str | None:
+    return None if record is None else record.created_at.isoformat().replace("+00:00", "Z")
+
+
 def comparison_rows(records: list[ModelComparison]) -> list[dict[str, object]]:
-    """The newest record of each run, flattened for printing side by side."""
-    newest: dict[str, ModelComparison] = {}
-    for record in records:
-        newest[record.run_id] = record
+    """One row per run, composed from its records: the newest training summary, the newest
+    benchmark and the newest blind-review link, each with the record it came from and when
+    that was recorded (a later record without a benchmark never hides an earlier one's).
+    ``corpus_differs`` marks a run trained on another corpus than the most common one of
+    the runs shown: its numbers do not compare with theirs.
+    """
+    ordered = sorted(records, key=lambda item: (item.created_at, item.comparison_id))
+    training: dict[str, ModelComparison] = {}
+    benchmark: dict[str, ModelComparison] = {}
+    review: dict[str, ModelComparison] = {}
+    for record in ordered:
+        training[record.run_id] = record
+        if record.inference is not None:
+            benchmark[record.run_id] = record
+        if record.quality is not None:
+            review[record.run_id] = record
+    corpora = [record.training.corpus_sha256 for record in training.values()]
+    common = max(sorted(set(corpora)), key=corpora.count) if corpora else None
     rows: list[dict[str, object]] = []
-    for record in sorted(newest.values(), key=lambda item: (item.model_family, item.run_id)):
-        training, inference = record.training, record.inference
+    for run_id, record in sorted(
+        training.items(), key=lambda item: (item[1].model_family, item[0])
+    ):
+        summary = record.training
+        measured, judged = benchmark.get(run_id), review.get(run_id)
+        inference = None if measured is None else measured.inference
+        quality = None if judged is None else judged.quality
+        host = summary.host
         rows.append(
             {
-                "run_id": record.run_id,
+                "run_id": run_id,
                 "model_family": record.model_family,
-                "comparison_id": record.comparison_id,
-                "dataset_sha256": training.dataset_sha256,
-                "dataset_seconds": training.dataset_seconds,
-                "epochs": training.epochs,
-                "updates": training.updates,
-                "training_wall_seconds": training.wall_seconds,
-                "training_device": training.device,
+                "training_comparison_id": record.comparison_id,
+                "training_recorded_at": _when(record),
+                "corpus_sha256": summary.corpus_sha256,
+                "corpus_differs": summary.corpus_sha256 != common,
+                "dataset_sha256": summary.dataset_sha256,
+                "dataset_seconds": summary.dataset_seconds,
+                "epochs": summary.epochs,
+                "updates": summary.updates,
+                "training_wall_seconds": summary.wall_seconds,
+                "training_device": summary.device,
+                "training_host": None if host is None else _host_label(host),
+                "benchmark_comparison_id": None if measured is None else measured.comparison_id,
+                "benchmark_recorded_at": _when(measured),
                 "real_time_factor": None if inference is None else inference.real_time_factor,
                 "time_to_first_audio_ms": (
                     None if inference is None else inference.time_to_first_audio_ms
                 ),
                 "load_ms": None if inference is None else inference.load_ms,
-                "peak_memory_bytes": None if inference is None else inference.peak_memory_bytes,
+                "peak_memory_bytes": (
+                    None
+                    if inference is None or inference.peak_memory is None
+                    else inference.peak_memory.bytes
+                ),
+                "peak_memory_method": (
+                    None
+                    if inference is None or inference.peak_memory is None
+                    else inference.peak_memory.method
+                ),
                 "deterministic": None if inference is None else inference.deterministic,
                 "device": None if inference is None else inference.fingerprint.device,
-                "blind_review": None if record.quality is None else record.quality.review_id,
+                "benchmark_host": None if inference is None else _host_label(inference.host),
+                "gpu_shared_with": (None if inference is None else _shared_with(inference)),
+                "sandboxed": None if inference is None else inference.sandboxed,
+                "review_comparison_id": None if judged is None else judged.comparison_id,
+                "review_recorded_at": _when(judged),
+                "blind_review": None if quality is None else quality.review_id,
+                "review_overall_mean": None if quality is None else quality.overall_mean,
             }
         )
     return rows
 
 
-def require_blind_review(layout: AssetLayout, review: BlindReviewRef) -> None:
-    """Refuse a link to a blind review the lab does not hold.
+def _host_label(host: HostFingerprint) -> str:
+    gpus = ", ".join(
+        " ".join(
+            part
+            for part in (
+                item.name or f"{item.vendor_id or '?'}:{item.device_id or '?'}",
+                item.driver,
+                item.driver_version,
+            )
+            if part
+        )
+        for item in host.accelerators
+    )
+    parts = [host.cpu_model or host.machine, gpus or "no GPU listed"]
+    if host.rocm_version:
+        parts.append(f"ROCm {host.rocm_version}")
+    if host.memory_bytes:
+        parts.append(f"{host.memory_bytes / 2**30:.0f} GiB")
+    return "; ".join(parts)
 
-    Raises: ``ComparisonError``.
+
+def _shared_with(inference: InferenceBenchmark) -> list[str] | None:
+    seen = [
+        name
+        for snapshot in (inference.contention_before, inference.contention_after)
+        for name in (snapshot.gpu_processes or ())
+    ]
+    if inference.contention_before.gpu_processes is None and (
+        inference.contention_after.gpu_processes is None
+    ):
+        return None
+    return sorted(set(seen))
+
+
+def comparison_warnings(rows: list[dict[str, object]]) -> list[str]:
+    """What makes the rows not compare like with like: corpora, hosts and the GPU's sharing."""
+    warnings = [
+        f"{row['run_id']} trained on another corpus ({str(row['corpus_sha256'])[:12]}…)"
+        for row in rows
+        if row["corpus_differs"]
+    ]
+    hosts = {row["benchmark_host"] for row in rows if row["benchmark_host"] is not None}
+    if len(hosts) > 1:
+        warnings.append("the benchmarks ran on different hosts")
+    trained = {row["training_host"] for row in rows if row["training_host"] is not None}
+    if len(trained) > 1:
+        warnings.append("the runs trained on different hosts")
+    for row in rows:
+        shared = row["gpu_shared_with"]
+        if shared:
+            names = ", ".join(cast(list[str], shared))
+            warnings.append(f"{row['run_id']}'s benchmark shared the GPU with {names}")
+        if row["sandboxed"] is False:
+            warnings.append(f"{row['run_id']}'s benchmark ran outside the speech sandbox")
+    return warnings
+
+
+def blind_review_link(
+    layout: AssetLayout,
+    review_id: str,
+    score_sheet: bytes,
+    *,
+    score_sheet_sha256: str,
+    candidate_id: str | None,
+    run_id: str,
+) -> QualityLink:
+    """The link to blind review ``review_id``, from its score sheet itself.
+
+    The sheet's digest must be ``score_sheet_sha256``, it must be review ``review_id``'s, and
+    it must verify against the sealed review package (``blind.aggregate_scores``). The run's
+    scores are carried when the review scored candidate ``candidate_id`` (default: the run's
+    id; one named explicitly must be there).
+    Raises: ``ComparisonError``; ``ContractError``/``SecurityError`` from the package check.
     """
-    reviews = layout.directory("evaluations") / "blind-reviews"
-    if not (reviews / review.review_id).is_dir():
-        raise ComparisonError(f"there is no blind review {review.review_id}")
+    if hashlib.sha256(score_sheet).hexdigest() != score_sheet_sha256:
+        raise ComparisonError("the score sheet's digest is not the one given")
+    try:
+        sheet = ScoreSheet.model_validate_json(score_sheet)
+    except ValidationError as error:
+        raise ComparisonError(f"that is not a score sheet: {error}") from error
+    if sheet.review_id != review_id:
+        raise ComparisonError(f"that score sheet is review {sheet.review_id}'s, not {review_id}'s")
+    summary = aggregate_scores(layout, sheet)
+    wanted = candidate_id or run_id
+    tracks = cast(dict[str, dict[str, list[dict[str, object]]]], summary["tracks"])
+    found = next(
+        (
+            candidate
+            for track in tracks.values()
+            for candidate in track["candidates"]
+            if candidate["candidate_id"] == wanted
+        ),
+        None,
+    )
+    if found is None:
+        if candidate_id is not None:
+            raise ComparisonError(f"review {review_id} scored no candidate {candidate_id}")
+        return QualityLink(review_id=review_id, score_sheet_sha256=score_sheet_sha256)
+    means = cast(dict[str, float], found["means"])
+    return QualityLink(
+        review_id=review_id,
+        score_sheet_sha256=score_sheet_sha256,
+        candidate_id=wanted,
+        sample_count=cast(int, found["sample_count"]),
+        overall_mean=round(cast(float, found["overall_mean"]), 4),
+        means={name: round(value, 4) for name, value in means.items()},
+    )

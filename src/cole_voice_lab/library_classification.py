@@ -45,6 +45,7 @@ from .storage_ports import storage_error
 __all__ = [
     "CLASSIFICATION_RULES",
     "CORPUS_DATABASE_PATH",
+    "PINNED_WEIGHT_FILES",
     "EVERY_LATER_RULE",
     "FILE_CLASSES",
     "MAC_ONLY",
@@ -55,6 +56,7 @@ __all__ = [
     "Transfer",
     "classify",
     "matching_rules",
+    "pinned_weight_rule_name",
     "rule_named",
     "subtree_stays_on_mac",
 ]
@@ -212,6 +214,40 @@ def _rule(
         transfer=transfer,
         mode=mode,
         wins_over=wins_over,
+    )
+
+
+# Each training family's link to its runtime's pinned pretrained weights in a run's
+# ``checkpoints/`` (a file-name glob): the vault records it by its pin and never uploads it.
+# One entry per family, equal to its adapter's ``training.TrainingAdapter.pinned_weight_pattern``
+# (tests/test_training_families.py holds the two equal); this module cannot import the adapters.
+PINNED_WEIGHT_FILES: Final[Mapping[str, str]] = MappingProxyType(
+    {"f5-tts": "pretrained_*.safetensors"}
+)
+
+
+def pinned_weight_rule_name(family: str) -> str:
+    """The classification rule of ``family``'s pinned-weight link (F5-TTS's keeps its name)."""
+    return (
+        "fine-tune-pretrained-link" if family == "f5-tts" else f"fine-tune-pretrained-link-{family}"
+    )
+
+
+def _pinned_weight_rule(family: str, name: str) -> ClassificationRule:
+    if family == "f5-tts":
+        example = "derived/finetune/run-1/checkpoints/pretrained_model_1250000.safetensors"
+    else:
+        example = f"derived/finetune/run-1/checkpoints/{name.replace('*', 'base')}"
+    return _rule(
+        pinned_weight_rule_name(family),
+        f"derived/finetune/{{id}}/checkpoints/{name}",
+        "training",
+        owner="finetune",
+        reason="the hard link to the runtime's pinned base weights, recorded by its pin and "
+        "never uploaded",
+        example=example,
+        transfer="pin",
+        wins_over=("fine-tune-run",),
     )
 
 
@@ -896,17 +932,7 @@ _RULES: Final = (
         example="derived/datasets/pilot-1/manifest.json",
         mode=0o400,
     ),
-    _rule(
-        "fine-tune-pretrained-link",
-        "derived/finetune/{id}/checkpoints/pretrained_*.safetensors",
-        "training",
-        owner="finetune",
-        reason="the hard link to the runtime's pinned base weights, recorded by its pin and "
-        "never uploaded",
-        example="derived/finetune/run-1/checkpoints/pretrained_model_1250000.safetensors",
-        transfer="pin",
-        wins_over=("fine-tune-run",),
-    ),
+    *(_pinned_weight_rule(family, name) for family, name in PINNED_WEIGHT_FILES.items()),
     _rule(
         "fine-tune-archive-records",
         "derived/finetune/{id}/{archived|local-removal}.json",

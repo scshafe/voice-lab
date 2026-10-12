@@ -32,7 +32,7 @@ from cole_voice_lab.api.staging import IntakeStaging
 from cole_voice_lab.consent import approve_self_consent, install_pending_consent
 from cole_voice_lab.finetune import FineTuneRun
 from cole_voice_lab.paths import AssetLayout
-from cole_voice_lab.speech.backend import SpeechBackendError
+from cole_voice_lab.speech.backend import PeakMemory, SpeechBackendError
 from cole_voice_lab.speech.config import SpeechCaller, SpeechConfig
 from cole_voice_lab.speech.contracts import F5RenderSettings, FileDigest, RenderFingerprint
 from cole_voice_lab.speech.release import VerifiedRelease, designate
@@ -185,8 +185,8 @@ class FakeBackend:
         else:
             write_tone(output, frames=self.frames, period=20 + seed % 40, stamp=seed)
 
-    def peak_memory_bytes(self) -> int | None:
-        return self.peak
+    def peak_memory(self) -> PeakMemory | None:
+        return None if self.peak is None else PeakMemory(bytes=self.peak, method="fake")
 
     def unload(self) -> None:
         self.loaded = False
