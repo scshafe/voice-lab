@@ -7,6 +7,10 @@ evaluation remain in `voice-lab` (named `cole-voice-lab` until 2026-10). ChloeSp
 hash-pinned promotion manifest. This preserves ChloeSpeech's provider-neutral
 runtime scope.
 
+Superseded 2026-10-11 (D-044): ChloeSpeech is retired and voice-lab is the speech engine.
+The promotion manifest and the ChloeSpeech handoff are removed; capture, storage, datasets,
+training and evaluation stay in voice-lab as before.
+
 ## D-002 — Local-first, explicit asset root
 
 The repository has no default writable media directory. Commands that handle
@@ -47,6 +51,10 @@ Amended 2026-10-06 (D-026): on the PC, Chatterbox candidates run through the off
 upstream PyTorch runtime, which applies its Perth watermark, so a Chatterbox winner from a
 PC bake-off needs no separate official-runtime reproduction. MLX results remain historical
 evidence under the rule above.
+
+Amended 2026-10-11 (D-044, D-045): ChloeSpeech, its adapters and promotion are retired, so
+the provider-identity part of this decision no longer applies. The rule that the lab never
+relabels an engine's output or fabricates watermark evidence stands for bake-off evidence.
 
 ## D-008 — Sequential candidate residency
 
@@ -478,6 +486,12 @@ matching subject, whose purposes name the act (`private-fine-tuning`, or the new
 "local listening" no longer suffices as a scope. Until phase 5, the Mac-local Speak above is
 unchanged. The second open question, retention of Speak clips, remains open.
 
+Amended 2026-10-11 (D-044, D-047): the purpose `private-chloe-speech-rendering` named above is
+retired; promotion and ChloeSpeech no longer exist as uses beyond local listening. The
+purposes are `private-zero-shot-evaluation`, `private-fine-tuning`,
+`private-home-host-synthesis` and `private-assistant-speech`. The retention question for
+Speak clips stays open: D-046's retention covers audio rendered through the speech API only.
+
 ## D-020 — The library vault is an encrypted durable copy
 
 Cole decided on 2026-09-17 to keep an encrypted copy of the recording library on
@@ -638,6 +652,10 @@ question.
 and Speak of D-016 to D-019 are unchanged until the design's phase 5 moves them. D-019's
 retention question for Speak clips remains open.
 
+Amended 2026-10-11 (D-047): a third use on the home host joins these two. Speech rendered for
+a registered caller through the speech API (D-046) needs a record whose purposes include
+`private-assistant-speech`, with the same `home-host` boundary and the same checks.
+
 ## D-023 — The vault reverses direction, and every copy stays on Cole's hardware
 
 Cole decided on 2026-10-06 (design §13, decision 3) that the offsite copy of the
@@ -689,6 +707,11 @@ matrix on both platforms.
 The phone gets a server-rendered, read-only web view behind Pocket ID. Cole decided on
 2026-10-06 (design §13, decision 8) that it plays no audio: it shows summaries only and
 serves no recording, transcript or lyric.
+
+Amended 2026-10-11 (D-046), for synthesized speech only: audio rendered from Cole's voice
+release may reach Cole's own devices, the phone included, through a registered caller of the
+speech API. The web view itself is unchanged and serves no audio, and recordings, corpus
+audio, transcripts and lyrics still never go to the phone.
 
 ## D-026 — Model runtimes on ROCm: spike, then decide
 
@@ -1135,3 +1158,141 @@ hardened runtime's entitlements are unchanged: a self-signed identity, like an a
 has no Team ID.
 
 Nothing of this has run on a Mac yet. The Mac agent's first refresh is the check.
+
+## D-044 — ChloeSpeech is retired; voice-lab is the speech engine
+
+Cole decided on 2026-10-11: "please amend the rules. I want to get rid of `ChloeSpeech` and
+move speech generation into voice-lab." voice-lab no longer hands a voice to another
+renderer. It generates speech itself, with Cole's own voice (D-045), for callers it registers
+(D-046).
+
+- **Removed.** The one-way, manifest-only ChloeSpeech boundary (D-001, AGENTS.md, the
+  design's goals and non-goals), `promotion.py` with its `promotion validate` and
+  `promotion handoff` commands, and the records that existed only for it: the promotion
+  manifest, the ChloeSpeech handoff, the promotion listening summary, the lab verdict, the
+  winning-run record and the human-reference provenance record, with their generated schemas
+  (`chloe-speech-handoff`, `promotion-manifest`, `promotion-listening-summary`, `lab-verdict`,
+  `winning-run`, `human-reference-provenance`). `docs/CHLOESPEECH_HANDOFF.md` is deleted; git
+  history keeps it.
+- **Kept.** The bake-off (audition, normalization, diagnostics) and blind review stay as lab
+  tools for comparing candidates and runs; their records and schemas are unchanged. Blind
+  review can still inform which run Cole designates (D-045); it no longer feeds a manifest.
+- **Stored identifiers.** The design's non-goal "no rewrite of stored identifiers" is about
+  stored records. The repository records no promotion manifest, verdict, winning-run,
+  listening summary, provenance record or handoff ever having been produced: CURRENT.md lists
+  authoring them as an outstanding human gate, the CLI never authored them, and phase 5's
+  bake-off on the PC has not run. If such a file exists in a private asset root, nothing
+  reads it any more; its schema id is retired, never reused. The consent purpose
+  `private-chloe-speech-rendering` is in every pending consent record `assets init` has
+  installed, so the consent model still reads it (D-047).
+- **Amends.** D-001 (superseded), D-007 (the provider-identity part), D-019 (the purpose
+  list), AGENTS.md's mission and its ChloeSpeech invariant, the design's goals, non-goals,
+  components, boundaries and API table (docs/design/VOICE-PLATFORM.md), README, RUNBOOK §7,
+  FINETUNE, CURRENT.md and PROGRESS_CONTRACT.md.
+
+## D-045 — The voice is Cole's own clone, designated as a voice release
+
+Cole decided on 2026-10-11: "The speech generation should explicitly use my personal voice
+clone." Promotion is replaced by a **voice release**: Cole designates one finished,
+fine-tuned F5-TTS run of his own voice as the voice that speaks.
+
+- **The record.** A strict, checksum-bound `voice-release` record in the asset root
+  (`provenance/voice-releases/`), written once and never edited. It names the subject, the
+  fine-tune run id and the digest of its `run.json`, the checkpoint the run recorded and its
+  SHA-256, the reference clip (its prompt id, its path in the run's dataset and its SHA-256),
+  the consent record's id and SHA-256, the runtime identity the run trained with, when it was
+  created and who designated it.
+- **Designation.** `voice-lab voice release designate --run <id>` validates against the run's
+  existing records: the run is finished, its subject is the consent record's subject, it is
+  not archived, and its checkpoint and reference clip still hash to what the run recorded.
+  It reads no audio beyond what the existing Speak seam already hashes. Designating is an act
+  of judgement: a CLI command on the PC that Cole runs, never an API route and never an
+  agent's step.
+- **Only the release speaks.** Speech through the API uses only the current release. It
+  refuses the pinned base weights, a zero-shot reference, another subject, and any run not
+  designated. A checkpoint, reference clip or consent record whose digest no longer matches
+  the release refuses the render until Cole designates again.
+- **Rotation is append-only.** Each designation is a new record that names the digest of the
+  one before it; the newest is current, and the history is kept. Revoking the consent record
+  stops all API speech without touching the releases.
+- **Blind review is optional evidence.** A release may name a blind review (its review id and
+  score-sheet digest), checked to exist when given. It is not required: Cole may designate a
+  run he has listened to.
+
+## D-046 — Assistant speech over the tailnet API
+
+Cole decided on 2026-10-11: "I'm not familiar with how long the TTS takes — if necessary, we
+can make this an asynchronous style that leverages webhooks to communicate completion." The
+caller he has in mind is his own agent server, later, which sends reply text to voice-lab and
+plays the audio on his phone through his own app. Speech synthesis is therefore allowed over
+the API, under these rules (design §3.6, [docs/SPEECH_API.md](docs/SPEECH_API.md)):
+
+- **Tailnet only, free, own hardware.** voice-lab serves synthesis over its tailnet-only
+  `/api/v1` to approved callers: text in, audio of Cole's voice release (D-045) out. No public
+  endpoint, Funnel stays off, nothing paid, no cloud (D-028 stands). Human recordings still
+  never go to a hosted service.
+- **A queued job, completed asynchronously.** Synthesis is a job in the one GPU slot, never
+  an always-on or streaming endpoint. `POST /api/v1/speech` answers `202` with a job; the
+  caller polls it or receives a signed webhook when it ends. The API process only enqueues;
+  the network-less job runner renders; delivery of webhooks runs in a network-capable process
+  of its own, never in the job runner.
+- **Registered callers.** Each caller is listed in a caller registry: an id, the Pocket ID
+  issuer and subject (and audience) its machine tokens carry, the consent purposes it may
+  invoke, an allowlist of webhook URLs (`https` on `*.ts.net` tailnet hosts only), a path to
+  its webhook secret file, and its limits (queued jobs, text length, daily characters). A
+  token that matches no caller is refused; a caller's token reaches the speech routes and
+  nothing else.
+- **Where audio may go.** Rendered audio leaves the PC only to a registered caller, and may
+  reach Cole's own devices through that caller. This amends D-025 for synthesized speech only.
+- **The render ledger.** Every render is recorded in an append-only ledger: job id, caller,
+  the SHA-256 and length of the text (never the text), the release id, the consent digest,
+  the model and runtime fingerprint, the output digest and the timings.
+- **Retention.** Rendered audio is kept for a bounded time, 7 days by default and
+  configurable, then deleted; the job then reads `expired`. The ledger stays.
+- **Amends** SECURITY.md ("Deliberately avoided: long-running synthesis endpoints" becomes
+  "an always-on or streaming synthesis endpoint, or one beyond the tailnet"), the design's
+  non-goal "No long-running synthesis endpoint", and D-025 as above.
+
+Recommended in this decision, for Cole to confirm in review:
+
+- **No watermark, for now.** Rendered audio carries no inaudible watermark. Provenance is the
+  render ledger and the output digests: any file can be checked against the ledger. F5-TTS
+  has no watermark of its own, and adding one would add a dependency to the pinned runtime
+  for a listener who is Cole. This is revisited before any rendered audio could leave Cole's
+  own devices (for example, a message to someone else), together with SECURITY.md's
+  disclosure rule.
+- **Retention 7 days**, as above; the job's status record is kept 30 days, the ledger for
+  ever.
+- **Priority against long jobs.** Speech waits behind no queued GPU job: it runs next when the
+  slot frees, ahead of any queued fine-tune or audition, and never preempts a running one. If a
+  long job holds the slot (a fine-tune takes hours), `POST /api/v1/speech` is refused at once,
+  `503 gpu_busy` with `Retry-After` from the holder's estimate, so the agent can answer in
+  text instead of waiting. A speech job not started within 10 minutes of its submission
+  expires as `queue_timeout`.
+- **Format.** WAV, 24 kHz mono 16-bit, the synthesizer's own output. The API image has no
+  ffmpeg; Ogg Opus is reserved and refused until the job runner encodes it with the host's
+  ffmpeg.
+- **Limits.** 1–2,000 code points per request (as Speak), at most 4 queued or running jobs
+  per caller, 50,000 characters per caller per UTC day, 32 jobs queued in all.
+
+## D-047 — Consent for synthesis on the home host
+
+Recorded 2026-10-11 with D-044 to D-046, from Cole's decisions above and D-022.
+
+- **Purposes.** `private-chloe-speech-rendering` is retired. The purposes are
+  `private-zero-shot-evaluation`, `private-fine-tuning`, `private-home-host-synthesis` (Speak on
+  the home host, for Cole's listening; planned by D-022) and `private-assistant-speech`
+  (synthesis for registered callers that deliver audio to Cole; new).
+- **Boundary.** The `home-host` execution boundary of D-022 is added: the host the standing
+  home-host approval names. A record for it authorizes nothing anywhere else.
+- **API synthesis** requires an approved, checksum-bound consent record with a matching
+  subject whose purposes include `private-assistant-speech` and whose boundaries include
+  `home-host`, checked before the job is queued and again before the worker starts; each
+  render records the record's digest in the ledger.
+- **Stored records.** The consent model still reads the retired purpose, so a record written
+  before today (every pending record installed by `assets init`) can be rotated into approval
+  or revoked; nothing grants or requires it. `assets init` keeps an existing untouched pending
+  record rather than refusing it. The pending template now lists the four purposes and the
+  three boundaries.
+- **Cole's step.** Approving a consent record stays Cole's own act (`consent preview`, then
+  `consent approve-self`); no agent creates or approves one.

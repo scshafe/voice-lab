@@ -1813,7 +1813,7 @@ class SpeechClip(ContractModel):
     pretrained weights) or the fine-tuned run's id; the reference clip is
     ``reference_prompt_id``'s normalized training copy in ``reference_run_id``'s dataset (the
     model's own run, or the newest finished run for ``base``). Relative paths only. A
-    listening aid: never a reference, dataset or promotion artifact.
+    listening aid: never a reference, dataset or voice-release artifact.
     """
 
     schema_version: Literal["cole-voice-lab.finetune-speech/v1"] = FINETUNE_SPEECH_SCHEMA

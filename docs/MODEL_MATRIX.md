@@ -81,8 +81,8 @@ each must resolve to the separately hashed interpreter. Every trial validates
 that receipt/tree before and after execution, copies the exact receipt into the
 experiment, and binds its separately approved digest in the persisted result.
 The trial also copies the complete primary/auxiliary local-source manifest
-preimages and Git integrity preimage. Resume, status, blind review, and
-promotion validate those immutable experiment copies after space-driven model
+preimages and Git integrity preimage. Resume, status and blind review
+validate those immutable experiment copies after space-driven model
 or runtime eviction; they intentionally do not reinterpret an unrelated later
 install at the same runtime ID. A new trial always requires a currently sealed
 resident tree plus its operator-approved receipt digest. Trial evidence also
@@ -270,7 +270,7 @@ enabled real smoke run should assert:
 4. cold/warm latency, RTF, process RSS, and MLX memory evidence are retained;
 5. Qwen passes a long-text tail regression;
 6. ASR WER and speaker-embedding cosine are retained as diagnostics only; and
-7. a blinded human A/B/X listening pass remains the promotion signal.
+7. a blinded human A/B/X listening pass remains the decision signal.
 
 Only checksum-bound, consented reference recordings may enter a worker.
 

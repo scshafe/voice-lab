@@ -7,13 +7,15 @@ Private, local-first infrastructure for:
 3. building reference clips and versioned datasets without modifying raw audio;
 4. running a reproducible, blind comparison of Qwen3-TTS, Chatterbox Turbo,
    Chatterbox multilingual V3, F5-TTS, and Seed-VC; and
-5. exporting a hash-pinned handoff manifest for ChloeSpeech.
+5. speaking with the voice release Cole designates, for callers he registers on
+   the tailnet (D-044 to D-047; [docs/SPEECH_API.md](docs/SPEECH_API.md), designed,
+   not yet built).
 
 ```text
 MacBook capture -> checksum-bound READY package -> Tailnet landing zone
     -> verified immutable raw store -> references/derived datasets
     -> isolated candidate workers -> normalized outputs + metrics
-    -> blind review -> promotion manifest -> ChloeSpeech
+    -> blind review -> fine-tune -> voice release (Cole) -> speech jobs
 ```
 
 The next shape of the project, with voice-journey merged in, the backend on the PC,
@@ -92,7 +94,6 @@ voice-lab models list
 voice-lab models verify-registry
 voice-lab audition --help
 voice-lab blind --help
-voice-lab promotion --help
 ```
 
 The [native desktop recording library](docs/DESKTOP.md) opens its own window
@@ -131,16 +132,14 @@ Audition execution is offline, resumable, and requires its own `--execute`;
 each selected runtime also requires the exact reviewed
 `--runtime-receipt RUNTIME_ID=SHA256` binding printed by preparation. Completed
 trials retain their runtime receipt and source-integrity preimages under the
-experiment so status/blind/promotion remain verifiable after cache eviction.
+experiment so status and blind review remain verifiable after cache eviction.
 candidate snapshots can only be evicted with an exact manifest digest and two
 destructive confirmation flags.
 
-The CLI authors intake, reference-review, blind-review, and handoff evidence,
-and deeply validates a schema-authored promotion manifest. It does **not**
-choose a winner or author the listening summary, verdict, winning-run, or
-promotion manifest; those reviewed records remain explicit inputs at the
-promotion boundary. `promotion handoff` writes one new canonical private JSON
-file and never copies audio or mutates ChloeSpeech.
+The CLI authors intake, reference-review and blind-review evidence. It does
+**not** choose a winner. ChloeSpeech, the promotion manifest and its handoff were
+retired on 2026-10-11 (D-044): the voice that speaks is the voice release Cole
+designates himself (D-045).
 
 `voice-lab vault` approves, binds, copies, verifies and restores an encrypted
 library copy under D-020. The Mac keeps its working database; Speak clips stay

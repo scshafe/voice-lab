@@ -19,6 +19,12 @@ changes with the phase that implements it, never ahead of the code. Two decision
 apply at once and are already in the tree: the MIT licence (D-027) and the
 free-and-own-hardware rule (D-028, an AGENTS.md invariant).
 
+Amended 2026-10-11 (D-044 to D-047): ChloeSpeech is retired and voice-lab is the speech
+engine. Speech is generated with Cole's own designated voice release and served, as queued
+jobs with webhooks, to callers registered on the tailnet
+([§3.6](#36-speech-for-registered-callers), [SPEECH_API.md](../SPEECH_API.md)). The sections
+below say so where they named the ChloeSpeech boundary or promotion.
+
 Contents:
 
 1. [Goals and non-goals](#1-goals-and-non-goals)
@@ -73,17 +79,17 @@ These are requirements of this design, not proposals:
 
 - **One coherent, privacy-first voice platform.** Capture, intake, a corpus that spans
   phone memos and calibrated measurement sessions, longitudinal analysis, voice-model
-  evaluation and the ChloeSpeech handoff live in one repository with one set of
-  invariants, one API and one operator app.
+  evaluation and speech in Cole's own voice live in one repository with one set of
+  invariants, one API and one operator app (D-044).
 - **Every private byte on hardware Cole owns.** No recording, derived audio, weight or
   consent record leaves Cole's hosts without an explicit, digest-bound approval
   (AGENTS.md), and no copy ever goes to a cloud service (D-028). The second and
   offsite copies of recordings are ciphertext on Cole's own laptop and MacBook Air,
   sealed before they leave the PC.
 - **Keep every existing guarantee.** Fail-closed checksum intake, content-addressed
-  write-protected raw audio, isolated pinned model workers, blind listening as the
-  primary decision signal, and the one-way, manifest-only ChloeSpeech boundary
-  (D-001) all carry over unchanged.
+  write-protected raw audio, isolated pinned model workers and blind listening as the
+  primary decision signal all carry over unchanged. (The one-way, manifest-only
+  ChloeSpeech boundary of D-001 was retired on 2026-10-11, D-044.)
 - **Retire the Mac mini's role** (intake, Voice Memos mirror sender) and the Mac-only
   Swift app, without a gap in service at any phase.
 - **Use the PC's GPU** for the model bake-off, fine-tuning and analysis, replacing the
@@ -103,17 +109,18 @@ These are requirements of this design, not proposals:
 - **No Windows support**, and no mobile app. The phone gets a read-only web view.
 - **No multi-user product.** The platform has one subject and one operator. Pocket ID
   gates access; it is not a user-management system.
-- **No change to ChloeSpeech.** It stays the production rendering boundary and keeps
-  consuming the promotion manifest exactly as
-  [CHLOESPEECH_HANDOFF.md](../CHLOESPEECH_HANDOFF.md) defines it.
-- **No automatic winner.** The lab still never authors the verdict, the listening
-  summary or the promotion manifest (README, "First pilot").
+- **No other speech engine.** ChloeSpeech is retired (D-044): voice-lab generates speech
+  itself, only with the voice release Cole designates (D-045).
+- **No automatic winner.** The lab never authors a listening verdict, and never
+  designates a voice release: designation is Cole's act, by a CLI command (D-045).
 - **No rewrite of stored identifiers.** `cole-voice-lab.<record>/vN` schema ids and
   the `cole-voice-lab-common-v1` normalization id stay for ever, although the package
   and its variables are renamed in phase 6 ([§13](#13-owner-decisions-2026-10-06),
   decision 2).
-- **No long-running synthesis endpoint** (SECURITY.md, "Deliberately avoided").
-  Synthesis stays a queued, one-at-a-time job, as Speak is today.
+- **No always-on or streaming synthesis endpoint** (SECURITY.md, "Deliberately
+  avoided", as amended by D-046). Synthesis stays a queued, one-at-a-time job in the GPU
+  slot, as Speak is today. Registered callers on the tailnet may request it and learn of
+  its completion by polling or a signed webhook (§3.6).
 
 ## 2. Today and target
 
@@ -128,7 +135,7 @@ These are requirements of this design, not proposals:
 | Analysis | Node pipeline (`watchd`) + one Python feature extractor, in the laptop container | Python `journey` package; pipeline jobs on the PC |
 | Model bake-off and fine-tuning | MLX (Qwen3-TTS, Chatterbox) and MPS (F5-TTS, Seed-VC) on Apple silicon, one candidate at a time | PyTorch on ROCm on the PC's `gfx1030`, same worker contract; per-model spikes; Mac runtimes kept as a fallback |
 | Blind review | Static review pages and the CLI | Blind review screen in the desktop app (blinded indices only); the CLI stays |
-| Promotion | CLI validates a reviewed manifest and writes the handoff | Unchanged CLI on the PC; the app shows the evidence chain read-only |
+| Promotion | CLI validates a reviewed manifest and writes the handoff | Retired 2026-10-11 (D-044): Cole designates a voice release by CLI on the PC (D-045), and the speech API renders with it for registered callers (D-046) |
 | UI | Swift app (about 24k lines with its tests), legacy Qt Widgets desktop, React SPA (four views) | One `scshafe-qt` app + a server-rendered read-only web view |
 | Auth | Capture client: Pocket ID PKCE; web: oauth2-proxy + Pocket ID | Same Pocket ID model for both, plus token checks in the API itself |
 | Production host | The laptop (voice-journey stack, runner lane); the Mini (intake design) | The PC: a new `pc` host role in the runner lane |
@@ -142,7 +149,7 @@ These are requirements of this design, not proposals:
 ```mermaid
 flowchart LR
     subgraph CLIENTS["Cole's machines"]
-        APP["Desktop app<br/>scshafe-qt, macOS + Linux<br/>capture, corpus, analysis,<br/>blind review, promotion view"]
+        APP["Desktop app<br/>scshafe-qt, macOS + Linux<br/>capture, corpus, analysis,<br/>blind review, voice release view"]
         MIRROR["Voice Memos mirror sender<br/>(the Air, launchd)"]
         PHONE["Phone browser"]
     end
@@ -159,11 +166,12 @@ flowchart LR
         DROP["memos drop<br/>rrsync -wo"]
         DATA[("/data/voice-lab")]
         SEAL["vault copier<br/>seals before upload"]
+        HOOKS["webhook delivery<br/>(host unit, tailnet only)"]
     end
 
     LAPTOP[("Laptop<br/>vault: ciphertext only<br/>nightly")]
     OFF[("MacBook Air<br/>vault: ciphertext only<br/>weekly, travels: offsite")]
-    CHLOE["ChloeSpeech<br/>(consumer)"]
+    CALLER["Registered speech caller<br/>(Cole's agent server, later)"]
     ID["Pocket ID"]
 
     APP -- "HTTPS /api/v1, bearer" --> TS
@@ -179,7 +187,9 @@ flowchart LR
     DROP --> DATA
     DATA --> SEAL --> LAPTOP
     SEAL -. "weekly, when the Air is online" .-> OFF
-    DATA -- "promotion manifest (CLI)" --> CHLOE
+    CALLER -- "HTTPS /api/v1/speech, machine bearer" --> TS
+    JOBS -- "outbox event" --> HOOKS
+    HOOKS -. "signed webhook" .-> CALLER
 ```
 
 | Component | Runs where | What it owns | Origin |
@@ -194,7 +204,7 @@ flowchart LR
 | **Datasets and references** | PC, job runner / CLI | Derived audio, references, fine-tune datasets; never in `raw/` | voice-lab `references`, `datasets`, `finetune` |
 | **Model workers** | PC, job runner subprocesses on ROCm | One isolated runtime per model stack, `worker-request/v1` in, `worker-result/v1` out | voice-lab `workers/` |
 | **Blind review** | Desktop app + API | Blinded listening packages, score sheets; the reveal stays server-side | voice-lab `blind` |
-| **Promotion / export** | PC, CLI | Validates the reviewed `PromotionManifest`, writes the ChloeSpeech handoff | voice-lab `promotion` (unchanged) |
+| **Voice release and speech** | PC: CLI, API, job runner, delivery unit | The designated voice release (D-045); speech jobs for registered callers, their ledger and webhooks (D-046, §3.6) | Replaces voice-lab `promotion` (retired, D-044) |
 | **Read-only web view** | PC, same container, `/view` | Phone-sized summaries, charts and tables; GET only | voice-journey SPA views, simplified |
 | **Vault copier** | PC, host unit | Seals generations and pushes them to the laptop vault (nightly) and the Air vault (weekly, resumable when the Air wakes) | voice-lab `library_*` + `storage_*` (D-020), re-pointed (D-023) |
 
@@ -256,7 +266,7 @@ files and receipts" style and needs no broker.
                                                                      │
                                          verdict (Cole) ◄────────────┘
                                                 │
-                       PromotionManifest (Cole) ─► promotion handoff (CLI) ─► ChloeSpeech
+                       voice release (Cole, CLI) ─► speech jobs ─► registered callers (§3.6)
 ```
 
 The capture app keeps every take in its local spool until the server returns an
@@ -272,10 +282,10 @@ There are four boundaries, each versioned:
 | **HTTP API** | desktop app ↔ backend | JSON over HTTPS, Pydantic models, JSON Schema generated into `schemas/api/v1/` | Path-versioned: `/api/v1/…`. A breaking change adds `/api/v2` and serves both for at least one app release. `GET /api/v1/meta` returns the server build, the API versions served and the minimum client version |
 | **Worker contract** | job runner ↔ model runtime | `worker-request/v1` / `worker-result/v1` on stdin/stdout (D-004) | Unchanged |
 | **Mirror drop** | mirror sender ↔ PC | Files + `_mirror/latest.json` (size and SHA-256 per file) over `rrsync` | Unchanged from voice-journey |
-| **Promotion** | voice-lab ↔ ChloeSpeech | `PromotionManifest` v2 → in-memory `ChloeSpeechHandoff` | Unchanged (CHLOESPEECH_HANDOFF.md) |
+| **Speech API** | voice-lab ↔ registered callers | `/api/v1/speech` and Standard Webhooks events ([SPEECH_API.md](../SPEECH_API.md)) | Path-versioned with the HTTP API; the event `type` names its version |
 
 The `/api/v1` surface, by resource. Every route is the port of an existing
-route or command; nothing here is a new capability.
+route or command, except `speech`, the new capability of D-046.
 
 | Resource | Routes | Ported from |
 | --- | --- | --- |
@@ -289,13 +299,13 @@ route or command; nothing here is a new capability.
 | referee | `GET /api/v1/referee/next`, `POST /api/v1/referee/verdicts`, `GET /api/v1/referee/results` | voice-journey referee |
 | jobs | `POST /api/v1/jobs` (`pipeline`, `finetune`, `audition`, `synthesize`), `GET …/{id}`, `GET …/{id}/events` (SSE), `POST …/{id}/cancel` | voice-lab recording service fine-tune supervisor (`FINETUNE.JOB_ACTIVE`, one GPU slot) |
 | blind | `GET /api/v1/blind/{package}/items`, `GET …/items/{index}/audio`, `POST /api/v1/blind/{package}/scores` | voice-lab `blind` (blinded indices only; the reveal is never served) |
-| promotion | `GET /api/v1/promotion/{experiment}/evidence` (read-only) | voice-lab `promotion.validate_promotion` |
+| speech | `POST /api/v1/speech`, `GET …/{id}`, `GET …/{id}/audio` (Range), `POST …/{id}/cancel`; registered callers only, with machine tokens (§3.6) | new (D-046); renders through Speak's seam, `finetune.synthesize_speech` |
 | view | `GET /view/…` (HTML) | voice-journey SPA views |
 
 Writes that are acts of judgement stay out of the API on purpose: publishing a
-reference, approving consent or a destination, writing a verdict, writing the
-promotion manifest, `promotion handoff`, evicting a model, archiving a run. Those
-remain CLI commands on the PC with their existing explicit flags and digests.
+reference, approving consent or a destination, writing a verdict, designating a
+voice release, registering a speech caller, evicting a model, archiving a run. Those
+remain CLI commands or configuration on the PC with their explicit flags and digests.
 
 During phase 3 the API also answers voice-journey's unversioned paths (`/api/rows`,
 `/api/intake/…`) so the React SPA and the current capture client keep working; they
@@ -316,6 +326,7 @@ Pocket ID is the identity provider for everything, as today:
 | --- | --- | --- | --- |
 | Desktop app | `voice-lab-desktop`, public | Authorization code + PKCE S256, one-shot loopback redirect on `127.0.0.1`, state, nonce, issuer and audience checks; tokens only in the OS keychain (`keyring`) | `/api/v1/*` with `Authorization: Bearer` |
 | Phone (web view) | `voice-lab`, confidential, used by oauth2-proxy | OIDC code flow, PKCE S256, 12 h cookie | `/view/*`, `/healthz` |
+| Speech caller (D-046) | one confidential client per caller | `client_credentials`; the API maps the token's issuer, subject and audience to a registered caller | `/api/v1/speech*` only |
 
 This is `voice-journey-capture`'s `auth.py` and voice-journey's door, unchanged in
 shape. The door accepts the app's bearer tokens through oauth2-proxy's
@@ -330,6 +341,19 @@ stack's state directory because the app container has no route to Pocket ID) and
 checks the subject against a configured allow-list of one. For `/view` it checks
 that the forwarded identity is the same allowed subject. Defence in depth, not a
 replacement for the door.
+
+### 3.6 Speech for registered callers
+
+Added 2026-10-11 (D-044 to D-047); specified in [SPEECH_API.md](../SPEECH_API.md).
+voice-lab renders text as speech in Cole's voice for callers listed in a caller registry
+(Cole's own agent server, later). Only the voice release Cole designates speaks (D-045).
+`POST /api/v1/speech` answers `202` with a job; the caller polls `GET /api/v1/speech/{id}`
+or receives a signed webhook (Standard Webhooks) at a registered tailnet URL, then fetches
+`…/audio`. The API container only enqueues; a new host unit, `voice-lab-speech`, renders in
+the one GPU slot with no network; a second, `voice-lab-speech-webhooks`, delivers webhooks
+over the tailnet only. Every render is in an append-only ledger (the text's digest, never
+the text), and rendered audio is deleted after 7 days. Synthesis speed on the PC is not
+measured yet (spike S-2), which is why the API is asynchronous.
 
 ## 4. Data and privacy model
 
@@ -397,6 +421,13 @@ host (D-021), and a consent record for fine-tuning and Speak (D-022).
 
   D-019's second open question (retention for Speak clips) is unchanged and still
   open.
+- **Speech for registered callers** (D-046, D-047, 2026-10-11). Rendering through the
+  speech API needs an approved, checksum-bound consent record whose purposes include
+  `private-assistant-speech` and whose boundaries include `home-host`, checked when the job
+  is queued and again before the worker starts; each render's ledger entry names the
+  record's digest. The purpose `private-chloe-speech-rendering` is retired: stored records
+  that name it still parse, and nothing grants or requires it. Rendered audio leaves the PC
+  only to a registered caller and may reach Cole's own devices through it.
 - **Transfer approval.** AGENTS.md: "No human audio is sent to a hosted service or
   GPU host without a separate, explicit transfer approval naming the destination
   and payload digest." The PC is a GPU host. Today each Mini transfer needs a
@@ -582,7 +613,7 @@ voice-lab/
 │   ├── memos/                   NEW  Voice Memos drop ingest (mirror-manifest checks)
 │   ├── jobs/                    NEW  job runner: queue, one GPU slot, pipeline scheduling
 │   ├── workers/                 existing model workers (+ ROCm runtime locks)
-│   └── …                        existing modules (intake, catalog, storage, promotion, …)
+│   └── …                        existing modules (intake, catalog, storage, …)
 ├── contracts/                   NEW  `voice-lab-api`: the /api/v1 Pydantic models only,
 │                                     shared by the backend and the app (py >= 3.12)
 ├── apps/
@@ -729,7 +760,7 @@ After phase 4 (capture) and phase 6 (publication) the two repositories are archi
 | **Referee** | React Referee view | Blind A/B pairs within a cluster |
 | **Models** | Swift Fine-tune and Speak | Fine-tune jobs with progress and cancel; Speak. Both refuse to start without an approved consent record for the home host (decision 7) |
 | **Blind review** | static review pages | Blinded listening packages, score entry; never the reveal |
-| **Promotion** | (CLI only today) | Read-only evidence chain of a candidate promotion, with each digest checked |
+| **Voice release** | (CLI only) | Read-only: the current voice release and its history, with each digest checked (D-045; promotion retired, D-044) |
 
 ### 6.2 Capture on two platforms
 
@@ -1095,6 +1126,10 @@ Three independently shippable steps:
   Speak) behind `/api/v1/jobs`; Models and Blind review screens; the `home-host`
   execution boundary and the `private-home-host-synthesis` purpose, so that
   fine-tuning and Speak require an approved consent record (decision 7, D-022).
+  Added 2026-10-11 (D-044 to D-047): the voice release and the speech API for registered
+  callers (§3.6), with its own `private-assistant-speech` purpose. The consent purposes and
+  boundary, the speech API, its job runner and delivery units are built ahead of the rest of
+  this phase; they render nothing until the ROCm runtime (S-2) and a voice release exist.
 - **Acceptance:**
   - each candidate passes the automated smoke gate on `gfx1030` with evidence
     (code revision, weight revision, environment fingerprint, reference digest,
@@ -1108,8 +1143,14 @@ Three independently shippable steps:
   - fine-tuning and Speak each refuse without an approved consent record for the home
     host, and with a record whose digest, subject, purpose or boundary does not
     match; each run and clip records the consent digest;
-  - a blind review completes in the app, and `promotion` validates a manifest built
-    from it.
+  - a blind review completes in the app;
+  - Cole designates a voice release from a finished PC run; a registered caller's speech
+    job renders with it, its webhook verifies with the Standard Webhooks algorithm, its
+    audio plays on Cole's phone through the caller, and the ledger names the job, the
+    release, the consent digest and the output digest; the API refuses the base weights,
+    another run, a caller not registered, a callback URL not on the allowlist, and a job
+    without an approved `private-assistant-speech` record for `home-host`;
+  - synthesis time on `gfx1030` is recorded for short and maximum-length texts.
 - **Rollback:** the Air's MLX and MPS runtimes stay registered and runnable; nothing
   evicts them.
 
@@ -1245,6 +1286,11 @@ sure everything is free and running on my hardware (no cloud or paid services)".
 | 13 | macOS signing | **Ad-hoc** (free); the first-run Gatekeeper steps are documented (§6.3). No paid Developer ID, no notarization | D-028 |
 | 14 | Host units through the runner lane | **Yes**: the deploy entrypoint installs sealed releases and systemd units; a signed host-tree change that needs the owner's hash approval | D-032 |
 
+Amended 2026-10-11: decision 8 holds for the web view, which still plays no audio, but
+synthesized speech of Cole's voice release may reach his own devices, the phone included,
+through a registered caller of the speech API (D-046). Recordings and corpus audio never
+go to the phone.
+
 ## 14. What this demonstrates
 
 - **Privacy engineering.** Biometric data that never leaves the hardware its owner
@@ -1255,8 +1301,8 @@ sure everything is free and running on my hardware (no cloud or paid services)".
   keeps every private byte out of Git.
 - **Reproducible ML evaluation.** Pinned code and weight revisions, isolated runtimes
   behind a versioned worker contract, identical held-out inputs across candidates,
-  blind listening as the decision signal, and a hash-pinned promotion manifest as the
-  only output.
+  blind listening as the decision signal, and one checksum-bound, owner-designated voice
+  release as the only voice that speaks.
 - **Longitudinal signal analysis.** Six years of real-world singing turned into
   pitch, tuning, vibrato and range trends with seeded, reproducible statistics,
   ported across languages under a test-parity harness.
