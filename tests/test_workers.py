@@ -316,7 +316,14 @@ def test_a_request_written_before_d050_names_a_consent_record_that_is_never_read
         context=fake_context(tmp_path),
         synchronize=lambda: None,
     )
-    assert result.ok and "consent_sha256" not in result.metadata
+    # The digest is carried into the evidence and the result, as a binding only: the record it
+    # names does not exist, so it cannot have been read (audition.py checks the three agree).
+    assert result.ok and result.metadata["consent_sha256"] == "c" * 64
+    evidence = WorkerModelEvidence.model_validate_json(
+        (tmp_path / str(result.metadata["model_evidence_path"])).read_bytes()
+    )
+    assert evidence.consent_sha256 == "c" * 64
+    assert not (tmp_path / "absent-consent.json").exists()
 
 
 def test_voice_conversion_source_is_bound_to_request_digest_and_size(tmp_path: Path) -> None:

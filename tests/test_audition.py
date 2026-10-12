@@ -263,8 +263,8 @@ def write_tone(path: Path, *, sample_rate: int = 24_000) -> None:
 
 def successful_worker(invocation) -> ExperimentResult:
     output = Path(invocation.request.output_path)
-    stored_consent = invocation.request.reference.consent_sha256
-    consent = {} if stored_consent is None else {"consent_sha256": stored_consent}
+    # As the real worker (workers.common.execute_request): a pre-D-050 digest, carried unread.
+    consent = invocation.request.reference.consent_binding()
     write_tone(output)
     inspection = inspect_pcm_wav(output)
     digest, size = sha256_file(output)
@@ -1232,4 +1232,45 @@ def test_a_trial_run_under_a_consent_record_before_d050_still_validates(
     )
     assert record.worker_result.metadata["consent_sha256"] == "c" * 64
     validate_persisted_trial_evidence(assets, trial, record)
+    assert not (assets.root / "provenance/consents").exists()
+
+
+def test_an_unfinished_plan_written_before_d050_finishes_its_remaining_trials(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # A plan written under a consent record ran one trial before D-050; the rest run after.
+    # The worker carries the request's consent digest into its evidence and result unread
+    # (ReferenceEvidence.consent_binding), so every trial still binds, and nothing reads the
+    # consent record (none exists here).
+    assets = layout(tmp_path)
+    audition = plan(tmp_path, assets, experiment_id="audition-historical-resume", historical=True)
+    monkeypatch.setattr("cole_voice_lab.audition.run_worker", successful_worker)
+    monkeypatch.setattr("cole_voice_lab.audition.execute_normalization", successful_normalization)
+    monkeypatch.setattr("cole_voice_lab.audition._verify_current_model_sources", lambda *_: None)
+    first = run_offline_audition(
+        registry(), assets, audition, direct_candidate_ids=("qwen3-tts-base",), now=NOW
+    )
+    assert len(first.results) == 1
+    direct = sorted(
+        {trial.candidate_id for trial in audition.trials if trial.track == "direct-tts"}
+    )
+    converted = sorted(
+        {trial.candidate_id for trial in audition.trials if trial.track == "voice-conversion"}
+    )
+    finished = run_offline_audition(
+        registry(),
+        assets,
+        audition,
+        direct_candidate_ids=direct,
+        voice_conversion_candidate_ids=converted,
+        now=NOW,
+    )
+    assert finished.status == "complete"
+    assert len(finished.results) == len(audition.trials) > 1
+    for pointer in finished.results:
+        record = PersistedTrialResult.model_validate_json(
+            (assets.root / pointer.result_path).read_bytes()
+        )
+        assert record.outcome == "success"
+        assert record.worker_result.metadata["consent_sha256"] == "c" * 64
     assert not (assets.root / "provenance/consents").exists()

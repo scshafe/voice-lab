@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -1039,3 +1040,30 @@ def test_prompt_suite_v2_accepts_its_boundaries() -> None:
     physical = _physical(_v2_room(labels=["test"]), _v2_step(labels=["test", "recovery"]))
     assert physical.purpose == "physical-test"
     assert _catalog(_v2_prompt(text="Legacy\u200b bytes."), version="v1")
+
+
+def test_no_generated_schema_offers_null_for_a_retired_consent_field() -> None:
+    # The historical consent fields (D-050) are present or absent, never null: the models refuse
+    # null (reject_explicit_null) and the generated schemas offer it nowhere.
+    schemas = Path(__file__).resolve().parents[1] / "schemas"
+    found: list[str] = []
+
+    def walk(node: object, where: str) -> None:
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                for name, schema in properties.items():
+                    if name in {"consent", "consent_id", "consent_path", "consent_sha256"}:
+                        found.append(f"{where}:{name}")
+                        assert "default" not in schema, f"{where}:{name}"
+                        assert {"type": "null"} not in schema.get("anyOf", []), f"{where}:{name}"
+                        assert schema.get("type") != "null", f"{where}:{name}"
+            for child in node.values():
+                walk(child, where)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child, where)
+
+    for path in sorted(schemas.glob("*.schema.json")):
+        walk(json.loads(path.read_text()), path.name)
+    assert len({entry.split(":")[0] for entry in found}) >= 8

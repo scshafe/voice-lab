@@ -485,6 +485,16 @@ def validate_reference_publication(layout: AssetLayout, directory: Path) -> Publ
     )
 
 
+def _same_publication(desired: ReferenceManifest, existing: ReferenceManifest) -> bool:
+    """Whether ``existing`` publishes what ``desired`` would, but for when it was published and
+    a consent binding written before D-050 (which nothing reads), so republishing a reference
+    published before D-050 stays idempotent."""
+    comparable = desired.model_copy(
+        update={"created_at": existing.created_at, "consent": existing.consent}
+    )
+    return comparable == existing
+
+
 def publish_reference(
     layout: AssetLayout,
     *,
@@ -537,8 +547,7 @@ def publish_reference(
     destination = layout.directory("references") / desired.reference_id
     if destination.exists() or destination.is_symlink():
         existing = validate_reference_publication(layout, destination)
-        comparable = desired.model_copy(update={"created_at": existing.manifest.created_at})
-        if comparable != existing.manifest:
+        if not _same_publication(desired, existing.manifest):
             raise SecurityError(f"reference ID collision: {desired.reference_id}")
         return existing
 
@@ -574,8 +583,7 @@ def publish_reference(
             if not destination.exists():
                 raise
             existing = validate_reference_publication(layout, destination)
-            comparable = desired.model_copy(update={"created_at": existing.manifest.created_at})
-            if comparable != existing.manifest:
+            if not _same_publication(desired, existing.manifest):
                 raise SecurityError(f"reference ID collision: {desired.reference_id}") from error
             return existing
         os.chmod(destination, 0o500)

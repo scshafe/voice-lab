@@ -289,26 +289,10 @@
           "type": "integer"
         },
         "consent_id": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/StableId"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+          "$ref": "#/$defs/StableId"
         },
         "consent_sha256": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Sha256"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+          "$ref": "#/$defs/Sha256"
         },
         "contention_after": {
           "$ref": "#/$defs/GpuContention"

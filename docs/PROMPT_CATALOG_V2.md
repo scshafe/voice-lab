@@ -417,7 +417,7 @@ New suites get versioned names only; there is no unversioned `physical-test` ali
 - **Creation** happens only through `voice-lab assets init --asset-root A --diagnostic physical-test --subject-id S`, which extends `_assets_init` (`cli.py:352-363`).
   - `S` MUST start with `cole-physical-diagnostic-`.
   - The command refuses unless `A` does not exist, or every `ASSET_DIRECTORIES` member (`paths.py:12-23`) is absent or empty.
-  - It writes the marker and installs no consent record; the standard path's `install_pending_consent` (`cli.py:354`) is skipped.
+  - It writes the marker and installs no consent record; the standard path's `install_pending_consent` (`cli.py:354`) is skipped. *(Superseded 2026-10-12, D-050: consent records are retired and no path installs one.)*
   - A marker is never added to or removed from an existing root.
 - **Subject prefix.** Readers and writers on the corpus side refuse `cole-physical-diagnostic-` subjects in every root (§5.3 #6, #7, #7a, #11). Open-context in a standard root does not refuse them: the one-off roots `…i649qel_` and `…c65af236` are unmarked, use `cole-physical-diagnostic-2026091{3,4}`, and must stay openable.
 - **Module** `diagnostic_roots.py`: `root_purpose(layout)`, `require_root_purpose(layout, purpose, *, subject_id=None)`, `is_physical_test_suite_id(suite_id)` (Step 2), `is_diagnostic_subject(subject_id)`, and `require_corpus_eligible_package(layout, package)`, which refuses a physical-test root, a physical-test suite ID and a diagnostic subject.
@@ -438,6 +438,7 @@ New suites get versioned names only; there is no unversioned `physical-test` ali
 | 9 | legacy capture: `TakeEngine` (`capture.py:1178-1218`), `capture_prompt_suite` (`capture.py:853`), `run_desktop` (`desktop.py:31`), `create_desktop_application` (`desktop_application.py:40`), `_capture_inputs` (`cli.py:435`) | refuse v2 suites (Step 2) and physical-test roots (Step 4) | `ContractError` | 2, 4 |
 | 10 | `finalize_capture_session` (`capture.py:1761`), where every `CaptureManifest` is minted | `is_physical_test_suite_id(suite.suite_id) == (suite.purpose == "physical-test")`; a v2 suite requires a `native-` session ID; no `procedure` prompt | `ContractError` | 2 |
 | 11 | `approve_self_consent` (`consent.py:106`) | refuse diagnostic subjects and physical-test roots | `SecurityError` | 4 |
+| 11′ | *Superseded 2026-10-12 (D-050):* `consent.py` is deleted, so guard #11 is gone. A diagnostic subject is never synthesized: reference publication, datasets, the offline workers, designation and the speech API refuse any subject but `cole-self` (`models.require_cole_subject`), on top of guards #6–#8 | `SecurityError` | — |
 | — | `sync.py` transport | not guarded (payload-agnostic); intake at the destination is the boundary | — | — |
 
 **Sequencing. A refusal lands with the capability it guards.**

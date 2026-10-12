@@ -10,29 +10,13 @@
       "additionalProperties": false,
       "properties": {
         "consent_path": {
-          "anyOf": [
-            {
-              "maxLength": 1024,
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Consent Path"
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Consent Path",
+          "type": "string"
         },
         "consent_sha256": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Sha256"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+          "$ref": "#/$defs/Sha256"
         },
         "path": {
           "maxLength": 1024,

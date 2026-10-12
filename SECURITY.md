@@ -216,10 +216,13 @@ The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these co
 
 ## Revocation
 
-Cole withdraws the standing permission of D-050 by recording a new decision;
-stopping the speech units, or designating no release, stops rendering for callers
-at once. Revocation prevents new experiments and exports. It does not silently delete
-evidence or backups. Deletion is a separate, explicit, audited operation.
+There is no consent record to revoke (D-050). Cole withdraws his standing
+permission by recording a new decision, together with the code change that
+enforces it; until it lands, stopping the speech units (and not starting the
+benchmark unit) stops every render for callers at once, and designating another
+run stops the current release at its next sentence. Withdrawing permission does
+not silently delete evidence or backups. Deletion is a separate, explicit,
+audited operation.
 An expired, missing or changed vault approval stops new uploads when the vault
 opens. The storage ports expose no delete operation: removing host data is a
 separate operator action. Destroying both the library key and its recovery sheet

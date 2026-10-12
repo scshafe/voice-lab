@@ -329,15 +329,7 @@
   "additionalProperties": false,
   "properties": {
     "consent": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ConsentEvidenceBinding"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
+      "$ref": "#/$defs/ConsentEvidenceBinding"
     },
     "created_at": {
       "format": "date-time",

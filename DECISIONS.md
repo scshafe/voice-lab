@@ -1558,8 +1558,12 @@ processes can just be handled more smoothly?" After the options were laid out, h
   requests and audition plans (`consent_path`, `consent_sha256`), worker model evidence
   (`consent_sha256`), voice releases, render-ledger entries and model-comparison benchmarks
   (`consent_id`, `consent_sha256`). Those fields are optional and absent from every new record
-  (never `null`), and a pair is present whole or not at all; no consent record they name is
-  read. Schema ids stay `v1`, since every stored record still validates. The job failure code
+  (never `null`, and the generated schemas offer no `null`), and a pair is present whole or
+  not at all; no consent record they name is read. A worker running a trial of an audition
+  plan written before D-050 carries the request's consent digest into its evidence and result
+  unread, so such a plan can still finish its remaining trials. Republishing a reference or
+  dataset published before D-050 stays idempotent: the comparison ignores the old binding.
+  Schema ids stay `v1`, since every stored record still validates. The job failure code
   `consent_changed` and the refusal `consent_unavailable` are removed outright: no job, ledger
   entry or caller exists yet (speech is not live), as when D-048 changed those shapes.
 - **The caller registry's purpose stays.** A caller's `allowed_purposes`

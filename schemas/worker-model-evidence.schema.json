@@ -39,15 +39,7 @@
       "type": "string"
     },
     "consent_sha256": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Sha256"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
+      "$ref": "#/$defs/Sha256"
     },
     "executed_code_evidence_path": {
       "maxLength": 4096,

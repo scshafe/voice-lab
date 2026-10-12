@@ -588,7 +588,8 @@ def test_a_dataset_built_under_a_consent_record_still_validates_byte_for_byte(
     tmp_path: Path,
 ) -> None:
     fixture = _corpus(tmp_path)
-    published = publish_dataset_manifest(fixture.layout, _manifest(fixture))
+    manifest = _manifest(fixture)
+    published = publish_dataset_manifest(fixture.layout, manifest)
     manifest_path = published.directory / "manifest.json"
     stored = json.loads(manifest_path.read_bytes())
     stored["consent"] = {
@@ -608,6 +609,12 @@ def test_a_dataset_built_under_a_consent_record_still_validates_byte_for_byte(
     os.chmod(published.directory, 0o500)
     revalidated = validate_published_dataset(fixture.layout, published.directory)
     assert revalidated.manifest.consent is not None
+    # Republishing the same dataset (now without a consent binding) is idempotent.
+    assert publish_dataset_manifest(fixture.layout, manifest) == revalidated
+    assert manifest_path.read_bytes() == data + b"\n"
+    other = manifest.model_copy(update={"created_by": "someone-else"})
+    with pytest.raises(SecurityError, match="collision"):
+        publish_dataset_manifest(fixture.layout, other)
     assert not (fixture.layout.root / "provenance/consents").exists()
 
 

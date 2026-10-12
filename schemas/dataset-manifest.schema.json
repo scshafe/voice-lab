@@ -651,15 +651,7 @@
       "type": "array"
     },
     "consent": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ConsentEvidenceBinding"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
+      "$ref": "#/$defs/ConsentEvidenceBinding"
     },
     "corpus_stage": {
       "enum": [

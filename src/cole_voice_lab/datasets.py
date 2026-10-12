@@ -664,7 +664,9 @@ def publish_dataset_manifest(layout: AssetLayout, manifest: DatasetManifest) -> 
     destination = datasets_root / manifest.dataset_id
     if destination.exists() or destination.is_symlink():
         existing = validate_published_dataset(layout, destination)
-        if existing.manifest != manifest:
+        # A manifest published before D-050 binds a consent record nothing reads; republishing
+        # the same dataset without it stays idempotent.
+        if existing.manifest != manifest.model_copy(update={"consent": existing.manifest.consent}):
             raise SecurityError(f"dataset ID collision: {manifest.dataset_id}")
         return existing
 

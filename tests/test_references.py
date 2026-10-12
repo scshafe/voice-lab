@@ -333,9 +333,28 @@ def test_a_reference_published_under_a_consent_record_still_validates_byte_for_b
     os.chmod(published.directory, 0o500)
     revalidated = validate_reference_publication(fixture.layout, published.directory)
     assert revalidated.manifest == old
+    # Republishing the same reference (now without a consent binding) is idempotent: the
+    # stored publication, binding and all, is returned and nothing is rewritten.
+    assert _publish(fixture) == revalidated
+    assert manifest_path.read_bytes() == data + b"\n"
     assert not (fixture.layout.root / "provenance/consents").exists()
     with pytest.raises(ValidationError, match="never null"):
         ReferenceManifest.model_validate_json(json.dumps({**stored, "consent": None}))
+
+
+def test_validation_refuses_a_hand_written_reference_of_another_subject(tmp_path: Path) -> None:
+    fixture = _accepted(tmp_path)
+    published = _publish(fixture)
+    manifest_path = published.directory / "manifest.json"
+    stored = json.loads(manifest_path.read_bytes())
+    stored["source"]["subject_id"] = "someone-else"
+    data = json.dumps(stored, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ReferenceManifest.model_validate_json(data)  # a well-formed manifest, of the wrong voice
+    os.chmod(published.directory, 0o700)
+    os.chmod(manifest_path, 0o600)
+    manifest_path.write_bytes(data + b"\n")
+    with pytest.raises(SecurityError, match="not 'cole-self'"):
+        validate_reference_publication(fixture.layout, published.directory)
 
 
 def test_reference_contract_cross_field_validation_matrix(tmp_path: Path) -> None:

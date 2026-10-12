@@ -43,13 +43,29 @@ def require_cole_subject(subject_id: str, *, what: str) -> None:
         raise SecurityError(f"{what} is of subject {subject_id!r}, not {COLE_SUBJECT!r}")
 
 
+def _absent_not_null(schema: dict[str, Any]) -> None:
+    """The JSON schema of a historical field: its value's type, optional, never ``null``."""
+    branches = [branch for branch in schema.pop("anyOf", ()) if branch != {"type": "null"}]
+    if len(branches) == 1:
+        schema.update(branches[0])
+    elif branches:
+        schema["anyOf"] = branches
+    schema.pop("default", None)
+
+
 def historical_field(**constraints: Any) -> Any:
     """A field only records written before D-050 carry (the retired consent bindings).
 
     It defaults to absent and is left out of a record's JSON when absent, so a new record never
-    names it and a stored one keeps its exact bytes. ``reject_explicit_null`` refuses ``null``.
+    names it and a stored one keeps its exact bytes. ``reject_explicit_null`` refuses ``null``,
+    and the generated JSON schema offers no ``null`` either (``_absent_not_null``).
     """
-    return Field(default=None, exclude_if=lambda value: value is None, **constraints)
+    return Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        json_schema_extra=_absent_not_null,
+        **constraints,
+    )
 
 
 def reject_explicit_null(model: BaseModel, *names: str) -> None:
@@ -472,6 +488,14 @@ class ReferenceEvidence(ContractModel):
         if (self.consent_path is None) != (self.consent_sha256 is None):
             raise ValueError("a stored consent path and digest are present together")
         return self
+
+    def consent_binding(self) -> dict[str, str]:
+        """``{"consent_sha256": …}`` for a reference written before D-050, else ``{}``.
+
+        A worker carries it into its model evidence and result unread, so a trial of a plan
+        written before D-050 binds the same digest its request does and can still finish.
+        """
+        return {} if self.consent_sha256 is None else {"consent_sha256": self.consent_sha256}
 
 
 class ExperimentRequest(ContractModel):
