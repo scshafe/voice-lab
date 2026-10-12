@@ -31,18 +31,19 @@ from ..finetune import (
     FineTuneDigestCache,
     FineTuneError,
     FineTunePretrainedPins,
+    FineTuneRuntimeIdentity,
     SpeechResolution,
     describe_finetune_runtime,
     resolve_speech_model,
     synthesis_vocab_path,
 )
+from ..models import F5_FAMILY
 from ..paths import AssetLayout
 from ..resources import resource_path
-from .backend import SpeechBackend, SpeechBackendError
+from .backend import PeakMemory, SpeechBackend, SpeechBackendError
 from .config import F5SpeechRuntime, SpeechConfig
 from .contracts import (
     API_SAMPLE_RATE_HZ,
-    F5_FAMILY,
     F5ReleaseModel,
     F5RenderSettings,
     F5RuntimeRef,
@@ -57,6 +58,12 @@ from .resident import ResidentError, ResidentProcess
 RESIDENT_SCRIPT: Final = "f5_resident.py"
 RESIDENT_DIRECTORY: Final = "resident"
 CACHE_DIRECTORY: Final = "cache"
+# How the resident worker measures its peak (``f5_resident.py``): torch's own count, on a GPU.
+PEAK_MEMORY_METHOD: Final = (
+    "torch.cuda.max_memory_allocated in the resident worker: the peak of its own tensors since "
+    "it started, the load included; not the caching allocator's reserve, the runtime's own "
+    "context, or any other process"
+)
 STARTUP_SECONDS: Final = 300.0
 # F5-TTS renders at 24 kHz, the API's own rate: no resampling.
 F5_SAMPLE_RATE_HZ: Final = API_SAMPLE_RATE_HZ
@@ -81,6 +88,8 @@ def _bound(resolution: SpeechResolution, run_id: str) -> DesignatedModel:
     run = resolution.run
     if run is None or run.run_id != run_id:  # pragma: no cover - resolve never returns base here
         raise ValueError(f"run {run_id} did not resolve to itself")
+    if not isinstance(run.runtime, FineTuneRuntimeIdentity):
+        raise ValueError(f"run {run_id} is not an F5-TTS run")
     recorded = next((item for item in run.checkpoints if item.kind == "last"), None)
     if recorded is None:
         raise ValueError(f"fine-tune run {run_id} records no checkpoint")
@@ -309,6 +318,10 @@ class F5ResidentBackend:
                 self.unload()
             code: FailureCode = "render_timeout" if error.timed_out else "render_failed"
             raise SpeechBackendError(code, str(error)) from error
+
+    def peak_memory(self) -> PeakMemory | None:
+        peak = None if self._process is None else self._process.peak_memory_bytes
+        return None if peak is None else PeakMemory(bytes=peak, method=PEAK_MEMORY_METHOD)
 
     def unload(self) -> None:
         if self._process is not None:

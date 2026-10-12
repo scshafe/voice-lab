@@ -48,6 +48,8 @@ class ResidentProcess:
         self.clock = clock
         self._buffer = b""
         self._requests = 0
+        # The worker's own report of its peak accelerator memory, when it gives one.
+        self.peak_memory_bytes: int | None = None
         try:
             self.process = subprocess.Popen(
                 list(command),
@@ -142,6 +144,9 @@ class ResidentProcess:
             self.kill()
             raise ResidentError("the resident worker answered another request")
         if answer.get("event") == "rendered" and isinstance(answer.get("frames"), int):
+            peak = answer.get("peak_memory_bytes")
+            if isinstance(peak, int) and not isinstance(peak, bool) and peak >= 0:
+                self.peak_memory_bytes = max(peak, self.peak_memory_bytes or 0)
             return int(answer["frames"])
         raise ResidentError(
             f"the segment failed in the resident worker: {str(answer.get('error'))[:200]}",

@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "GpuSlotHolder": {
+      "additionalProperties": false,
+      "description": "``gpu-slot.json``: who holds the one GPU slot, and until when it expects to.",
+      "properties": {
+        "expected_end_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "job_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "kind": {
+          "enum": [
+            "speech",
+            "finetune",
+            "audition",
+            "speak",
+            "benchmark"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.gpu-slot-holder/v1",
+          "default": "cole-voice-lab.gpu-slot-holder/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "started_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        }
+      },
+      "required": [
+        "kind",
+        "job_id",
+        "started_at"
+      ],
+      "title": "GpuSlotHolder",
+      "type": "object"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``gpu-slot.wanted``: a long job waiting for the slot, and how to tell it is gone.\n\nThe want is stale, and is removed by whoever reads it, when its process is not alive,\nthe host booted since it was written, or it is past ``expires_at`` (the longest the job\nsaid it would wait for the lock, plus a minute).",
+  "properties": {
+    "boot_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Boot Id",
+      "type": "string"
+    },
+    "expires_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "holder": {
+      "$ref": "#/$defs/GpuSlotHolder"
+    },
+    "pid": {
+      "minimum": 1,
+      "title": "Pid",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.gpu-slot-want/v1",
+      "default": "cole-voice-lab.gpu-slot-want/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "holder",
+    "pid",
+    "boot_id",
+    "expires_at"
+  ],
+  "title": "GpuSlotWant",
+  "type": "object"
+}

@@ -341,3 +341,30 @@ def test_a_new_consent_record_names_the_purpose_and_is_designated_by_its_id(
     lab.designate(consent_id="cole-self-v2")
     release, _ = current_release(lab.layout)
     assert release.consent_id == "cole-self-v2"
+
+
+def test_only_a_preview_may_check_another_purpose(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path, release=False)
+    with pytest.raises(ValueError, match="private-assistant-speech"):
+        designate(
+            lab.layout,
+            run_id="finetune-a",
+            designated_by="Cole",
+            now=NOW,
+            consent_id=V1,
+            purpose="private-home-host-synthesis",
+        )
+    # The fixture's consent allows assistant speech only: a benchmark's preview is refused.
+    refused(
+        "not_designatable",
+        lambda: designate(
+            lab.layout,
+            run_id="finetune-a",
+            designated_by="Cole",
+            now=NOW,
+            consent_id=V1,
+            purpose="private-home-host-synthesis",
+            write=False,
+        ),
+    )
+    assert history(lab.layout) == []

@@ -1400,3 +1400,58 @@ about what speaks today changes.
 - **Amends** D-045 (the release's fields: files by role and the family's section instead of
   F5-TTS's checkpoint, reference and runtime fields) and D-046 (the segment limit is the
   family's; the seed comes from the render settings' digest; the backend is the family's).
+
+## D-049 — Training and comparing model families
+
+Follows D-048, from the same request of Cole's (2026-10-11): "once we have a full corpus of
+800ish recordings, i'll be curious to try out different models and compare their training
+time, inference time, and quality."
+
+- **Training goes through a family's adapter.** The fine-tune pipeline selects the corpus
+  itself and does everything after through the training adapter of the hyperparameters'
+  family (`training.py`): the dataset, the runtime, the training, the progress, the
+  checkpoints and the listening samples. F5-TTS is the first adapter, over the code that
+  trained every run so far; its records keep their schemas and their bytes. Another family's
+  run records `FamilyHyperparameters` and `FamilyRuntimeIdentity`, and its dataset may have its
+  own sample rate.
+- **A comparison record per measurement of a run** (`provenance/model-comparisons/`,
+  write-once): the training cost (wall time, device, epochs and updates, dataset digest), an
+  optional inference benchmark through the speech backend port on a fixed held-out text set
+  (load time, time to first audio, real-time factor, peak memory, determinism), and an optional
+  link to the blind review that judged the run. Quality stays blind listening's (AGENTS.md);
+  the numbers are diagnostics.
+- **Family-neutral common code.** A family builds its own settings (training and listening)
+  from options, chooses its own reference clip, owns its runtime's pins, and declares the
+  pinned-weight link the vault records by pin; the pipeline holds the hyperparameters, the
+  adapter and the options to one family before it reads the corpus, and a run's
+  hyperparameters and runtime must be of one family. Speak renders F5-TTS runs only, so its
+  `latest` and `base`, and the runs the app lists, never include another family's run. What
+  still has F5-TTS's shape is listed in docs/MODEL_FAMILIES.md.
+- **A fair comparison.** Training and benchmarks record the host they ran on (CPU, memory,
+  GPUs with driver and VRAM, ROCm or MPS); `families compare` composes each run's newest
+  training summary, benchmark and review and flags runs on another corpus, unlike hosts and a
+  GPU shared with another process (an advisory read without privileges). Benchmark seeds come
+  from the run, its files' digests, the text set and the render settings, so reruns render
+  the same. Peak memory names how it was measured. A review link is made from the score sheet
+  itself, verified against the sealed review package, and only for a review that scored the
+  run.
+- **Benchmarks render in the speech runner's sandbox.** On the PC a benchmark is one start of
+  `voice-lab-speech-benchmark.service` (no network, only the GPU's devices); the command
+  refuses to render unless the unit's marker is set and only loopback is visible (a claim
+  about the process's network, not proof of every fence), or
+  `--i-render-outside-the-sandbox` accepts it, and the record says so. Its segments render in
+  its own scratch under the speech state, never in the lab. A long job's want of
+  the GPU slot names its process, boot and wait, and goes stale when any of them is gone.
+
+Recommended in this decision, for Cole to confirm in review:
+
+- **The benchmark's consent purpose is `private-home-host-synthesis`** on `home-host` (D-022,
+  D-047: synthesis on the PC for Cole's own evaluation), not `private-assistant-speech`: a
+  benchmark renders a run, designated or not, for measurement, and its audio is hashed and
+  deleted, never kept, served or played. It runs only on an approved record that names that
+  purpose, through an unwritten release preview, so it never designates anything.
+- **The text set is fixed and public** (`benchmark-v1`, six sentences of different shapes),
+  refused for a run that trained on any of them, and never edited: a new set is a new id.
+- **Benchmarks hold the GPU slot** as kind `benchmark`, a long job: the speech API answers
+  `503 gpu_busy` while one runs, as for a fine-tune.
+

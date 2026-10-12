@@ -21,7 +21,7 @@ from pydantic import AfterValidator, Field, StringConstraints, ValidationError, 
 
 from ..canonical import open_regular_no_follow
 from ..errors import ContractError, VoiceLabError
-from ..models import ContractModel, StableId
+from ..models import F5_FAMILY, ContractModel, StableId
 from ..paths import validate_absolute_path
 from ..recording_contracts import (
     SPEECH_DEFAULT_NFE_STEPS,
@@ -189,7 +189,7 @@ class SpeechCaller(ContractModel):
 class F5SpeechRuntime(ContractModel):
     """The F5-TTS runtime the job runner renders an ``f5-tts`` release with (D-048)."""
 
-    model_family: Literal["f5-tts"] = "f5-tts"
+    model_family: Literal["f5-tts"] = F5_FAMILY
     runtime_root: AbsolutePath
     device: Literal["cuda", "cpu"] = "cuda"
     # Flow steps: 32 until Cole compares 16 and 32 by ear (D-046); every ledger entry names it.

@@ -17,6 +17,7 @@ from .canonical import canonical_json_bytes, canonical_sha256
 from .capture import CaptureContinuityEvidence
 from .errors import ContractError
 from .models import (
+    F5_FAMILY,
     AudioQcMetrics,
     AudioSpec,
     CaptureDevice,
@@ -1911,6 +1912,9 @@ class FineTuneRunSummary(ContractModel):
 
     run_id: StableId
     run_root: RelativePath
+    # The model family the run trained (D-049). Every run before families: F5-TTS, the
+    # default, so a summary without the field reads as before and the app may ignore it.
+    model_family: StableId = F5_FAMILY
     status: Literal["running", "finished", "failed"]
     started_at: UtcTimestamp
     finished_at: UtcTimestamp | None = None
@@ -1956,11 +1960,11 @@ MAX_FINISHED_RUNS: Final = 32
 class FineTuneStatusEvent(ContractModel):
     """Reply to ``fine-tune-status``: the runtime, the active job and the finished runs.
 
-    ``active`` is always reported. ``finished_runs`` are the newest finished runs (at most
-    32, newest first: latest finish time, then greater run id) and ``latest_run`` is the
-    first of them. When they cannot be resolved (an unreadable or invalid ``run.json`` under
-    ``derived/finetune``), both are absent and ``latest_run_error`` names why; a new job can
-    still be started.
+    ``active`` is always reported. ``finished_runs`` are the newest finished runs of the
+    model families Speak renders (F5-TTS; at most 32, newest first: latest finish time, then
+    greater run id) and ``latest_run`` is the first of them. When they cannot be resolved
+    (an unreadable or invalid ``run.json`` under ``derived/finetune``), both are absent and
+    ``latest_run_error`` names why; a new job can still be started.
     """
 
     event: Literal["fine-tune-status"] = "fine-tune-status"

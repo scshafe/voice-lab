@@ -62,10 +62,12 @@ from .errors import ContractError, SecurityError, VoiceLabError
 from .library_classification import (
     CORPUS_DATABASE_PATH,
     FILE_CLASSES,
+    PINNED_WEIGHT_FILES,
     ClassificationRule,
     RestoreMode,
     classify,
     matching_rules,
+    pinned_weight_rule_name,
     rule_named,
     subtree_stays_on_mac,
 )
@@ -1386,7 +1388,7 @@ class ReferenceSource:
 def _fine_tune_rules() -> frozenset[str]:
     return frozenset(
         {
-            "fine-tune-pretrained-link",
+            *(pinned_weight_rule_name(family) for family in PINNED_WEIGHT_FILES),
             "fine-tune-archive-records",
             "fine-tune-removal-history",
             "fine-tune-run",
@@ -2079,11 +2081,16 @@ def library_sources() -> tuple[ReplicationSource, ...]:
             (ScanRoot("provenance/host-transfers"),),
             private=False,
         ),
-        # The voice releases and the render ledger (D-045, D-046): write-once records.
+        # The voice releases, the render ledger and the model comparisons (D-045, D-046,
+        # D-049): write-once records.
         RecordTreeSource(
             "speech-records",
-            frozenset({"voice-releases", "speech-renders"}),
-            (ScanRoot("provenance/voice-releases"), ScanRoot("provenance/speech-renders")),
+            frozenset({"voice-releases", "speech-renders", "model-comparisons"}),
+            (
+                ScanRoot("provenance/voice-releases"),
+                ScanRoot("provenance/speech-renders"),
+                ScanRoot("provenance/model-comparisons"),
+            ),
             referents=frozenset({"lab-approvals"}),
         ),
         RecordTreeSource(

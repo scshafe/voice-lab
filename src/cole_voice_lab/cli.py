@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, get_args
 
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
-from . import cli_home_host, cli_speech
+from . import cli_home_host, cli_models, cli_speech
 from .audition import (
     AuditionPlan,
     audition_paths,
@@ -81,6 +81,7 @@ from .doctor import run_doctor
 from .errors import VoiceLabError
 from .intake import accept_capture_session, validate_capture_package
 from .models import (
+    F5_FAMILY,
     PHYSICAL_TEST_SUITE_PREFIX,
     PROMPT_SUITE_V1,
     PROMPT_SUITE_V2,
@@ -638,7 +639,8 @@ def _prompts_show(options: argparse.Namespace) -> int:
 
 
 def _finetune_hyperparameters(options: argparse.Namespace) -> Any:
-    from .finetune import FineTuneHyperparameters
+    """The training settings of ``--family`` (its adapter's), from the options given."""
+    from .training import training_adapter
 
     overrides = {
         "epochs": options.epochs,
@@ -652,7 +654,19 @@ def _finetune_hyperparameters(options: argparse.Namespace) -> Any:
         "dataloader_workers": options.dataloader_workers,
         "light_checkpoints": None if options.no_light_checkpoints is False else False,
     }
-    return FineTuneHyperparameters(**{k: v for k, v in overrides.items() if v is not None})
+    adapter = training_adapter(options.family)
+    return adapter.hyperparameters({k: v for k, v in overrides.items() if v is not None})
+
+
+def _finetune_listening(options: argparse.Namespace) -> dict[str, object]:
+    """The listening-sample options given (the family's adapter checks them)."""
+    given = {
+        "reference_prompt_id": options.reference_prompt_id,
+        "use_ema": False if options.no_ema else None,
+        "nfe_steps": options.nfe_steps,
+        "device": options.device,
+    }
+    return {key: value for key, value in given.items() if value is not None}
 
 
 def _finetune_run_id(options: argparse.Namespace) -> str:
@@ -710,7 +724,7 @@ def _finetune_corpus(options: argparse.Namespace) -> int:
 
 
 def _finetune_dataset(options: argparse.Namespace) -> int:
-    from .finetune import materialize_finetune_dataset
+    from .training import training_adapter
 
     run_id = _finetune_run_id(options)
     # Rewriting dataset/ in place would leave run.json, and the archive record built from it,
@@ -722,7 +736,8 @@ def _finetune_dataset(options: argparse.Namespace) -> int:
         run_id,
     )
     layout, corpus = _finetune_select(options)
-    dataset = materialize_finetune_dataset(
+    # The family's adapter builds its training copies (its rate, loudness and transcripts).
+    dataset = training_adapter(options.family).build_dataset(
         layout,
         corpus,
         f"{options.output_root}/{run_id}/dataset",
@@ -781,7 +796,9 @@ def _refuse_during_app_gpu_work(layout: AssetLayout) -> None:
 
 
 def _finetune_train(options: argparse.Namespace) -> int:
-    from .finetune import describe_finetune_runtime, run_f5_finetune
+    from .finetune import FineTuneDigestCache
+    from .host_fingerprint import record_training_host
+    from .training import adapter_for
 
     layout = AssetLayout.validate(_asset_root(options.asset_root))
     _refuse_during_app_gpu_work(layout)
@@ -789,13 +806,16 @@ def _finetune_train(options: argparse.Namespace) -> int:
     # Training rewrites run.json and resumes from a checkpoint an archive removed, so it
     # would leave the run disagreeing with its archive record.
     _refuse_an_archived_run(layout, run_root, options.run_id)
+    hyperparameters = _finetune_hyperparameters(options)
+    adapter = adapter_for(hyperparameters)
     corpus, dataset = _finetune_load_run_inputs(layout, run_root)
-    runtime = describe_finetune_runtime(Path(options.runtime_root))
-    run = run_f5_finetune(
+    runtime = adapter.describe_runtime(Path(options.runtime_root), digests=FineTuneDigestCache())
+    record_training_host(layout, run_root)
+    run = adapter.train(
         layout,
         dataset,
         runtime,
-        _finetune_hyperparameters(options),
+        hyperparameters,
         run_root,
         run_id=options.run_id,
         subject_id=corpus.subject_id,
@@ -817,8 +837,11 @@ def _finetune_synthesize_one(
     use_ema: bool,
 ) -> Any:
     from .finetune import FINETUNE_DEFAULT_SAMPLE_TEXTS, synthesize_finetune_samples
+    from .training import F5_TRAINING
 
-    reference = options.reference_prompt_id or dataset.clips[0].prompt_id
+    # `finetune synthesize` is F5-TTS's: its checkpoints and settings are F5-TTS's.
+    settings = F5_TRAINING.listening_settings(_finetune_listening(options))
+    reference = settings.reference_prompt_id or dataset.clips[0].prompt_id
     return synthesize_finetune_samples(
         layout,
         dataset,
@@ -829,8 +852,8 @@ def _finetune_synthesize_one(
         reference_prompt_id=reference,
         texts=tuple(options.text) if options.text else FINETUNE_DEFAULT_SAMPLE_TEXTS,
         use_ema=use_ema,
-        nfe_steps=options.nfe_steps,
-        device=options.device,
+        nfe_steps=settings.nfe_steps,
+        device=settings.device,
     )
 
 
@@ -899,11 +922,8 @@ def _finetune_run(options: argparse.Namespace) -> int:
         reference=resolved.reference,
         output_root=options.output_root,
         ffmpeg=Path(options.ffmpeg),
-        reference_prompt_id=options.reference_prompt_id,
         sample_texts=tuple(options.text) if options.text else FINETUNE_DEFAULT_SAMPLE_TEXTS,
-        use_ema=not options.no_ema,
-        nfe_steps=options.nfe_steps,
-        device=options.device,
+        listening=_finetune_listening(options),
     )
     run = result.run
     _json_print(
@@ -4204,7 +4224,18 @@ def build_parser() -> argparse.ArgumentParser:
             help="proceed with the prompts that have a take instead of refusing",
         )
 
+    def _finetune_family_argument(parser: argparse.ArgumentParser) -> None:
+        from .training import training_family_ids
+
+        parser.add_argument(
+            "--family",
+            choices=training_family_ids(),
+            default=F5_FAMILY,
+            help="the model family to train (D-049; default f5-tts)",
+        )
+
     def _finetune_run_arguments(parser: argparse.ArgumentParser) -> None:
+        _finetune_family_argument(parser)
         parser.add_argument("--output-root", default="derived/finetune")
         parser.add_argument("--run-id", help="defaults to finetune-<UTC time>")
         parser.add_argument("--ffmpeg", default="/opt/homebrew/bin/ffmpeg")
@@ -4226,8 +4257,12 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument("--reference-prompt-id", help="defaults to the first corpus clip")
         parser.add_argument("--text", action="append", help="sentence to synthesize; repeatable")
         parser.add_argument("--no-ema", action="store_true", help="use raw instead of EMA weights")
-        parser.add_argument("--nfe-steps", type=int, default=32)
-        parser.add_argument("--device", choices=("mps", "cpu"), default="mps")
+        parser.add_argument("--nfe-steps", type=int, help="F5-TTS's flow steps (default 32)")
+        parser.add_argument(
+            "--device",
+            choices=("mps", "cpu", "cuda"),
+            help="where F5-TTS synthesizes: mps (default), cpu, or cuda (the PC's GPU, ROCm)",
+        )
 
     finetune_corpus = finetune_commands.add_parser(
         "corpus", help="list the latest kept take per spoken prompt (read-only)"
@@ -4249,6 +4284,7 @@ def build_parser() -> argparse.ArgumentParser:
     finetune_train.add_argument("--asset-root")
     finetune_train.add_argument("--output-root", default="derived/finetune")
     finetune_train.add_argument("--run-id", required=True)
+    _finetune_family_argument(finetune_train)
     _finetune_training_arguments(finetune_train)
     finetune_train.set_defaults(handler=_finetune_train)
 
@@ -4573,6 +4609,7 @@ def build_parser() -> argparse.ArgumentParser:
     intake_scan.set_defaults(handler=_intake_scan)
     cli_home_host.register(commands, intake_commands)
     cli_speech.register(commands)
+    cli_models.register(commands)
 
     sync = commands.add_parser("sync", help="plan or explicitly execute private Tailnet upload")
     sync_commands = sync.add_subparsers(dest="sync_command", required=True)

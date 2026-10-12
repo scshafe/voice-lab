@@ -1,0 +1,76 @@
+# One model comparison benchmark of a fine-tuned run (docs/MODEL_FAMILIES.md, D-049), in the
+# speech runner's sandbox: `voice-lab families record --benchmark` renders the fixed held-out
+# text set in Cole's voice through the speech backend, so it gets exactly what
+# voice-lab-speech.service has: no network at all, only the GPU's devices, and writes only
+# where it must. What to benchmark is in the root-owned /etc/voice-lab/speech-benchmark.env
+# (0644; no secret in it):
+#
+#   VOICE_LAB_BENCHMARK_RUN=<run id>
+#   VOICE_LAB_BENCHMARK_CONSENT_ID=<a consent record approved for private-home-host-synthesis
+#                                   on home-host>
+#
+#   sudoedit /etc/voice-lab/speech-benchmark.env
+#   sudo systemctl start voice-lab-speech-benchmark.service
+#   journalctl -u voice-lab-speech-benchmark.service
+#
+# It waits for the GPU slot as a long job (kind `benchmark`; the speech runner yields once
+# its queue is empty), renders, hashes and deletes the audio in its own scratch under
+# state/speech/benchmark/ (never the lab, whose tmp/ holds raw take originals), and writes one
+# record under the lab's provenance/model-comparisons/<run id>/ (digests and timings only).
+# Without the file the unit does not start.
+#
+# Unlike the runner it needs no --release-link, no exit 75/78 and no long TimeoutStopSec: each
+# start runs the code /opt/voice-lab/current holds then, once. A stop kills the whole unit, its
+# resident worker included (it is in the unit's cgroup); nothing is recorded, the next
+# benchmark sweeps the scratch it left, and its want of the GPU slot goes stale with it.
+#
+# Installed by hand, not by the runner lane, for the speech runner's reason: it needs the
+# GPU's devices (README.md here). A fixed name, not a template: infra's host-unit validator
+# refuses templates. The command refuses to render outside such a sandbox unless
+# --i-render-outside-the-sandbox is given (SECURITY.md).
+[Unit]
+Description=voice-lab model benchmark of one fine-tuned run (no network, GPU)
+ConditionPathExists=/etc/voice-lab/speech.json
+ConditionPathExists=/etc/voice-lab/speech-benchmark.env
+ConditionPathIsDirectory=/data/voice-lab/state/speech/benchmark
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=voice-lab
+Group=voice-lab
+SupplementaryGroups=render video
+UMask=0077
+EnvironmentFile=/etc/voice-lab/speech-benchmark.env
+# The marker the command requires before it renders (with no network but loopback).
+Environment=VOICE_LAB_SANDBOX=voice-lab-speech-benchmark
+ExecStart=/opt/voice-lab/current/bin/voice-lab families record --asset-root /data/voice-lab/lab --run ${VOICE_LAB_BENCHMARK_RUN} --benchmark --config /etc/voice-lab/speech.json --consent-id ${VOICE_LAB_BENCHMARK_CONSENT_ID}
+TimeoutStartSec=2h
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+# The GPU slot's lock and markers (optional, as for the runner), the backend's own scratch,
+# caches and rendered segments (not the speech runner's: state/speech/benchmark/, made before
+# the first start, README.md here), and the comparison records. Not the lab's tmp/.
+ReadWritePaths=-/data/voice-lab/state/jobs /data/voice-lab/state/speech/benchmark /data/voice-lab/lab/provenance/model-comparisons
+ProtectHome=yes
+PrivateTmp=yes
+# The GPU (ROCm: /dev/kfd and the DRM render node), nothing else.
+DevicePolicy=closed
+DeviceAllow=/dev/kfd rw
+DeviceAllow=char-drm rw
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# Not MemoryDenyWriteExecute: torch compiles kernels at run time.

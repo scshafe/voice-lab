@@ -38,7 +38,6 @@ import fcntl
 import json
 import os
 import queue
-import re
 import select
 import shutil
 import signal
@@ -65,10 +64,10 @@ from .errors import ContractError, SecurityError, VoiceLabError
 from .finetune import (
     FINETUNE_OUTPUT_ROOT,
     MAX_TRUSTED_DIGESTS,
+    SPEAK_FAMILIES,
     AbsolutePath,
     FineTuneDigestCache,
     FineTuneError,
-    FineTuneHyperparameters,
     FineTunePipelineStep,
     FineTunePretrainedPins,
     FineTuneRuntimeProbe,
@@ -88,10 +87,9 @@ from .finetune import (
     run_finetune_pipeline,
     synthesize_speech,
 )
-from .models import ContractModel, Sha256, StableId, utc_now
+from .models import F5_FAMILY, ContractModel, Sha256, StableId, utc_now
 from .paths import AssetLayout, confined_path
 from .recording_contracts import (
-    FINETUNE_MAX_EPOCHS,
     MAX_CONTROL_FRAME_BYTES,
     CancelFineTuneCommand,
     CancelSynthesisCommand,
@@ -127,8 +125,18 @@ from .recording_takes import (
     write_recording_evidence,
 )
 from .storage_binding import open_catalog_reader
+from .training import (
+    F5TrainingAdapter,
+    FineTuneTrainingProgress,
+    TrainingAdapter,
+    parse_training_progress,
+    training_adapter,
+)
 
 FINETUNE_JOBS_ROOT: Final = "provenance/finetune-jobs"
+# The model family the app's fine-tune trains (D-049): its intent names none, and its worker's
+# pretrained-pin test seam is F5-TTS's.
+APP_TRAINING_FAMILY: Final = F5_FAMILY
 FINETUNE_WORKER_MODULE: Final = "cole_voice_lab.recording_finetune_jobs"
 # A run's dataset, packed copy, checkpoints and samples need several GiB.
 FINETUNE_MIN_FREE_BYTES: Final = 8 * 1024**3  # 8 GiB
@@ -1001,80 +1009,6 @@ def _run_record_error(code: ErrorCode, failure: BaseException) -> RecordingError
     )
 
 
-@dataclass(frozen=True, slots=True)
-class FineTuneTrainingProgress:
-    """One trainer status line: pass ``epoch`` of ``epochs``, the update, loss and time left."""
-
-    epoch: int
-    epochs: int
-    update: int | None
-    loss: float | None
-    eta_seconds: int | None
-
-
-_ESCAPES = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_SEPARATORS = re.compile(r"[\r\n]")
-_EPOCH = re.compile(r"Epoch (\d{1,6})/(\d{1,6})")
-# tqdm's elapsed<remaining times: [MM:SS or [H:MM:SS, the leading field at most six digits.
-_TIMES = re.compile(r"\[(\d{1,6}(?::\d{2}){1,2})<(\d{1,6}(?::\d{2}){1,2})")
-_LOSS = re.compile(r"loss=([^,\]\s]+)")
-_UPDATE = re.compile(r"update=(\d{1,18})\b")
-
-
-def _interval_seconds(text: str) -> int:
-    seconds = 0
-    for part in text.split(":"):
-        seconds = seconds * 60 + int(part)
-    return seconds
-
-
-def _fragment_progress(fragment: str) -> FineTuneTrainingProgress | None:
-    epoch_match = _EPOCH.search(fragment)
-    if epoch_match is None:
-        return None
-    epoch, epochs = int(epoch_match.group(1)), int(epoch_match.group(2))
-    if not 1 <= epoch <= epochs <= FINETUNE_MAX_EPOCHS:
-        return None
-    loss: float | None = None
-    loss_match = _LOSS.search(fragment)
-    if loss_match is not None:
-        try:
-            value = float(loss_match.group(1))
-        except ValueError:
-            value = float("nan")
-        loss = value if value == value and abs(value) != float("inf") else None
-    update_match = _UPDATE.search(fragment)
-    eta: int | None = None
-    times = _TIMES.search(fragment)
-    if times is not None:
-        elapsed, remaining = (_interval_seconds(value) for value in times.groups())
-        eta = remaining + (epochs - epoch) * (elapsed + remaining)
-    return FineTuneTrainingProgress(
-        epoch=epoch,
-        epochs=epochs,
-        update=None if update_match is None else int(update_match.group(1)),
-        loss=loss,
-        eta_seconds=eta,
-    )
-
-
-def parse_training_progress(text: str) -> FineTuneTrainingProgress | None:
-    """The latest trainer status in ``text``: the last fragment naming ``Epoch E/N``.
-
-    ``text`` is F5-TTS training output: tqdm status lines separated by ``\\r`` (and terminal
-    escapes), e.g. ``Epoch 3/120:  89%|███▉ | 8/9 [00:50<00:06, 6.03s/update, loss=0.566,
-    update=1079]``. The time left is the current pass's remaining time plus the remaining
-    passes at the current pass's length. A non-finite loss is reported as unknown; a pass
-    outside ``1..total`` is ignored.
-    Returns: the progress, or ``None`` when no fragment names a pass.
-    """
-    for fragment in reversed(_SEPARATORS.split(_ESCAPES.sub("", text))):
-        progress = _fragment_progress(fragment)
-        if progress is not None:
-            return progress
-    return None
-
-
 class FineTuneLogTail:
     """Reads what a run's ``train.log`` gained since the last read, at most its last 64 KiB.
 
@@ -1082,9 +1016,16 @@ class FineTuneLogTail:
     ``]``); the unfinished rest is kept for the next read.
     """
 
-    def __init__(self, layout: AssetLayout, run_id: str) -> None:
+    def __init__(
+        self,
+        layout: AssetLayout,
+        run_id: str,
+        *,
+        parse: Callable[[str], FineTuneTrainingProgress | None] = parse_training_progress,
+    ) -> None:
         self.layout = layout
         self.relative_path = f"{FINETUNE_OUTPUT_ROOT}/{run_id}/train.log"
+        self.parse = parse
         self._offset = 0
         self._carry = ""
 
@@ -1112,7 +1053,7 @@ class FineTuneLogTail:
         if rest.rstrip().endswith("]"):
             complete, rest = text, ""
         self._carry = rest[-_LOG_CARRY_CHARACTERS:]
-        return parse_training_progress(complete)
+        return self.parse(complete)
 
 
 class FineTuneProgressTracker:
@@ -1461,9 +1402,10 @@ class FineTuneSupervisor:
         """Whether a runtime is configured, the active job's live progress and the finished runs.
 
         Never waits for recovery: a job being recovered is reported running with the message
-        ``Checking the last fine-tune``. Finished runs (``finished_finetune_runs``, newest
-        first; the latest is the first; a run whose records are unchanged since the last
-        reply is not read again) that cannot be resolved are reported as
+        ``Checking the last fine-tune``. Finished runs of the families Speak renders
+        (``finetune.SPEAK_FAMILIES``, F5-TTS; ``finished_finetune_runs``, newest first; the
+        latest is the first; a run whose records are unchanged since the last reply is not
+        read again) that cannot be resolved are reported as
         ``latest_run_error`` (its ``FineTuneError`` code; an unsafe path as
         RECORDING.SOURCE_CHANGED, a file-system failure as RECORDING.WRITE_FAILED), so
         ``active`` is always answered and a new job can still start.
@@ -1478,7 +1420,10 @@ class FineTuneSupervisor:
         runs: tuple[FineTuneRunSummary, ...] = ()
         latest_run_error: RecordingError | None = None
         try:
-            runs = finished_finetune_runs(self.queue.layout, summaries=self._summaries)
+            # The app's runs are Speak's choices: F5-TTS's, as Speak's latest and base.
+            runs = finished_finetune_runs(
+                self.queue.layout, summaries=self._summaries, families=SPEAK_FAMILIES
+            )
         except FineTuneError as failure:
             latest_run_error = _latest_run_error(failure.code, failure)
         except (SecurityError, ValueError) as failure:
@@ -1569,7 +1514,7 @@ class FineTuneSupervisor:
         again and names the failure.
         """
         try:
-            return not finished_finetune_run_ids(self.queue.layout)
+            return not finished_finetune_run_ids(self.queue.layout, families=SPEAK_FAMILIES)
         except (FineTuneError, SecurityError, OSError):
             return False
 
@@ -1758,7 +1703,10 @@ class FineTuneSupervisor:
 
     def _run_job(self, job: FineTuneJob, intent: FineTuneJobIntent) -> None:
         assert job.run_id is not None
-        epochs = intent.command.epochs or FineTuneHyperparameters().epochs
+        epochs = (
+            intent.command.epochs
+            or training_adapter(APP_TRAINING_FAMILY).hyperparameters({}).epochs
+        )
         tracker = FineTuneProgressTracker(
             job.operation_id, job.run_id, epochs, interval=self.progress_interval
         )
@@ -2450,10 +2398,15 @@ def run_finetune_worker_request(
             with open_catalog_reader(layout) as store:
                 _, reference = store.active_catalog(intent.subject_id)
         snapshot = read_catalog_snapshot(layout, reference)
-        hyperparameters = (
-            FineTuneHyperparameters()
-            if intent.command.epochs is None
-            else FineTuneHyperparameters(epochs=intent.command.epochs)
+        # The app trains its family (its intent names none); the adapter makes its settings.
+        # The worker's pin seam (tests only) is F5-TTS's, the app's family.
+        adapter: TrainingAdapter = (
+            training_adapter(APP_TRAINING_FAMILY)
+            if request.pretrained_pin is None
+            else F5TrainingAdapter(pretrained_pin=request.pretrained_pin)
+        )
+        hyperparameters = adapter.hyperparameters(
+            {} if intent.command.epochs is None else {"epochs": intent.command.epochs}
         )
 
         def progress(step: FineTunePipelineStep) -> None:
@@ -2478,7 +2431,7 @@ def run_finetune_worker_request(
                     run_id=request.run_id,
                     allow_missing=intent.command.allow_missing,
                     reference=reference,
-                    pretrained_pin=request.pretrained_pin,
+                    adapter=adapter,
                     progress=progress,
                 )
                 break

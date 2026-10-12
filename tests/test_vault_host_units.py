@@ -255,3 +255,52 @@ def test_webhook_delivery_reaches_the_tailnet_and_nothing_else() -> None:
     assert values(MANUAL / "voice-lab-speech-webhooks.path", "Path", "PathChanged") == [
         "/data/voice-lab/state/speech/outbox"
     ]
+
+
+# -- the model comparison's benchmark (D-049, docs/MODEL_FAMILIES.md) ---------------------------
+
+BENCHMARK = MANUAL / "voice-lab-speech-benchmark.service"
+
+
+def test_the_benchmark_runs_in_the_speech_runners_sandbox() -> None:
+    assert values(BENCHMARK, "Service", "ExecStart") == [
+        f"{BINARY} families record --asset-root {LAB} --run ${{VOICE_LAB_BENCHMARK_RUN}} "
+        f"--benchmark --config {SPEECH_CONFIG} --consent-id ${{VOICE_LAB_BENCHMARK_CONSENT_ID}}"
+    ]
+    assert values(BENCHMARK, "Service", "Type") == ["oneshot"]
+    assert values(BENCHMARK, "Service", "EnvironmentFile") == [
+        "/etc/voice-lab/speech-benchmark.env"
+    ]
+    # Every fence of the speech runner, the same GPU devices, and no credentials.
+    for key in (
+        "PrivateNetwork",
+        "IPAddressDeny",
+        "RestrictAddressFamilies",
+        "ProtectSystem",
+        "ProtectHome",
+        "PrivateTmp",
+        "DevicePolicy",
+        "DeviceAllow",
+        "SupplementaryGroups",
+        "NoNewPrivileges",
+        "CapabilityBoundingSet",
+        "RestrictNamespaces",
+        "SystemCallArchitectures",
+    ):
+        assert values(BENCHMARK, "Service", key) == values(SPEECH, "Service", key), key
+    assert not {key for _, key, _ in settings(BENCHMARK)} & CREDENTIAL_KEYS
+    # It writes the GPU slot (optional, as the runner's), its own scratch under the speech
+    # state and the comparisons only: never the lab's tmp/, which holds raw take originals.
+    assert values(BENCHMARK, "Service", "ReadWritePaths") == [
+        "-/data/voice-lab/state/jobs /data/voice-lab/state/speech/benchmark "
+        f"{LAB}/provenance/model-comparisons"
+    ]
+    assert "-/data/voice-lab/state/jobs" in values(SPEECH, "Service", "ReadWritePaths")[0].split()
+    assert values(BENCHMARK, "Service", "Environment") == [
+        "VOICE_LAB_SANDBOX=voice-lab-speech-benchmark"
+    ]
+    assert values(BENCHMARK, "Unit", "ConditionPathExists") == [
+        SPEECH_CONFIG,
+        "/etc/voice-lab/speech-benchmark.env",
+    ]
+    assert not values(BENCHMARK, "Install", "WantedBy")  # started by hand, never at boot

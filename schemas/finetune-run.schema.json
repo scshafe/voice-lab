@@ -1,5 +1,128 @@
 {
   "$defs": {
+    "FamilyHyperparameters": {
+      "additionalProperties": false,
+      "description": "Training settings of a model family other than F5-TTS (D-049).\n\nF5-TTS's runs keep ``FineTuneHyperparameters`` (its own schema version, so the two are\ntold apart and every stored run reads as it did). ``settings`` holds the family's own\noptions, passed to its training adapter as they are.",
+      "properties": {
+        "epochs": {
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Epochs",
+          "type": "integer"
+        },
+        "family": {
+          "$ref": "#/$defs/StableId"
+        },
+        "learning_rate": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0,
+          "title": "Learning Rate",
+          "type": "number"
+        },
+        "model_name": {
+          "$ref": "#/$defs/ModelName"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.training-hyperparameters/v1",
+          "default": "cole-voice-lab.training-hyperparameters/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "settings": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "maxProperties": 64,
+          "propertyNames": {
+            "$ref": "#/$defs/StableId"
+          },
+          "title": "Settings",
+          "type": "object"
+        }
+      },
+      "required": [
+        "family",
+        "model_name",
+        "epochs",
+        "learning_rate"
+      ],
+      "title": "FamilyHyperparameters",
+      "type": "object"
+    },
+    "FamilyRuntimeIdentity": {
+      "additionalProperties": false,
+      "description": "The isolated runtime a family other than F5-TTS trained in (D-049): its interpreter,\nits packages' versions, the pinned pretrained weights it started from, and the device.\n\nF5-TTS's runs keep ``FineTuneRuntimeIdentity``; ``family`` tells the two apart, so every\nstored run reads, and re-serializes, exactly as before.",
+      "properties": {
+        "device": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device"
+        },
+        "family": {
+          "$ref": "#/$defs/StableId"
+        },
+        "packages": {
+          "additionalProperties": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxProperties": 16,
+          "title": "Packages",
+          "type": "object"
+        },
+        "pretrained_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Pretrained Path",
+          "type": "string"
+        },
+        "pretrained_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "python_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "runtime_root": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Runtime Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "family",
+        "runtime_root",
+        "python_sha256",
+        "packages",
+        "pretrained_path",
+        "pretrained_sha256"
+      ],
+      "title": "FamilyRuntimeIdentity",
+      "type": "object"
+    },
     "FineTuneCheckpoint": {
       "additionalProperties": false,
       "properties": {
@@ -178,10 +301,43 @@
       "title": "FineTuneRuntimeIdentity",
       "type": "object"
     },
+    "ModelName": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "type": "string"
+    },
     "RelativePath": {
       "maxLength": 1024,
       "minLength": 1,
       "type": "string"
+    },
+    "RunHyperparameters": {
+      "discriminator": {
+        "mapping": {
+          "cole-voice-lab.finetune-hyperparameters/v1": "#/$defs/FineTuneHyperparameters",
+          "cole-voice-lab.training-hyperparameters/v1": "#/$defs/FamilyHyperparameters"
+        },
+        "propertyName": "schema_version"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/FineTuneHyperparameters"
+        },
+        {
+          "$ref": "#/$defs/FamilyHyperparameters"
+        }
+      ]
+    },
+    "RunRuntimeIdentity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FineTuneRuntimeIdentity"
+        },
+        {
+          "$ref": "#/$defs/FamilyRuntimeIdentity"
+        }
+      ]
     },
     "Sha256": {
       "pattern": "^[0-9a-f]{64}$",
@@ -242,7 +398,7 @@
       "default": null
     },
     "hyperparameters": {
-      "$ref": "#/$defs/FineTuneHyperparameters"
+      "$ref": "#/$defs/RunHyperparameters"
     },
     "log_path": {
       "$ref": "#/$defs/RelativePath"
@@ -254,7 +410,7 @@
       "$ref": "#/$defs/RelativePath"
     },
     "runtime": {
-      "$ref": "#/$defs/FineTuneRuntimeIdentity"
+      "$ref": "#/$defs/RunRuntimeIdentity"
     },
     "schema_version": {
       "const": "cole-voice-lab.finetune-run/v1",
