@@ -68,6 +68,9 @@ dev = ["pytest>=8.3,<9", "pytest-qt==4.5.0", "pytest-cov>=6,<7"]
 testpaths = ["tests"]
 addopts = "--strict-config --strict-markers -ra"
 qt_api = "pyside6"
+# Keep only the newest run's temp directories: a full run leaves about 100,000 files,
+# and /tmp is a shared tmpfs with an inode limit.
+tmp_path_retention_count = 1
 # Any Qt/QML warning (binding errors, unknown properties, ...) fails the test,
 # except the macOS offscreen theme font one (see scshafe-qt's pyproject).
 qt_log_level_fail = "WARNING"
