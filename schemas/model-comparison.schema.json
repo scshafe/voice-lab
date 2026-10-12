@@ -1,0 +1,467 @@
+{
+  "$defs": {
+    "BlindReviewRef": {
+      "additionalProperties": false,
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "score_sheet_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "review_id",
+        "score_sheet_sha256"
+      ],
+      "title": "BlindReviewRef",
+      "type": "object"
+    },
+    "F5RenderSettings": {
+      "additionalProperties": false,
+      "description": "What an F5-TTS render was asked for: its flow steps (D-046).",
+      "properties": {
+        "family": {
+          "const": "f5-tts",
+          "default": "f5-tts",
+          "title": "Family",
+          "type": "string"
+        },
+        "nfe_steps": {
+          "maximum": 256,
+          "minimum": 1,
+          "title": "Nfe Steps",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "nfe_steps"
+      ],
+      "title": "F5RenderSettings",
+      "type": "object"
+    },
+    "FileDigest": {
+      "additionalProperties": false,
+      "description": "A file a backend loaded, by role and digest (a render's fingerprint names no path).",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/StableId"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "role",
+        "sha256"
+      ],
+      "title": "FileDigest",
+      "type": "object"
+    },
+    "InferenceBenchmark": {
+      "additionalProperties": false,
+      "description": "How a run renders the fixed text set through the speech backend port.",
+      "properties": {
+        "audio_ms": {
+          "minimum": 1,
+          "title": "Audio Ms",
+          "type": "integer"
+        },
+        "consent_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "consent_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "designated": {
+          "title": "Designated",
+          "type": "boolean"
+        },
+        "deterministic": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deterministic"
+        },
+        "fingerprint": {
+          "$ref": "#/$defs/RenderFingerprint"
+        },
+        "first_segment_ms": {
+          "minimum": 0,
+          "title": "First Segment Ms",
+          "type": "integer"
+        },
+        "load_ms": {
+          "minimum": 0,
+          "title": "Load Ms",
+          "type": "integer"
+        },
+        "peak_memory_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Peak Memory Bytes"
+        },
+        "real_time_factor": {
+          "minimum": 0.0,
+          "title": "Real Time Factor",
+          "type": "number"
+        },
+        "release_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "render_ms": {
+          "minimum": 0,
+          "title": "Render Ms",
+          "type": "integer"
+        },
+        "segments": {
+          "items": {
+            "$ref": "#/$defs/SegmentTiming"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "title": "Segments",
+          "type": "array"
+        },
+        "text_set": {
+          "const": "benchmark-v1",
+          "default": "benchmark-v1",
+          "title": "Text Set",
+          "type": "string"
+        },
+        "text_set_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "time_to_first_audio_ms": {
+          "minimum": 0,
+          "title": "Time To First Audio Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "text_set_sha256",
+        "release_sha256",
+        "designated",
+        "consent_id",
+        "consent_sha256",
+        "fingerprint",
+        "load_ms",
+        "first_segment_ms",
+        "time_to_first_audio_ms",
+        "render_ms",
+        "audio_ms",
+        "real_time_factor",
+        "peak_memory_bytes",
+        "deterministic",
+        "segments"
+      ],
+      "title": "InferenceBenchmark",
+      "type": "object"
+    },
+    "ModelName": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "type": "string"
+    },
+    "RenderFingerprint": {
+      "additionalProperties": false,
+      "description": "What spoke: the family, the files its backend loaded, the runtime and the settings.\n\n``native_sample_rate_hz`` is the rate the model renders at; the backend delivers\n``API_SAMPLE_RATE_HZ`` whatever it is. ``seeded`` says whether the family honours a seed\n(a family that does not cannot promise byte-identical reruns).",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/StableId"
+        },
+        "device": {
+          "$ref": "#/$defs/StableId"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/FileDigest"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Files",
+          "type": "array"
+        },
+        "model_family": {
+          "$ref": "#/$defs/StableId"
+        },
+        "native_sample_rate_hz": {
+          "maximum": 192000,
+          "minimum": 8000,
+          "title": "Native Sample Rate Hz",
+          "type": "integer"
+        },
+        "runtime": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 16,
+          "title": "Runtime",
+          "type": "object"
+        },
+        "seeded": {
+          "title": "Seeded",
+          "type": "boolean"
+        },
+        "settings": {
+          "$ref": "#/$defs/RenderSettings"
+        },
+        "voice_lab_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Voice Lab Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model_family",
+        "backend",
+        "files",
+        "runtime",
+        "device",
+        "native_sample_rate_hz",
+        "seeded",
+        "settings",
+        "voice_lab_version"
+      ],
+      "title": "RenderFingerprint",
+      "type": "object"
+    },
+    "RenderSettings": {
+      "discriminator": {
+        "mapping": {
+          "f5-tts": "#/$defs/F5RenderSettings"
+        },
+        "propertyName": "family"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/F5RenderSettings"
+        }
+      ]
+    },
+    "SegmentTiming": {
+      "additionalProperties": false,
+      "description": "One rendered segment of the benchmark (its digest; the audio itself is deleted).",
+      "properties": {
+        "audio_ms": {
+          "minimum": 0,
+          "title": "Audio Ms",
+          "type": "integer"
+        },
+        "characters": {
+          "minimum": 1,
+          "title": "Characters",
+          "type": "integer"
+        },
+        "render_ms": {
+          "minimum": 0,
+          "title": "Render Ms",
+          "type": "integer"
+        },
+        "segment_index": {
+          "minimum": 1,
+          "title": "Segment Index",
+          "type": "integer"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "text_index": {
+          "minimum": 1,
+          "title": "Text Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "text_index",
+        "segment_index",
+        "characters",
+        "render_ms",
+        "audio_ms",
+        "sha256"
+      ],
+      "title": "SegmentTiming",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "TrainingSummary": {
+      "additionalProperties": false,
+      "description": "What one run cost to train.",
+      "properties": {
+        "corpus_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "dataset_clips": {
+          "minimum": 1,
+          "title": "Dataset Clips",
+          "type": "integer"
+        },
+        "dataset_sample_rate_hz": {
+          "maximum": 192000,
+          "minimum": 8000,
+          "title": "Dataset Sample Rate Hz",
+          "type": "integer"
+        },
+        "dataset_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Dataset Seconds",
+          "type": "number"
+        },
+        "dataset_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "device": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Device"
+        },
+        "epochs": {
+          "minimum": 1,
+          "title": "Epochs",
+          "type": "integer"
+        },
+        "model_family": {
+          "$ref": "#/$defs/StableId"
+        },
+        "model_name": {
+          "$ref": "#/$defs/ModelName"
+        },
+        "run_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "runtime": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 24,
+          "title": "Runtime",
+          "type": "object"
+        },
+        "updates": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Updates"
+        },
+        "wall_seconds": {
+          "minimum": 0.0,
+          "title": "Wall Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "run_id",
+        "model_family",
+        "model_name",
+        "dataset_sha256",
+        "corpus_sha256",
+        "dataset_clips",
+        "dataset_seconds",
+        "dataset_sample_rate_hz",
+        "epochs",
+        "updates",
+        "wall_seconds",
+        "device",
+        "runtime"
+      ],
+      "title": "TrainingSummary",
+      "type": "object"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One measurement of one run (docs/MODEL_FAMILIES.md, D-049).",
+  "properties": {
+    "comparison_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "inference": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InferenceBenchmark"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "model_family": {
+      "$ref": "#/$defs/StableId"
+    },
+    "quality": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BlindReviewRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "run_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.model-comparison/v1",
+      "default": "cole-voice-lab.model-comparison/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "training": {
+      "$ref": "#/$defs/TrainingSummary"
+    }
+  },
+  "required": [
+    "comparison_id",
+    "model_family",
+    "run_id",
+    "created_at",
+    "training"
+  ],
+  "title": "ModelComparison",
+  "type": "object"
+}

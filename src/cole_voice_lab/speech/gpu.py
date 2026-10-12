@@ -1,7 +1,7 @@
 """The PC's one GPU slot (D-008 as amended by D-026; D-046).
 
-@canonical speech.gpu -- every GPU job on the home host (speech now; fine-tuning, auditions
-and Speak when phase 5 brings them to the PC) holds an exclusive ``flock`` on
+@canonical speech.gpu -- every GPU job on the home host (speech and model benchmarks now;
+fine-tuning, auditions and Speak when phase 5 brings them to the PC) holds an exclusive ``flock`` on
 ``<root>/.gpu-slot.lock`` while it uses the GPU, and names itself in ``<root>/gpu-slot.json``
 (``GpuSlotHolder``): its kind, its job, when it started and when it expects to end. The lock
 is the truth: a holder record whose lock nobody holds is stale and is ignored, so a crash

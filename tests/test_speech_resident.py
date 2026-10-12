@@ -71,7 +71,9 @@ for line in sys.stdin:
         handle.writeframes(b"".join(struct.pack("<h", round(8000 * math.sin(i * 6.283 / period)))
                                     for i in range(frames)))
     os.chmod(request["output_path"], 0o600)
-    protocol.write(json.dumps({"event": "rendered", "id": request["id"], "frames": frames}) + "\n")
+    protocol.write(json.dumps({"event": "rendered", "id": request["id"], "frames": frames,
+                               "peak_memory_bytes": MODE.get("peak", 1000 + len(request["text"]))})
+                   + "\n")
     protocol.flush()
 """
 
@@ -168,10 +170,21 @@ def test_the_model_is_loaded_once_and_renders_each_segment(rig: Rig) -> None:
     again = rig.lab.root / "again.wav"
     backend.render_segment("Hello there.", seed=7, output=again, deadline_seconds=10)
     assert sha256_file(again)[0] == sha256_file(output)[0]
+    assert backend.peak_memory_bytes() == 1000 + len("Hello there.")
     process = backend._process
     assert backend.prepare(verified) == fingerprint and backend._process is process
     backend.unload()
-    assert not backend.loaded and not scratch.exists()
+    assert not backend.loaded and not scratch.exists() and backend.peak_memory_bytes() is None
+    backend.unload()
+
+
+@pytest.mark.parametrize("peak", [True, -5, "a lot"])
+def test_a_peak_the_worker_reports_oddly_is_ignored(rig: Rig, peak: Any) -> None:
+    rig.mode(peak=peak)
+    backend = rig.backend()
+    backend.prepare(rig.verified())
+    backend.render_segment("Hi.", seed=1, output=rig.lab.root / "x.wav", deadline_seconds=10)
+    assert backend.peak_memory_bytes() is None
     backend.unload()
 
 

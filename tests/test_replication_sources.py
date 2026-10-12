@@ -486,6 +486,7 @@ def add_lab_records(layout: AssetLayout) -> None:
         f"tmp/.intake-pilot-001-{os.getpid()}/manifest.json",
         f"tmp/.reference-neutral-{HEX16}/reference.wav",
         f"tmp/.dataset-pilot-{HEX16}/manifest.json",
+        "tmp/.model-benchmark-mc-20261012t120000z-0a1b2c/0001.wav",
         f"tmp/.transfer-plan-plan-1-{HEX16}/manifest.json",
         f"tmp/blind-review-1-{HEX16}/clip-01.wav",
         "incoming/pilot-001/READY",
@@ -525,6 +526,7 @@ def add_lab_records(layout: AssetLayout) -> None:
         "provenance/diagnostic-root.json",
         "provenance/voice-releases/0001.json",
         "provenance/speech-renders/sp-0123456789abcdef01234567.json",
+        "provenance/model-comparisons/finetune-a/mc-20261012t120000z-0a1b2c.json",
     ):
         write_file(root, relative, mode=0o400)
     (root / "derived/datasets/pilot-1").chmod(0o500)
@@ -788,6 +790,11 @@ PLAN_DISPOSITIONS: Mapping[str, tuple[str, int | None, str | None]] = {
     "provenance/diagnostic-root.json": ("records", 0o400, "file"),
     "provenance/voice-releases/0001.json": ("records", 0o400, "file"),
     "provenance/speech-renders/sp-0123456789abcdef01234567.json": ("records", 0o400, "file"),
+    "provenance/model-comparisons/finetune-a/mc-20261012t120000z-0a1b2c.json": (
+        "records",
+        0o400,
+        "file",
+    ),
     # The prompt database travels as its online backup.
     "provenance/corpus/corpus.sqlite3": ("prompt-database", 0o600, "sqlite-backup"),
     f"provenance/corpus/snapshots/{SHA}.json": ("prompt-database", 0o600, "file"),

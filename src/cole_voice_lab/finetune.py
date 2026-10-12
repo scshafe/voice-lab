@@ -316,24 +316,56 @@ class FineTuneHyperparameters(ContractModel):
     light_checkpoints: bool = True
 
 
+# A trainer's model name, as its family spells it (F5-TTS: ``F5TTS_v1_Base``).
+type ModelName = Annotated[
+    str, StringConstraints(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+]
+# A family's training copies may have their own rate (D-048); F5-TTS's are 24 kHz.
+type TrainingSampleRate = Annotated[int, Field(ge=8_000, le=192_000)]
+
+
+class FamilyHyperparameters(ContractModel):
+    """Training settings of a model family other than F5-TTS (D-048).
+
+    F5-TTS's runs keep ``FineTuneHyperparameters`` (its own schema version, so the two are
+    told apart and every stored run reads as it did). ``settings`` holds the family's own
+    options, passed to its training adapter as they are.
+    """
+
+    schema_version: Literal["cole-voice-lab.training-hyperparameters/v1"] = (
+        "cole-voice-lab.training-hyperparameters/v1"
+    )
+    family: StableId
+    model_name: ModelName
+    epochs: int = Field(ge=1, le=FINETUNE_MAX_EPOCHS)
+    learning_rate: float = Field(gt=0.0, le=1.0, allow_inf_nan=False)
+    settings: dict[StableId, int | float | str | bool] = Field(default_factory=dict, max_length=64)
+
+
+type RunHyperparameters = Annotated[
+    FineTuneHyperparameters | FamilyHyperparameters, Field(discriminator="schema_version")
+]
+
+
 class FineTuneDatasetClip(ContractModel):
     prompt_id: StableId
     take_id: StableId
     relative_path: RelativePath
     sha256: Sha256
     frames: int = Field(ge=1)
-    sample_rate_hz: Literal[24_000] = FINETUNE_SAMPLE_RATE_HZ
+    sample_rate_hz: TrainingSampleRate = FINETUNE_SAMPLE_RATE_HZ
     gain_db: float = Field(allow_inf_nan=False)
     text: str = Field(min_length=1, max_length=2_000)
 
 
 class FineTuneDataset(ContractModel):
-    """Materialized training copies (24 kHz mono 16-bit, level-normalized) bound to a corpus."""
+    """Materialized training copies (mono 16-bit, level-normalized, at the family's rate:
+    24 kHz for F5-TTS) bound to a corpus."""
 
     schema_version: Literal["cole-voice-lab.finetune-dataset/v1"] = FINETUNE_DATASET_SCHEMA
     corpus_sha256: Sha256
     dataset_root: RelativePath
-    sample_rate_hz: Literal[24_000] = FINETUNE_SAMPLE_RATE_HZ
+    sample_rate_hz: TrainingSampleRate = FINETUNE_SAMPLE_RATE_HZ
     normalization_rule: str = Field(min_length=1, max_length=512)
     clips: tuple[FineTuneDatasetClip, ...] = Field(min_length=1, max_length=10_000)
     metadata_csv_sha256: Sha256
@@ -358,6 +390,28 @@ class FineTuneRuntimeIdentity(ContractModel):
     pretrained_sha256: Sha256
 
 
+class FamilyRuntimeIdentity(ContractModel):
+    """The isolated runtime a family other than F5-TTS trained in (D-048): its interpreter,
+    its packages' versions, the pinned pretrained weights it started from, and the device.
+
+    F5-TTS's runs keep ``FineTuneRuntimeIdentity``; ``family`` tells the two apart, so every
+    stored run reads, and re-serializes, exactly as before.
+    """
+
+    family: StableId
+    runtime_root: str = Field(min_length=1, max_length=4_096)
+    python_sha256: Sha256
+    packages: dict[str, Annotated[str, StringConstraints(min_length=1, max_length=64)]] = Field(
+        max_length=16
+    )
+    pretrained_path: str = Field(min_length=1, max_length=4_096)
+    pretrained_sha256: Sha256
+    device: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+type RunRuntimeIdentity = FineTuneRuntimeIdentity | FamilyRuntimeIdentity
+
+
 class FineTuneCheckpoint(ContractModel):
     relative_path: RelativePath
     sha256: Sha256
@@ -375,8 +429,8 @@ class FineTuneRun(ContractModel):
     catalog_sha256: Sha256
     corpus_sha256: Sha256
     dataset_sha256: Sha256
-    hyperparameters: FineTuneHyperparameters
-    runtime: FineTuneRuntimeIdentity
+    hyperparameters: RunHyperparameters
+    runtime: RunRuntimeIdentity
     run_root: RelativePath
     log_path: RelativePath
     checkpoints: tuple[FineTuneCheckpoint, ...] = Field(max_length=200)
@@ -1366,6 +1420,12 @@ def _checkpoints_in(directory: Path, relative_root: Path) -> tuple[FineTuneCheck
     return tuple(found)
 
 
+def run_checkpoints(layout: AssetLayout, run_root: str) -> tuple[FineTuneCheckpoint, ...]:
+    """The F5-TTS checkpoints (``model_*.pt``) a run's ``checkpoints/`` holds, hashed."""
+    directory = confined_path(layout.root, run_root) / "checkpoints"
+    return _checkpoints_in(directory, layout.root) if directory.is_dir() else ()
+
+
 def _failed_run(
     run: FineTuneRun, checkpoints: Path, root: Path, message: str, finished_at: datetime
 ) -> FineTuneRun:
@@ -1929,7 +1989,7 @@ def run_finetune_pipeline(
     catalog: PromptSuite | CatalogSnapshot,
     subject_id: str,
     runtime_root: Path,
-    hyperparameters: FineTuneHyperparameters,
+    hyperparameters: FineTuneHyperparameters | FamilyHyperparameters,
     *,
     run_id: str,
     allow_missing: bool,
@@ -1947,8 +2007,10 @@ def run_finetune_pipeline(
     """Select → describe the runtime → materialize → train → sample (fine-tuned and base).
 
     The one fine-tune chain: ``voice-lab finetune run`` and the recording service's job
-    worker both call it. Everything is written under ``<output_root>/<run_id>/``: the
-    dataset in ``dataset/``, the run in ``run.json``/``train.log``/``checkpoints/``, and the
+    worker both call it. Each step after the selection is the training adapter's of the
+    hyperparameters' model family (``training.adapter_for``, D-048: F5-TTS today).
+    Everything is written under ``<output_root>/<run_id>/``: the dataset in ``dataset/``,
+    the run in ``run.json``/``train.log``/``checkpoints/``, and the
     listening samples in ``samples/finetuned`` (``model_last.pt``, EMA unless ``use_ema`` is
     false) and ``samples/base`` (the pinned pretrained weights, EMA). ``progress`` hears each
     stage as it starts: ``selecting`` (corpus and runtime), ``dataset``, ``training``,
@@ -1969,21 +2031,22 @@ def run_finetune_pipeline(
         if progress is not None:
             progress(FineTunePipelineStep(stage=stage, run_id=run_id, runtime_link=link))
 
+    from .training import adapter_for
+
+    adapter = adapter_for(hyperparameters)
     report("selecting", None)
     corpus = select_finetune_corpus(layout, catalog, subject_id, reference=reference)
     require_complete_corpus(corpus, allow_missing=allow_missing)
     # The base samples reuse the weights' digest the runtime check just verified.
     digests = FineTuneDigestCache()
-    runtime = describe_finetune_runtime(
-        runtime_root, pretrained_pin=pretrained_pin, digests=digests
-    )
-    link = runtime.checkpoints_directory / run_id
+    runtime = adapter.describe_runtime(runtime_root, pretrained_pin=pretrained_pin, digests=digests)
+    link = adapter.runtime_link(runtime, run_id)
     run_root = f"{output_root}/{run_id}"
     report("dataset", link)
-    dataset = materialize_finetune_dataset(layout, corpus, f"{run_root}/dataset", ffmpeg=ffmpeg)
+    dataset = adapter.build_dataset(layout, corpus, f"{run_root}/dataset", ffmpeg=ffmpeg)
     report("training", link)
     try:
-        run = run_f5_finetune(
+        run = adapter.train(
             layout,
             dataset,
             runtime,
@@ -1994,33 +2057,24 @@ def run_finetune_pipeline(
             catalog_sha256=corpus.catalog_sha256,
         )
     except BaseException:
-        release_finetune_runtime_link(link, layout.root / run_root / "checkpoints")
+        if link is not None:
+            adapter.release_runtime_link(link, layout.root / run_root / "checkpoints")
         raise
     report("sampling", link)
-    reference_clip = reference_prompt_id or dataset.clips[0].prompt_id
-
-    def samples(label: str, checkpoint: Path, ema: bool) -> FineTuneSampleSet:
-        return synthesize_finetune_samples(
-            layout,
-            dataset,
-            runtime,
-            checkpoint,
-            f"{run_root}/samples/{label}",
-            label=label,
-            reference_prompt_id=reference_clip,
-            texts=sample_texts,
-            use_ema=ema,
-            nfe_steps=nfe_steps,
-            device=device,
-            digests=digests,
-        )
-
-    finetuned = samples(
-        "finetuned", layout.root / run_root / "checkpoints" / "model_last.pt", use_ema
+    samples = adapter.listening_samples(
+        layout,
+        dataset,
+        runtime,
+        run_root,
+        reference_prompt_id=reference_prompt_id or dataset.clips[0].prompt_id,
+        texts=sample_texts,
+        use_ema=use_ema,
+        nfe_steps=nfe_steps,
+        device=device,
+        digests=digests,
     )
-    base = samples("base", runtime.pretrained_path, True)
     return FineTunePipelineResult(
-        corpus=corpus, dataset=dataset, run=run, finetuned=finetuned, base=base
+        corpus=corpus, dataset=dataset, run=run, finetuned=samples.finetuned, base=samples.base
     )
 
 

@@ -151,6 +151,7 @@ class FakeBackend:
     prepared: list[VerifiedRelease] = field(default_factory=list)
     unloads: int = 0
     loaded: bool = False
+    peak: int | None = None
 
     def prepare(self, release: VerifiedRelease) -> RenderFingerprint:
         if self.fail == "runtime_unavailable":
@@ -183,6 +184,9 @@ class FakeBackend:
             self.write(output)
         else:
             write_tone(output, frames=self.frames, period=20 + seed % 40, stamp=seed)
+
+    def peak_memory_bytes(self) -> int | None:
+        return self.peak
 
     def unload(self) -> None:
         self.loaded = False

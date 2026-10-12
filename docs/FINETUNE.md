@@ -8,6 +8,12 @@ reads takes directly from the library; lab packages, intake, dataset manifests a
 pilot gate are not involved. Module: `src/cole_voice_lab/finetune.py` (`@canonical
 finetune`). Decisions: D-016, D-018, D-019.
 
+F5-TTS is the first model family (D-048). The pipeline's dataset, runtime, training and
+samples are its training adapter's (`src/cole_voice_lab/training.py`), so another family can
+be trained on the same corpus selection; what a run cost and how it renders are recorded with
+`voice-lab families record` and compared with `voice-lab families compare` (D-049,
+[MODEL_FAMILIES.md](MODEL_FAMILIES.md)). Everything below is F5-TTS's.
+
 ## The corpus
 
 The live corpus is **the latest kept take of every spoken prompt** in the configured catalog

@@ -33,7 +33,7 @@ from typing import Final, Literal
 from pydantic import Field, TypeAdapter, ValidationError, model_validator
 
 from ..canonical import canonical_json_bytes, open_regular_no_follow, write_new_private_file
-from ..consent import load_valid_consent
+from ..consent import Purpose, load_valid_consent
 from ..errors import ContractError, SecurityError, VoiceLabError
 from ..finetune import FINETUNE_OUTPUT_ROOT, FineTuneDigestCache, FineTuneError
 from ..models import ContractModel, Sha256, StableId
@@ -266,6 +266,7 @@ def designate(
     blind_review: BlindReviewRef | None = None,
     digests: FineTuneDigestCache | None = None,
     write: bool = True,
+    purpose: Purpose = RELEASE_PURPOSE,
 ) -> tuple[VoiceRelease, str]:
     """Designate finished run ``run_id`` as the next voice release (``write=False``: only
     build and return the record it would write, for the preview).
@@ -274,10 +275,15 @@ def designate(
     finished, not archived, and of ``subject_id`` (the pinned subject); its files must hash to
     its records; consent record ``consent_id`` must be approved for ``private-assistant-speech``
     on ``home-host`` and name the same subject.
+    ``purpose`` is the consent purpose checked; only a preview (``write=False``) may name
+    another than ``private-assistant-speech`` (the model comparison's benchmark renders a run
+    under ``private-home-host-synthesis`` without designating it).
     Returns: the release written and its digest.
     Raises: ``VoiceReleaseError`` ``not_designatable`` (naming why) for any of the above;
-    ``SecurityError`` for a broken history.
+    ``SecurityError`` for a broken history; ``ValueError`` for another purpose with ``write``.
     """
+    if write and purpose != RELEASE_PURPOSE:
+        raise ValueError("a release is written only for private-assistant-speech")
     from .families import family_for, run_family
 
     cache = FineTuneDigestCache() if digests is None else digests
@@ -303,7 +309,7 @@ def designate(
             record_path,
             expected_sha256=consent_sha256,
             subject_id=subject_id,
-            purpose=RELEASE_PURPOSE,
+            purpose=purpose,
             execution_boundary=RELEASE_BOUNDARY,
             at=now,
         )

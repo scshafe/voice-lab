@@ -43,6 +43,7 @@ from .home_host import HomeHostApproval, HomeHostBinding, HomeHostLedgerEntry
 from .intake import IntakeReceipt
 from .intake_publisher import IntakeAcceptanceRecord, IntakeRefusalRecord
 from .library_replication_service import VAULT_SUPERVISOR_SCHEMA_MODELS
+from .model_comparison import ModelComparison
 from .models import (
     CandidateSpec,
     CaptureManifest,
@@ -91,6 +92,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     **SPEECH_SCHEMA_MODELS,
     "speech-config": SpeechConfig,
     "voice-release": VoiceRelease,
+    "model-comparison": ModelComparison,
     **VAULT_SUPERVISOR_SCHEMA_MODELS,
     **NATIVE_RECORDING_APPLICATION_SCHEMA_MODELS,
     "recording-python-runtime-receipt": RecordingPythonRuntimeReceipt,

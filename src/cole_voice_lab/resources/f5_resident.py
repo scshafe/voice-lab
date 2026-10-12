@@ -24,7 +24,8 @@ Render::
   {"op": "render", "id": N, "text": "...", "seed": S, "nfe_steps": 32, "output_path": "..."}
 
 answered ``{"event": "rendered", "id": N, "frames": F}`` (the WAV, 24 kHz mono 16-bit, 0600,
-at ``output_path``) or ``{"event": "failed", "id": N, "error": "..."}``. ``{"op": "quit"}``
+at ``output_path``; on a GPU also ``"peak_memory_bytes"``, the most memory torch has
+allocated) or ``{"event": "failed", "id": N, "error": "..."}``. ``{"op": "quit"}``
 ends the worker. Each segment is seeded just before it renders and is rendered in one pass
 through ``infer_batch_process``'s sequential streaming path, never through ``infer_process``,
 whose thread pool shares the global RNG between chunks (spike S-2: not reproducible, and
@@ -147,7 +148,14 @@ def _serve(job: dict[str, Any], protocol: IO[str]) -> int:
             output = Path(request["output_path"])
             sf.write(str(output), wave, 24_000, subtype="PCM_16")
             os.chmod(output, 0o600)
-            _send(protocol, {"event": "rendered", "id": identifier, "frames": int(len(wave))})
+            answer: dict[str, Any] = {
+                "event": "rendered",
+                "id": identifier,
+                "frames": int(len(wave)),
+            }
+            if torch.cuda.is_available():  # ROCm answers through the same API
+                answer["peak_memory_bytes"] = int(torch.cuda.max_memory_allocated())
+            _send(protocol, answer)
         except Exception as error:  # noqa: BLE001 - one segment fails, the worker stays
             _send(
                 protocol,

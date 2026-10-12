@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, get_args
 
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
-from . import cli_home_host, cli_speech
+from . import cli_home_host, cli_models, cli_speech
 from .audition import (
     AuditionPlan,
     audition_paths,
@@ -710,7 +710,7 @@ def _finetune_corpus(options: argparse.Namespace) -> int:
 
 
 def _finetune_dataset(options: argparse.Namespace) -> int:
-    from .finetune import materialize_finetune_dataset
+    from .training import F5_FAMILY, training_adapter
 
     run_id = _finetune_run_id(options)
     # Rewriting dataset/ in place would leave run.json, and the archive record built from it,
@@ -722,7 +722,8 @@ def _finetune_dataset(options: argparse.Namespace) -> int:
         run_id,
     )
     layout, corpus = _finetune_select(options)
-    dataset = materialize_finetune_dataset(
+    # The command line trains F5-TTS (its options are F5-TTS's); the adapter builds its data.
+    dataset = training_adapter(F5_FAMILY).build_dataset(
         layout,
         corpus,
         f"{options.output_root}/{run_id}/dataset",
@@ -781,7 +782,8 @@ def _refuse_during_app_gpu_work(layout: AssetLayout) -> None:
 
 
 def _finetune_train(options: argparse.Namespace) -> int:
-    from .finetune import describe_finetune_runtime, run_f5_finetune
+    from .finetune import FineTuneDigestCache
+    from .training import adapter_for
 
     layout = AssetLayout.validate(_asset_root(options.asset_root))
     _refuse_during_app_gpu_work(layout)
@@ -790,12 +792,16 @@ def _finetune_train(options: argparse.Namespace) -> int:
     # would leave the run disagreeing with its archive record.
     _refuse_an_archived_run(layout, run_root, options.run_id)
     corpus, dataset = _finetune_load_run_inputs(layout, run_root)
-    runtime = describe_finetune_runtime(Path(options.runtime_root))
-    run = run_f5_finetune(
+    hyperparameters = _finetune_hyperparameters(options)
+    adapter = adapter_for(hyperparameters)
+    runtime = adapter.describe_runtime(
+        Path(options.runtime_root), pretrained_pin=None, digests=FineTuneDigestCache()
+    )
+    run = adapter.train(
         layout,
         dataset,
         runtime,
-        _finetune_hyperparameters(options),
+        hyperparameters,
         run_root,
         run_id=options.run_id,
         subject_id=corpus.subject_id,
@@ -4573,6 +4579,7 @@ def build_parser() -> argparse.ArgumentParser:
     intake_scan.set_defaults(handler=_intake_scan)
     cli_home_host.register(commands, intake_commands)
     cli_speech.register(commands)
+    cli_models.register(commands)
 
     sync = commands.add_parser("sync", help="plan or explicitly execute private Tailnet upload")
     sync_commands = sync.add_subparsers(dest="sync_command", required=True)

@@ -425,7 +425,7 @@ class GpuSlotHolder(ContractModel):
     schema_version: Literal["cole-voice-lab.gpu-slot-holder/v1"] = (
         "cole-voice-lab.gpu-slot-holder/v1"
     )
-    kind: Literal["speech", "finetune", "audition", "speak"]
+    kind: Literal["speech", "finetune", "audition", "speak", "benchmark"]
     job_id: StableId
     started_at: UtcTimestamp
     expected_end_at: UtcTimestamp | None = None

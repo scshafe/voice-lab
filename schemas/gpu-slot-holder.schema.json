@@ -32,7 +32,8 @@
         "speech",
         "finetune",
         "audition",
-        "speak"
+        "speak",
+        "benchmark"
       ],
       "title": "Kind",
       "type": "string"

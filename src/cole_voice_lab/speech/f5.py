@@ -31,6 +31,7 @@ from ..finetune import (
     FineTuneDigestCache,
     FineTuneError,
     FineTunePretrainedPins,
+    FineTuneRuntimeIdentity,
     SpeechResolution,
     describe_finetune_runtime,
     resolve_speech_model,
@@ -81,6 +82,8 @@ def _bound(resolution: SpeechResolution, run_id: str) -> DesignatedModel:
     run = resolution.run
     if run is None or run.run_id != run_id:  # pragma: no cover - resolve never returns base here
         raise ValueError(f"run {run_id} did not resolve to itself")
+    if not isinstance(run.runtime, FineTuneRuntimeIdentity):
+        raise ValueError(f"run {run_id} is not an F5-TTS run")
     recorded = next((item for item in run.checkpoints if item.kind == "last"), None)
     if recorded is None:
         raise ValueError(f"fine-tune run {run_id} records no checkpoint")
@@ -309,6 +312,9 @@ class F5ResidentBackend:
                 self.unload()
             code: FailureCode = "render_timeout" if error.timed_out else "render_failed"
             raise SpeechBackendError(code, str(error)) from error
+
+    def peak_memory_bytes(self) -> int | None:
+        return None if self._process is None else self._process.peak_memory_bytes
 
     def unload(self) -> None:
         if self._process is not None:

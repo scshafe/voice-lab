@@ -429,6 +429,14 @@ _RULES: Final = (
         example=f"tmp/.reference-neutral-{_EXAMPLE_HEX16}/reference.wav",
     ),
     _rule(
+        "model-benchmark-scratch",
+        "tmp/.model-benchmark-*{/**}",
+        MAC_ONLY,
+        owner="model_comparison",
+        reason="a benchmark's rendered segments, hashed and deleted when it ends (D-049)",
+        example="tmp/.model-benchmark-mc-20261012t120000z-0a1b2c/0001.wav",
+    ),
+    _rule(
         "dataset-staging",
         "tmp/.dataset-*{/**}",
         MAC_ONLY,
@@ -716,6 +724,15 @@ _RULES: Final = (
         owner="speech.release",
         reason="the designated voice releases, an append-only chain (D-045)",
         example="provenance/voice-releases/0001.json",
+        mode=0o400,
+    ),
+    _rule(
+        "model-comparisons",
+        "provenance/model-comparisons/**",
+        "records",
+        owner="model_comparison",
+        reason="one write-once record per measurement of a fine-tuned run, never audio (D-049)",
+        example="provenance/model-comparisons/finetune-a/mc-20261012t120000z-0a1b2c.json",
         mode=0o400,
     ),
     _rule(

@@ -179,6 +179,10 @@ The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these co
 - The API container only enqueues and serves finished files (whole sentences and the
   joined audio); the job runner and its resident model worker render with no network; the
   delivery unit reaches the tailnet only.
+- A model comparison's benchmark (D-049) renders a run only under an approved consent record
+  for `private-home-host-synthesis` on `home-host`, as an unwritten release preview; its
+  audio is hashed in the asset root's `tmp/` and deleted, and its record holds digests and
+  timings only.
 - The job's text is deleted when the job ends, on every path, first. The job record and the
   render ledger name it only by a keyed digest (HMAC-SHA256 under a 32-byte key made once per
   install in the speech state, never in the asset root or the vault) and its length, so a

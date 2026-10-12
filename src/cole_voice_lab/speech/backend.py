@@ -54,6 +54,11 @@ class SpeechBackend(Protocol):
         """
         ...
 
+    def peak_memory_bytes(self) -> int | None:
+        """The most accelerator memory the loaded model has used, when the backend can tell
+        (for the model comparison's benchmark, docs/MODEL_FAMILIES.md); else ``None``."""
+        ...
+
     def unload(self) -> None:
         """Stop any resident model and free the GPU."""
         ...

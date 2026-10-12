@@ -2079,11 +2079,16 @@ def library_sources() -> tuple[ReplicationSource, ...]:
             (ScanRoot("provenance/host-transfers"),),
             private=False,
         ),
-        # The voice releases and the render ledger (D-045, D-046): write-once records.
+        # The voice releases, the render ledger and the model comparisons (D-045, D-046,
+        # D-049): write-once records.
         RecordTreeSource(
             "speech-records",
-            frozenset({"voice-releases", "speech-renders"}),
-            (ScanRoot("provenance/voice-releases"), ScanRoot("provenance/speech-renders")),
+            frozenset({"voice-releases", "speech-renders", "model-comparisons"}),
+            (
+                ScanRoot("provenance/voice-releases"),
+                ScanRoot("provenance/speech-renders"),
+                ScanRoot("provenance/model-comparisons"),
+            ),
             referents=frozenset({"lab-approvals"}),
         ),
         RecordTreeSource(

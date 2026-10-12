@@ -22,20 +22,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ..errors import VoiceLabError
 from ..finetune import FINETUNE_OUTPUT_ROOT, FineTuneDigestCache, require_finished_run
 from ..paths import AssetLayout
 from .backend import SpeechBackend, SpeechBackendError
-from .contracts import F5_FAMILY, RenderFingerprint
+from .contracts import RenderFingerprint
 
 if TYPE_CHECKING:
     from .config import SpeechConfig
     from .release import DesignatedModel, FamilyCheck, VerifiedRelease, VoiceRelease
-
-# The family of a run trained before runs named their family: their trainer's model name.
-TRAINED_MODEL_FAMILIES: Final[dict[str, str]] = {"F5TTS_v1_Base": F5_FAMILY}
 
 
 class UnknownModelFamily(VoiceLabError):
@@ -107,16 +104,13 @@ def family_for(family_id: str) -> ModelFamily:
 
 
 def run_family(layout: AssetLayout, run_id: str) -> str:
-    """The model family finished run ``run_id`` trained.
+    """The model family finished run ``run_id`` trained (``training.run_family``).
 
-    Raises: ``FineTuneError`` for a missing, invalid or unfinished run;
-    ``UnknownModelFamily`` for a trainer this build does not know.
+    Raises: ``FineTuneError`` for a missing, invalid or unfinished run.
     """
-    run = require_finished_run(layout, f"{FINETUNE_OUTPUT_ROOT}/{run_id}", run_id)
-    family = TRAINED_MODEL_FAMILIES.get(run.hyperparameters.model_name)
-    if family is None:  # pragma: no cover - the run model admits F5-TTS only today
-        raise UnknownModelFamily(f"run {run_id} trained {run.hyperparameters.model_name}")
-    return family
+    from ..training import run_family as trained_family
+
+    return trained_family(require_finished_run(layout, f"{FINETUNE_OUTPUT_ROOT}/{run_id}", run_id))
 
 
 class ReleaseBackend:
@@ -158,6 +152,9 @@ class ReleaseBackend:
         self._backend.render_segment(
             text, seed=seed, output=output, deadline_seconds=deadline_seconds
         )
+
+    def peak_memory_bytes(self) -> int | None:
+        return None if self._backend is None else self._backend.peak_memory_bytes()
 
     def unload(self) -> None:
         if self._backend is not None:

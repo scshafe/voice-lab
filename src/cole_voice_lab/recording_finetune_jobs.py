@@ -38,7 +38,6 @@ import fcntl
 import json
 import os
 import queue
-import re
 import select
 import shutil
 import signal
@@ -91,7 +90,6 @@ from .finetune import (
 from .models import ContractModel, Sha256, StableId, utc_now
 from .paths import AssetLayout, confined_path
 from .recording_contracts import (
-    FINETUNE_MAX_EPOCHS,
     MAX_CONTROL_FRAME_BYTES,
     CancelFineTuneCommand,
     CancelSynthesisCommand,
@@ -127,6 +125,7 @@ from .recording_takes import (
     write_recording_evidence,
 )
 from .storage_binding import open_catalog_reader
+from .training import FineTuneTrainingProgress, parse_training_progress
 
 FINETUNE_JOBS_ROOT: Final = "provenance/finetune-jobs"
 FINETUNE_WORKER_MODULE: Final = "cole_voice_lab.recording_finetune_jobs"
@@ -1001,80 +1000,6 @@ def _run_record_error(code: ErrorCode, failure: BaseException) -> RecordingError
     )
 
 
-@dataclass(frozen=True, slots=True)
-class FineTuneTrainingProgress:
-    """One trainer status line: pass ``epoch`` of ``epochs``, the update, loss and time left."""
-
-    epoch: int
-    epochs: int
-    update: int | None
-    loss: float | None
-    eta_seconds: int | None
-
-
-_ESCAPES = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_SEPARATORS = re.compile(r"[\r\n]")
-_EPOCH = re.compile(r"Epoch (\d{1,6})/(\d{1,6})")
-# tqdm's elapsed<remaining times: [MM:SS or [H:MM:SS, the leading field at most six digits.
-_TIMES = re.compile(r"\[(\d{1,6}(?::\d{2}){1,2})<(\d{1,6}(?::\d{2}){1,2})")
-_LOSS = re.compile(r"loss=([^,\]\s]+)")
-_UPDATE = re.compile(r"update=(\d{1,18})\b")
-
-
-def _interval_seconds(text: str) -> int:
-    seconds = 0
-    for part in text.split(":"):
-        seconds = seconds * 60 + int(part)
-    return seconds
-
-
-def _fragment_progress(fragment: str) -> FineTuneTrainingProgress | None:
-    epoch_match = _EPOCH.search(fragment)
-    if epoch_match is None:
-        return None
-    epoch, epochs = int(epoch_match.group(1)), int(epoch_match.group(2))
-    if not 1 <= epoch <= epochs <= FINETUNE_MAX_EPOCHS:
-        return None
-    loss: float | None = None
-    loss_match = _LOSS.search(fragment)
-    if loss_match is not None:
-        try:
-            value = float(loss_match.group(1))
-        except ValueError:
-            value = float("nan")
-        loss = value if value == value and abs(value) != float("inf") else None
-    update_match = _UPDATE.search(fragment)
-    eta: int | None = None
-    times = _TIMES.search(fragment)
-    if times is not None:
-        elapsed, remaining = (_interval_seconds(value) for value in times.groups())
-        eta = remaining + (epochs - epoch) * (elapsed + remaining)
-    return FineTuneTrainingProgress(
-        epoch=epoch,
-        epochs=epochs,
-        update=None if update_match is None else int(update_match.group(1)),
-        loss=loss,
-        eta_seconds=eta,
-    )
-
-
-def parse_training_progress(text: str) -> FineTuneTrainingProgress | None:
-    """The latest trainer status in ``text``: the last fragment naming ``Epoch E/N``.
-
-    ``text`` is F5-TTS training output: tqdm status lines separated by ``\\r`` (and terminal
-    escapes), e.g. ``Epoch 3/120:  89%|███▉ | 8/9 [00:50<00:06, 6.03s/update, loss=0.566,
-    update=1079]``. The time left is the current pass's remaining time plus the remaining
-    passes at the current pass's length. A non-finite loss is reported as unknown; a pass
-    outside ``1..total`` is ignored.
-    Returns: the progress, or ``None`` when no fragment names a pass.
-    """
-    for fragment in reversed(_SEPARATORS.split(_ESCAPES.sub("", text))):
-        progress = _fragment_progress(fragment)
-        if progress is not None:
-            return progress
-    return None
-
-
 class FineTuneLogTail:
     """Reads what a run's ``train.log`` gained since the last read, at most its last 64 KiB.
 
@@ -1082,9 +1007,16 @@ class FineTuneLogTail:
     ``]``); the unfinished rest is kept for the next read.
     """
 
-    def __init__(self, layout: AssetLayout, run_id: str) -> None:
+    def __init__(
+        self,
+        layout: AssetLayout,
+        run_id: str,
+        *,
+        parse: Callable[[str], FineTuneTrainingProgress | None] = parse_training_progress,
+    ) -> None:
         self.layout = layout
         self.relative_path = f"{FINETUNE_OUTPUT_ROOT}/{run_id}/train.log"
+        self.parse = parse
         self._offset = 0
         self._carry = ""
 
@@ -1112,7 +1044,7 @@ class FineTuneLogTail:
         if rest.rstrip().endswith("]"):
             complete, rest = text, ""
         self._carry = rest[-_LOG_CARRY_CHARACTERS:]
-        return parse_training_progress(complete)
+        return self.parse(complete)
 
 
 class FineTuneProgressTracker:
