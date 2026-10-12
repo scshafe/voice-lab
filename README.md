@@ -38,9 +38,14 @@ checkout's `.venv` (Python 3.12) and runs on both hosts below.
 ```bash
 /opt/homebrew/bin/python3.12 -m venv .venv
 .venv/bin/python -m pip install -U pip
+.venv/bin/python -m pip install --require-hashes --only-binary=:all: --no-deps \
+  -r requirements/development-build.txt
 .venv/bin/python -m pip install -e '.[dev]'
 scripts/verify
 ```
+
+On Cole's Mac, an agent does this, then builds and installs the macOS apps from a commit:
+`scripts/mac-refresh` and [docs/mac-agent/README.md](docs/mac-agent/README.md) (D-043).
 
 **Linux** (the Arch PC; Python 3.12 from [uv](https://docs.astral.sh/uv/)):
 

@@ -234,6 +234,33 @@ Deviations and open items:
   not. The hosted `ci.yml` fails within seconds on every commit (Actions does not run for
   this private repository); every PR says what was verified locally instead.
 
+### 2026-10-11, the Mac agent (D-043)
+
+- **The gap.** Since the move to scshafe-dev, nothing has built or tested the macOS apps.
+  The project's agent is on the PC, `scripts/verify` skips the Swift suites off macOS, and
+  the agent cannot reach the Mac.
+- **The Mac agent.** Cole keeps a workspace on the Mac with a clone and a `CLAUDE.md` copied
+  from `docs/mac-agent/CLAUDE.template.md`, and starts an agent there. The template is not
+  named `CLAUDE.md` in the repository, so this agent never loads it.
+- **`scripts/mac-refresh`**, its one command:
+  - fetches a commit (`main` or a pull request's head) and checks it out, detached;
+  - sets up the `.venv`, including the pinned build tools;
+  - runs `scripts/verify` with the Swift suites;
+  - builds the Swift app (from private build settings outside the repository, verified after
+    the build) and voice-lab-desktop's bundle;
+  - with `--install`, copies both into `/Applications`, keeping the apps they replace;
+  - writes `report.md` for a pull request comment, and returns the checkout to where it was.
+
+  Installs need a commit on `main` and never put an older Swift app over a newer one. Each
+  needs an explicit override.
+- **`scripts/mac-signing-identity`** creates, once, a self-signed code-signing identity in the
+  login keychain. Both builders gained `--signing-identity`, still ad-hoc by default.
+  `mac-refresh` signs with the identity when it exists, so a microphone grant survives
+  rebuilds.
+- **Tests and limits.** The scripts are tested on Linux against a fake Mac: order, refusals,
+  install guards, rollback copies and the report. Nothing has run on a Mac yet; the Mac
+  agent's first refresh is that check (owner step 15).
+
 ## scshafe-qt asks
 
 What voice-lab-desktop needs from scshafe-qt (design §6.4), as the API its stand-ins in
@@ -488,3 +515,14 @@ or the owner's judgement.
     `/api/chains` alias and its alias tests in `tests/test_api_chains.py`. Then bring `main`
     into `phase4/remove-compat`, verify, mark it ready and merge it; the deploy stops
     answering the old paths at once.
+15. **The Mac workspace (D-043),** which makes the macOS builds of steps 8, 11 and 12 the Mac
+    agent's: follow [docs/mac-agent/README.md](../mac-agent/README.md).
+    1. Install the tools.
+    2. Clone the repository into `~/voice-lab-mac`, and copy `CLAUDE.template.md` there as
+       `CLAUDE.md`.
+    3. Put the Swift app's build settings at `~/.config/voice-lab/native-app-settings.json`.
+    4. Run `scripts/mac-signing-identity --execute` once; macOS asks for your login password.
+    5. Then: `cd ~/voice-lab-mac && claude "refresh the apps from main and install them"`.
+
+    The first refresh is the first time any of this runs on a Mac. Allow the microphone once
+    per app, then check it is not asked again after the next refresh.

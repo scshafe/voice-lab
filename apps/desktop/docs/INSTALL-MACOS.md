@@ -5,9 +5,14 @@ an app bundle that declares why it records (`NSMicrophoneUsageDescription`), not
 started from a terminal (design [VOICE-PLATFORM.md](../../../docs/design/VOICE-PLATFORM.md)
 §6.3, D-041).
 
-The bundle is **ad-hoc signed** (`codesign --sign -`). That costs nothing, but it is not
-notarized and has no paid Developer ID (decision 13, D-028), so macOS asks you once to allow
-it (see "First run" below).
+The bundle is **ad-hoc signed** (`codesign --sign -`) unless you name a signing identity. That
+costs nothing, but it is not notarized and has no paid Developer ID (decision 13, D-028), so
+macOS asks you once to allow a copied build (see "First run" below).
+
+**On Cole's Mac, let the Mac agent do it.** `scripts/mac-refresh` builds this app and the
+Swift app from a commit, signs both with the stable local identity `voice-lab local signing`
+(D-043), and installs them; see [docs/mac-agent/README.md](../../../docs/mac-agent/README.md).
+The rest of this page is the manual route.
 
 **Prompted capture:** until spike S-1 passes on macOS, the Swift app stays the macOS path for
 prompted recordings (D-025, design §6.2). This app's **Record: prompts** screen then serves the
@@ -101,9 +106,12 @@ The first recording asks for the microphone: "voice-lab would like to access the
 Record your voice prompts and measurement sessions with the UMIK-1." Choose **Allow**. To
 change your answer later, use **System Settings → Privacy & Security → Microphone**.
 
-TCC binds the grant to the build's code hash, and an ad-hoc signature changes with every build.
-So **each new build asks for the microphone again**. This is expected, not a fault. If a new
-build is refused silently, reset its grant and open it again:
+TCC binds the grant to the build's designated requirement. For an ad-hoc signature that is
+the code hash, which every build changes, so **each new ad-hoc build asks for the microphone
+again**. This is expected, not a fault. A build signed with the stable local identity
+(`scripts/build-desktop-bundle --signing-identity "voice-lab local signing"`, after
+`scripts/mac-signing-identity --execute` once; D-043) keeps the grant across rebuilds. If a
+new build is refused silently, reset its grant and open it again:
 
 ```sh
 tccutil reset Microphone private.cole.voice-lab-desktop

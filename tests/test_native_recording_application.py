@@ -692,6 +692,78 @@ def test_preview_preflight_preserves_existing_output_and_requires_native_device(
         )
 
 
+def test_the_signing_identity_is_ad_hoc_a_certificate_hash_or_a_plain_name(
+    tmp_path: Path,
+) -> None:
+    from cole_voice_lab.native_recording_application import (
+        AD_HOC_IDENTITY,
+        _codesign_command,
+        _signing_environment,
+        require_signing_identity,
+    )
+
+    for good in (AD_HOC_IDENTITY, "voice-lab local signing", "AB" * 20, "ab12" * 10):
+        assert require_signing_identity(good) == good
+    for bad in ("", "--deep", "-s", " leading", "name\n", 'a "quote"', "x" * 129):
+        with pytest.raises(ContractError, match="signing identity"):
+            require_signing_identity(bad)
+    app, entitlements = tmp_path / "Preview.app", tmp_path / "audio.plist"
+    command = _codesign_command("voice-lab local signing", entitlements, app)
+    assert command == (
+        "/usr/bin/codesign",
+        "--force",
+        "--sign",
+        "voice-lab local signing",
+        "--options",
+        "runtime",
+        "--entitlements",
+        str(entitlements),
+        "--timestamp=none",
+        str(app),
+    )
+    # codesign finds a keychain identity from HOME; an ad-hoc signature needs none.
+    assert "HOME" not in _signing_environment(AD_HOC_IDENTITY)
+    assert _signing_environment("voice-lab local signing")["HOME"] == str(Path.home())
+
+
+def test_the_builder_refuses_a_bad_signing_identity_before_any_release_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from test_recording_takes import DEVICE
+
+    from cole_voice_lab import native_recording_application as module
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "asset_root": str(tmp_path / "no-root-needed"),
+                "purpose": "capture-pilot",
+                "subject_id": "synthetic",
+                "capture_device": DEVICE.model_dump(mode="json"),
+                "capture_host": "synthetic-host",
+            }
+        )
+    )
+    base = ["--output", str(tmp_path / "A Preview.app"), "--settings", str(settings)]
+    base += ["--source-root", str(tmp_path)]
+    seen: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "create_native_recording_application",
+        lambda *_args, **kwargs: seen.append(kwargs["signing_identity"]) or pytest.fail("built"),
+    )
+    with pytest.raises(pytest.fail.Exception, match="built"):
+        module.main([*base, "--signing-identity", "voice-lab local signing"])
+    assert seen == ["voice-lab local signing"]
+    monkeypatch.undo()
+    # The real builder checks the identity first: no asset root, no platform check, nothing.
+    with pytest.raises(SystemExit) as exited:
+        module.main([*base, "--signing-identity=--deep"])
+    assert exited.value.code == 2
+    assert "signing identity" in capsys.readouterr().err
+
+
 def test_settings_declare_a_purpose_and_embed_no_catalog(tmp_path: Path) -> None:
     from recording_fixtures import synthetic_catalog
     from test_recording_contracts import synthetic_contracts
