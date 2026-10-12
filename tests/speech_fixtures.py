@@ -50,13 +50,22 @@ SECRET = "whsec_" + base64.b64encode(KEY).decode("ascii")
 
 
 def write_tone(
-    path: Path, *, frames: int = 2400, rate: int = 24_000, channels: int = 1, period: int = 60
+    path: Path,
+    *,
+    frames: int = 2400,
+    rate: int = 24_000,
+    channels: int = 1,
+    period: int = 60,
+    stamp: int | None = None,
 ) -> None:
-    """A synthetic tone: ``frames`` frames of 16-bit PCM (private)."""
+    """A synthetic tone: ``frames`` frames of 16-bit PCM (private). ``stamp`` (a seed) is
+    written into the first four mono frames, so two seeds never give the same bytes."""
     samples = b"".join(
         struct.pack("<h", round(8000 * math.sin(index * math.tau / period))) * channels
         for index in range(frames)
     )
+    if stamp is not None:
+        samples = struct.pack("<Q", stamp % 2**64) + samples[8:]
     with wave.open(str(path), "wb") as handle:
         handle.setnchannels(channels)
         handle.setsampwidth(2)
@@ -173,7 +182,7 @@ class FakeBackend:
         if self.write is not None:
             self.write(output)
         else:
-            write_tone(output, frames=self.frames, period=20 + seed % 40)
+            write_tone(output, frames=self.frames, period=20 + seed % 40, stamp=seed)
 
     def unload(self) -> None:
         self.loaded = False
