@@ -193,6 +193,12 @@ would need a pilot approval) and requires `--purpose` without a seed; the suite 
 the catalog id. `init` refuses a catalog id that names a built-in, and refuses a store that
 already holds anything; its message names the command that continues from the store's state.
 
+On the PC (D-052, docs/design/RECORDING-V1.md), the same store is the corpus for every
+recording client: the owner runs these commands there as the `voice-lab` user with
+`--asset-root /data/voice-lab/lab`, the API serves the active version over `/api/v1`, and a
+client pins the version it records against (the recording service's relaunch pin is the
+Swift app's).
+
 Seeding a library, as the rollout's Step 7 does:
 
 ```sh

@@ -1576,3 +1576,46 @@ processes can just be handled more smoothly?" After the options were laid out, h
   (docs/design/VOICE-PLATFORM.md); README; docs/SPEECH_API.md, docs/FINETUNE.md,
   docs/MODEL_FAMILIES.md, docs/REFERENCES_AND_DATASETS.md and docs/RUNBOOK.md; and
   deploy/speech/README.md and deploy/host-manual/.
+
+## D-051 — Recording v1: the owner's decisions
+
+Recorded 2026-10-12. The owner's answers to "what is this application", and the plan they set
+([docs/design/RECORDING-V1.md](docs/design/RECORDING-V1.md)):
+
+- The Swift app (Cole Voice Recorder) is the reference recording interface. voice-lab-desktop's
+  prompt studio is rebuilt to its layout and behaviour, and **replaces the Swift app** on
+  macOS once spike S-1 passes there and the studio reaches parity. The Swift app is then
+  frozen with a tag (D-025).
+- **The speech corpus lives on the PC** (catalog, takes, decisions, trims, coverage) and is
+  served over `/api/v1`.
+- **Singing recordings are held generically on the backend**: a singing recording is a
+  recording, whatever made it. For now Voice Memos is its only source. A **singing studio**,
+  similar to the prompt studio but distinct from it, follows v1.
+- **Training**: fine-tuning stays on the Mac and trains on the takes already there. PC
+  fine-tuning (phase 5) follows v1. Takes recorded into the PC's corpus are not trained on
+  until then.
+
+## D-052 — The corpus on the PC: one writer, a read-only API, take by take
+
+Recorded 2026-10-12. Design: [docs/design/RECORDING-V1.md](docs/design/RECORDING-V1.md) §3–§4.
+
+**Writer and reads.** The API stays read-only on the lab, except `incoming/` (D-021's split).
+The intake publisher, the no-network host unit that already alone writes `raw/`, becomes the
+only writer of the PC's corpus. It publishes take packages, which arrive through the existing
+resumable `/api/v1/intake` with the D-021 ledger, class `capture`. It applies corpus requests
+(decisions, trims) that the API drops into `incoming/`. And it keeps a read model in
+`derived/corpus/`. The API serves that read model and the catalog snapshots, and never opens
+the corpus database. Catalog edits stay the owner's `voice-lab catalog …` on the PC. No new
+host unit and no new mount.
+
+**Takes.** voice-lab-desktop's takes get their own versioned contracts: a take record, a take
+package and a take's state. The Swift app's Core Audio-bound records are not reused. A take
+is identified by its audio's SHA-256. It names the exact prompt and catalog version, and
+carries its PortAudio continuity evidence (D-039). Takes travel one at a time, not as
+sessions (D-018's corpus-first model, now on the PC).
+
+**Clients.** Clients are offline-first and pin the catalog version they record against. This
+supersedes docs/LIBRARY_VAULT.md's "serving prompts from a remote store is out of scope" and,
+for HTTP clients, the recording service's relaunch pin.
+
+**The vault.** Every new path is classified for the vault in the PR that first writes it.
