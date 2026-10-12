@@ -16,7 +16,11 @@ The package: ``session_id`` ``vj-<sessionId>``; ``prompt_suite_id``
 ``startedAt``/``endedAt``; ``capture_device`` the chain (``voice-journey-chain:<chainId>``),
 the cal file's serial and digest; one file per WAV at ``<segmentKey>/<name>`` (the key of
 the last segment naming it) or ``<name>``; ``room-silence`` is the ``room-tone`` file and
-every other take ``calibration``; ``qc.json`` the validator's portable metrics; ``READY``.
+every other take ``calibration``; ``measurement`` the session's own record
+(:func:`measurement_session`: the mouth-to-capsule distance, the input level and its pin,
+the calibration file, the client, each segment's label, start, duration and levels), so it
+travels with the takes and is checksum-bound with them; ``qc.json`` the validator's portable
+metrics; ``READY``.
 
 What the package cannot hold is refused up front (``require_package_mapping``): a session id
 that is not lower case or ends in ``-``/``_``, a chain that is not a UMIK-1, a format other
@@ -27,6 +31,7 @@ written, a WAV that is not canonical (``audio_not_accepted``).
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -39,7 +44,14 @@ from ..audio import WavInspection, inspect_canonical_wav
 from ..canonical import open_regular_no_follow, write_canonical_json
 from ..capture import MANIFEST_NAME, QC_REPORT_NAME, READY_NAME, ReadyMarker
 from ..errors import ContractError
-from ..models import AudioFileEvidence, CaptureDevice, CaptureManifest, QcReport
+from ..models import (
+    AudioFileEvidence,
+    CaptureDevice,
+    CaptureManifest,
+    MeasurementSegment,
+    MeasurementSession,
+    QcReport,
+)
 from . import jscompat as js
 from .corpus import MEASUREMENT_DEVICE_PREFIX, MEASUREMENT_SESSION_PREFIX, MEASUREMENT_SUITE_ID
 from .jsonio import MISSING
@@ -162,6 +174,77 @@ def package_layout(manifest: Json) -> list[tuple[str, str, str]]:
     return layout
 
 
+def _text(value: Any, limit: int = 500) -> str | None:
+    return value if isinstance(value, str) and 0 < len(value) <= limit else None
+
+
+def _number(value: Any, *, low: float = -1_000_000, high: float = 1_000_000) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and low <= number <= high else None
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _client(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    parts = [
+        part
+        for key in ("name", "version", "platform", "machine")
+        if (part := _text(value.get(key), 100)) is not None
+    ]
+    return _text(" ".join(parts))
+
+
+def measurement_session(manifest: Json) -> MeasurementSession:
+    """The session's own record beyond its audio, for the package's manifest.
+
+    Everything the intake's rules guarantee is kept as recorded (the distance and the input
+    volume, as numbers; the segments' keys); everything else is kept when it is a value the
+    contract can hold and is null otherwise, so a session the intake accepts is never
+    refused for its metadata. A segment naming no file of the package is left out."""
+
+    capture = manifest["capture"]
+    level = capture.get("inputLevel")
+    level = level if isinstance(level, dict) else {}
+    paths = {name: path for name, path, _ in package_layout(manifest)}
+    segments = tuple(
+        MeasurementSegment(
+            key=segment["key"],
+            path=paths[segment["file"]],
+            label=_text(segment.get("label")),
+            mode=_text(segment.get("mode"), 32),
+            started_at=_text(segment.get("startedAt"), 64),
+            duration_seconds=_number(segment.get("durationSeconds")),
+            peak_dbfs=_number(segment.get("peakDbfs")),
+            rms_dbfs=_number(segment.get("rmsDbfs")),
+            clipped_samples=_count(segment.get("clippedSamples")),
+            input_overflows=_count(segment.get("inputOverflows")),
+        )
+        for segment in manifest["segments"]
+        if isinstance(segment.get("file"), str) and segment["file"] in paths
+    )
+    controlled = manifest.get("controlled")
+    muted = level.get("muted")
+    return MeasurementSession(
+        source_session_id=manifest["sessionId"],
+        distance_cm=_number(capture["distanceCm"], low=math.ulp(0), high=10_000),
+        input_volume=_number(capture["inputVolume"]),
+        input_level_source=_text(level.get("source")),
+        input_level_control=_text(level.get("control")),
+        input_level_muted=muted if isinstance(muted, bool) else None,
+        level_pinned_at=_text(capture.get("levelPinnedAt"), 64),
+        controlled=controlled if isinstance(controlled, bool) else None,
+        calibration_file=_text(capture.get("calFile")),
+        client=_client(capture.get("client")),
+        segments=segments,
+    )
+
+
 def capture_manifest(
     manifest: Json,
     inspections: Mapping[str, WavInspection],
@@ -199,6 +282,7 @@ def capture_manifest(
             calibration_sha256=js.get(capture, "calFileSha256") or None,
         ),
         files=files,
+        measurement=measurement_session(manifest),
     )
 
 

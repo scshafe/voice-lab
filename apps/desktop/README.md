@@ -88,7 +88,7 @@ Pocket ID issuer in **Status → Settings…**, or in the settings file. Precede
 | `server_url` | none (`https://voice-lab.<tailnet>.ts.net`) | `VOICE_LAB_DESKTOP_SERVER` |
 | `issuer` | none (`https://id.<tailnet>.ts.net`) | `VOICE_LAB_DESKTOP_ISSUER` |
 | `client_id` | `voice-lab-desktop` | `VOICE_LAB_DESKTOP_CLIENT_ID` |
-| `distance_cm` | `35` (the measurement chain's mouth distance; Status → Settings) | |
+| `distance_cm` | `35`: the measurement chain's mouth-to-capsule distance (Status → Settings). Measure it once from your lips to the tip of the UMIK-1 and keep it: levels change about 6 dB per doubling of distance. Each session records it, and its package carries it to the PC | |
 | `bearer` | `access` (the access token when it is a JWT; `id` sends the ID token) | |
 | `catalog_file` | none: Record → Prompts offers the built-in pilot catalogs; a prompt-suite JSON file adds it (docs/FIRST-RUN.md §7) | |
 | `prompted_uploads` | `false`: prompted sessions stay on this machine until spike S-1 passes (D-042); the owner sets it per machine after recording the pass | |
@@ -111,7 +111,7 @@ voice-lab-desktop --import-cal PATH     # miniDSP's per-serial cal file
 voice-lab-desktop --sessions            # local measurement sessions and their upload state
 voice-lab-desktop --upload              # upload every pending measurement session (/api/v1/intake); prompted ones go from Uploads
 voice-lab-desktop --retry-failed        # refused sessions back to pending
-voice-lab-desktop --prune-accepted      # delete local copies the server has accepted
+voice-lab-desktop --prune-accepted      # delete local copies the server has accepted (their distance, level and segments are in the package on the PC)
 voice-lab-desktop --import-capture-data [DIR]   # copy voice-journey-capture's pin, cal file, sessions
 voice-lab-desktop --install-desktop-entry [--replace]   # Linux: the app in the desktop's menu
 ```

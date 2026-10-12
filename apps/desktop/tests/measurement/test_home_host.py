@@ -54,6 +54,21 @@ def test_a_session_becomes_the_measurement_package(
         key = segment["key"]
         expected = "room-tone" if key == "room-silence" else "calibration"
         assert kinds[segment["file"]] == (key, expected)
+    # The session's own record travels with its takes: the distance, the pinned level, and
+    # each segment with its label and levels.
+    measurement = capture.measurement
+    assert measurement is not None
+    assert measurement.source_session_id == recorded.session_id
+    assert measurement.distance_cm == float(session_json["capture"]["distanceCm"])
+    assert measurement.input_volume == float(session_json["capture"]["inputVolume"])
+    assert measurement.level_pinned_at == session_json["capture"]["levelPinnedAt"]
+    assert measurement.controlled is True
+    assert measurement.client is not None and measurement.client.startswith("voice-lab-desktop")
+    assert [s.key for s in measurement.segments] == [s["key"] for s in session_json["segments"]]
+    paths = {f.path for f in capture.files}
+    for recorded_segment, kept in zip(session_json["segments"], measurement.segments, strict=True):
+        assert kept.path in paths and kept.label == recorded_segment["label"]
+        assert kept.rms_dbfs == recorded_segment["rmsDbfs"]
     # Built once: the same package, the same bytes, so a retry names the same digest.
     before = (built / "manifest.json").read_bytes()
     assert home_host.build_package(local, tmp_path / "packages") == built
@@ -113,6 +128,8 @@ def test_a_session_lands_in_raw_with_its_receipt_and_the_ledger(
             receipt.session_id == f"vj-{recorded.session_id}" and receipt.manifest_sha256 == digest
         )
         assert manifest_of(raw) == manifest_of(built)
+        published = validate_capture_package(raw, allow_intake_receipt=True).manifest
+        assert published.measurement is not None and published.measurement.distance_cm == 35.0
         # The ledger: started before the first byte, completed with the receipt.
         events = [entry.event for entry, _ in HomeHostLedger(rig.library).entries()]
         assert events == ["upload-started", "upload-completed"]
