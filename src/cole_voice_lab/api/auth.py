@@ -75,6 +75,7 @@ class Principal:
 
     issuer: str
     subject: str
+    audiences: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,7 +233,13 @@ class TokenVerifier:
             raise AuthError("the token's signature does not verify")
         self._check_claims(claims, trusted)
         subject = claims["sub"]
-        return Principal(issuer=trusted.issuer, subject=subject)
+        audience = claims["aud"]
+        audiences = (
+            (audience,)
+            if isinstance(audience, str)
+            else tuple(item for item in audience if isinstance(item, str))
+        )
+        return Principal(issuer=trusted.issuer, subject=subject, audiences=audiences)
 
     def _check_claims(self, claims: Mapping[str, Any], trusted: TrustedIssuer) -> None:
         now = self._clock()

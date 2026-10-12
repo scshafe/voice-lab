@@ -1,0 +1,64 @@
+# The speech job runner (docs/SPEECH_API.md §7, D-046), long-running. It looks for queued
+# jobs every quarter second; for each it re-checks the voice release and its consent record,
+# holds the GPU slot, renders the text sentence by sentence through the resident F5-TTS worker
+# (f5_resident.py in the runtime's python, its own process group), publishes each sentence as
+# it is done, writes the render ledger into the lab and queues the job's webhook event. The
+# model stays loaded between jobs and is unloaded after 15 idle minutes, or at once when a long
+# GPU job wants the slot and no speech is queued. It has no network at all; webhooks leave
+# from voice-lab-speech-webhooks.service.
+#
+# Installed by hand, not by the runner lane (README.md here): it needs the GPU's devices,
+# which infra's host-unit validator has no rule for yet, and it is inert until the owner's
+# steps of docs/SPEECH_API.md §11 are done (/etc/voice-lab/speech.json exists).
+#
+# A deploy moves /opt/voice-lab/current but does not restart this unit (the lane does not
+# manage it). With --release-link the runner notices, before its next model load or once it
+# is idle, that its code is no longer the active release's, gives back the GPU slot and any
+# job it claimed, and exits 75, which Restart=on-failure turns into a start of the new code.
+#
+# It writes only the speech state, the GPU slot's lock and the render ledger: the ledger's
+# directory must exist before the unit starts (deploy/speech/README.md, step 8).
+[Unit]
+Description=voice-lab speech job runner and resident model (no network, GPU)
+ConditionPathExists=/etc/voice-lab/speech.json
+ConditionPathIsDirectory=/data/voice-lab/state/speech
+After=local-fs.target
+
+[Service]
+Type=simple
+User=voice-lab
+Group=voice-lab
+SupplementaryGroups=render video
+UMask=0077
+ExecStart=/opt/voice-lab/current/bin/voice-lab speech run --config /etc/voice-lab/speech.json --release-link /opt/voice-lab/current
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ReadWritePaths=/data/voice-lab/state/speech -/data/voice-lab/state/jobs /data/voice-lab/lab/provenance/speech-renders
+ProtectHome=yes
+PrivateTmp=yes
+# The GPU (ROCm: /dev/kfd and the DRM render node), nothing else.
+DevicePolicy=closed
+DeviceAllow=/dev/kfd rw
+DeviceAllow=char-drm rw
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# Not MemoryDenyWriteExecute: torch compiles kernels at run time.
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,351 @@
+{
+  "$defs": {
+    "F5RenderSettings": {
+      "additionalProperties": false,
+      "description": "What an F5-TTS render was asked for: its flow steps (D-046).",
+      "properties": {
+        "family": {
+          "const": "f5-tts",
+          "default": "f5-tts",
+          "title": "Family",
+          "type": "string"
+        },
+        "nfe_steps": {
+          "maximum": 256,
+          "minimum": 1,
+          "title": "Nfe Steps",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "nfe_steps"
+      ],
+      "title": "F5RenderSettings",
+      "type": "object"
+    },
+    "FailureCode": {
+      "enum": [
+        "runtime_unavailable",
+        "render_failed",
+        "render_timeout",
+        "queue_timeout",
+        "voice_release_changed",
+        "consent_changed",
+        "internal_error"
+      ],
+      "type": "string"
+    },
+    "FileDigest": {
+      "additionalProperties": false,
+      "description": "A file a backend loaded, by role and digest (a render's fingerprint names no path).",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/StableId"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "role",
+        "sha256"
+      ],
+      "title": "FileDigest",
+      "type": "object"
+    },
+    "JobId": {
+      "pattern": "^sp-[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "RenderFingerprint": {
+      "additionalProperties": false,
+      "description": "What spoke: the family, the files its backend loaded, the runtime and the settings.\n\n``native_sample_rate_hz`` is the rate the model renders at; the backend delivers\n``API_SAMPLE_RATE_HZ`` whatever it is. ``seeded`` says whether the family honours a seed\n(a family that does not cannot promise byte-identical reruns).",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/StableId"
+        },
+        "device": {
+          "$ref": "#/$defs/StableId"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/FileDigest"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Files",
+          "type": "array"
+        },
+        "model_family": {
+          "$ref": "#/$defs/StableId"
+        },
+        "native_sample_rate_hz": {
+          "maximum": 192000,
+          "minimum": 8000,
+          "title": "Native Sample Rate Hz",
+          "type": "integer"
+        },
+        "runtime": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 16,
+          "title": "Runtime",
+          "type": "object"
+        },
+        "seeded": {
+          "title": "Seeded",
+          "type": "boolean"
+        },
+        "settings": {
+          "$ref": "#/$defs/RenderSettings"
+        },
+        "voice_lab_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Voice Lab Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model_family",
+        "backend",
+        "files",
+        "runtime",
+        "device",
+        "native_sample_rate_hz",
+        "seeded",
+        "settings",
+        "voice_lab_version"
+      ],
+      "title": "RenderFingerprint",
+      "type": "object"
+    },
+    "RenderSettings": {
+      "discriminator": {
+        "mapping": {
+          "f5-tts": "#/$defs/F5RenderSettings"
+        },
+        "propertyName": "family"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/F5RenderSettings"
+        }
+      ]
+    },
+    "RenderedAudio": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "minimum": 45,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "const": 24000,
+          "default": 24000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "sha256",
+        "bytes",
+        "frames"
+      ],
+      "title": "RenderedAudio",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "VoiceReleaseRef": {
+      "additionalProperties": false,
+      "properties": {
+        "release_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "release_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "release_id",
+        "release_sha256"
+      ],
+      "title": "VoiceReleaseRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``provenance/speech-renders/<job id>.json``: one render, for ever (never the text; the\ntext's digest is keyed with the install's text key, so it can be checked against a text\non this host and guessed nowhere).",
+  "properties": {
+    "audio_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Audio Ms"
+    },
+    "caller_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "consent_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "consent_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FailureCode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fingerprint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RenderFingerprint"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "finished_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "job_id": {
+      "$ref": "#/$defs/JobId"
+    },
+    "model_family": {
+      "$ref": "#/$defs/StableId"
+    },
+    "outcome": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RenderedAudio"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "queue_ms": {
+      "minimum": 0,
+      "title": "Queue Ms",
+      "type": "integer"
+    },
+    "release": {
+      "$ref": "#/$defs/VoiceReleaseRef"
+    },
+    "render_ms": {
+      "minimum": 0,
+      "title": "Render Ms",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.speech-render/v1",
+      "default": "cole-voice-lab.speech-render/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "seed": {
+      "maximum": 2147483647,
+      "minimum": 0,
+      "title": "Seed",
+      "type": "integer"
+    },
+    "segment_count": {
+      "maximum": 2000,
+      "minimum": 1,
+      "title": "Segment Count",
+      "type": "integer"
+    },
+    "segment_sha256": {
+      "items": {
+        "$ref": "#/$defs/Sha256"
+      },
+      "maxItems": 2000,
+      "title": "Segment Sha256",
+      "type": "array"
+    },
+    "started_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "text_characters": {
+      "maximum": 2000,
+      "minimum": 1,
+      "title": "Text Characters",
+      "type": "integer"
+    },
+    "text_hmac_sha256": {
+      "$ref": "#/$defs/Sha256"
+    }
+  },
+  "required": [
+    "job_id",
+    "caller_id",
+    "text_hmac_sha256",
+    "text_characters",
+    "release",
+    "model_family",
+    "consent_id",
+    "consent_sha256",
+    "outcome",
+    "failure",
+    "fingerprint",
+    "seed",
+    "segment_count",
+    "segment_sha256",
+    "output",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "queue_ms",
+    "render_ms",
+    "audio_ms"
+  ],
+  "title": "SpeechRenderRecord",
+  "type": "object"
+}

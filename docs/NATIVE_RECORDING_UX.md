@@ -872,7 +872,8 @@ written inside the request's directory, not the system's temporary directory, an
 with the synthesis. A Save As copy is written outside the root, only
 where the operator chose, and never inside the library. Speak reads no consent
 record: D-019 records in-app speech as local listening by Cole and leaves that scope for
-Cole to confirm; every use beyond it keeps the lab's consent, transfer and promotion rules.
+Cole to confirm; every use beyond it keeps the lab's consent and transfer rules and, for
+speech beyond the lab, the voice release (D-045; promotion was retired by D-044).
 
 **Amended 2026-09-13 — SQLite descriptor ownership:** SQLite alone owns open
 database and sidecar descriptors. Checking their paths must not open and close an
@@ -1261,7 +1262,8 @@ cloud sync, App Store distribution, and iOS are separate product decisions.
 
 **Amended 2026-09-16:** §16 adds training to the app, under D-018, which Cole decided on
 2026-09-15. The training rules of D-016 and `docs/FINETUNE.md` are unchanged. Consent,
-transfer and promotion policy are unchanged too. Nothing leaves the Mac.
+transfer and release policy are unchanged too (promotion, since retired by D-044). Nothing
+leaves the Mac.
 
 **Amended 2026-09-19 (D-020):** The separately approved tailnet vault may hold an
 encrypted library copy on Cole's own host. The Mac keeps the working library and
@@ -1270,7 +1272,8 @@ separate, and D-019's local-listening consent question is still open.
 
 **Amended 2026-09-16:** §17 adds a Speak page, under D-019, which Cole asked for on
 2026-09-15. Its clips are for local listening. They are not references, datasets or
-promotion material. The consent, transfer and promotion policy is unchanged; D-019 records
+voice-release material. The consent, transfer and release policy is unchanged (D-044
+retired promotion; D-045 is the voice release); D-019 records
 that Speak reads no consent record and leaves that scope open for Cole to confirm.
 
 ## 16. Fine-tuning from the app

@@ -1,0 +1,125 @@
+{
+  "$defs": {
+    "DeliveryAttempt": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "duration_ms": {
+          "minimum": 0,
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "number": {
+          "maximum": 16,
+          "minimum": 1,
+          "title": "Number",
+          "type": "integer"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "maximum": 599,
+              "minimum": 100,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Status"
+        }
+      },
+      "required": [
+        "number",
+        "at",
+        "status",
+        "error",
+        "duration_ms"
+      ],
+      "title": "DeliveryAttempt",
+      "type": "object"
+    },
+    "DeliveryOutcome": {
+      "enum": [
+        "pending",
+        "delivered",
+        "gone",
+        "given-up",
+        "refused"
+      ],
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``webhooks/<event id>/delivery.json``: every attempt; never the secret or the body.",
+  "properties": {
+    "attempts": {
+      "items": {
+        "$ref": "#/$defs/DeliveryAttempt"
+      },
+      "maxItems": 16,
+      "title": "Attempts",
+      "type": "array"
+    },
+    "caller_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "ended_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "event_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Event Id",
+      "type": "string"
+    },
+    "outcome": {
+      "$ref": "#/$defs/DeliveryOutcome"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.speech-webhook-delivery/v1",
+      "default": "cole-voice-lab.speech-webhook-delivery/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "caller_id",
+    "outcome",
+    "attempts"
+  ],
+  "title": "WebhookDeliveryLog",
+  "type": "object"
+}

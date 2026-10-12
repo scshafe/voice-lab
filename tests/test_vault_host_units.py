@@ -200,3 +200,58 @@ def test_the_air_timer_probes_hourly_and_catches_up() -> None:
     assert values(AIR_TIMER, "Timer", "Persistent") == ["true"]
     assert not values(AIR_TIMER, "Timer", "Unit")
     assert values(AIR_TIMER, "Install", "WantedBy") == ["timers.target"]
+
+
+# -- the speech units (D-046, docs/SPEECH_API.md §7, §8) -----------------------------------------
+
+SPEECH = MANUAL / "voice-lab-speech.service"
+WEBHOOKS = MANUAL / "voice-lab-speech-webhooks.service"
+SPEECH_CONFIG = "/etc/voice-lab/speech.json"
+
+
+def test_the_speech_units_stay_out_of_the_lanes_directory() -> None:
+    lane = {unit.name for unit in host_units(HOST)}
+    assert not any(name.startswith("voice-lab-speech") for name in lane)
+
+
+def test_the_speech_runner_has_the_gpu_and_no_network() -> None:
+    assert values(SPEECH, "Service", "ExecStart") == [
+        f"{BINARY} speech run --config {SPEECH_CONFIG} --release-link /opt/voice-lab/current"
+    ]
+    # It writes the speech state, the GPU slot and the render ledger: not the rest of the lab.
+    assert values(SPEECH, "Service", "ReadWritePaths") == [
+        "/data/voice-lab/state/speech -/data/voice-lab/state/jobs "
+        "/data/voice-lab/lab/provenance/speech-renders"
+    ]
+    assert values(SPEECH, "Service", "ProtectSystem") == ["strict"]
+    assert values(SPEECH, "Service", "PrivateNetwork") == ["yes"]
+    assert values(SPEECH, "Service", "IPAddressDeny") == ["any"]
+    assert values(SPEECH, "Service", "RestrictAddressFamilies") == ["AF_UNIX"]
+    assert values(SPEECH, "Service", "DevicePolicy") == ["closed"]
+    assert values(SPEECH, "Service", "DeviceAllow") == ["/dev/kfd rw", "char-drm rw"]
+    assert values(SPEECH, "Service", "SupplementaryGroups") == ["render video"]
+    assert values(SPEECH, "Unit", "ConditionPathExists") == [SPEECH_CONFIG]
+    assert not {key for _, key, _ in settings(SPEECH)} & CREDENTIAL_KEYS
+    # Long-running: the resident model stays loaded between jobs; it polls its own queue.
+    assert values(SPEECH, "Service", "Type") == ["simple"]
+    assert values(SPEECH, "Service", "Restart") == ["on-failure"]
+    assert values(SPEECH, "Install", "WantedBy") == ["multi-user.target"]
+    assert not (MANUAL / "voice-lab-speech.path").exists()
+
+
+def test_webhook_delivery_reaches_the_tailnet_and_nothing_else() -> None:
+    assert values(WEBHOOKS, "Service", "ExecStart") == [
+        f"{BINARY} speech deliver --config {SPEECH_CONFIG}"
+    ]
+    assert values(WEBHOOKS, "Service", "IPAddressDeny") == ["any"]
+    assert values(WEBHOOKS, "Service", "IPAddressAllow") == TAILNET_ALLOWANCE
+    assert values(WEBHOOKS, "Service", "PrivateDevices") == ["yes"]
+    assert values(WEBHOOKS, "Service", "ReadWritePaths") == ["/data/voice-lab/state/speech"]
+    # The callers' secrets reach this unit alone, as credentials from a root-only directory.
+    assert {key for _, key, _ in settings(WEBHOOKS)} & CREDENTIAL_KEYS == {"LoadCredential"}
+    assert values(WEBHOOKS, "Service", "LoadCredential") == [
+        "speech-webhook-secrets:/etc/voice-lab/speech-webhook-secrets"
+    ]
+    assert values(MANUAL / "voice-lab-speech-webhooks.path", "Path", "PathChanged") == [
+        "/data/voice-lab/state/speech/outbox"
+    ]

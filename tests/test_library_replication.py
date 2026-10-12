@@ -605,7 +605,7 @@ def test_owners_that_do_not_complete_keep_their_previous_entries(
     )
     assert "moved during the pass" in (waiting.reason or "")
     held_back = {owner.owner for owner in first.waiting_owners} - {"lab-approvals"}
-    assert held_back == {"datasets", "references", "transfer-plans"}
+    assert held_back == {"datasets", "references", "speech-records", "transfer-plans"}
     assert {owners[name].held_back_by for name in held_back} <= {"lab-approvals", "datasets"}
     assert first.exit_status == 0 and first.refused_owners == ()
     omitted = by_path(manifest_of(vault, first.head))

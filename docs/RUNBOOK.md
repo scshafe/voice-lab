@@ -37,7 +37,11 @@ the preview's `scope_sha256`, the pending record's SHA-256 from `assets init`,
 and `--i-am-the-subject-and-authorize`. Fine-tuning, Speak on the home host and
 speech for registered callers use later, separate previews/approvals
 (`private-fine-tuning`, `private-home-host-synthesis`, `private-assistant-speech`;
-D-022, D-047); zero-shot approval does not imply them. Each consumer validates its
+D-022, D-047); zero-shot approval does not imply them. An approved or revoked record
+is never replaced (`approve-self` refuses), so a later scope is a new record with its own
+`--consent-id` and no `--expected-current-sha256`: speech for registered callers is
+`cole-self-v2`, with `--purpose private-assistant-speech --execution-boundary home-host`
+([deploy/speech/README.md](../deploy/speech/README.md), step 1). Each consumer validates its
 actual boundary: any capture-side consumer must request `capture-host`, reference
 publication, datasets, and offline synthesis on the mini request
 `tailnet-local-host`, and the PC's job runner requests `home-host`. A record lacking the
@@ -541,7 +545,30 @@ The voice that speaks is a **voice release**: one finished fine-tuned run of
 Cole's own voice that Cole designates himself, on the PC, by CLI (D-045). Speech
 for registered callers uses only the current release (D-046). The commands, the
 caller registry and the owner's steps are specified in
-[SPEECH_API.md](SPEECH_API.md); they are built in the increment that implements it.
+[SPEECH_API.md](SPEECH_API.md); deploying it is [deploy/speech/README.md](../deploy/speech/README.md).
+
+Designate on the PC, as `voice-lab`, after an approved consent record for
+`private-assistant-speech` on `home-host` exists (`cole-self-v2`, section 1). The first
+command previews; the second, which Cole runs, writes the next release (append-only; the
+history stays). The release names that consent record, and only a run of the pinned subject
+(the configuration's `subject_id`, `cole-self`) can be designated:
+
+```bash
+voice-lab voice release designate --asset-root /data/voice-lab/lab \
+  --run <finished run id> --consent-id cole-self-v2 \
+  --config /etc/voice-lab/speech.json --designated-by Cole
+voice-lab voice release designate --asset-root /data/voice-lab/lab \
+  --run <finished run id> --consent-id cole-self-v2 \
+  --config /etc/voice-lab/speech.json --designated-by Cole --i-designate-this-run
+voice-lab voice release show --asset-root /data/voice-lab/lab
+voice-lab voice release history --asset-root /data/voice-lab/lab
+```
+
+`--reference-prompt <prompt id>` chooses an F5-TTS release's reference clip (by default
+Speak's choice; D-048: a family without a reference clip has no use for it);
+`--blind-review <review id> --score-sheet-sha256 <digest>` attaches blind-review evidence.
+A render refuses once the release's checkpoint, reference clip or consent record changes,
+including a renewed consent record: designate again.
 
 ## 8. Conditional full corpus/fine-tuning
 

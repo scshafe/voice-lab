@@ -1630,6 +1630,13 @@ def _reported_clips(output: str, directory: Path, prefix: str, count: int) -> li
     return [reported[index] for index in range(1, count + 1)]
 
 
+def synthesis_vocab_path(runtime: FineTuneRuntime) -> Path:
+    """The vocabulary synthesis loads: the one fine-tuning wrote beside the runtime's data,
+    else the pinned pretrained one (Speak and the speech API's resident worker share it)."""
+    vocab = runtime.data_directory / _F5_PRETRAINED_VOCAB_DATASET / "vocab.txt"
+    return vocab if vocab.is_file() else runtime.pretrained_vocab_path
+
+
 def _synthesize(
     layout: AssetLayout,
     runtime: FineTuneRuntime,
@@ -1642,7 +1649,7 @@ def _synthesize(
     file_prefix: str,
     use_ema: bool,
     nfe_steps: int,
-    device: Literal["mps", "cpu"],
+    device: Literal["mps", "cpu", "cuda"],
     synthesizer: Path | None,
     what: str,
     keep_job: bool,
@@ -1658,9 +1665,7 @@ def _synthesize(
     directory behind, or wrote or reported something other than the clips asked for),
     FINETUNE.RUNTIME_UNAVAILABLE.
     """
-    vocab = runtime.data_directory / _F5_PRETRAINED_VOCAB_DATASET / "vocab.txt"
-    if not vocab.is_file():
-        vocab = runtime.pretrained_vocab_path
+    vocab = synthesis_vocab_path(runtime)
     work_directory = output_directory / SYNTHESIS_WORK_DIRECTORY
     job = {
         "checkpoint_path": str(checkpoint),
@@ -2708,7 +2713,7 @@ def synthesize_speech(
     text: str,
     nfe_steps: int = SPEECH_DEFAULT_NFE_STEPS,
     use_ema: bool = True,
-    device: Literal["mps", "cpu"] = "mps",
+    device: Literal["mps", "cpu", "cuda"] = "mps",
     pretrained_pin: FineTunePretrainedPins | None = None,
     digests: FineTuneDigestCache | None = None,
     synthesizer: Path | None = None,

@@ -1,0 +1,224 @@
+{
+  "$defs": {
+    "BlindReviewRef": {
+      "additionalProperties": false,
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "score_sheet_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "review_id",
+        "score_sheet_sha256"
+      ],
+      "title": "BlindReviewRef",
+      "type": "object"
+    },
+    "F5ReleaseModel": {
+      "additionalProperties": false,
+      "description": "F5-TTS's part of a release: the reference clip's prompt and transcript, and the\nruntime the run trained with. Its files are ``checkpoint`` (the run's ``model_last.pt``)\nand ``reference`` (the clip in the run's dataset).",
+      "properties": {
+        "family": {
+          "const": "f5-tts",
+          "default": "f5-tts",
+          "title": "Family",
+          "type": "string"
+        },
+        "reference_prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_text_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "runtime": {
+          "$ref": "#/$defs/F5RuntimeRef"
+        }
+      },
+      "required": [
+        "reference_prompt_id",
+        "reference_text_sha256",
+        "runtime"
+      ],
+      "title": "F5ReleaseModel",
+      "type": "object"
+    },
+    "F5RuntimeRef": {
+      "additionalProperties": false,
+      "description": "The F5-TTS runtime a run trained with, as its run record names it.",
+      "properties": {
+        "f5_tts_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "F5 Tts Version",
+          "type": "string"
+        },
+        "pretrained_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "torch_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Torch Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "f5_tts_version",
+        "torch_version",
+        "pretrained_sha256"
+      ],
+      "title": "F5RuntimeRef",
+      "type": "object"
+    },
+    "ReleaseFile": {
+      "additionalProperties": false,
+      "description": "One file a release binds: its role in its family (``checkpoint``, ``reference``, a\nspeaker embedding\u2026), its path relative to the asset root, and its SHA-256.",
+      "properties": {
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/StableId"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "role",
+        "path",
+        "sha256"
+      ],
+      "title": "ReleaseFile",
+      "type": "object"
+    },
+    "ReleaseModel": {
+      "discriminator": {
+        "mapping": {
+          "f5-tts": "#/$defs/F5ReleaseModel"
+        },
+        "propertyName": "family"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/F5ReleaseModel"
+        }
+      ]
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One designation (docs/SPEECH_API.md \u00a73).",
+  "properties": {
+    "blind_review": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BlindReviewRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "consent_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "consent_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "created_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "designated_by": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Designated By",
+      "type": "string"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/ReleaseFile"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "model": {
+      "$ref": "#/$defs/ReleaseModel"
+    },
+    "model_family": {
+      "$ref": "#/$defs/StableId"
+    },
+    "previous_release_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "release_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "run_record_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.voice-release/v1",
+      "default": "cole-voice-lab.voice-release/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "maximum": 9999,
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "release_id",
+    "sequence",
+    "previous_release_sha256",
+    "subject_id",
+    "model_family",
+    "run_id",
+    "run_record_sha256",
+    "files",
+    "model",
+    "consent_id",
+    "consent_sha256",
+    "created_at",
+    "designated_by"
+  ],
+  "title": "VoiceRelease",
+  "type": "object"
+}

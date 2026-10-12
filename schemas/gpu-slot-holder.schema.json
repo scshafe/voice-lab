@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``gpu-slot.json``: who holds the one GPU slot, and until when it expects to.",
+  "properties": {
+    "expected_end_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "job_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "kind": {
+      "enum": [
+        "speech",
+        "finetune",
+        "audition",
+        "speak"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.gpu-slot-holder/v1",
+      "default": "cole-voice-lab.gpu-slot-holder/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "started_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    }
+  },
+  "required": [
+    "kind",
+    "job_id",
+    "started_at"
+  ],
+  "title": "GpuSlotHolder",
+  "type": "object"
+}

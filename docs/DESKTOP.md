@@ -93,7 +93,7 @@ contain a session date, and the history identifies that lower precision.
 “Recorded” means the take exists in a capture session. “Finalized” means the
 session has its complete checksum-bound package. “Accepted raw” means the package
 has also passed intake into immutable raw storage. These states do not authorize
-synthesis or certify that a reference has been reviewed for promotion.
+synthesis or certify that a reference has been reviewed for a voice release (D-045).
 
 ## Record and refresh material
 

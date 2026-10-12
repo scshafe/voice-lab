@@ -1,0 +1,219 @@
+{
+  "$defs": {
+    "ClientRef": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    },
+    "EventType": {
+      "enum": [
+        "speech.succeeded",
+        "speech.failed",
+        "speech.cancelled"
+      ],
+      "type": "string"
+    },
+    "FailureCode": {
+      "enum": [
+        "runtime_unavailable",
+        "render_failed",
+        "render_timeout",
+        "queue_timeout",
+        "voice_release_changed",
+        "consent_changed",
+        "internal_error"
+      ],
+      "type": "string"
+    },
+    "JobId": {
+      "pattern": "^sp-[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "SpeechAudio": {
+      "additionalProperties": false,
+      "description": "The rendered audio: what a caller checks the bytes it fetched against.",
+      "properties": {
+        "bytes": {
+          "minimum": 45,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "duration_ms": {
+          "minimum": 0,
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "format": {
+          "const": "wav",
+          "default": "wav",
+          "title": "Format",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "sha256",
+        "bytes",
+        "duration_ms",
+        "expires_at"
+      ],
+      "title": "SpeechAudio",
+      "type": "object"
+    },
+    "SpeechEventData": {
+      "additionalProperties": false,
+      "properties": {
+        "audio": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechAudio"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "client_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClientRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechFailure"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/JobId"
+        },
+        "links": {
+          "$ref": "#/$defs/SpeechLinks"
+        },
+        "segment_count": {
+          "anyOf": [
+            {
+              "maximum": 2000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Segment Count"
+        },
+        "state": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "cancelled"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "client_ref",
+        "segment_count",
+        "audio",
+        "error",
+        "links"
+      ],
+      "title": "SpeechEventData",
+      "type": "object"
+    },
+    "SpeechFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/FailureCode"
+        },
+        "detail": {
+          "maxLength": 2000,
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "detail"
+      ],
+      "title": "SpeechFailure",
+      "type": "object"
+    },
+    "SpeechLinks": {
+      "additionalProperties": false,
+      "properties": {
+        "audio": {
+          "title": "Audio",
+          "type": "string"
+        },
+        "cancel": {
+          "title": "Cancel",
+          "type": "string"
+        },
+        "events": {
+          "title": "Events",
+          "type": "string"
+        },
+        "self": {
+          "title": "Self",
+          "type": "string"
+        }
+      },
+      "required": [
+        "self",
+        "audio",
+        "events",
+        "cancel"
+      ],
+      "title": "SpeechLinks",
+      "type": "object"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A webhook's body: no text and no audio (Standard Webhooks' ``type``, ``timestamp``,\n``data``).",
+  "properties": {
+    "data": {
+      "$ref": "#/$defs/SpeechEventData"
+    },
+    "timestamp": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "type": {
+      "$ref": "#/$defs/EventType"
+    }
+  },
+  "required": [
+    "type",
+    "timestamp",
+    "data"
+  ],
+  "title": "SpeechEvent",
+  "type": "object"
+}

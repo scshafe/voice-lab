@@ -1,0 +1,45 @@
+# The stack changes the speech API needs (docs/SPEECH_API.md §5, §11), written as a compose
+# override and NOT used by the runner lane: deploy/stack/compose.yaml is unchanged, so a merge
+# deploys none of this. The owner applies it, after the steps of deploy/speech/README.md, by
+# folding these lines into deploy/stack/compose.yaml in a reviewed change, together with
+# infra's stacks/voice-lab/host.conf granting the bind below.
+services:
+  oauth2-proxy:
+    environment:
+      # Admit the speech callers' machine tokens (client_credentials) beside the desktop
+      # app's. VOICE_LAB_SPEECH_AUDIENCE is the audience Pocket ID puts in a caller's token,
+      # read from one real token; it is not a secret.
+      OAUTH2_PROXY_EXTRA_JWT_ISSUERS: ${OIDC_ISSUER}=voice-lab-desktop,${OIDC_ISSUER}=${VOICE_LAB_SPEECH_AUDIENCE:?set VOICE_LAB_SPEECH_AUDIENCE in .env}
+
+  api:
+    command:
+      - serve
+      - --asset-root
+      - /data/voice-lab/lab
+      - --jwks
+      - /data/voice-lab/state/auth/jwks.json
+      - --issuer
+      - ${OIDC_ISSUER}
+      - --audience
+      - voice-lab-desktop
+      - --allowed-subject
+      - ${VOICE_LAB_SUBJECT}
+      - --server-build
+      - ${VOICE_LAB_IMAGE}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --journey
+      # The speech routes for the callers this configuration registers (D-046).
+      - --speech-config
+      - /etc/voice-lab/speech.json
+    volumes:
+      # The speech configuration: root-owned, readable by voice-lab, read-only here. It holds
+      # no secret; the webhook secrets stay on the host for the delivery unit only.
+      - type: bind
+        source: /etc/voice-lab/speech.json
+        target: /etc/voice-lab/speech.json
+        read_only: true
+        bind:
+          create_host_path: false

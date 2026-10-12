@@ -161,7 +161,8 @@ fine-tuning runner. [Current matrix](MODEL_MATRIX.md).
   [trainer](https://github.com/QwenLM/Qwen3-TTS/blob/main/finetuning/sft_12hz.py).
 - F5-TTS has an official paired-audio/text fine-tuning path, but this research
   did not establish a measured M4/24 GB training configuration. Its pretrained
-  weights have a noncommercial license caveat relevant to later promotion.
+  weights have a noncommercial license caveat relevant to any use beyond private
+  speech (promotion was retired by D-044; the voice release of D-045 is private use).
   [Training guide](https://github.com/SWivid/F5-TTS/blob/main/src/f5_tts/train/README.md),
   [license statement](https://github.com/SWivid/F5-TTS#license).
 - Chatterbox is a useful zero-shot comparator. No official user-speaker training

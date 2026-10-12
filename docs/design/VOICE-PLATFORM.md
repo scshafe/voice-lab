@@ -345,7 +345,7 @@ replacement for the door.
 
 ### 3.6 Speech for registered callers
 
-Added 2026-10-11 (D-044 to D-047); specified in [SPEECH_API.md](../SPEECH_API.md).
+Added 2026-10-11 (D-044 to D-048); specified in [SPEECH_API.md](../SPEECH_API.md).
 voice-lab renders text as speech in Cole's voice for callers listed in a caller registry
 (Cole's own agent server, later). Only the voice release Cole designates speaks (D-045).
 `POST /api/v1/speech` answers `202` with a job. The job runner splits the text into
@@ -360,6 +360,14 @@ delivers webhooks over the tailnet only. Every render is in an append-only ledge
 digest, never the text), and rendered audio is deleted after 7 days. Spike S-2 measured a warm
 real-time factor of about 0.7 at 32 flow steps on the PC (D-046); a whole long reply still
 takes minutes, which is why the API is asynchronous and progressive.
+
+The speech path is family-neutral (D-048): a release names its model family and binds that
+family's files by role, the job runner renders through one backend port, and a small registry
+gives each family its backend, its segment limit, its native sample rate and whether it
+seeds. F5-TTS is the one family today; the API's audio stays 24 kHz mono 16-bit whatever a
+family renders. Adding a family for the comparison Cole wants once the corpus is complete is
+one runtime lock, one training adapter, one speech backend and one registry entry
+([MODEL_FAMILIES.md](../MODEL_FAMILIES.md)).
 
 ## 4. Data and privacy model
 

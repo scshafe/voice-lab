@@ -1,0 +1,10 @@
+# Starts webhook delivery whenever the job runner or a cancel queues an event.
+[Unit]
+Description=voice-lab speech webhooks: watch the outbox
+
+[Path]
+PathChanged=/data/voice-lab/state/speech/outbox
+Unit=voice-lab-speech-webhooks.service
+
+[Install]
+WantedBy=paths.target
