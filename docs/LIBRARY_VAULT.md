@@ -46,7 +46,9 @@ It is **not**:
   vault is only ever reached through ports;
 - a live catalog. The prompt database travels as an encrypted copy; the Mac's database stays
   authoritative. Serving prompts from a remote store would let whoever controls the host
-  change them, and is deliberately out of scope;
+  change them, and is deliberately out of scope for the vault. (Since D-052 the live
+  catalog moves to the PC's own corpus store, which Cole controls and which `/api/v1` serves
+  to signed-in clients; the vault still carries only encrypted copies.);
 - a way to free disk. Only `voice-lab finetune archive --remove-local-copy` removes anything
   from the Mac, one run at a time, after the copy has been verified by download;
 - an off-site copy by itself. Each destination is one copy on one disk; the laptop shares the
