@@ -32,11 +32,12 @@ from cole_voice_lab.api.staging import IntakeStaging
 from cole_voice_lab.consent import approve_self_consent, install_pending_consent
 from cole_voice_lab.finetune import FineTuneRun
 from cole_voice_lab.paths import AssetLayout
-from cole_voice_lab.speech.backend import RenderRequest, SpeechBackendError
+from cole_voice_lab.speech.backend import SpeechBackendError
 from cole_voice_lab.speech.config import SpeechCaller, SpeechConfig
 from cole_voice_lab.speech.contracts import RenderFingerprint
-from cole_voice_lab.speech.release import designate
+from cole_voice_lab.speech.release import VerifiedRelease, designate
 from cole_voice_lab.speech.routes import PREFIX, SpeechRoutes, caller_policy
+from cole_voice_lab.speech.runner import PassReport, SpeechRunner
 
 START = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
@@ -48,10 +49,12 @@ KEY = bytes(range(32))
 SECRET = "whsec_" + base64.b64encode(KEY).decode("ascii")
 
 
-def write_tone(path: Path, *, frames: int = 2400, rate: int = 24_000, channels: int = 1) -> None:
+def write_tone(
+    path: Path, *, frames: int = 2400, rate: int = 24_000, channels: int = 1, period: int = 60
+) -> None:
     """A synthetic tone: ``frames`` frames of 16-bit PCM (private)."""
     samples = b"".join(
-        struct.pack("<h", round(8000 * math.sin(index * math.tau / 60))) * channels
+        struct.pack("<h", round(8000 * math.sin(index * math.tau / period))) * channels
         for index in range(frames)
     )
     with wave.open(str(path), "wb") as handle:
@@ -127,38 +130,63 @@ def caller_token(**claims: Any) -> str:
 
 @dataclass
 class FakeBackend:
-    """Writes a synthetic tone; can fail, wait for a cancel, or write something else."""
+    """A stand-in for the resident model: each segment is a tone shaped by its seed, so the
+    same seed gives the same bytes. It can fail, write something else, or call a hook."""
 
     frames: int = 2400
     fail: str | None = None
-    wait_for_cancel: bool = False
+    fail_at: int = 1
     write: Callable[[Path], None] | None = None
-    calls: list[RenderRequest] = field(default_factory=list)
+    on_segment: Callable[[int], None] | None = None
+    calls: list[tuple[str, int]] = field(default_factory=list)
+    prepared: list[VerifiedRelease] = field(default_factory=list)
+    unloads: int = 0
+    loaded: bool = False
 
-    def render(self, request: RenderRequest, *, cancelled: Callable[[], bool]) -> RenderFingerprint:
-        self.calls.append(request)
-        if self.wait_for_cancel:
-            for _ in range(200):
-                if cancelled():
-                    raise SpeechBackendError("cancelled", "cancelled")
-                threading.Event().wait(0.01)
-            raise SpeechBackendError("render_timeout", "waited")
-        if self.fail is not None:
-            raise SpeechBackendError(self.fail, f"fake {self.fail}")  # type: ignore[arg-type]
-        if self.write is not None:
-            self.write(request.output)
-        else:
-            write_tone(request.output, frames=self.frames)
-        release = request.release.release
+    def prepare(self, release: VerifiedRelease) -> RenderFingerprint:
+        if self.fail == "runtime_unavailable":
+            raise SpeechBackendError("runtime_unavailable", "fake: no runtime")
+        self.prepared.append(release)
+        self.loaded = True
+        record = release.release
         return RenderFingerprint(
-            checkpoint_sha256=release.checkpoint_sha256,
-            reference_sha256=release.reference_sha256,
+            checkpoint_sha256=record.checkpoint_sha256,
+            reference_sha256=record.reference_sha256,
             backend="fake",
             runtime={"fake": "1"},
             device="cpu",
-            nfe_steps=8,
+            nfe_steps=32,
             voice_lab_version="test",
         )
+
+    def render_segment(
+        self, text: str, *, seed: int, output: Path, deadline_seconds: float
+    ) -> None:
+        self.calls.append((text, seed))
+        index = len(self.calls)
+        if self.on_segment is not None:
+            self.on_segment(index)
+        if self.fail is not None and index == self.fail_at:
+            raise SpeechBackendError(self.fail, f"fake {self.fail}")  # type: ignore[arg-type]
+        if self.write is not None:
+            self.write(output)
+        else:
+            write_tone(output, frames=self.frames, period=20 + seed % 40)
+
+    def unload(self) -> None:
+        self.loaded = False
+        self.unloads += 1
+
+
+class OnePass(SpeechRunner):
+    """A runner whose every pass ends by unloading, as ``speech run --once`` does: tests that
+    build a runner per pass must not leave the GPU slot held by one they dropped."""
+
+    def run_pending(self, *, sweep: bool = True) -> PassReport:
+        try:
+            return super().run_pending(sweep=sweep)
+        finally:
+            self.unload()
 
 
 @dataclass

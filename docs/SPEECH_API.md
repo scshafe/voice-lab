@@ -128,7 +128,8 @@ read the parts they need.
   "segment_deadline_seconds": 120,
   "idle_unload_seconds": 900,
   "gpu_busy_retry_seconds": 600,
-  "runtime": {"runtime_root": "/data/voice-lab/lab/runtimes/f5-tts-rocm", "device": "cuda", "nfe_steps": 32},
+  "runtime": {"runtime_root": "/data/voice-lab/lab/runtimes/f5-tts-rocm", "device": "cuda",
+              "nfe_steps": 32, "visible_devices": "0"},
   "callers": [
     {
       "caller_id": "agent-server",
@@ -328,6 +329,8 @@ outbox/<event id>.json        a webhook event waiting for the delivery process
 webhooks/<event id>/          an event being delivered, with its delivery log
 resident/                     the resident model's private scratch (a converted reference
                               copy); removed when it unloads, and at start
+cache/                        the resident model's caches (MIOpen's kernel database);
+                              no private data
 ```
 
 The ledger lives in the asset root (§9); the audio does not, so the vault never sees it.

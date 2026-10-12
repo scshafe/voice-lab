@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import time
 from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ from speech_fixtures import (
     HOOK,
     NOW,
     FakeBackend,
+    OnePass,
     SpeechRig,
     build_lab,
     caller,
@@ -34,7 +36,6 @@ from cole_voice_lab.speech.contracts import GpuSlotHolder
 from cole_voice_lab.speech.gpu import hold_slot
 from cole_voice_lab.speech.release import consent_path, current_release
 from cole_voice_lab.speech.routes import byte_range, caller_policy, match_caller
-from cole_voice_lab.speech.runner import SpeechRunner
 from cole_voice_lab.speech.store import SpeechRefusal
 
 
@@ -69,7 +70,7 @@ def answer(
 
 
 def run_jobs(rig: SpeechRig) -> None:
-    SpeechRunner(rig.lab.config, FakeBackend(), clock=lambda: rig.clock[0]).run_pending()
+    OnePass(rig.lab.config, FakeBackend(), clock=lambda: rig.clock[0]).run_pending()
 
 
 @pytest.fixture
@@ -317,3 +318,91 @@ def test_the_caller_policy_and_match(tmp_path: Path) -> None:
         match_caller(lab.config, Principal(registered.issuer, registered.subject, ("other",)))
         is None
     )
+
+
+# -- segments and the event stream -----------------------------------------------------------
+
+THREE = "The first sentence is here. A second one follows it! And is there a third?"
+
+
+def parse_events(payload: bytes) -> list[dict[str, str]]:
+    events = []
+    for block in payload.decode().split("\n\n"):
+        fields = dict(
+            line.split(": ", 1)
+            for line in block.splitlines()
+            if ": " in line and not line.startswith(":")
+        )
+        if "event" in fields:
+            events.append(fields)
+    return events
+
+
+def test_each_sentence_is_served_as_soon_as_it_is_published(rig: SpeechRig) -> None:
+    _, job = answer(rig, "POST", "/api/v1/speech", {"text": THREE})
+    first = f"{job['links']['self']}/segments/1/audio"
+    status, refusal = answer(rig, "GET", first)
+    assert (status, refusal["error"]) == (409, "audio_not_ready")
+    run_jobs(rig)
+    _, done = answer(rig, "GET", job["links"]["self"])
+    assert done["segment_count"] == 3 and [s["index"] for s in done["segments"]] == [1, 2, 3]
+    status, headers, audio = call(rig, "GET", done["segments"][1]["audio"])
+    assert status == 200 and headers["ETag"] == f'"{done["segments"][1]["sha256"]}"'
+    stored = Path(rig.lab.config.state_root) / "jobs" / job["id"] / "segments" / "0002.wav"
+    assert audio == stored.read_bytes()
+    status, _, part = call(rig, "GET", first, headers={"Range": "bytes=0-9"})
+    assert status == 206 and len(part) == 10
+    for path, code in (
+        (f"{job['links']['self']}/segments/4/audio", "not_found"),
+        (f"{job['links']['self']}/segments/0/audio", "not_found"),
+        (f"{job['links']['self']}/segments/x/audio", "not_found"),
+        (f"{job['links']['self']}/segments/1/other", "not_found"),
+    ):
+        assert answer(rig, "GET", path)[1]["error"] == code
+    assert answer(rig, "POST", first)[0] == 405
+
+
+def test_the_event_stream_announces_segments_then_the_end(rig: SpeechRig) -> None:
+    _, job = answer(rig, "POST", "/api/v1/speech", {"text": THREE})
+    received: list[bytes] = []
+
+    def listen() -> None:
+        received.append(call(rig, "GET", job["links"]["events"])[2])
+
+    import threading
+
+    listener = threading.Thread(target=listen)
+    listener.start()
+    time.sleep(0.5)
+    run_jobs(rig)
+    listener.join(10)
+    events = parse_events(received[0])
+    assert [event["event"] for event in events] == [
+        "segment.ready",
+        "segment.ready",
+        "segment.ready",
+        "speech.succeeded",
+    ]
+    assert [event["id"] for event in events] == ["1", "2", "3", "end"]
+    assert json.loads(events[0]["data"])["audio"].endswith("/segments/1/audio")
+    assert json.loads(events[-1]["data"])["state"] == "succeeded"
+    assert b"first sentence" not in received[0]
+    status, headers, resumed = call(
+        rig, "GET", job["links"]["events"], headers={"Last-Event-ID": "2"}
+    )
+    assert status == 200 and headers["Content-Type"].startswith("text/event-stream")
+    assert [event["id"] for event in parse_events(resumed)] == ["3", "end"]
+    status, refusal = answer(rig, "GET", "/api/v1/speech/sp-000000000000000000000000/events")
+    assert (status, refusal["error"]) == (404, "speech_not_found")
+
+
+def test_the_event_stream_keeps_alive_and_ends_on_time(rig: SpeechRig) -> None:
+    _, job = answer(rig, "POST", "/api/v1/speech", {"text": "Waiting forever."})
+    ticks = iter([0.0, 0.0, 16.0, 16.0, 700.0])
+    routes = rig.routes
+    routes.monotonic = lambda: next(ticks)
+    routes.sleep = lambda _: None
+    registered = rig.lab.config.callers[0]
+    chunks = list(routes._events(registered, job["id"], None))
+    assert chunks[0].startswith(b"retry:") and b": keepalive\n\n" in chunks
+    assert not any(b"event:" in chunk for chunk in chunks)

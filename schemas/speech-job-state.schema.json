@@ -58,6 +58,45 @@
       "title": "RenderedAudio",
       "type": "object"
     },
+    "SegmentAudio": {
+      "additionalProperties": false,
+      "description": "One published sentence: ``jobs/<id>/segments/<index, 4 digits>.wav``.",
+      "properties": {
+        "bytes": {
+          "minimum": 45,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "index": {
+          "maximum": 2000,
+          "minimum": 1,
+          "title": "Index",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "const": 24000,
+          "default": 24000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "sha256",
+        "bytes",
+        "frames",
+        "index"
+      ],
+      "title": "SegmentAudio",
+      "type": "object"
+    },
     "Sha256": {
       "pattern": "^[0-9a-f]{64}$",
       "type": "string"
@@ -141,6 +180,29 @@
       "default": "cole-voice-lab.speech-job-state/v1",
       "title": "Schema Version",
       "type": "string"
+    },
+    "segment_count": {
+      "anyOf": [
+        {
+          "maximum": 2000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Segment Count"
+    },
+    "segments": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SegmentAudio"
+      },
+      "maxItems": 2000,
+      "title": "Segments",
+      "type": "array"
     },
     "started_at": {
       "anyOf": [

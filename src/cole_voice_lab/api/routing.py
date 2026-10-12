@@ -14,7 +14,7 @@ aliases answer the JS's JSON).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import IO, Protocol
 
@@ -58,8 +58,8 @@ class RouteRequest:
 
 @dataclass(frozen=True, slots=True)
 class RouteResponse:
-    """An answer: ``body`` bytes, or ``stream`` (``stream_length`` bytes copied from an
-    open file, which the server closes)."""
+    """An answer: ``body`` bytes, ``stream`` (``stream_length`` bytes copied from an open
+    file, which the server closes), or ``events`` (chunks written as they come)."""
 
     status: int
     route: str
@@ -68,6 +68,9 @@ class RouteResponse:
     headers: tuple[tuple[str, str], ...] = ()
     stream: IO[bytes] | None = None
     stream_length: int = 0
+    # A response of unknown length written as it is produced (server-sent events): no
+    # Content-Length, flushed after each chunk, and the connection is closed at its end.
+    events: Iterator[bytes] | None = None
 
 
 class Route(Protocol):

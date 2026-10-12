@@ -149,9 +149,12 @@ class SpeechRuntime(ContractModel):
 
     runtime_root: AbsolutePath
     device: Literal["cuda", "cpu"] = "cuda"
+    # Flow steps: 32 until Cole compares 16 and 32 by ear (D-046); every ledger entry names it.
     nfe_steps: int = Field(
         default=SPEECH_DEFAULT_NFE_STEPS, ge=SPEECH_MIN_NFE_STEPS, le=SPEECH_MAX_NFE_STEPS
     )
+    # HIP_VISIBLE_DEVICES for the resident worker (the discrete card, design §7.1), if set.
+    visible_devices: str | None = Field(default=None, pattern=r"^[0-9]{1,2}(,[0-9]{1,2}){0,3}$")
 
 
 class SpeechConfig(ContractModel):
@@ -168,7 +171,8 @@ class SpeechConfig(ContractModel):
     record_retention_days: int = Field(default=30, ge=1, le=365)
     queue_limit: int = Field(default=32, ge=1, le=256)
     queue_timeout_seconds: int = Field(default=600, ge=10, le=3600)
-    render_deadline_seconds: int = Field(default=300, ge=10, le=3600)
+    segment_deadline_seconds: int = Field(default=120, ge=10, le=600)
+    idle_unload_seconds: int = Field(default=900, ge=10, le=86_400)
     gpu_busy_retry_seconds: int = Field(default=600, ge=1, le=86_400)
     runtime: SpeechRuntime | None = None
     callers: tuple[SpeechCaller, ...] = Field(min_length=1, max_length=MAX_CALLERS)

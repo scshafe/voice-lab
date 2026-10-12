@@ -16,10 +16,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from speech_fixtures import KEY, NOW, SECRET, FakeBackend, Lab, build_lab, caller
+from speech_fixtures import KEY, NOW, SECRET, FakeBackend, Lab, OnePass, build_lab, caller
 
 from cole_voice_lab.speech.contracts import SpeechRequest, WebhookDeliveryLog
-from cole_voice_lab.speech.runner import SpeechRunner
 from cole_voice_lab.speech.store import SpeechStore
 from cole_voice_lab.speech.webhooks import (
     RETRY_OFFSETS,
@@ -150,7 +149,7 @@ def ended_job(lab: Lab, **fields: Any) -> str:
     store.ensure()
     fields.setdefault("callback_url", lab.config.callers[0].webhook_urls[0] + "/turn-1")
     job, _ = store.submit(lab.config.callers[0], SpeechRequest(text="Hello.", **fields), now=NOW)
-    SpeechRunner(lab.config, FakeBackend(), clock=lambda: NOW).run_pending()
+    OnePass(lab.config, FakeBackend(), clock=lambda: NOW).run_pending()
     return job.record.job_id
 
 

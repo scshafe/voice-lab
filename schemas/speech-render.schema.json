@@ -218,6 +218,26 @@
       "title": "Schema Version",
       "type": "string"
     },
+    "seed": {
+      "maximum": 2147483647,
+      "minimum": 0,
+      "title": "Seed",
+      "type": "integer"
+    },
+    "segment_count": {
+      "maximum": 2000,
+      "minimum": 1,
+      "title": "Segment Count",
+      "type": "integer"
+    },
+    "segment_sha256": {
+      "items": {
+        "$ref": "#/$defs/Sha256"
+      },
+      "maxItems": 2000,
+      "title": "Segment Sha256",
+      "type": "array"
+    },
     "started_at": {
       "$ref": "#/$defs/UtcTimestamp"
     },
@@ -242,6 +262,9 @@
     "outcome",
     "failure",
     "fingerprint",
+    "seed",
+    "segment_count",
+    "segment_sha256",
     "output",
     "created_at",
     "started_at",

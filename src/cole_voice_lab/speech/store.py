@@ -45,6 +45,7 @@ from .contracts import (
     FailureCode,
     JobState,
     RenderedAudio,
+    SegmentAudio,
     SpeechAudio,
     SpeechEvent,
     SpeechEventData,
@@ -55,12 +56,15 @@ from .contracts import (
     SpeechJobStatus,
     SpeechLinks,
     SpeechRequest,
+    SpeechSegment,
     WebhookOutboxEntry,
     event_type,
     milliseconds,
+    segment_link,
 )
 
 AUDIO_NAME: Final = "speech.wav"
+SEGMENTS_DIRECTORY: Final = "segments"
 PARTIAL_AUDIO_NAME: Final = "render.wav.part"
 MAX_RECORD_BYTES: Final = 64 * 1024
 # A job directory that never got its state (a crash inside ``submit``) is removed after this.
@@ -333,8 +337,34 @@ class SpeechStore:
     def write_state(self, state: SpeechJobState) -> None:
         write_canonical_json(self.job_directory(state.job_id) / "status.json", state)
 
-    def mark_running(self, job: Job, *, now: datetime) -> Job:
-        state = SpeechJobState(job_id=job.record.job_id, state="running", started_at=now)
+    def mark_running(self, job: Job, *, now: datetime, segment_count: int) -> Job:
+        state = SpeechJobState(
+            job_id=job.record.job_id,
+            state="running",
+            started_at=now,
+            segment_count=segment_count,
+        )
+        self.write_state(state)
+        return Job(job.record, state)
+
+    def segment_path(self, job_id: str, index: int) -> Path:
+        return self.job_directory(job_id) / SEGMENTS_DIRECTORY / f"{index:04d}.wav"
+
+    def partial_segment_path(self, job_id: str, index: int) -> Path:
+        directory = self.job_directory(job_id) / SEGMENTS_DIRECTORY
+        directory.mkdir(mode=0o700, exist_ok=True)
+        return directory / f".{index:04d}.wav.part"
+
+    def publish_segment(self, job: Job, segment: SegmentAudio) -> Job:
+        """Publish one finished sentence (its owner only): the file by rename, then the state
+        that lists it, so a listed segment is always complete."""
+        job_id = job.record.job_id
+        os.replace(
+            self.partial_segment_path(job_id, segment.index),
+            self.segment_path(job_id, segment.index),
+        )
+        state = job.state.model_copy(update={"segments": (*job.state.segments, segment)})
+        state = SpeechJobState.model_validate(state.model_dump())
         self.write_state(state)
         return Job(job.record, state)
 
@@ -357,10 +387,12 @@ class SpeechStore:
             error=None
             if failure is None
             else SpeechFailure(code=failure[0], detail=failure[1][:2000]),
+            segment_count=job.state.segment_count,
+            segments=job.state.segments,
             audio=audio,
             audio_expires_at=(
                 now + timedelta(hours=self.config.audio_retention_hours)
-                if audio is not None
+                if audio is not None or job.state.segments
                 else None
             ),
         )
@@ -368,6 +400,8 @@ class SpeechStore:
         directory = self.job_directory(job_id)
         (directory / "input.json").unlink(missing_ok=True)
         (directory / PARTIAL_AUDIO_NAME).unlink(missing_ok=True)
+        for partial in (directory / SEGMENTS_DIRECTORY).glob(".*.part"):
+            partial.unlink(missing_ok=True)
         (self.queue_root / job_id).unlink(missing_ok=True)
         ended = Job(job.record, state)
         if job.record.callback_url is not None:
@@ -393,6 +427,7 @@ class SpeechStore:
                     id=status.id,
                     state=outcome,
                     client_ref=status.client_ref,
+                    segment_count=status.segment_count,
                     audio=status.audio,
                     error=status.error,
                     links=status.links,
@@ -426,12 +461,14 @@ class SpeechStore:
                 continue
             state = job.state
             if (
-                state.state == "succeeded"
-                and state.audio_expires_at is not None
+                state.audio_expires_at is not None
                 and state.audio_expires_at <= now
+                and (state.state == "succeeded" or (directory / SEGMENTS_DIRECTORY).exists())
             ):
                 (directory / AUDIO_NAME).unlink(missing_ok=True)
-                self.write_state(state.model_copy(update={"state": "expired"}))
+                shutil.rmtree(directory / SEGMENTS_DIRECTORY, ignore_errors=True)
+                if state.state == "succeeded":
+                    self.write_state(state.model_copy(update={"state": "expired"}))
                 audio_removed += 1
             if state.finished_at is not None and state.finished_at + keep <= now:
                 (directory / AUDIO_NAME).unlink(missing_ok=True)
@@ -474,6 +511,16 @@ def to_status(job: Job) -> SpeechJobStatus:
         if state.started_at is not None and state.finished_at is not None
         else None
     )
+    segments = tuple(
+        SpeechSegment(
+            index=segment.index,
+            sha256=segment.sha256,
+            bytes=segment.bytes,
+            duration_ms=round(segment.frames * 1000 / segment.sample_rate_hz),
+            audio=segment_link(record.job_id, segment.index),
+        )
+        for segment in state.segments
+    )
     return SpeechJobStatus(
         id=record.job_id,
         state=state.state,
@@ -485,6 +532,8 @@ def to_status(job: Job) -> SpeechJobStatus:
         finished_at=state.finished_at,
         queue_ms=queue_ms,
         render_ms=render_ms,
+        segment_count=state.segment_count,
+        segments=segments,
         audio=audio,
         error=state.error,
         links=SpeechLinks.for_job(record.job_id),
@@ -507,3 +556,24 @@ def open_audio(store: SpeechStore, job: Job) -> tuple[BinaryIO, int]:
     except (OSError, VoiceLabError) as error:  # missing, or not a regular file
         raise SpeechRefusal(410, "audio_expired", "the audio is no longer kept") from error
     return stream, os.fstat(stream.fileno()).st_size
+
+
+def open_segment(store: SpeechStore, job: Job, index: int) -> tuple[BinaryIO, int, SegmentAudio]:
+    """One published segment, opened (never through a link), its size and its record.
+
+    Raises: ``SpeechRefusal`` 404 ``not_found`` beyond the job's segments, 409
+    ``audio_not_ready`` before it is published, 410 ``audio_expired`` after retention.
+    """
+    count = job.state.segment_count
+    if count is not None and not 1 <= index <= count:
+        raise SpeechRefusal(404, "not_found", f"the job has {count} segments")
+    published = next((item for item in job.state.segments if item.index == index), None)
+    if published is None:
+        if job.state.state in TERMINAL_STATES:
+            raise SpeechRefusal(404, "not_found", "that segment was never rendered")
+        raise SpeechRefusal(409, "audio_not_ready", "that segment is not rendered yet")
+    try:
+        stream = open_regular_no_follow(store.segment_path(job.record.job_id, index))
+    except (OSError, VoiceLabError) as error:
+        raise SpeechRefusal(410, "audio_expired", "the audio is no longer kept") from error
+    return stream, os.fstat(stream.fileno()).st_size, published

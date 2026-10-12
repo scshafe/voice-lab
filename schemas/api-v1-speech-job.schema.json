@@ -102,6 +102,10 @@
           "title": "Cancel",
           "type": "string"
         },
+        "events": {
+          "title": "Events",
+          "type": "string"
+        },
         "self": {
           "title": "Self",
           "type": "string"
@@ -110,9 +114,48 @@
       "required": [
         "self",
         "audio",
+        "events",
         "cancel"
       ],
       "title": "SpeechLinks",
+      "type": "object"
+    },
+    "SpeechSegment": {
+      "additionalProperties": false,
+      "description": "One finished sentence, as a caller sees it (and fetches it at ``audio``).",
+      "properties": {
+        "audio": {
+          "title": "Audio",
+          "type": "string"
+        },
+        "bytes": {
+          "minimum": 45,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "duration_ms": {
+          "minimum": 0,
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "index": {
+          "maximum": 2000,
+          "minimum": 1,
+          "title": "Index",
+          "type": "integer"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "index",
+        "sha256",
+        "bytes",
+        "duration_ms",
+        "audio"
+      ],
+      "title": "SpeechSegment",
       "type": "object"
     },
     "UtcTimestamp": {
@@ -207,6 +250,27 @@
       "title": "Schema Version",
       "type": "string"
     },
+    "segment_count": {
+      "anyOf": [
+        {
+          "maximum": 2000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Segment Count"
+    },
+    "segments": {
+      "items": {
+        "$ref": "#/$defs/SpeechSegment"
+      },
+      "maxItems": 2000,
+      "title": "Segments",
+      "type": "array"
+    },
     "started_at": {
       "anyOf": [
         {
@@ -237,6 +301,8 @@
     "finished_at",
     "queue_ms",
     "render_ms",
+    "segment_count",
+    "segments",
     "audio",
     "error",
     "links"

@@ -393,6 +393,9 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self.close_connection = True
         else:
             self._discard_body()
+        if response.events is not None:
+            self._send_events(response)
+            return
         length = response.stream_length if response.stream is not None else len(response.body)
         try:
             self.send_response(response.status)
@@ -413,6 +416,31 @@ class _ApiHandler(BaseHTTPRequestHandler):
         finally:
             if response.stream is not None:
                 response.stream.close()
+        self._access_log(response.status)
+
+    def _send_events(self, response: RouteResponse) -> None:
+        """Write an event stream as it is produced, then close the connection."""
+        events = response.events
+        assert events is not None
+        self.close_connection = True
+        try:
+            self.send_response(response.status)
+            self.send_header("Content-Type", response.content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            for name, value in response.headers:
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.flush()
+            for chunk in events:
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except OSError:
+            pass  # the client went away
+        finally:
+            close = getattr(events, "close", None)
+            if close is not None:
+                close()
         self._access_log(response.status)
 
     def _stream(self, source: IO[bytes], length: int) -> None:

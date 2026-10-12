@@ -84,7 +84,7 @@ def test_the_host_passes_run_from_the_configuration(
     checked = json.loads(capsys.readouterr().out)
     assert checked["runtime_configured"] is False and checked["callers"][0]["caller_id"]
     assert "secret" not in json.dumps(checked)
-    assert main(["speech", "run", "--config", str(config)]) == 0
+    assert main(["speech", "run", "--config", str(config), "--once"]) == 0
     report = json.loads(capsys.readouterr().out)
     # No runtime on this host: the job fails runtime_unavailable (or queue_timeout, since the
     # fixture's clock is not this one), and the runner does not crash.

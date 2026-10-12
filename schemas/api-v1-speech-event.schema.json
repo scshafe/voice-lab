@@ -108,6 +108,19 @@
         "links": {
           "$ref": "#/$defs/SpeechLinks"
         },
+        "segment_count": {
+          "anyOf": [
+            {
+              "maximum": 2000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Segment Count"
+        },
         "state": {
           "enum": [
             "succeeded",
@@ -122,6 +135,7 @@
         "id",
         "state",
         "client_ref",
+        "segment_count",
         "audio",
         "error",
         "links"
@@ -159,6 +173,10 @@
           "title": "Cancel",
           "type": "string"
         },
+        "events": {
+          "title": "Events",
+          "type": "string"
+        },
         "self": {
           "title": "Self",
           "type": "string"
@@ -167,6 +185,7 @@
       "required": [
         "self",
         "audio",
+        "events",
         "cancel"
       ],
       "title": "SpeechLinks",

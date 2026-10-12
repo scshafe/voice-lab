@@ -3,8 +3,9 @@
 @canonical cli_speech -- registered into ``voice-lab``'s parser by ``cli.build_parser``.
 ``voice release designate`` previews, then (with ``--i-designate-this-run``) writes, the
 next voice release (D-045): an act of judgement that is Cole's, never an agent's.
-``voice release show|history`` print releases. ``speech run`` is the job runner's one pass
-(the host unit ``voice-lab-speech``, no network); ``speech deliver`` the webhook delivery
+``voice release show|history`` print releases. ``speech run`` is the job runner with its
+resident model until SIGTERM (the host unit ``voice-lab-speech``, no network; ``--once``: one
+pass); ``speech deliver`` the webhook delivery
 pass (``voice-lab-speech-webhooks``, tailnet only); ``speech check-config`` validates a
 configuration and prints its callers without anything secret.
 """
@@ -14,19 +15,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
+import threading
 from dataclasses import asdict
 from pathlib import Path
 
 from .errors import VoiceLabError
 from .models import utc_now
 from .paths import AssetLayout
-from .speech.backend import F5SpeechBackend
+from .speech.backend import F5ResidentBackend
 from .speech.config import load_speech_config
 from .speech.release import BlindReviewRef, current_release, designate, history
 from .speech.runner import SpeechRunner
 from .speech.webhooks import WebhookDispatcher
-
-TRUSTED_DIGESTS_NAME = "trusted-digests.json"
 
 
 def _print(value: object) -> None:
@@ -91,11 +92,21 @@ def _history(options: argparse.Namespace) -> int:
 
 def _run(options: argparse.Namespace) -> int:
     config = load_speech_config(options.config)
-    backend = F5SpeechBackend(
-        config.runtime, trusted_digests=Path(config.state_root) / TRUSTED_DIGESTS_NAME
+    backend = F5ResidentBackend(
+        config.runtime, state_root=Path(config.state_root), asset_root=Path(config.asset_root)
     )
-    report = SpeechRunner(config, backend).run_pending()
-    _print(asdict(report))
+    runner = SpeechRunner(config, backend)
+    if options.once:
+        try:
+            report = runner.run_pending()
+        finally:
+            runner.unload()
+        _print(asdict(report))
+        return 0
+    stopping = threading.Event()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, lambda *_: stopping.set())
+    runner.serve(stop=stopping.is_set)
     return 0
 
 
@@ -156,9 +167,10 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     speech = commands.add_parser("speech", help="the speech API's host passes (D-046)")
     speech_commands = speech.add_subparsers(dest="speech_command", required=True)
     run = speech_commands.add_parser(
-        "run", help="one job runner pass over the speech queue (host unit, no network)"
+        "run", help="the speech job runner with its resident model (host unit, no network)"
     )
     run.add_argument("--config", type=Path, required=True)
+    run.add_argument("--once", action="store_true", help="one pass, then unload and exit")
     run.set_defaults(handler=_run)
     deliver = speech_commands.add_parser(
         "deliver", help="one webhook delivery pass (host unit, tailnet only)"

@@ -117,6 +117,19 @@
         },
         "runtime_root": {
           "$ref": "#/$defs/AbsolutePath"
+        },
+        "visible_devices": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9]{1,2}(,[0-9]{1,2}){0,3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Visible Devices"
         }
       },
       "required": [
@@ -176,6 +189,13 @@
     "gpu_slot_root": {
       "$ref": "#/$defs/AbsolutePath"
     },
+    "idle_unload_seconds": {
+      "default": 900,
+      "maximum": 86400,
+      "minimum": 10,
+      "title": "Idle Unload Seconds",
+      "type": "integer"
+    },
     "queue_limit": {
       "default": 32,
       "maximum": 256,
@@ -197,13 +217,6 @@
       "title": "Record Retention Days",
       "type": "integer"
     },
-    "render_deadline_seconds": {
-      "default": 300,
-      "maximum": 3600,
-      "minimum": 10,
-      "title": "Render Deadline Seconds",
-      "type": "integer"
-    },
     "runtime": {
       "anyOf": [
         {
@@ -220,6 +233,13 @@
       "default": "cole-voice-lab.speech-config/v1",
       "title": "Schema Version",
       "type": "string"
+    },
+    "segment_deadline_seconds": {
+      "default": 120,
+      "maximum": 600,
+      "minimum": 10,
+      "title": "Segment Deadline Seconds",
+      "type": "integer"
     },
     "state_root": {
       "$ref": "#/$defs/AbsolutePath"

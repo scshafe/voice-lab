@@ -8,13 +8,12 @@ from __future__ import annotations
 import json
 import os
 import stat
-import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
-from speech_fixtures import NOW, FakeBackend, Lab, build_lab, caller, write_tone
+from speech_fixtures import NOW, FakeBackend, Lab, OnePass, build_lab, caller, write_tone
 
 from cole_voice_lab.canonical import sha256_file, write_canonical_json
 from cole_voice_lab.consent import revoke_consent
@@ -27,15 +26,27 @@ from cole_voice_lab.speech.contracts import (
     WebhookOutboxEntry,
 )
 from cole_voice_lab.speech.gpu import (
+    GpuSlotLease,
     GpuSlotTimeout,
     busy_with_long_job,
     current_holder,
     hold_slot,
+    slot_wanted,
     speech_waiting,
+    want_slot,
+    withdraw_want,
 )
 from cole_voice_lab.speech.release import consent_path, current_release
 from cole_voice_lab.speech.runner import SpeechRunner, check_wav, ledger_path
-from cole_voice_lab.speech.store import Job, SpeechRefusal, SpeechStore, open_audio, to_status
+from cole_voice_lab.speech.segments import job_seed, segment_seed
+from cole_voice_lab.speech.store import (
+    Job,
+    SpeechRefusal,
+    SpeechStore,
+    open_audio,
+    open_segment,
+    to_status,
+)
 
 
 def store_for(lab: Lab) -> SpeechStore:
@@ -53,9 +64,7 @@ def submit(lab: Lab, text: str = "Hello there.", **fields: Any) -> Job:
 
 
 def runner(lab: Lab, backend: Any | None = None, *, at: Any = NOW) -> SpeechRunner:
-    return SpeechRunner(
-        lab.config, backend or FakeBackend(), clock=lambda: at, slot_poll_seconds=0.01
-    )
+    return OnePass(lab.config, backend or FakeBackend(), clock=lambda: at, slot_poll_seconds=0.01)
 
 
 def refused(code: str, call: Any) -> SpeechRefusal:
@@ -145,38 +154,58 @@ def test_a_caller_is_held_to_its_limits_and_the_queue_to_its_size(tmp_path: Path
 # -- rendering -------------------------------------------------------------------------------
 
 
-def test_a_job_renders_writes_its_ledger_and_queues_its_webhook(lab: Lab) -> None:
+THREE = "The first sentence is here. A second one follows it! And is there a third?"
+
+
+def test_a_job_renders_sentence_by_sentence_and_joins_them(lab: Lab) -> None:
     hook = f"{lab.config.callers[0].webhook_urls[0]}/turn-7"
-    job = submit(lab, "Hello there.", callback_url=hook, client_ref="turn-7")
+    job = submit(lab, THREE, callback_url=hook, client_ref="turn-7")
     job_id = job.record.job_id
     backend = FakeBackend()
     report = runner(lab, backend).run_pending()
     assert report.outcomes == {job_id: "succeeded"}
+    assert [text for text, _ in backend.calls] == [
+        "The first sentence is here.",
+        "A second one follows it!",
+        "And is there a third?",
+    ]
     store = store_for(lab)
     ended = store.load(job_id)
     assert ended is not None and ended.state.state == "succeeded"
+    assert ended.state.segment_count == 3 and [s.index for s in ended.state.segments] == [1, 2, 3]
+    for segment in ended.state.segments:
+        path = store.segment_path(job_id, segment.index)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert sha256_file(path)[0] == segment.sha256
     audio = store.audio_path(job_id)
     assert stat.S_IMODE(audio.stat().st_mode) == 0o600
-    assert ended.state.audio is not None
+    assert ended.state.audio is not None and ended.state.audio.frames == 3 * 2400
     assert ended.state.audio.sha256 == sha256_file(audio)[0]
     assert ended.state.audio_expires_at == NOW + timedelta(days=7)
     assert not (store.job_directory(job_id) / "input.json").exists()
     assert not (store.queue_root / job_id).exists()
     release, release_digest = current_release(lab.layout)
-    assert backend.calls[0].release.release == release
+    assert backend.prepared[0].release == release
     ledger = SpeechRenderRecord.model_validate_json(ledger_path(lab.layout, job_id).read_bytes())
     assert stat.S_IMODE(ledger_path(lab.layout, job_id).stat().st_mode) == 0o400
     assert (ledger.outcome, ledger.caller_id, ledger.text_characters) == (
         "succeeded",
         "agent-server",
-        12,
+        len(THREE),
     )
     assert (
         ledger.release.release_id == "vr-0001" and ledger.release.release_sha256 == release_digest
     )
     assert ledger.consent_sha256 == lab.consent_sha256
-    assert ledger.output == ended.state.audio and ledger.audio_ms == 100
-    assert "Hello there" not in ledger_path(lab.layout, job_id).read_text()
+    assert ledger.output == ended.state.audio and ledger.audio_ms == 300
+    assert ledger.segment_count == 3
+    assert ledger.segment_sha256 == tuple(segment.sha256 for segment in ended.state.segments)
+    assert ledger.fingerprint is not None and ledger.fingerprint.nfe_steps == 32
+    assert ledger.seed == job_seed(job.record.text_sha256, release_digest, 32)
+    assert [seed for _, seed in backend.calls] == [
+        segment_seed(ledger.seed, index) for index in (1, 2, 3)
+    ]
+    assert "first sentence" not in ledger_path(lab.layout, job_id).read_text()
     entry = WebhookOutboxEntry.model_validate_json(
         (store.outbox_root / f"msg_{job_id}.json").read_bytes()
     )
@@ -185,27 +214,51 @@ def test_a_job_renders_writes_its_ledger_and_queues_its_webhook(lab: Lab) -> Non
         "speech.succeeded",
         "turn-7",
     )
-    assert entry.event.data.audio is not None
-    assert "Hello there" not in (store.outbox_root / f"msg_{job_id}.json").read_text()
+    assert entry.event.data.audio is not None and entry.event.data.segment_count == 3
+    assert "first sentence" not in (store.outbox_root / f"msg_{job_id}.json").read_text()
     stream, size = open_audio(store, ended)
     with stream:
         assert size == ended.state.audio.bytes
+    stream, size, segment = open_segment(store, ended, 2)
+    with stream:
+        assert segment.index == 2
+    refused("not_found", lambda: open_segment(store, ended, 4))
+    status = to_status(ended)
+    assert status.segments[0].audio == f"/api/v1/speech/{job_id}/segments/1/audio"
+
+
+def test_a_rerun_of_the_same_text_is_byte_identical(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path)
+    first = submit(lab, THREE)
+    runner(lab).run_pending()
+    second = submit(lab, THREE)
+    runner(lab).run_pending()
+    store = store_for(lab)
+    one, two = store.load(first.record.job_id), store.load(second.record.job_id)
+    assert one is not None and two is not None
+    assert one.state.audio == two.state.audio
+    assert [s.sha256 for s in one.state.segments] == [s.sha256 for s in two.state.segments]
+    other = submit(lab, THREE + " Plus one more sentence.")
+    runner(lab).run_pending()
+    three = store.load(other.record.job_id)
+    assert three is not None and three.state.segments[0].sha256 != one.state.segments[0].sha256
 
 
 @pytest.mark.parametrize(
-    ("fail", "outcome", "code"),
+    ("fail", "outcome", "code", "ledger"),
     [
-        ("runtime_unavailable", "failed", "runtime_unavailable"),
-        ("render_timeout", "failed", "render_timeout"),
-        ("render_failed", "failed", "render_failed"),
-        ("cancelled", "cancelled", None),
+        ("runtime_unavailable", "failed", "runtime_unavailable", False),
+        ("render_timeout", "failed", "render_timeout", True),
+        ("render_failed", "failed", "render_failed", True),
+        ("cancelled", "cancelled", None, True),
     ],
 )
-def test_a_render_that_fails_is_ended_with_its_code_and_still_in_the_ledger(
-    lab: Lab, fail: str, outcome: str, code: str | None
+def test_a_render_that_fails_is_ended_with_its_code(
+    lab: Lab, fail: str, outcome: str, code: str | None, ledger: bool
 ) -> None:
-    job = submit(lab, callback_url=lab.config.callers[0].webhook_urls[0])
-    report = runner(lab, FakeBackend(fail=fail)).run_pending()
+    job = submit(lab, THREE, callback_url=lab.config.callers[0].webhook_urls[0])
+    backend = FakeBackend(fail=fail, fail_at=2)
+    report = runner(lab, backend).run_pending()
     job_id = job.record.job_id
     assert report.outcomes == {job_id: outcome}
     store = store_for(lab)
@@ -213,8 +266,16 @@ def test_a_render_that_fails_is_ended_with_its_code_and_still_in_the_ledger(
     assert ended is not None
     assert (ended.state.error.code if ended.state.error else None) == code
     assert not store.audio_path(job_id).exists()
-    ledger = SpeechRenderRecord.model_validate_json(ledger_path(lab.layout, job_id).read_bytes())
-    assert (ledger.outcome, ledger.failure, ledger.output) == (outcome, code, None)
+    assert ledger_path(lab.layout, job_id).exists() == ledger
+    if ledger:
+        record = SpeechRenderRecord.model_validate_json(
+            ledger_path(lab.layout, job_id).read_bytes()
+        )
+        assert (record.outcome, record.failure, record.output) == (outcome, code, None)
+        assert len(record.segment_sha256) == 1  # the sentence published before the failure
+        assert [s.index for s in ended.state.segments] == [1]
+    else:
+        assert backend.prepared == [] and not backend.loaded
     event = json.loads((store.outbox_root / f"msg_{job_id}.json").read_text())
     assert event["event"]["type"] == f"speech.{outcome}"
 
@@ -243,7 +304,9 @@ def test_check_wav_names_the_shape_it_found(tmp_path: Path) -> None:
         check_wav(path)
 
 
-def test_cancel_ends_a_queued_job_at_once_and_a_running_one_through_the_runner(lab: Lab) -> None:
+def test_cancel_ends_a_queued_job_at_once_and_a_running_one_between_sentences(
+    lab: Lab,
+) -> None:
     store = store_for(lab)
     registered = lab.config.callers[0]
     queued = submit(lab, callback_url=registered.webhook_urls[0])
@@ -253,24 +316,21 @@ def test_cancel_ends_a_queued_job_at_once_and_a_running_one_through_the_runner(l
     assert runner(lab).run_pending().outcomes == {}  # the runner cannot claim it
     refused("already_finished", lambda: store.cancel(registered, queued.record.job_id, now=NOW))
 
-    running = submit(lab, "Second.")
-    backend = FakeBackend(wait_for_cancel=True)
-    pass_thread = threading.Thread(target=runner(lab, backend).run_pending)
-    pass_thread.start()
-    for _ in range(500):
-        state = store.load(running.record.job_id)
-        if state is not None and state.state.state == "running":
-            break
-        threading.Event().wait(0.01)
-    during = store.cancel(registered, running.record.job_id, now=NOW)
-    assert during.state.state == "running"  # the runner owns it; the cancel is a marker
-    assert store.cancel(registered, running.record.job_id, now=NOW).state.state in {
-        "running",
-        "cancelled",
-    }
-    pass_thread.join(10)
+    running = submit(lab, THREE)
+    seen: list[str] = []
+
+    def cancel_during_the_first_sentence(index: int) -> None:
+        if index == 1:
+            seen.append(store.cancel(registered, running.record.job_id, now=NOW).state.state)
+
+    backend = FakeBackend(on_segment=cancel_during_the_first_sentence)
+    report = runner(lab, backend).run_pending()
+    assert seen == ["running"]  # the runner owned it: the cancel was a marker
+    assert report.outcomes == {running.record.job_id: "cancelled"}
     ended = store.load(running.record.job_id)
-    assert ended is not None and ended.state.state == "cancelled"
+    assert ended is not None and [s.index for s in ended.state.segments] == [1]
+    # The cancel did not unload the model: only the one-pass runner's end did.
+    assert len(backend.calls) == 1 and backend.unloads == 1
 
 
 def test_a_cancel_that_arrives_before_the_claim_is_honoured(lab: Lab) -> None:
@@ -329,7 +389,7 @@ def test_a_stale_job_times_out_and_an_orphan_fails(lab: Lab) -> None:
     orphan = submit(lab, "Orphan.")
     store = store_for(lab)
     store.claim(orphan.record.job_id, "runner")
-    store.mark_running(orphan, now=NOW)
+    store.mark_running(orphan, now=NOW, segment_count=1)
     report = runner(lab).run_pending()
     ended = store.load(orphan.record.job_id)
     assert report.outcomes == {orphan.record.job_id: "failed"}
@@ -377,6 +437,75 @@ def test_speech_waits_for_the_slot_only_until_its_queue_limit(lab: Lab) -> None:
     ended = store_for(lab).load(job.record.job_id)
     assert ended is not None and ended.state.error is not None
     assert ended.state.error.code == "queue_timeout"
+
+
+def test_the_resident_model_stays_loaded_until_idle_or_a_long_job_wants_the_slot(
+    lab: Lab,
+) -> None:
+    clock = [0.0]
+    backend = FakeBackend()
+    resident = SpeechRunner(
+        lab.config, backend, clock=lambda: NOW, monotonic=lambda: clock[0], slot_poll_seconds=0.01
+    )
+    root = Path(lab.config.gpu_slot_root)
+    submit(lab)
+    resident.run_pending()
+    assert backend.loaded and resident.lease.held
+    assert current_holder(root) is not None and current_holder(root).kind == "speech"  # type: ignore[union-attr]
+    assert busy_with_long_job(root, now=NOW, default_seconds=1) is None
+    clock[0] = lab.config.idle_unload_seconds - 1
+    assert not resident.yield_if_idle() and backend.loaded
+    clock[0] = lab.config.idle_unload_seconds
+    assert resident.yield_if_idle()
+    assert not backend.loaded and not resident.lease.held and current_holder(root) is None
+    assert not resident.yield_if_idle()
+
+    submit(lab, "Load it again.")
+    resident.run_pending()
+    assert backend.loaded
+    long_job = GpuSlotHolder(kind="finetune", job_id="finetune-1", started_at=NOW)
+    want_slot(root, long_job)
+    queued = submit(lab, "Queued speech goes first.")
+    assert not resident.yield_if_idle()  # speech is queued
+    resident.run_pending()
+    assert store_for(lab).load(queued.record.job_id).state.state == "succeeded"  # type: ignore[union-attr]
+    assert resident.yield_if_idle()  # wanted and the queue is empty
+    assert not backend.loaded and not resident.lease.held
+    with hold_slot(root, long_job, timeout_seconds=1):
+        withdraw_want(root)
+        assert not slot_wanted(root)
+    resident.unload()
+
+
+def test_a_lease_is_taken_once_and_times_out_while_another_holds_the_slot(tmp_path: Path) -> None:
+    root = tmp_path / "jobs"
+    speech = GpuSlotHolder(kind="speech", job_id="sp-1", started_at=NOW)
+    lease = GpuSlotLease(root)
+    lease.acquire(speech, timeout_seconds=0)
+    lease.acquire(speech, timeout_seconds=0)
+    assert lease.held and current_holder(root) == speech
+    other = GpuSlotLease(root)
+    with pytest.raises(GpuSlotTimeout):
+        other.acquire(speech, timeout_seconds=0.02, poll_seconds=0.01, sleep=lambda _: None)
+    lease.release()
+    lease.release()
+    assert not lease.held and current_holder(root) is None
+
+
+def test_serve_runs_until_stopped_and_unloads(lab: Lab) -> None:
+    submit(lab)
+    backend = FakeBackend()
+    resident = SpeechRunner(lab.config, backend, clock=lambda: NOW)
+    passes = iter([False, False, True])
+    resident.serve(stop=lambda: next(passes), poll_seconds=0.0)
+    assert backend.calls and not backend.loaded and not resident.lease.held
+
+
+def test_a_runtime_that_cannot_load_frees_the_slot(lab: Lab) -> None:
+    submit(lab)
+    resident = SpeechRunner(lab.config, FakeBackend(fail="runtime_unavailable"), clock=lambda: NOW)
+    resident.run_pending()
+    assert not resident.lease.held
 
 
 # -- retention --------------------------------------------------------------------------------

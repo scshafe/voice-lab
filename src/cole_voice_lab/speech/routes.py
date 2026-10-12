@@ -8,16 +8,22 @@ caller is then the principal for limits, idempotency, job visibility and webhook
 speech caller's token never passes the global check, so it reaches nothing else.
 
 The route claims every path under its prefix (``404`` for one it does not know), so no
-other route ever sees a request that skipped the global check. The API only enqueues and
-serves finished files: it reads the asset root (read-only) for the voice release and the
-consent record, and the GPU slot's holder record; the job runner renders.
+other route ever sees a request that skipped the global check. Besides submit, status,
+cancel and the joined audio, it serves each published sentence
+(``…/segments/{n}/audio``) and a per-job server-sent event stream (``…/events``) that
+announces them and the job's end; it only ever reports files the job runner has finished.
+
+The API only enqueues and serves finished files: it reads the asset root (read-only) for the
+voice release and the consent record, and the GPU slot's holder record; the job runner
+renders.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Final
@@ -31,12 +37,15 @@ from ..errors import VoiceLabError
 from ..models import ContractModel, utc_now
 from ..paths import AssetLayout
 from .config import SpeechCaller, SpeechConfig, webhook_url_problem
-from .contracts import JOB_ID_PATTERN, SpeechRequest
+from .contracts import JOB_ID_PATTERN, TERMINAL_STATES, SpeechRequest
 from .gpu import busy_with_long_job
 from .release import VoiceReleaseError, current_release, require_release_consent
-from .store import Job, SpeechRefusal, SpeechStore, open_audio, to_status
+from .store import Job, SpeechRefusal, SpeechStore, open_audio, open_segment, to_status
 
 PREFIX: Final = "/api/v1/speech"
+EVENTS_MAX_SECONDS: Final = 600.0
+KEEPALIVE_SECONDS: Final = 15.0
+_SEGMENT_INDEX: Final = re.compile(r"^[1-9][0-9]{0,3}$")
 MAX_BODY_BYTES: Final = 64 * 1024
 _RANGE: Final = re.compile(r"^bytes=(?P<start>\d{0,15})-(?P<end>\d{0,15})$")
 
@@ -116,10 +125,16 @@ class SpeechRoutes:
         verifier: TokenVerifier,
         *,
         clock: Callable[[], datetime] = utc_now,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        events_poll_seconds: float = 0.2,
     ) -> None:
         self.config = config
         self.verifier = verifier
         self.clock = clock
+        self.monotonic = monotonic
+        self.sleep = sleep
+        self.events_poll_seconds = events_poll_seconds
         self.store = SpeechStore(config)
         self.store.ensure()
         self.asset_root = Path(config.asset_root)
@@ -160,7 +175,14 @@ class SpeechRoutes:
             return self._submit(caller, request)
         parts = rest.removeprefix("/").split("/")
         job_id = parts[0]
-        if not JOB_ID_PATTERN.fullmatch(job_id) or len(parts) > 2:
+        if not JOB_ID_PATTERN.fullmatch(job_id):
+            raise SpeechRefusal(404, "not_found", "no such route")
+        if len(parts) == 4 and parts[1] == "segments" and parts[3] == "audio":
+            if not _SEGMENT_INDEX.fullmatch(parts[2]):
+                raise SpeechRefusal(404, "not_found", "no such segment")
+            self._only(request, "GET", "HEAD")
+            return self._segment(caller, job_id, int(parts[2]), request.header("Range"))
+        if len(parts) > 2:
             raise SpeechRefusal(404, "not_found", "no such route")
         action = parts[1] if len(parts) == 2 else None
         if action is None:
@@ -170,6 +192,16 @@ class SpeechRoutes:
         if action == "audio":
             self._only(request, "GET", "HEAD")
             return self._audio(caller, job_id, request.header("Range"))
+        if action == "events":
+            self._only(request, "GET")
+            self.store.for_caller(caller, job_id)  # refused before the stream starts
+            return RouteResponse(
+                status=200,
+                route="speech.events",
+                content_type="text/event-stream; charset=utf-8",
+                headers=(("X-Accel-Buffering", "no"),),
+                events=self._events(caller, job_id, request.header("Last-Event-ID")),
+            )
         if action == "cancel":
             self._only(request, "POST")
             job = self.store.cancel(caller, job_id, now=self.clock())
@@ -237,15 +269,27 @@ class SpeechRoutes:
     def _audio(self, caller: SpeechCaller, job_id: str, range_header: str | None) -> RouteResponse:
         job: Job = self.store.for_caller(caller, job_id)
         stream, size = open_audio(self.store, job)
+        assert job.state.audio is not None
+        return self._ranged(stream, size, job.state.audio.sha256, range_header)
+
+    def _segment(
+        self, caller: SpeechCaller, job_id: str, index: int, range_header: str | None
+    ) -> RouteResponse:
+        job: Job = self.store.for_caller(caller, job_id)
+        stream, size, segment = open_segment(self.store, job, index)
+        return self._ranged(stream, size, segment.sha256, range_header)
+
+    def _ranged(
+        self, stream: BinaryIO, size: int, sha256: str, range_header: str | None
+    ) -> RouteResponse:
         try:
             chosen = byte_range(range_header, size)
         except SpeechRefusal:
             stream.close()
             raise
-        assert job.state.audio is not None
         headers: list[tuple[str, str]] = [
             ("Accept-Ranges", "bytes"),
-            ("ETag", f'"{job.state.audio.sha256}"'),
+            ("ETag", f'"{sha256}"'),
         ]
         if chosen is None:
             return self._stream(200, stream, size, headers)
@@ -266,3 +310,40 @@ class SpeechRoutes:
             stream=stream,
             stream_length=length,
         )
+
+    # -- events --------------------------------------------------------------------------------
+
+    def _events(
+        self, caller: SpeechCaller, job_id: str, last_event_id: str | None
+    ) -> Iterator[bytes]:
+        """``segment.ready`` for each published segment after ``Last-Event-ID``, then the
+        terminal event; a comment every ``KEEPALIVE_SECONDS``; closed after
+        ``EVENTS_MAX_SECONDS`` in any case."""
+        sent = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
+        started = last_beat = self.monotonic()
+        yield b"retry: 2000\n\n"
+        while True:
+            try:
+                job = self.store.for_caller(caller, job_id)
+            except SpeechRefusal:
+                return  # removed by retention while streaming
+            status = to_status(job)
+            for segment in status.segments:
+                if segment.index > sent:
+                    yield _event("segment.ready", str(segment.index), segment)
+                    sent = segment.index
+            if job.state.state in TERMINAL_STATES:
+                yield _event(f"speech.{job.state.state}", "end", status)
+                return
+            now = self.monotonic()
+            if now - started >= EVENTS_MAX_SECONDS:
+                return
+            if now - last_beat >= KEEPALIVE_SECONDS:
+                last_beat = now
+                yield b": keepalive\n\n"
+            self.sleep(self.events_poll_seconds)
+
+
+def _event(name: str, identifier: str, model: ContractModel) -> bytes:
+    data = canonical_json_bytes(model).decode("utf-8")
+    return f"id: {identifier}\nevent: {name}\ndata: {data}\n\n".encode()

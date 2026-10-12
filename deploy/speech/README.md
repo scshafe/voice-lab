@@ -18,8 +18,10 @@ release, creates a Pocket ID client or touches the running stack.
    `private-chloe-speech-rendering`; it is rotated into approval like any pending record.
 2. **The runtime.** The F5-TTS runtime for the PC's GPU (design phase 5, spike S-2), with its
    pinned weights, at the `runtime.runtime_root` the configuration names (`device: "cuda"` on
-   ROCm). Until it exists every job fails `runtime_unavailable`; leaving `runtime` out of the
-   configuration says so explicitly.
+   ROCm; torch 2.14.0+rocm7.2 and torchcodec 0.16.0+cpu, as spike S-2 ran it; its hash-locked
+   lock is a follow-up). Until it exists every job fails `runtime_unavailable`; leaving
+   `runtime` out of the configuration says so explicitly. `runtime.nfe_steps` stays 32 until
+   Cole's 16-versus-32 listening check.
 3. **A voice release.** On the PC, as `voice-lab`:
    `voice-lab voice release designate --asset-root /data/voice-lab/lab --run <run id>
    --designated-by Cole`, review the preview, then the same with `--i-designate-this-run`.
@@ -40,13 +42,14 @@ release, creates a Pocket ID client or touches the running stack.
    it: oauth2-proxy builds a session from a bearer token and a client-credentials token has
    no `email` claim. If the door refuses it, fix the claim in Pocket ID or the door's claim
    mapping; never skip the door for `/api/v1/speech`.
-8. **Host units.** Install and enable the speech runner and the webhook delivery
-   ([`../host-manual/README.md`](../host-manual/README.md)).
+8. **Host units.** Install and enable the speech runner (long-running, with the resident
+   model) and the webhook delivery ([`../host-manual/README.md`](../host-manual/README.md)).
+   The resident model needs about 1.3–3 GiB of the card's 16 GB beside llama-swap's models.
 9. **The tailnet policy** (infra `tailnet/policy.hujson`): the caller's node may reach
    `tag:voice-lab:443`; the PC may reach each caller's node on its webhook port; and the
    service user's egress table names those nodes (`HOST_EGRESS_TAILNET`).
 
 Rollback: remove `--speech-config` (the API then answers `404` under `/api/v1/speech`) and
-`systemctl disable --now voice-lab-speech.path voice-lab-speech.timer
-voice-lab-speech-webhooks.path voice-lab-speech-webhooks.timer`. Revoking the consent record
+`systemctl disable --now voice-lab-speech.service voice-lab-speech-webhooks.path
+voice-lab-speech-webhooks.timer`. Revoking the consent record
 stops every render at once. The ledger and the releases stay.

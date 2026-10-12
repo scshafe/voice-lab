@@ -19,6 +19,7 @@ from ..models import ContractModel, Sha256, StableId, has_hidden_control
 from ..recording_contracts import SpeechText, UtcTimestamp
 
 JOB_ID_PATTERN: Final = re.compile(r"^sp-[0-9a-f]{24}$")
+MAX_SEGMENTS: Final = 2000
 MAX_CLIENT_REF: Final = 200
 WEBHOOK_EVENT_PREFIX: Final = "msg_"
 
@@ -71,12 +72,29 @@ class SpeechRequest(ContractModel):
 class SpeechLinks(ContractModel):
     self: str
     audio: str
+    events: str
     cancel: str
 
     @classmethod
     def for_job(cls, job_id: str) -> SpeechLinks:
         base = f"/api/v1/speech/{job_id}"
-        return cls(self=base, audio=f"{base}/audio", cancel=f"{base}/cancel")
+        return cls(
+            self=base, audio=f"{base}/audio", events=f"{base}/events", cancel=f"{base}/cancel"
+        )
+
+
+def segment_link(job_id: str, index: int) -> str:
+    return f"/api/v1/speech/{job_id}/segments/{index}/audio"
+
+
+class SpeechSegment(ContractModel):
+    """One finished sentence, as a caller sees it (and fetches it at ``audio``)."""
+
+    index: int = Field(ge=1, le=MAX_SEGMENTS)
+    sha256: Sha256
+    bytes: int = Field(ge=45)
+    duration_ms: int = Field(ge=0)
+    audio: str
 
 
 class SpeechAudio(ContractModel):
@@ -108,6 +126,8 @@ class SpeechJobStatus(ContractModel):
     finished_at: UtcTimestamp | None
     queue_ms: int | None = Field(ge=0)
     render_ms: int | None = Field(ge=0)
+    segment_count: int | None = Field(ge=1, le=MAX_SEGMENTS)
+    segments: tuple[SpeechSegment, ...] = Field(max_length=MAX_SEGMENTS)
     audio: SpeechAudio | None
     error: SpeechFailure | None
     links: SpeechLinks
@@ -117,6 +137,7 @@ class SpeechEventData(ContractModel):
     id: JobId
     state: Literal["succeeded", "failed", "cancelled"]
     client_ref: ClientRef | None
+    segment_count: int | None = Field(ge=1, le=MAX_SEGMENTS)
     audio: SpeechAudio | None
     error: SpeechFailure | None
     links: SpeechLinks
@@ -165,6 +186,12 @@ class RenderedAudio(ContractModel):
     sample_rate_hz: Literal[24_000] = 24_000
 
 
+class SegmentAudio(RenderedAudio):
+    """One published sentence: ``jobs/<id>/segments/<index, 4 digits>.wav``."""
+
+    index: int = Field(ge=1, le=MAX_SEGMENTS)
+
+
 class SpeechJobState(ContractModel):
     """``jobs/<id>/status.json``: where the job is (replaced atomically at each change)."""
 
@@ -176,11 +203,19 @@ class SpeechJobState(ContractModel):
     started_at: UtcTimestamp | None = None
     finished_at: UtcTimestamp | None = None
     error: SpeechFailure | None = None
+    segment_count: int | None = Field(default=None, ge=1, le=MAX_SEGMENTS)
+    segments: tuple[SegmentAudio, ...] = Field(default=(), max_length=MAX_SEGMENTS)
     audio: RenderedAudio | None = None
     audio_expires_at: UtcTimestamp | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> SpeechJobState:
+        if [segment.index for segment in self.segments] != list(range(1, len(self.segments) + 1)):
+            raise ValueError("segments are published in order, from 1")
+        if self.segments and (
+            self.segment_count is None or len(self.segments) > self.segment_count
+        ):
+            raise ValueError("a job publishes at most the segments it planned")
         terminal = self.state in TERMINAL_STATES
         if terminal != (self.finished_at is not None):
             raise ValueError("an ended job carries its end time, and only an ended job")
@@ -228,6 +263,9 @@ class SpeechRenderRecord(ContractModel):
     outcome: Literal["succeeded", "failed", "cancelled"]
     failure: FailureCode | None
     fingerprint: RenderFingerprint | None
+    seed: int = Field(ge=0, le=0x7FFFFFFF)
+    segment_count: int = Field(ge=1, le=MAX_SEGMENTS)
+    segment_sha256: tuple[Sha256, ...] = Field(max_length=MAX_SEGMENTS)
     output: RenderedAudio | None
     created_at: UtcTimestamp
     started_at: UtcTimestamp

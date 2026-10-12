@@ -226,9 +226,11 @@ def test_the_speech_runner_has_the_gpu_and_no_network() -> None:
     assert values(SPEECH, "Service", "SupplementaryGroups") == ["render video"]
     assert values(SPEECH, "Unit", "ConditionPathExists") == [SPEECH_CONFIG]
     assert not {key for _, key, _ in settings(SPEECH)} & CREDENTIAL_KEYS
-    assert values(MANUAL / "voice-lab-speech.path", "Path", "PathChanged") == [
-        "/data/voice-lab/state/speech/queue"
-    ]
+    # Long-running: the resident model stays loaded between jobs; it polls its own queue.
+    assert values(SPEECH, "Service", "Type") == ["simple"]
+    assert values(SPEECH, "Service", "Restart") == ["on-failure"]
+    assert values(SPEECH, "Install", "WantedBy") == ["multi-user.target"]
+    assert not (MANUAL / "voice-lab-speech.path").exists()
 
 
 def test_webhook_delivery_reaches_the_tailnet_and_nothing_else() -> None:

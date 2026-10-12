@@ -7,11 +7,15 @@ and Speak when phase 5 brings them to the PC) holds an exclusive ``flock`` on
 is the truth: a holder record whose lock nobody holds is stale and is ignored, so a crash
 never wedges the slot.
 
-The rules, for every kind: nobody preempts a holder. A long job (anything but speech) that
-is about to take the slot first checks ``speech_waiting`` and lets queued speech go first.
-While a long job holds the slot, the API refuses new speech at once (``503 gpu_busy``) with
-the holder's expected end as ``Retry-After``, so an assistant answers in text rather than
-waiting hours.
+The rules, for every kind: nobody preempts a holder. The resident speech worker holds the
+slot while its model is loaded (``GpuSlotLease``). A long job (anything but speech) that wants
+the slot writes ``<root>/gpu-slot.wanted`` (``want_slot``) and then waits for the lock; the
+speech worker gives the slot up as soon as it has no speech job in hand and none is queued
+(``slot_wanted``), and does not take it again while the marker is there and its queue is
+empty. So queued speech goes first and a long job waits for the speech queue to drain, never
+for the resident worker's idle timeout. While a long job holds the slot, the API refuses new
+speech at once (``503 gpu_busy``) with the holder's expected end as ``Retry-After``, so an
+assistant answers in text rather than waiting hours.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from .contracts import GpuSlotHolder
 
 LOCK_NAME: Final = ".gpu-slot.lock"
 HOLDER_NAME: Final = "gpu-slot.json"
+WANTED_NAME: Final = "gpu-slot.wanted"
 MAX_HOLDER_BYTES: Final = 4096
 
 
@@ -117,3 +122,68 @@ def hold_slot(
             (root / HOLDER_NAME).unlink(missing_ok=True)
     finally:
         os.close(descriptor)
+
+
+def want_slot(root: Path, holder: GpuSlotHolder) -> None:
+    """Say that a long job wants the slot (it then waits for the lock, and withdraws)."""
+    write_canonical_json(root / WANTED_NAME, holder)
+
+
+def withdraw_want(root: Path) -> None:
+    (root / WANTED_NAME).unlink(missing_ok=True)
+
+
+def slot_wanted(root: Path) -> bool:
+    """Whether a long job is waiting for the slot."""
+    return os.path.lexists(root / WANTED_NAME)
+
+
+class GpuSlotLease:
+    """The slot held across jobs (the resident speech worker's), taken and given up by hand."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._descriptor: int | None = None
+
+    @property
+    def held(self) -> bool:
+        return self._descriptor is not None
+
+    def acquire(
+        self,
+        holder: GpuSlotHolder,
+        *,
+        timeout_seconds: float,
+        sleep: Callable[[float], None] = time.sleep,
+        poll_seconds: float = 0.5,
+    ) -> None:
+        """Take the slot for ``holder`` (no-op when already held).
+
+        Raises: ``GpuSlotTimeout`` when it stays held by another for ``timeout_seconds``.
+        """
+        if self._descriptor is not None:
+            return
+        descriptor = _open_lock(self.root)
+        waited = 0.0
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in {errno.EWOULDBLOCK, errno.EAGAIN}:  # pragma: no cover
+                    os.close(descriptor)
+                    raise
+            if waited >= timeout_seconds:
+                os.close(descriptor)
+                raise GpuSlotTimeout("the GPU slot stayed held")
+            sleep(poll_seconds)
+            waited += poll_seconds
+        write_canonical_json(self.root / HOLDER_NAME, holder)
+        self._descriptor = descriptor
+
+    def release(self) -> None:
+        if self._descriptor is None:
+            return
+        (self.root / HOLDER_NAME).unlink(missing_ok=True)
+        os.close(self._descriptor)
+        self._descriptor = None

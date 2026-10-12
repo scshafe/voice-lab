@@ -1,44 +1,48 @@
-"""The port a render goes through, and the F5-TTS backend behind it (docs/SPEECH_API.md §7).
+"""The port a render goes through, and the resident F5-TTS backend behind it (D-046).
 
-@canonical speech.backend -- the job runner knows only ``SpeechBackend``: given a job's text
-(through its ``input.json``) and a verified voice release, write a 24 kHz mono 16-bit WAV to
-the given path, or fail with a stable code. Tests use a fake that writes synthetic audio.
+@canonical speech.backend -- the job runner knows only ``SpeechBackend``: ``prepare`` a
+verified voice release (loading it if it is not the one loaded) and get its fingerprint;
+``render_segment`` one sentence into a 24 kHz mono 16-bit WAV with a given seed; ``unload``
+to give the GPU back. Tests use a fake that writes synthetic audio.
 
-``F5SpeechBackend`` runs ``speech.worker`` as a subprocess in a session of its own, which
-renders through the existing Speak seam (``finetune.synthesize_speech``, the pinned
-``f5_synthesize.py`` in the runtime's interpreter). The backend polls for a cancel and for
-the deadline and kills the worker's whole process group for either. Without a configured
-runtime, or with a runtime directory that is not there, it fails ``runtime_unavailable``
-before starting anything: the PC's ROCm runtime is phase 5's (spike S-2).
+``F5ResidentBackend`` keeps one resident worker (``f5_resident.py`` in the runtime's
+interpreter, ``speech.resident``) with the model, the vocoder and the release's checkpoint
+and reference clip loaded between jobs. It checks the runtime first through the existing
+seam (``finetune.describe_finetune_runtime``: the interpreter, F5-TTS and every pinned
+pretrained file), so a PC without its ROCm runtime fails ``runtime_unavailable`` before
+anything starts. A changed release restarts the worker; a segment past its deadline kills
+it (``render_timeout``).
 """
 
 from __future__ import annotations
 
 import os
-import signal
-import subprocess
-import sys
-import time
+import pwd
+import shutil
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, Protocol
 
-from pydantic import Field, ValidationError
-
-from ..canonical import open_regular_no_follow, write_canonical_json
+from .. import __version__
 from ..errors import VoiceLabError
-from ..finetune import FineTunePretrainedPins, FineTuneTrustedDigests, discard_speech_output
-from ..models import ContractModel, Sha256, StableId
-from ..paths import AssetLayout
-from .config import AbsolutePath, SpeechRuntime
+from ..finetune import (
+    FineTuneDigestCache,
+    FineTuneError,
+    FineTunePretrainedPins,
+    describe_finetune_runtime,
+    synthesis_vocab_path,
+)
+from ..paths import confined_path
+from ..resources import resource_path
+from .config import SpeechRuntime
 from .contracts import FailureCode, RenderFingerprint
 from .release import VerifiedRelease
+from .resident import ResidentError, ResidentProcess
 
-WORKER_MODULE: Final = "cole_voice_lab.speech.worker"
-WORKER_REQUEST_NAME: Final = "worker-request.json"
-WORKER_RESULT_NAME: Final = "worker-result.json"
-MAX_RESULT_BYTES: Final = 256 * 1024
+RESIDENT_SCRIPT: Final = "f5_resident.py"
+RESIDENT_DIRECTORY: Final = "resident"
+CACHE_DIRECTORY: Final = "cache"
+STARTUP_SECONDS: Final = 300.0
 
 type BackendFailure = FailureCode | Literal["cancelled"]
 
@@ -52,195 +56,185 @@ class SpeechBackendError(VoiceLabError):
         self.detail = detail
 
 
-@dataclass(frozen=True, slots=True)
-class RenderRequest:
-    """One render: the job, its directory (holding ``input.json``), the verified release,
-    where the WAV goes, and how long it may take."""
-
-    job_id: str
-    job_directory: Path
-    asset_root: Path
-    release: VerifiedRelease
-    output: Path
-    deadline_seconds: float
-
-
 class SpeechBackend(Protocol):
-    def render(self, request: RenderRequest, *, cancelled: Callable[[], bool]) -> RenderFingerprint:
-        """Write ``request.output``; return what spoke.
+    @property
+    def loaded(self) -> bool:
+        """Whether a model is resident (and so holds GPU memory)."""
+        ...
 
-        Raises: ``SpeechBackendError`` (``cancelled`` when ``cancelled()`` became true).
+    def prepare(self, release: VerifiedRelease) -> RenderFingerprint:
+        """Have ``release`` loaded; return what will speak.
+
+        Raises: ``SpeechBackendError`` (``runtime_unavailable``).
         """
         ...
 
+    def render_segment(
+        self, text: str, *, seed: int, output: Path, deadline_seconds: float
+    ) -> None:
+        """Render ``text`` into ``output`` (24 kHz mono 16-bit WAV) with ``seed``.
 
-class SpeechWorkerRequest(ContractModel):
-    """What the worker subprocess renders (the text stays in the job's ``input.json``)."""
+        Raises: ``SpeechBackendError`` (``render_failed``, ``render_timeout``).
+        """
+        ...
 
-    schema_version: Literal["cole-voice-lab.speech-worker-request/v1"] = (
-        "cole-voice-lab.speech-worker-request/v1"
-    )
-    job_id: StableId
-    asset_root: AbsolutePath
-    job_directory: AbsolutePath
-    output: AbsolutePath
-    run_id: StableId
-    reference_prompt_id: StableId
-    checkpoint_sha256: Sha256
-    reference_sha256: Sha256
-    runtime_root: AbsolutePath
-    device: Literal["cuda", "cpu"]
-    nfe_steps: int = Field(ge=1, le=256)
-    pretrained_pin: FineTunePretrainedPins | None = None
-    trusted: FineTuneTrustedDigests = FineTuneTrustedDigests()
+    def unload(self) -> None:
+        """Stop any resident model and free the GPU."""
+        ...
 
 
-class SpeechWorkerResult(ContractModel):
-    schema_version: Literal["cole-voice-lab.speech-worker-result/v1"] = (
-        "cole-voice-lab.speech-worker-result/v1"
-    )
-    job_id: StableId
-    ok: bool
-    code: FailureCode | None = None
-    detail: str = Field(default="", max_length=2000)
-    fingerprint: RenderFingerprint | None = None
-    trusted: FineTuneTrustedDigests = FineTuneTrustedDigests()
+def _environment(runtime: SpeechRuntime, state_root: Path) -> dict[str, str]:
+    """The resident worker's environment: this process's, offline, with writable caches
+    under the speech state (the host unit's home and system directories are read-only)."""
+    cache = state_root / CACHE_DIRECTORY
+    cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+    environment = {
+        **os.environ,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "HF_HUB_OFFLINE": "1",
+        "WANDB_MODE": "disabled",
+        "XDG_CACHE_HOME": str(cache),
+        "MIOPEN_USER_DB_PATH": str(cache / "miopen"),
+        "MIOPEN_CUSTOM_CACHE_DIR": str(cache / "miopen"),
+    }
+    environment.setdefault("HOME", pwd.getpwuid(os.getuid()).pw_dir)
+    if runtime.visible_devices is not None:
+        environment["HIP_VISIBLE_DEVICES"] = runtime.visible_devices
+    return environment
 
 
-def render_operation_id(job_id: str) -> str:
-    """The Speak operation a job's worker renders under (``derived/speech/api-<job id>``)."""
-    return f"api-{job_id}"
+class F5ResidentBackend:
+    """The resident F5-TTS backend over one runtime.
 
-
-def discard_render_scratch(asset_root: Path, job_id: str) -> None:
-    """Remove what a killed or crashed worker left under ``derived/speech/api-<job id>``
-    (its synthesizer job file holds the text, its work directory a reference copy)."""
-    try:
-        discard_speech_output(AssetLayout.validate(asset_root), render_operation_id(job_id))
-    except (OSError, VoiceLabError):  # pragma: no cover - a link there is left for the operator
-        pass
-
-
-def _kill_group(process: subprocess.Popen[bytes]) -> None:
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
-
-
-class F5SpeechBackend:
-    """Renders with the F5-TTS runtime through ``speech.worker`` (one process group per job).
-
-    ``trusted_digests`` names a file where verified digests are kept between renders, so the
-    checkpoint is hashed again only when it changes (``finetune.FineTuneDigestCache``).
-    ``pretrained_pin`` is a test seam, as for Speak; the shipped runner never passes it.
+    ``python`` and ``resident_script`` are test seams (a stand-in worker under this
+    interpreter), as ``pretrained_pin`` is for the runtime check; the shipped runner passes
+    none of them.
     """
 
     def __init__(
         self,
         runtime: SpeechRuntime | None,
         *,
-        trusted_digests: Path | None = None,
+        state_root: Path,
+        asset_root: Path,
         pretrained_pin: FineTunePretrainedPins | None = None,
-        python: str = sys.executable,
-        poll_seconds: float = 0.2,
-        clock: Callable[[], float] = time.monotonic,
+        python: str | None = None,
+        resident_script: Path | None = None,
+        digests: FineTuneDigestCache | None = None,
+        startup_seconds: float = STARTUP_SECONDS,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self.runtime = runtime
-        self.trusted_digests = trusted_digests
+        self.state_root = state_root
+        self.asset_root = asset_root
         self.pretrained_pin = pretrained_pin
         self.python = python
-        self.poll_seconds = poll_seconds
+        self.resident_script = resident_script
+        self.digests = FineTuneDigestCache() if digests is None else digests
+        self.startup_seconds = startup_seconds
         self.clock = clock
+        self._process: ResidentProcess | None = None
+        self._key: tuple[str, str, str] | None = None
+        self._fingerprint: RenderFingerprint | None = None
 
-    def _trusted(self) -> FineTuneTrustedDigests:
-        if self.trusted_digests is None or not self.trusted_digests.exists():
-            return FineTuneTrustedDigests()
-        try:
-            with open_regular_no_follow(self.trusted_digests) as stream:
-                return FineTuneTrustedDigests.model_validate_json(stream.read(MAX_RESULT_BYTES))
-        except (ValueError, VoiceLabError):
-            return FineTuneTrustedDigests()
+    @property
+    def loaded(self) -> bool:
+        return self._process is not None and self._process.alive
 
-    def render(self, request: RenderRequest, *, cancelled: Callable[[], bool]) -> RenderFingerprint:
+    def prepare(self, release: VerifiedRelease) -> RenderFingerprint:
         runtime = self.runtime
         if runtime is None:
             raise SpeechBackendError(
                 "runtime_unavailable",
                 "no speech runtime is configured on this host (design phase 5, spike S-2)",
             )
-        if not (Path(runtime.runtime_root) / "bin" / "python").is_file():
-            raise SpeechBackendError(
-                "runtime_unavailable", f"there is no F5-TTS runtime at {runtime.runtime_root}"
+        record = release.release
+        key = (record.checkpoint_sha256, record.reference_sha256, runtime.device)
+        if self.loaded and self._key == key and self._fingerprint is not None:
+            return self._fingerprint
+        self.unload()
+        try:
+            described = describe_finetune_runtime(
+                Path(runtime.runtime_root),
+                pretrained_pin=self.pretrained_pin,
+                digests=self.digests,
             )
-        release = request.release.release
-        worker_request = SpeechWorkerRequest(
-            job_id=request.job_id,
-            asset_root=str(request.asset_root),
-            job_directory=str(request.job_directory),
-            output=str(request.output),
-            run_id=release.run_id,
-            reference_prompt_id=release.reference_prompt_id,
-            checkpoint_sha256=release.checkpoint_sha256,
-            reference_sha256=release.reference_sha256,
-            runtime_root=runtime.runtime_root,
+        except FineTuneError as error:
+            raise SpeechBackendError("runtime_unavailable", str(error)) from error
+        root = Path(self.asset_root)
+        scratch = self.state_root / RESIDENT_DIRECTORY
+        shutil.rmtree(scratch, ignore_errors=True)
+        load = {
+            "checkpoint_path": str(confined_path(root, record.checkpoint_path, must_exist=True)),
+            "vocab_path": str(synthesis_vocab_path(described)),
+            "vocoder_path": str(described.vocoder_path),
+            "use_ema": True,
+            "device": runtime.device,
+            "reference_audio_path": str(
+                confined_path(root, record.reference_path, must_exist=True)
+            ),
+            "reference_text": release.resolution.reference.text,
+            "work_directory": str(scratch),
+        }
+        python = self.python or str(described.python)
+        script = self.resident_script or resource_path(RESIDENT_SCRIPT)
+        options = {} if self.clock is None else {"clock": self.clock}
+        try:
+            self._process = ResidentProcess(
+                [python, "-B", str(script)],
+                load=load,
+                environment=_environment(runtime, self.state_root),
+                cwd=self.state_root,
+                startup_seconds=self.startup_seconds,
+                **options,
+            )
+        except ResidentError as error:
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise SpeechBackendError("runtime_unavailable", str(error)) from error
+        ready = self._process.ready
+        identity = described.identity
+        self._key = key
+        self._fingerprint = RenderFingerprint(
+            checkpoint_sha256=record.checkpoint_sha256,
+            reference_sha256=record.reference_sha256,
+            backend="f5-tts-resident",
+            runtime={
+                "f5_tts_version": str(ready.get("f5_tts_version", identity.f5_tts_version))[:64],
+                "torch_version": str(ready.get("torch_version", identity.torch_version))[:64],
+                "model_dtype": str(ready.get("model_dtype", "unknown"))[:64],
+                "python_sha256": identity.python_sha256,
+                "pretrained_sha256": identity.pretrained_sha256,
+            },
             device=runtime.device,
             nfe_steps=runtime.nfe_steps,
-            pretrained_pin=self.pretrained_pin,
-            trusted=self._trusted(),
+            voice_lab_version=__version__,
         )
-        request_path = request.job_directory / WORKER_REQUEST_NAME
-        result_path = request.job_directory / WORKER_RESULT_NAME
-        result_path.unlink(missing_ok=True)
-        write_canonical_json(request_path, worker_request)
-        try:
-            process = subprocess.Popen(
-                [self.python, "-I", "-B", "-m", WORKER_MODULE, str(request_path)],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                cwd=request.job_directory,
-            )
-        except OSError as error:
-            raise SpeechBackendError(
-                "runtime_unavailable", f"the speech worker could not start: {error}"
-            ) from error
-        try:
-            deadline = self.clock() + request.deadline_seconds
-            while process.poll() is None:
-                if cancelled():
-                    _kill_group(process)
-                    raise SpeechBackendError("cancelled", "the job was cancelled while it rendered")
-                if self.clock() >= deadline:
-                    _kill_group(process)
-                    raise SpeechBackendError(
-                        "render_timeout",
-                        f"the render took longer than {request.deadline_seconds:.0f} seconds",
-                    )
-                time.sleep(self.poll_seconds)
-            _kill_group(process)  # whatever the worker left running in its group
-            result = self._result(result_path, request.job_id)
-        finally:
-            request_path.unlink(missing_ok=True)
-            result_path.unlink(missing_ok=True)
-            discard_render_scratch(request.asset_root, request.job_id)
-        if self.trusted_digests is not None:
-            write_canonical_json(self.trusted_digests, result.trusted)
-        if not result.ok or result.fingerprint is None:
-            raise SpeechBackendError(result.code or "render_failed", result.detail)
-        return result.fingerprint
+        return self._fingerprint
 
-    @staticmethod
-    def _result(path: Path, job_id: str) -> SpeechWorkerResult:
+    def render_segment(
+        self, text: str, *, seed: int, output: Path, deadline_seconds: float
+    ) -> None:
+        process, runtime = self._process, self.runtime
+        if process is None or runtime is None or not process.alive:
+            raise SpeechBackendError("render_failed", "no resident worker is loaded")
         try:
-            with open_regular_no_follow(path) as stream:
-                result = SpeechWorkerResult.model_validate_json(stream.read(MAX_RESULT_BYTES))
-        except (ValidationError, ValueError, VoiceLabError) as error:
-            raise SpeechBackendError(
-                "render_failed", "the speech worker ended without a readable result"
-            ) from error
-        if result.job_id != job_id:
-            raise SpeechBackendError("render_failed", "the speech worker answered another job")
-        return result
+            process.render(
+                text,
+                seed=seed,
+                nfe_steps=runtime.nfe_steps,
+                output=output,
+                deadline_seconds=deadline_seconds,
+            )
+        except ResidentError as error:
+            if not error.segment_only:
+                self.unload()
+            code: FailureCode = "render_timeout" if error.timed_out else "render_failed"
+            raise SpeechBackendError(code, str(error)) from error
+
+    def unload(self) -> None:
+        if self._process is not None:
+            self._process.close()
+        self._process = None
+        self._key = None
+        self._fingerprint = None
+        shutil.rmtree(self.state_root / RESIDENT_DIRECTORY, ignore_errors=True)
