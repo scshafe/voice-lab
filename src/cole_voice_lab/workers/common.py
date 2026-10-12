@@ -22,14 +22,18 @@ from pydantic import JsonValue
 
 from ..audio import inspect_pcm_wav
 from ..canonical import canonical_json_bytes, canonical_sha256, sha256_file, write_canonical_json
-from ..consent import load_valid_consent
 from ..errors import (
     ContractError,
     RuntimeUnavailableError,
     SecurityError,
     VoiceLabError,
 )
-from ..models import EnvironmentEvidence, ExperimentRequest, ExperimentResult
+from ..models import (
+    EnvironmentEvidence,
+    ExperimentRequest,
+    ExperimentResult,
+    require_cole_subject,
+)
 from ..runtime import (
     SOURCE_MANIFEST_NAME,
     LocalSourceManifest,
@@ -187,13 +191,9 @@ def _verify_human_bindings(request: ExperimentRequest) -> tuple[str, str | None,
     reference_digest, _ = sha256_file(reference_path)
     if reference_digest != request.reference.sha256:
         raise SecurityError("reference audio digest does not match request evidence")
-    load_valid_consent(
-        Path(request.reference.consent_path),
-        expected_sha256=request.reference.consent_sha256,
-        subject_id=request.reference.subject_id,
-        purpose="private-zero-shot-evaluation",
-        execution_boundary="tailnet-local-host",
-    )
+    # Cole's voice only (D-050); no consent record is read, and one a request written before
+    # names is ignored.
+    require_cole_subject(request.reference.subject_id, what="the request's reference")
     source_digest: str | None = None
     source_size: int | None = None
     if request.source_audio_path is not None:
@@ -416,7 +416,7 @@ def execute_request(
             or source_after != source_before
             or source_size_after != source_size_before
         ):
-            raise SecurityError("reference, consent, or source audio changed during inference")
+            raise SecurityError("reference or source audio changed during inference")
         inspection = inspect_pcm_wav(output_path)
         output_digest, output_bytes = sha256_file(output_path)
         executed_code_after = _executed_code_evidence(definition)
@@ -442,7 +442,7 @@ def execute_request(
             "executed_code_evidence_path": f"evidence/{request.trial_id}.executed-code.json",
             "executed_code_evidence_sha256": executed_code_digest,
             "reference_sha256": request.reference.sha256,
-            "consent_sha256": request.reference.consent_sha256,
+            **request.reference.consent_binding(),
             "source_audio_sha256": source_before,
             "source_audio_size_bytes": source_size_before,
             "settings": request.settings,
@@ -479,7 +479,7 @@ def execute_request(
         "executed_code_evidence_path": f"evidence/{request.trial_id}.executed-code.json",
         "executed_code_evidence_sha256": executed_code_digest,
         "reference_sha256": request.reference.sha256,
-        "consent_sha256": request.reference.consent_sha256,
+        **request.reference.consent_binding(),
         "source_audio_sha256": source_before,
         "source_audio_size_bytes": source_size_before,
         "runtime_package": definition.package_name,

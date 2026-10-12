@@ -214,8 +214,6 @@
     "run_record_sha256",
     "files",
     "model",
-    "consent_id",
-    "consent_sha256",
     "created_at",
     "designated_by"
   ],

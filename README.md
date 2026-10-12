@@ -27,8 +27,15 @@ uses is free and runs on the owner's own hardware: no cloud service, nothing pai
 voice-lab is released under the [MIT licence](LICENSE).
 
 The Git repository contains only code, schemas, prompts, and policy. Recordings,
-weights, consent evidence, runtime environments, and generated speech belong in
-an explicit private asset root and are rejected by the repository guard.
+weights, consent records (history only since D-050), runtime environments, and
+generated speech belong in an explicit private asset root and are rejected by the
+repository guard.
+
+Only Cole's own voice is synthesized. His standing decision (D-050) permits it for
+fine-tuning, listening, assistant speech and benchmarks on his own hardware, so no
+consent record is approved or checked. The subject is pinned in code to `cole-self`:
+voice release designation, the speech API, the model benchmark and the zero-shot
+bake-off (references, datasets, workers) refuse any other.
 
 ## Development bootstrap
 

@@ -27,8 +27,12 @@ from speech_fixtures import (
 )
 
 import cole_voice_lab
-from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canonical_json
-from cole_voice_lab.consent import revoke_consent
+from cole_voice_lab.canonical import (
+    canonical_json_bytes,
+    canonical_sha256,
+    sha256_file,
+    write_canonical_json,
+)
 from cole_voice_lab.speech.backend import SpeechBackendError
 from cole_voice_lab.speech.contracts import (
     FAILURE_DETAILS,
@@ -49,7 +53,7 @@ from cole_voice_lab.speech.gpu import (
     want_slot,
     withdraw_want,
 )
-from cole_voice_lab.speech.release import consent_path, current_release
+from cole_voice_lab.speech.release import current_release
 from cole_voice_lab.speech.runner import (
     CodeProblem,
     RunnerBusy,
@@ -220,7 +224,15 @@ def test_a_job_renders_sentence_by_sentence_and_joins_them(lab: Lab) -> None:
     assert (
         ledger.release.release_id == "vr-0001" and ledger.release.release_sha256 == release_digest
     )
-    assert ledger.consent_sha256 == lab.consent_sha256
+    # No consent record exists in the lab, and the ledger names none (D-050).
+    assert (ledger.consent_id, ledger.consent_sha256) == (None, None)
+    assert b"consent" not in ledger_path(lab.layout, job_id).read_bytes()
+    assert not (lab.layout.root / "provenance/consents").exists()
+    # An entry written before D-050 named the consent record; it still reads, byte for byte.
+    stored = json.loads(ledger_path(lab.layout, job_id).read_bytes())
+    stored |= {"consent_id": "cole-self-v1", "consent_sha256": "c" * 64}
+    data = canonical_json_bytes(stored) + b"\n"
+    assert canonical_json_bytes(SpeechRenderRecord.model_validate_json(data)) + b"\n" == data
     assert ledger.output == ended.state.audio and ledger.audio_ms == 300
     assert ledger.segment_count == 3
     assert ledger.segment_sha256 == tuple(segment.sha256 for segment in ended.state.segments)
@@ -377,29 +389,14 @@ def test_another_callers_job_is_not_found(lab: Lab) -> None:
     assert store.load("sp-" + "0" * 24) is None
 
 
-@pytest.mark.parametrize(
-    ("damage", "code"),
-    [
-        ("release", "voice_release_changed"),
-        ("consent", "consent_changed"),
-        ("none", "voice_release_changed"),
-    ],
-)
-def test_the_runner_rechecks_the_release_and_the_consent(
-    tmp_path: Path, damage: str, code: str
-) -> None:
+@pytest.mark.parametrize("damage", ["release", "none"])
+def test_the_runner_rechecks_the_release(tmp_path: Path, damage: str) -> None:
+    code = "voice_release_changed"
     lab = build_lab(tmp_path, release=damage != "none")
     job = submit(lab)
     if damage == "release":
         release, _ = current_release(lab.layout)
         (lab.layout.root / release.file("checkpoint").path).write_bytes(b"retrained")
-    elif damage == "consent":
-        release, _ = current_release(lab.layout)
-        revoke_consent(
-            consent_path(lab.layout, release.consent_id),
-            expected_sha256=release.consent_sha256,
-            at=NOW - timedelta(hours=1),
-        )
     backend = FakeBackend()
     runner(lab, backend).run_pending()
     ended = store_for(lab).load(job.record.job_id)
@@ -737,7 +734,7 @@ def test_a_cancel_ends_the_wait_for_the_gpu_slot(lab: Lab) -> None:
     assert len(polls) == 2  # it stopped waiting at once, long before the queue limit
 
 
-# -- review findings: only the pinned subject, and consent checked per sentence ------------
+# -- review findings: only the pinned subject, and the release checked per sentence --------
 
 
 def test_a_release_of_another_subject_than_the_configuration_pins_never_renders(
@@ -753,26 +750,18 @@ def test_a_release_of_another_subject_than_the_configuration_pins_never_renders(
     assert ended.state.error.code == "voice_release_changed" and backend.calls == []
 
 
-@pytest.mark.parametrize(
-    ("change", "code"), [("revoke", "consent_changed"), ("redesignate", "voice_release_changed")]
-)
-def test_a_revocation_or_a_new_release_stops_a_running_render_at_its_next_sentence(
-    lab: Lab, change: str, code: str
-) -> None:
+@pytest.mark.parametrize("change", ["redesignate", "another-subject"])
+def test_a_new_release_stops_a_running_render_at_its_next_sentence(lab: Lab, change: str) -> None:
+    code = "voice_release_changed"
     job = submit(lab, THREE)
-    release, digest = current_release(lab.layout)
 
     def change_after_the_first_sentence(index: int) -> None:
         if index != 1:
             return
-        if change == "revoke":
-            revoke_consent(
-                consent_path(lab.layout, release.consent_id),
-                expected_sha256=release.consent_sha256,
-                at=NOW - timedelta(minutes=1),
-            )
-        else:
+        if change == "redesignate":
             lab.designate()
+        else:
+            designate_another_subject(lab)
 
     backend = FakeBackend(on_segment=change_after_the_first_sentence)
     runner(lab, backend).run_pending()

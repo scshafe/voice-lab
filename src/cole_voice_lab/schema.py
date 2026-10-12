@@ -47,7 +47,6 @@ from .model_comparison import ModelComparison
 from .models import (
     CandidateSpec,
     CaptureManifest,
-    ConsentRecord,
     ExecutedCodeEvidence,
     ExperimentRequest,
     ExperimentResult,
@@ -140,7 +139,6 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "capture-ready": ReadyMarker,
     "capture-rejected-takes": RejectedTakeLog,
     "capture-desktop-session": DesktopSessionEvidence,
-    "consent": ConsentRecord,
     "dataset-manifest": DatasetManifest,
     "dataset-selection": DatasetSelectionDocument,
     "diagnostic-root": DiagnosticRootMarker,

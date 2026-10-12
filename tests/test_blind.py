@@ -84,17 +84,11 @@ def _audition_inputs(
     paths = audition_paths(layout, experiment_id)
     reference_path = layout.directory("references") / "reference.wav"
     reference_sha256 = _wav(reference_path, 50)
-    consent_path = layout.directory("provenance") / "consents" / "consent.json"
-    consent_path.parent.mkdir(mode=0o700, exist_ok=True)
-    consent_path.write_bytes(b"bound consent fixture")
-    consent_sha256, _ = sha256_file(consent_path)
     reference = ReferenceEvidence(
         path=str(reference_path),
         sha256=reference_sha256,
         transcript="Exact held-out reference transcript.",
         subject_id="cole-self",
-        consent_path=str(consent_path),
-        consent_sha256=consent_sha256,
     )
     source_path = layout.directory("derived") / "performed-source.wav"
     source_sha256 = _wav(source_path, 75)
@@ -280,7 +274,6 @@ def _audition_inputs(
                 "executed_code_evidence_path": (f"evidence/{trial.trial_id}.executed-code.json"),
                 "executed_code_evidence_sha256": code_sha256,
                 "reference_sha256": trial.request.reference.sha256,
-                "consent_sha256": trial.request.reference.consent_sha256,
                 "source_audio_sha256": trial.request.source_audio_sha256,
                 "source_audio_size_bytes": trial.request.source_audio_size_bytes,
                 "settings": trial.request.settings,
@@ -359,7 +352,6 @@ def _audition_inputs(
                 "executed_code_evidence_path": (f"evidence/{trial.trial_id}.executed-code.json"),
                 "executed_code_evidence_sha256": code_sha256,
                 "reference_sha256": trial.request.reference.sha256,
-                "consent_sha256": trial.request.reference.consent_sha256,
                 "source_audio_sha256": trial.request.source_audio_sha256,
                 "source_audio_size_bytes": trial.request.source_audio_size_bytes,
                 "runtime_package": runtime_package,
@@ -596,6 +588,7 @@ def test_blind_input_derivation_rejects_outside_reference_before_resolution(
 
 
 def test_review_build_rejects_outside_consent_before_run_binding(tmp_path: Path) -> None:
+    # A plan written before D-050 may name a consent record: never read, still confined.
     layout = _layout(tmp_path)
     inputs = _inputs(layout)
     changed_plan_sha256 = _rebind_plan_human_input(layout, target="consent")

@@ -511,6 +511,7 @@ def validate_audition_plan_paths(layout: AssetLayout, plan: AuditionPlan) -> Non
 
     paths = audition_paths(layout, plan.experiment_id)
     reference_root = layout.directory("references")
+    # A plan written before D-050 may name a consent record; it is never read, only confined.
     consent_root = layout.directory("provenance") / "consents"
     for trial in plan.trials:
         expected_native = (
@@ -551,12 +552,13 @@ def validate_audition_plan_paths(layout: AssetLayout, plan: AuditionPlan) -> Non
             reference_root,
             label="reference audio",
         )
-        _require_confined_path(
-            layout,
-            trial.request.reference.consent_path,
-            consent_root,
-            label="consent evidence",
-        )
+        if trial.request.reference.consent_path is not None:
+            _require_confined_path(
+                layout,
+                trial.request.reference.consent_path,
+                consent_root,
+                label="consent evidence",
+            )
         if trial.request.source_audio_path is not None:
             _require_confined_path(
                 layout,
@@ -1020,9 +1022,6 @@ def validate_persisted_trial_evidence(
         raise ContractError("persisted normalized output path does not match the audition plan")
     reference = Path(trial.request.reference.path)
     _assert_file_digest(reference, trial.request.reference.sha256)
-    _assert_file_digest(
-        Path(trial.request.reference.consent_path), trial.request.reference.consent_sha256
-    )
     if trial.request.source_audio_path is not None:
         _assert_file_digest(
             Path(trial.request.source_audio_path),
@@ -1109,7 +1108,6 @@ def validate_persisted_trial_evidence(
         "executed_code_evidence_path": model_evidence.executed_code_evidence_path,
         "executed_code_evidence_sha256": model_evidence.executed_code_evidence_sha256,
         "reference_sha256": model_evidence.reference_sha256,
-        "consent_sha256": model_evidence.consent_sha256,
         "source_audio_sha256": model_evidence.source_audio_sha256,
         "source_audio_size_bytes": model_evidence.source_audio_size_bytes,
         "runtime_package": model_evidence.runtime_package,
@@ -1137,6 +1135,17 @@ def validate_persisted_trial_evidence(
         model_evidence.runtime_package_version,
         evidence_label="executed-code evidence",
     )
+    # A consent digest is evidence of a trial run before D-050 only: present in the model
+    # evidence and the result together, or in neither.
+    if model_evidence.consent_sha256 is None:
+        if "consent_sha256" in result.metadata:
+            raise ContractError("worker result names a consent record its evidence does not")
+    else:
+        _assert_json_binding(
+            "consent_sha256",
+            _metadata_value(result, "consent_sha256"),
+            model_evidence.consent_sha256,
+        )
     if model_evidence.watermarked is None:
         if "watermarked" in result.metadata:
             raise ContractError("worker result claims watermark evidence that is not applicable")

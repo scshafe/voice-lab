@@ -7,7 +7,6 @@
         "render_timeout",
         "queue_timeout",
         "voice_release_changed",
-        "consent_changed",
         "internal_error"
       ],
       "type": "string"

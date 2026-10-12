@@ -81,7 +81,6 @@ type ApiErrorCode = Literal[
     "idempotency_conflict",
     "idempotency_key_unverifiable",
     "voice_release_unavailable",
-    "consent_unavailable",
     "gpu_busy",
     "too_many_jobs",
     "too_many_streams",

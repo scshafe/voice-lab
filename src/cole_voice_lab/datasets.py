@@ -25,7 +25,17 @@ from .canonical import (
 from .diagnostic_roots import require_corpus_eligible_package
 from .errors import ContractError, SecurityError
 from .intake import validate_capture_package
-from .models import ContractModel, Prompt, PromptSuite, Sha256, StableId, utc_now
+from .models import (
+    ContractModel,
+    Prompt,
+    PromptSuite,
+    Sha256,
+    StableId,
+    historical_field,
+    reject_explicit_null,
+    require_cole_subject,
+    utc_now,
+)
 from .paths import AssetLayout, confined_path, validate_relative_path
 from .references import (
     AcceptedUtteranceBinding,
@@ -33,7 +43,6 @@ from .references import (
     ConsentEvidenceBinding,
     JsonEvidenceBinding,
     load_accepted_utterance,
-    load_consent_binding,
     load_headphone_review,
 )
 
@@ -203,7 +212,8 @@ class DatasetManifest(ContractModel):
     created_by: NonBlank = Field(max_length=256)
     purpose: Literal["private-fine-tuning"] = "private-fine-tuning"
     subject_id: StableId
-    consent: ConsentEvidenceBinding
+    # Retired with consent records (D-050): only a manifest written before binds one.
+    consent: ConsentEvidenceBinding | None = historical_field()
     pilot_gate: BoundPilotGate | None
     entries: tuple[DatasetEntry, ...] = Field(min_length=3)
     category_accounting: tuple[CategoryAccounting, ...] = Field(min_length=1)
@@ -217,14 +227,15 @@ class DatasetManifest(ContractModel):
 
     @model_validator(mode="after")
     def _split_and_accounting_invariants(self) -> DatasetManifest:
-        if self.consent.purpose != self.purpose:
+        reject_explicit_null(self, "consent")
+        if self.consent is not None and self.consent.purpose != self.purpose:
             raise ValueError("dataset consent must authorize private fine-tuning")
         if self.corpus_stage == "full-corpus" and self.pilot_gate is None:
             raise ValueError("full-corpus datasets require a separately bound pilot gate")
         if self.pilot_gate is not None and self.pilot_gate.record.approved_at > self.created_at:
             raise ValueError("dataset cannot predate its pilot-gate approval")
         if any(entry.source.subject_id != self.subject_id for entry in self.entries):
-            raise ValueError("all dataset entries must match the consented subject")
+            raise ValueError("all dataset entries must match the dataset's subject")
         if any(
             entry.headphone_review.record.reviewed_at > self.created_at for entry in self.entries
         ):
@@ -488,8 +499,6 @@ def build_dataset_manifest(
     corpus_stage: Literal["pilot", "full-corpus"],
     selections: Sequence[DatasetSelection],
     prompt_suites: Mapping[str, PromptSuite],
-    consent_path: str,
-    consent_sha256: str,
     created_by: str,
     minimum_holdout_seconds: float = DEFAULT_MINIMUM_HOLDOUT_SECONDS,
     pilot_gate_path: str | None = None,
@@ -550,14 +559,7 @@ def build_dataset_manifest(
     if len(subject_ids) != 1:
         raise ContractError("one fine-tuning dataset cannot mix voice subjects")
     subject_id = next(iter(subject_ids))
-    consent, _ = load_consent_binding(
-        layout,
-        relative_path=consent_path,
-        expected_sha256=consent_sha256,
-        subject_id=subject_id,
-        purpose="private-fine-tuning",
-        at=now,
-    )
+    require_cole_subject(subject_id, what="the dataset")
 
     gate_supplied = pilot_gate_path is not None or pilot_gate_sha256 is not None
     if gate_supplied and (pilot_gate_path is None or pilot_gate_sha256 is None):
@@ -589,7 +591,6 @@ def build_dataset_manifest(
         created_at=now,
         created_by=created_by,
         subject_id=subject_id,
-        consent=consent,
         pilot_gate=gate,
         entries=tuple(entries),
         category_accounting=_category_accounting(entries),
@@ -601,22 +602,11 @@ def build_dataset_manifest(
     )
 
 
-def validate_dataset_sources(
-    layout: AssetLayout, manifest: DatasetManifest, *, at: datetime | None = None
-) -> None:
-    """Recheck accepted bytes, reviews, consent, and optional pilot-gate evidence."""
+def validate_dataset_sources(layout: AssetLayout, manifest: DatasetManifest) -> None:
+    """Recheck the subject (Cole's only, D-050), accepted bytes, reviews and optional
+    pilot-gate evidence. A consent record a manifest written before D-050 names is not read."""
 
-    when = _aware_utc(at or utc_now())
-    consent, _ = load_consent_binding(
-        layout,
-        relative_path=manifest.consent.file.path,
-        expected_sha256=manifest.consent.file.sha256,
-        subject_id=manifest.subject_id,
-        purpose="private-fine-tuning",
-        at=when,
-    )
-    if consent != manifest.consent:
-        raise SecurityError("dataset consent binding is stale")
+    require_cole_subject(manifest.subject_id, what="the dataset")
     if manifest.pilot_gate is not None:
         gate = load_pilot_gate(
             layout,
@@ -666,18 +656,17 @@ def _private_child_directory(parent: Path, name: str) -> Path:
     return directory
 
 
-def publish_dataset_manifest(
-    layout: AssetLayout, manifest: DatasetManifest, *, at: datetime | None = None
-) -> PublishedDataset:
+def publish_dataset_manifest(layout: AssetLayout, manifest: DatasetManifest) -> PublishedDataset:
     """Atomically publish only the manifest; accepted audio remains in raw/."""
 
-    validation_time = _aware_utc(at or utc_now())
-    validate_dataset_sources(layout, manifest, at=validation_time)
+    validate_dataset_sources(layout, manifest)
     datasets_root = _private_child_directory(layout.directory("derived"), "datasets")
     destination = datasets_root / manifest.dataset_id
     if destination.exists() or destination.is_symlink():
-        existing = validate_published_dataset(layout, destination, at=validation_time)
-        if existing.manifest != manifest:
+        existing = validate_published_dataset(layout, destination)
+        # A manifest published before D-050 binds a consent record nothing reads; republishing
+        # the same dataset without it stays idempotent.
+        if existing.manifest != manifest.model_copy(update={"consent": existing.manifest.consent}):
             raise SecurityError(f"dataset ID collision: {manifest.dataset_id}")
         return existing
 
@@ -699,15 +688,13 @@ def publish_dataset_manifest(
             os.fsync(root_descriptor)
         finally:
             os.close(root_descriptor)
-        return validate_published_dataset(layout, destination, at=validation_time)
+        return validate_published_dataset(layout, destination)
     finally:
         if not published and stage.exists():
             shutil.rmtree(stage)
 
 
-def validate_published_dataset(
-    layout: AssetLayout, directory: Path, *, at: datetime | None = None
-) -> PublishedDataset:
+def validate_published_dataset(layout: AssetLayout, directory: Path) -> PublishedDataset:
     datasets_root = (layout.directory("derived") / "datasets").resolve(strict=True)
     candidate = directory.expanduser()
     try:
@@ -720,7 +707,7 @@ def validate_published_dataset(
     manifest = _read_canonical_model(manifest_path, DatasetManifest)
     if manifest.dataset_id != candidate.name:
         raise ContractError("dataset directory name does not match manifest ID")
-    validate_dataset_sources(layout, manifest, at=at)
+    validate_dataset_sources(layout, manifest)
     digest, _ = sha256_file(manifest_path)
     return PublishedDataset(candidate, manifest, digest)
 
@@ -777,9 +764,7 @@ def validate_transfer_plan(
 
     when = _aware_utc(at or utc_now())
     published = validate_published_dataset(
-        layout,
-        layout.directory("derived") / "datasets" / plan.dataset_id,
-        at=when,
+        layout, layout.directory("derived") / "datasets" / plan.dataset_id
     )
     dataset_relative = f"derived/datasets/{plan.dataset_id}/{DATASET_MANIFEST_NAME}"
     dataset_path = published.directory / DATASET_MANIFEST_NAME
@@ -831,7 +816,7 @@ def build_transfer_plan(
 
     now = _aware_utc(clock())
     dataset_directory = layout.directory("derived") / "datasets" / dataset_id
-    published = validate_published_dataset(layout, dataset_directory, at=now)
+    published = validate_published_dataset(layout, dataset_directory)
     dataset_relative = f"derived/datasets/{dataset_id}/{DATASET_MANIFEST_NAME}"
     dataset_path = published.directory / DATASET_MANIFEST_NAME
     _, dataset_size = sha256_file(dataset_path)

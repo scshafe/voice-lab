@@ -14,15 +14,15 @@ first, and for each:
 
 1. ends it ``cancelled`` when a cancel arrived, and fails it ``queue_timeout`` when it waited
    longer than the configuration allows;
-2. re-reads the current voice release, refuses one of another subject, re-hashes what it
-   names (``voice_release_changed``) and re-checks its consent record (``consent_changed``);
+2. re-reads the current voice release, refuses one of another subject and re-hashes what it
+   names (``voice_release_changed``); no consent record is read (D-050);
 3. holds the GPU slot (``gpu.GpuSlotLease``, kept across jobs while the model is resident;
    a cancel ends the wait) and has the backend load the release (``runtime_unavailable``
    without a runtime);
 4. splits the text into segments no longer than the release's family takes in one pass
    (``segments``), and renders them one after another, each with its own seed derived from
-   the job's; before each it checks that the release is still current and its consent still
-   valid, so a revocation stops a running render at its next sentence; checks each WAV and
+   the job's; before each it checks that the release is still current, so a new designation
+   stops a running render at its next sentence; checks each WAV and
    publishes it at once as a segment of the job; a cancel is honoured between sentences;
 5. joins the segments into the job's audio, writes the render ledger entry
    (``provenance/speech-renders/<job id>.json``: never the text), ends the job and queues
@@ -101,7 +101,6 @@ from .release import (
     VerifiedRelease,
     VoiceReleaseError,
     current_release,
-    require_release_consent,
     require_subject,
     verify_release,
 )
@@ -208,10 +207,6 @@ def check_wav(path: Path) -> RenderedAudio:
     if not 1 <= frames <= MAX_AUDIO_FRAMES or data_bytes != frames * 2:
         raise SpeechBackendError("render_failed", "the render is empty or truncated")
     return RenderedAudio(sha256=digest, bytes=size, frames=frames)
-
-
-def _release_failure(error: VoiceReleaseError) -> FailureCode:
-    return "consent_changed" if error.code == "consent_changed" else "voice_release_changed"
 
 
 class SpeechRunner:
@@ -475,8 +470,8 @@ class SpeechRunner:
                 self.log(f"{job.record.job_id}: could not be ended: {type(again).__name__}")
                 return job
 
-    def _verified(self, at: datetime) -> VerifiedRelease:
-        """The current release, of the pinned subject, re-hashed, with its consent re-checked.
+    def _verified(self) -> VerifiedRelease:
+        """The current release, of the pinned subject, re-hashed.
 
         Raises: ``VoiceReleaseError`` (any other error reading the release is
         ``release_changed``).
@@ -491,11 +486,10 @@ class SpeechRunner:
             raise VoiceReleaseError("release_changed", f"{type(error).__name__}: {error}") from (
                 error
             )
-        require_release_consent(self.layout, release, at=at, subject_id=self.config.subject_id)
         return verified
 
     def _still_current(self, verified: VerifiedRelease) -> None:
-        """Before each sentence: the same release is current and its consent still valid.
+        """Before each sentence: the same release is still current.
 
         Raises: ``VoiceReleaseError``.
         """
@@ -509,9 +503,6 @@ class SpeechRunner:
             )
         if digest != verified.digest:
             raise VoiceReleaseError("release_changed", "another release was designated")
-        require_release_consent(
-            self.layout, release, at=self.clock(), subject_id=self.config.subject_id
-        )
 
     def _run(self, job: Job) -> Job:
         now = self.clock()
@@ -523,9 +514,9 @@ class SpeechRunner:
         if remaining <= 0:
             return self._fail(job, "queue_timeout", "the job waited longer than the queue allows")
         try:
-            verified = self._verified(now)
+            verified = self._verified()
         except VoiceReleaseError as error:
-            return self._fail(job, _release_failure(error), str(error))
+            return self._fail(job, "voice_release_changed", str(error))
         holder = GpuSlotHolder(kind="speech", job_id=job_id, started_at=now)
         try:
             self.lease.acquire(
@@ -615,7 +606,7 @@ class SpeechRunner:
                 outcome, failure = "failed", error.code
                 self.log(f"{job_id}: failed {error.code}: {error.detail}")
         except VoiceReleaseError as error:
-            outcome, failure = "failed", _release_failure(error)
+            outcome, failure = "failed", "voice_release_changed"
             self.log(f"{job_id}: stopped, {failure}: {error}")
         except Exception as error:  # noqa: BLE001 - the job ends, with its ledger entry
             outcome, failure = "failed", "internal_error"
@@ -658,8 +649,6 @@ class SpeechRunner:
                     release_id=release.release_id, release_sha256=verified.digest
                 ),
                 "model_family": release.model_family,
-                "consent_id": release.consent_id,
-                "consent_sha256": release.consent_sha256,
                 "outcome": outcome,
                 "failure": failure,
                 "fingerprint": fingerprint,

@@ -1,5 +1,5 @@
 # The speech job runner (docs/SPEECH_API.md §7, D-046), long-running. It looks for queued
-# jobs every quarter second; for each it re-checks the voice release and its consent record,
+# jobs every quarter second; for each it re-checks the voice release (no consent record, D-050),
 # holds the GPU slot, renders the text sentence by sentence through the resident F5-TTS worker
 # (f5_resident.py in the runtime's python, its own process group), publishes each sentence as
 # it is done, writes the render ledger into the lab and queues the job's webhook event. The

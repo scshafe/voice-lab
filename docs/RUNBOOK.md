@@ -18,49 +18,12 @@ stricter per-runtime estimate and never downloads models implicitly.
   --asset-root $HOME/.local/share/voice-lab
 ```
 
-This installs a **pending**, non-authorizing consent record. Cole completes the
-explicit approval command personally before voice cloning; an agent must not
-infer or supply the attestation flag on Cole's behalf.
-
-Consent is least-privilege and checksum-rotated. First preview the exact scope:
-
-```bash
-.venv/bin/voice-lab consent preview \
-  --purpose private-zero-shot-evaluation \
-  --execution-boundary capture-host \
-  --execution-boundary tailnet-local-host \
-  --expires-at 2027-08-17T00:00:00Z
-```
-
-Then Cole—not an agent—runs `consent approve-self` with those same scope flags,
-the preview's `scope_sha256`, the pending record's SHA-256 from `assets init`,
-and `--i-am-the-subject-and-authorize`. Fine-tuning, Speak on the home host and
-speech for registered callers use later, separate previews/approvals
-(`private-fine-tuning`, `private-home-host-synthesis`, `private-assistant-speech`;
-D-022, D-047); zero-shot approval does not imply them. An approved or revoked record
-is never replaced (`approve-self` refuses), so a later scope is a new record with its own
-`--consent-id` and no `--expected-current-sha256`: speech for registered callers is
-`cole-self-v2`, with `--purpose private-assistant-speech --execution-boundary home-host`
-([deploy/speech/README.md](../deploy/speech/README.md), step 1). Each consumer validates its
-actual boundary: any capture-side consumer must request `capture-host`, reference
-publication, datasets, and offline synthesis on the mini request
-`tailnet-local-host`, and the PC's job runner requests `home-host`. A record lacking the
-requested boundary fails closed even when its subject, purpose, digest, and
-dates are otherwise valid.
-
-For the zero-shot scope shown above, the personal approval command is:
-
-```bash
-.venv/bin/voice-lab consent approve-self \
-  --asset-root $HOME/.local/share/voice-lab \
-  --purpose private-zero-shot-evaluation \
-  --execution-boundary capture-host \
-  --execution-boundary tailnet-local-host \
-  --expires-at 2027-08-17T00:00:00Z \
-  --expected-current-sha256 <pending-consent-sha256> \
-  --reviewed-scope-sha256 <previewed-scope-sha256> \
-  --i-am-the-subject-and-authorize
-```
+It installs no consent record. Consent records are retired (D-050, 2026-10-12): Cole's
+standing decision permits his own voice for fine-tuning, listening (Speak), assistant speech
+and benchmarks on his own hardware, and the subject is pinned in code to `cole-self`, so no
+approval step comes before voice cloning. Consent records an earlier `assets init` or
+`consent approve-self` wrote stay in `provenance/consents/` as history; nothing reads them,
+and the vault keeps copying them.
 
 ## 2. Capture-kit handoff
 
@@ -348,8 +311,7 @@ recording more compromised audio.
 
 ## 6. Zero-shot bake-off
 
-1. Complete subject consent as shown in section 1.
-2. Review and publish three checksum-bound reference candidates. Use a distinct
+1. Review and publish three checksum-bound reference candidates. Use a distinct
    reviewed prompt and IDs for each candidate; copy every printed digest into
    the next command without retyping it:
 
@@ -364,8 +326,6 @@ recording more compromised audio.
      --reference-id cole-reference-01 \
      --raw-manifest-sha256 <accepted-manifest-sha256> \
      --prompt-id <reviewed-prompt-id> \
-     --consent-path provenance/consents/cole-self-v1.json \
-     --consent-sha256 <approved-consent-sha256> \
      --headphone-review-path \
        provenance/headphone-reviews/cole-reference-01-review.json \
      --headphone-review-sha256 <review-sha256> \
@@ -374,8 +334,8 @@ recording more compromised audio.
    voice-lab reference validate --asset-root <mini-private-root> \
      --reference-id cole-reference-01
    ```
-3. Inspect `voice-lab models list` and run `voice-lab models verify-registry`.
-4. Preview one candidate at a time with:
+2. Inspect `voice-lab models list` and run `voice-lab models verify-registry`.
+3. Preview one candidate at a time with:
 
    ```bash
    voice-lab models prepare --asset-root <mini-private-root> \
@@ -428,10 +388,10 @@ recording more compromised audio.
    executable setuptools `.pth` preimage before any subsequent runtime import;
    a missing/rebound preimage or any additional executable/external `.pth`
    aborts preparation and removes the incomplete environment.
-5. Put one performed source WAV per selected held-out prompt beneath the private
+4. Put one performed source WAV per selected held-out prompt beneath the private
    asset root. Seed-VC consumes these checksum-bound source performances while
    the same reviewed target reference is used by every candidate.
-6. Persist the all-candidate smoke matrix. For example, one held-out prompt,
+5. Persist the all-candidate smoke matrix. For example, one held-out prompt,
    one reference, and one seed produces cold/warm cells for all four direct-TTS
    candidates plus one separately labeled Seed-VC cell:
 
@@ -446,7 +406,7 @@ recording more compromised audio.
      --profile smoke
    ```
 
-7. Preview, then explicitly run **one candidate at a time**. The run path is
+6. Preview, then explicitly run **one candidate at a time**. The run path is
    offline and never provisions missing dependencies:
 
    ```bash
@@ -471,7 +431,7 @@ recording more compromised audio.
    voice-lab audition status --asset-root <mini-private-root> \
      --experiment-id zero-shot-smoke-001
    ```
-8. If the 10 GiB disk floor prevents the next snapshot from being prepared,
+7. If the 10 GiB disk floor prevents the next snapshot from being prepared,
    preview an exact source eviction. Only the digest copied from that preview,
    plus both destructive flags, can delete it:
 
@@ -493,11 +453,11 @@ recording more compromised audio.
    voice-lab models evict-runtime --asset-root <mini-private-root> <runtime-id> \
      --expected-receipt-sha256 <previewed-sha256> --execute --confirm-evict
    ```
-9. Run the quality matrix with repeated seeds after smoke results are healthy.
+8. Run the quality matrix with repeated seeds after smoke results are healthy.
    Normalization retains engine-native audio and writes a common 24 kHz,
    PCM-16, -18 LUFS/-1.5 dBTP comparison copy.
-10. Compute diagnostic ASR/speaker/format metrics.
-11. Build the candidate-blind package only from the exact persisted audition
+9. Compute diagnostic ASR/speaker/format metrics.
+10. Build the candidate-blind package only from the exact persisted audition
     plan/run/result digests. Package construction derives every candidate,
     prompt, seed, track, and normalized-audio label from that evidence, requires
     every planned candidate and a balanced failure-free matrix, and rejects
@@ -527,7 +487,7 @@ recording more compromised audio.
       --score-sheet /private/path/to/listening-scores.json
     ```
 
-12. Reveal identities only after score evidence is saved.
+11. Reveal identities only after score evidence is saved.
 
 The directory named `public/` inside a blind-review package means “safe for the
 reviewer without candidate labels.” It is independently self-contained and does
@@ -547,18 +507,16 @@ for registered callers uses only the current release (D-046). The commands, the
 caller registry and the owner's steps are specified in
 [SPEECH_API.md](SPEECH_API.md); deploying it is [deploy/speech/README.md](../deploy/speech/README.md).
 
-Designate on the PC, as `voice-lab`, after an approved consent record for
-`private-assistant-speech` on `home-host` exists (`cole-self-v2`, section 1). The first
-command previews; the second, which Cole runs, writes the next release (append-only; the
-history stays). The release names that consent record, and only a run of the pinned subject
-(the configuration's `subject_id`, `cole-self`) can be designated:
+Designate on the PC, as `voice-lab`; no consent record is needed (D-050). The first command
+previews; the second, which Cole runs, writes the next release (append-only; the history
+stays). Only a run of the pinned subject (`cole-self`) can be designated:
 
 ```bash
 voice-lab voice release designate --asset-root /data/voice-lab/lab \
-  --run <finished run id> --consent-id cole-self-v2 \
+  --run <finished run id> \
   --config /etc/voice-lab/speech.json --designated-by Cole
 voice-lab voice release designate --asset-root /data/voice-lab/lab \
-  --run <finished run id> --consent-id cole-self-v2 \
+  --run <finished run id> \
   --config /etc/voice-lab/speech.json --designated-by Cole --i-designate-this-run
 voice-lab voice release show --asset-root /data/voice-lab/lab
 voice-lab voice release history --asset-root /data/voice-lab/lab
@@ -567,8 +525,7 @@ voice-lab voice release history --asset-root /data/voice-lab/lab
 `--reference-prompt <prompt id>` chooses an F5-TTS release's reference clip (by default
 Speak's choice; D-048: a family without a reference clip has no use for it);
 `--blind-review <review id> --score-sheet-sha256 <digest>` attaches blind-review evidence.
-A render refuses once the release's checkpoint, reference clip or consent record changes,
-including a renewed consent record: designate again.
+A render refuses once the release's checkpoint or reference clip changes: designate again.
 
 ## 8. Conditional full corpus/fine-tuning
 

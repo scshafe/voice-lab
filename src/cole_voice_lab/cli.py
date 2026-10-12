@@ -40,7 +40,6 @@ from .canonical import (
     canonical_json_bytes,
     canonical_sha256,
     open_regular_no_follow,
-    sha256_file,
     write_canonical_json,
 )
 from .capture import (
@@ -50,14 +49,6 @@ from .capture import (
     require_legacy_capture_root,
     require_legacy_capture_suite,
     select_umik1_device,
-)
-from .consent import (
-    ExecutionBoundary,
-    Purpose,
-    approve_self_consent,
-    consent_record_path,
-    install_pending_consent,
-    revoke_consent,
 )
 from .datasets import (
     DEFAULT_MINIMUM_HOLDOUT_SECONDS,
@@ -86,7 +77,6 @@ from .models import (
     PROMPT_SUITE_V1,
     PROMPT_SUITE_V2,
     CaptureDevice,
-    ConsentRecord,
     Prompt,
     PromptSuite,
     PromptSuitePurpose,
@@ -400,8 +390,6 @@ def _audition_references(
                 sha256=manifest.output.sha256,
                 transcript=manifest.source.transcript,
                 subject_id=manifest.source.subject_id,
-                consent_path=str((layout.root / manifest.consent.file.path).resolve(strict=True)),
-                consent_sha256=manifest.consent.file.sha256,
             )
         )
     return tuple(references)
@@ -459,7 +447,6 @@ def _assets_init(options: argparse.Namespace) -> int:
         diagnostic, marker = initialize_diagnostic_root(
             _asset_root(options.asset_root), subject_id=options.subject_id
         )
-        # A diagnostic subject never approves consent, so no pending record is installed.
         _json_print(
             {
                 "asset_root": str(diagnostic.root),
@@ -472,13 +459,10 @@ def _assets_init(options: argparse.Namespace) -> int:
     if options.subject_id is not None:
         raise VoiceLabError("--subject-id is recorded only for --diagnostic asset roots")
     layout = AssetLayout.initialize(_asset_root(options.asset_root))
-    consent_path, consent_sha256 = install_pending_consent(layout)
     _json_print(
         {
             "asset_root": str(layout.root),
             "directories": [str(layout.directory(name)) for name in ASSET_DIRECTORIES],
-            "pending_consent": str(consent_path),
-            "pending_consent_sha256": consent_sha256,
         }
     )
     return 0
@@ -2415,8 +2399,6 @@ def _reference_publish(options: argparse.Namespace) -> int:
         reference_id=options.reference_id,
         raw_manifest_sha256=options.raw_manifest_sha256,
         prompt_id=options.prompt_id,
-        consent_path=options.consent_path,
-        consent_sha256=options.consent_sha256,
         headphone_review_path=options.headphone_review_path,
         headphone_review_sha256=options.headphone_review_sha256,
         created_by=options.created_by,
@@ -2515,8 +2497,6 @@ def _dataset_build(options: argparse.Namespace) -> int:
         corpus_stage=options.corpus_stage,
         selections=selection_document.selections,
         prompt_suites=prompt_suites,
-        consent_path=options.consent_path,
-        consent_sha256=options.consent_sha256,
         created_by=options.created_by,
         minimum_holdout_seconds=options.minimum_holdout_seconds,
         pilot_gate_path=options.pilot_gate_path,
@@ -3032,96 +3012,6 @@ def _blind_aggregate(options: argparse.Namespace) -> int:
     layout = AssetLayout.validate(_asset_root(options.asset_root))
     sheet = _read_bounded_contract(Path(options.score_sheet), ScoreSheet)
     _json_print(aggregate_scores(layout, sheet))
-    return 0
-
-
-def _consent_install(options: argparse.Namespace) -> int:
-    layout = AssetLayout.validate(_asset_root(options.asset_root))
-    path, digest = install_pending_consent(layout)
-    with open_regular_no_follow(path) as stream:
-        record = ConsentRecord.model_validate_json(stream.read())
-    _json_print({"path": str(path), "sha256": digest, "approved": record.approved})
-    return 0
-
-
-def _consent_scope(options: argparse.Namespace) -> dict[str, object]:
-    purposes = tuple(sorted(options.purpose))
-    boundaries = tuple(sorted(options.execution_boundary))
-    if len(purposes) != len(set(purposes)) or len(boundaries) != len(set(boundaries)):
-        raise VoiceLabError("consent purposes and execution boundaries must be unique")
-    return {
-        "consent_id": options.consent_id,
-        "subject_id": options.subject_id,
-        "allowed_purposes": purposes,
-        "allowed_execution_boundaries": boundaries,
-        "expires_at": options.expires_at.isoformat(),
-        "hosted_transfer_allowed": False,
-        "disclosure_required": True,
-    }
-
-
-def _consent_preview(options: argparse.Namespace) -> int:
-    scope = _consent_scope(options)
-    _json_print({"scope": scope, "scope_sha256": canonical_sha256(scope), "approved": False})
-    return 0
-
-
-def _consent_approve(options: argparse.Namespace) -> int:
-    layout = AssetLayout.validate(_asset_root(options.asset_root))
-    scope = _consent_scope(options)
-    scope_sha256 = canonical_sha256(scope)
-    if options.reviewed_scope_sha256 != scope_sha256:
-        raise VoiceLabError(
-            "approval requires the exact --reviewed-scope-sha256 emitted by consent preview"
-        )
-    path, digest = approve_self_consent(
-        layout,
-        acknowledgement=options.i_am_the_subject_and_authorize,
-        purposes=tuple(sorted(options.purpose)),
-        execution_boundaries=tuple(sorted(options.execution_boundary)),
-        expires_at=options.expires_at,
-        subject_id=options.subject_id,
-        consent_id=options.consent_id,
-        expected_current_sha256=options.expected_current_sha256,
-    )
-    _json_print(
-        {
-            "path": str(path),
-            "sha256": digest,
-            "approved": True,
-            "scope": scope,
-            "scope_sha256": scope_sha256,
-        }
-    )
-    return 0
-
-
-def _consent_status(options: argparse.Namespace) -> int:
-    layout = AssetLayout.validate(_asset_root(options.asset_root))
-    path = consent_record_path(layout, options.consent_id)
-    digest, size = sha256_file(path)
-    with open_regular_no_follow(path) as stream:
-        record = ConsentRecord.model_validate_json(stream.read())
-    _json_print(
-        {
-            "path": str(path),
-            "sha256": digest,
-            "size_bytes": size,
-            "record": record.model_dump(mode="json"),
-        }
-    )
-    return 0
-
-
-def _consent_revoke(options: argparse.Namespace) -> int:
-    if not options.confirm_revoke:
-        raise VoiceLabError("revocation requires --confirm-revoke")
-    layout = AssetLayout.validate(_asset_root(options.asset_root))
-    path = consent_record_path(layout, options.consent_id)
-    record, digest = revoke_consent(path, expected_sha256=options.expected_sha256)
-    _json_print(
-        {"path": str(path), "sha256": digest, "revoked_at": record.revoked_at, "approved": False}
-    )
     return 0
 
 
@@ -4103,24 +3993,6 @@ def _journey(options: argparse.Namespace) -> int:
     return cast(Callable[[list[str]], int], module.main)(list(options.arguments))
 
 
-def _add_consent_scope_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--subject-id", default="cole-self")
-    parser.add_argument("--consent-id", default="cole-self-v1")
-    parser.add_argument(
-        "--purpose",
-        action="append",
-        required=True,
-        choices=get_args(Purpose),
-    )
-    parser.add_argument(
-        "--execution-boundary",
-        action="append",
-        required=True,
-        choices=get_args(ExecutionBoundary),
-    )
-    parser.add_argument("--expires-at", type=_aware_datetime, required=True)
-
-
 def _add_capture_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--asset-root")
     parser.add_argument("--session-id", required=True)
@@ -4660,8 +4532,6 @@ def build_parser() -> argparse.ArgumentParser:
     reference_publish.add_argument("--reference-id", required=True)
     reference_publish.add_argument("--raw-manifest-sha256", required=True)
     reference_publish.add_argument("--prompt-id", required=True)
-    reference_publish.add_argument("--consent-path", required=True)
-    reference_publish.add_argument("--consent-sha256", required=True)
     reference_publish.add_argument("--headphone-review-path", required=True)
     reference_publish.add_argument("--headphone-review-sha256", required=True)
     reference_publish.add_argument("--created-by", default="cole")
@@ -4704,8 +4574,6 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SUITE_ID=PATH",
         help="exact prompt-suite JSON; repeat once for each suite used",
     )
-    dataset_build.add_argument("--consent-path", required=True)
-    dataset_build.add_argument("--consent-sha256", required=True)
     dataset_build.add_argument("--created-by", default="cole")
     dataset_build.add_argument(
         "--minimum-holdout-seconds",
@@ -4867,32 +4735,6 @@ def build_parser() -> argparse.ArgumentParser:
     blind_aggregate.add_argument("--asset-root")
     blind_aggregate.add_argument("--score-sheet", required=True)
     blind_aggregate.set_defaults(handler=_blind_aggregate)
-
-    consent = commands.add_parser("consent", help="manage machine-readable self-consent")
-    consent_commands = consent.add_subparsers(dest="consent_command", required=True)
-    consent_install = consent_commands.add_parser("install-pending")
-    consent_install.add_argument("--asset-root")
-    consent_install.set_defaults(handler=_consent_install)
-    consent_preview = consent_commands.add_parser("preview")
-    _add_consent_scope_arguments(consent_preview)
-    consent_preview.set_defaults(handler=_consent_preview)
-    consent_approve = consent_commands.add_parser("approve-self")
-    consent_approve.add_argument("--asset-root")
-    _add_consent_scope_arguments(consent_approve)
-    consent_approve.add_argument("--expected-current-sha256")
-    consent_approve.add_argument("--reviewed-scope-sha256", required=True)
-    consent_approve.add_argument("--i-am-the-subject-and-authorize", action="store_true")
-    consent_approve.set_defaults(handler=_consent_approve)
-    consent_status = consent_commands.add_parser("status")
-    consent_status.add_argument("--asset-root")
-    consent_status.add_argument("--consent-id", default="cole-self-v1")
-    consent_status.set_defaults(handler=_consent_status)
-    consent_revoke_parser = consent_commands.add_parser("revoke")
-    consent_revoke_parser.add_argument("--asset-root")
-    consent_revoke_parser.add_argument("--consent-id", default="cole-self-v1")
-    consent_revoke_parser.add_argument("--expected-sha256", required=True)
-    consent_revoke_parser.add_argument("--confirm-revoke", action="store_true")
-    consent_revoke_parser.set_defaults(handler=_consent_revoke)
 
     vault = commands.add_parser(
         "vault", help="bind, approve and operate the library's encrypted vault"

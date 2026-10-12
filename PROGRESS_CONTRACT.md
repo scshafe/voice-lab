@@ -43,12 +43,14 @@ D-044.)
    and explicit landing path.
 4. Every candidate passes a dependency/readiness probe before generation; every
    real render records immutable model and environment identity.
-5. A bake-off cannot start without approved consent, checksum-valid references,
-   held-out prompts, and enough free disk for the selected candidate.
+5. A bake-off cannot start without checksum-valid references of the pinned subject
+   (`cole-self`; consent records are retired, D-050), held-out prompts, and enough
+   free disk for the selected candidate.
 6. Blind ordering is deterministic but hides candidate identity; reveal and
    aggregation are reproducible from saved scoring evidence.
-7. A render uses only the current voice release and refuses when its checkpoint,
-   reference or consent digest no longer matches; every render is in the ledger.
+7. A render uses only the current voice release of the pinned subject and refuses
+   when its checkpoint or reference digest no longer matches; every render is in the
+   ledger.
 8. An independent review reports no unresolved high-severity finding.
 
 ## Progress rule

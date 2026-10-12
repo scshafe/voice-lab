@@ -384,9 +384,7 @@
         "path",
         "sha256",
         "transcript",
-        "subject_id",
-        "consent_path",
-        "consent_sha256"
+        "subject_id"
       ],
       "title": "ReferenceEvidence",
       "type": "object"

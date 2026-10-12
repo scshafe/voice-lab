@@ -33,7 +33,6 @@ from cole_voice_lab.canonical import (
 )
 from cole_voice_lab.capture import TakeEngine, capture_prompt_suite
 from cole_voice_lab.cli import main
-from cole_voice_lab.consent import approve_self_consent, consent_record_path
 from cole_voice_lab.datasets import (
     DatasetSelection,
     PilotGateApproval,
@@ -50,7 +49,13 @@ from cole_voice_lab.diagnostic_roots import (
 )
 from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.intake import accept_capture_session
-from cole_voice_lab.models import Prompt, PromptSuite, PromptSuitePurpose, utc_now
+from cole_voice_lab.models import (
+    Prompt,
+    PromptSuite,
+    PromptSuitePurpose,
+    require_cole_subject,
+    utc_now,
+)
 from cole_voice_lab.native_recording_application import (
     NativeRecordingApplicationConfiguration,
     NativeRecordingApplicationRelease,
@@ -252,17 +257,6 @@ def no_pilot_gates(layout: AssetLayout) -> bool:
     return not directory.exists() or not any(directory.iterdir())
 
 
-def consent_approval(layout: AssetLayout, subject: str) -> None:
-    approve_self_consent(
-        layout,
-        acknowledgement=True,
-        purposes=("private-zero-shot-evaluation",),
-        execution_boundaries=("capture-host",),
-        expires_at=utc_now() + timedelta(days=1),
-        subject_id=subject,
-    )
-
-
 def write_marker_variant(layout: AssetLayout, variant: str) -> None:
     marker = layout.root / DIAGNOSTIC_ROOT_MARKER
     valid = DiagnosticRootMarker(purpose="physical-test", subject_id=SUBJECT, created_at=utc_now())
@@ -321,9 +315,6 @@ def test_every_unsafe_marker_state_refuses_guarded_operations(
     with pytest.raises(SecurityError):
         store.open_group(synthetic_catalog(2), "synthetic-subject", UMIK, "host")
     assert not any((layout.root / "provenance").rglob("group-*.json"))
-    with pytest.raises(SecurityError):
-        consent_approval(layout, "cole-self")
-    assert not consent_record_path(layout, "cole-self-v1").exists()
     backend = RecordingWorkspaceBackend(layout, "synthetic-subject", discover=False)
     try:
         for command in (
@@ -338,7 +329,7 @@ def test_every_unsafe_marker_state_refuses_guarded_operations(
         backend.index.close()
 
 
-def test_assets_init_marks_only_new_or_empty_roots_and_installs_no_consent(
+def test_assets_init_marks_only_new_or_empty_roots(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     def init(root: Path, *extra: str) -> int:
@@ -352,7 +343,7 @@ def test_assets_init_marks_only_new_or_empty_roots_and_installs_no_consent(
     assert root_purpose(AssetLayout.validate(root)) == "physical-test"
     marker = root / DIAGNOSTIC_ROOT_MARKER
     assert marker.stat().st_mode & 0o777 == 0o400
-    # The marker is the only provenance entry: no pending consent is installed.
+    # The marker is the only provenance entry (no consent record exists any more, D-050).
     assert [path.name for path in (root / "provenance").iterdir()] == ["diagnostic-root.json"]
     before = marker.read_bytes()
     assert init(root, *diagnostic) == 2
@@ -367,6 +358,8 @@ def test_assets_init_marks_only_new_or_empty_roots_and_installs_no_consent(
     used = tmp_path.resolve() / "used" / "assets"
     assert init(used) == 0
     capsys.readouterr()
+    # A standard root that holds any record is not empty (init itself writes none, D-050).
+    (used / "provenance" / "headphone-reviews").mkdir(mode=0o700)
     assert init(used, *diagnostic) == 2
     assert "provenance/ is not empty" in capsys.readouterr().err
     raw_only = tmp_path.resolve() / "raw-only" / "assets"
@@ -738,8 +731,6 @@ def test_unmarked_one_off_pattern_opens_but_never_supplies_corpus_evidence(
                     ),
                 ),
                 prompt_suites={catalog.suite_id: catalog},
-                consent_path="provenance/consents/synthetic.json",
-                consent_sha256="b" * 64,
                 created_by="synthetic-test",
             )
         review = [
@@ -777,13 +768,9 @@ def test_unmarked_one_off_pattern_opens_but_never_supplies_corpus_evidence(
             (standard.root / "provenance/recording-groups/.prepared-gates").iterdir()
         )
 
-    with pytest.raises(SecurityError, match="diagnostic subjects"):
-        consent_approval(standard, SUBJECT)
-    marked = marked_root(tmp_path)
-    with pytest.raises(SecurityError, match="physical-test asset roots"):
-        consent_approval(marked, "cole-self")
-    for layout in (standard, marked):
-        assert not consent_record_path(layout, "cole-self-v1").exists()
+    # A diagnostic subject is never Cole's pinned subject, so nothing of it is synthesized.
+    with pytest.raises(SecurityError, match="not 'cole-self'"):
+        require_cole_subject(SUBJECT, what="the diagnostic subject")
 
 
 def test_legacy_capture_qt_and_launchers_refuse_marked_roots(

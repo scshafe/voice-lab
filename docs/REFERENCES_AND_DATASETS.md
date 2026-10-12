@@ -10,7 +10,7 @@ Those notes do not replace the approval and evidence requirements below.
 
 ```text
 raw/<capture-manifest-sha256>/             immutable accepted source
-provenance/consents/*.json                 explicit purpose-bound consent
+provenance/consents/*.json                 retired consent records (history, D-050)
 provenance/headphone-reviews/*.json        one human pass per exact utterance
 provenance/pilot-gates/*.json              separate full-corpus gate
 provenance/transfer-approvals/*.json       optional hosted-transfer authority
@@ -52,12 +52,13 @@ Call `publish_reference` with:
 
 - a stable reference ID;
 - an accepted raw capture-manifest SHA-256 and exact prompt ID;
-- the asset-relative path and SHA-256 of approved consent;
 - the asset-relative path and SHA-256 of the headphone review; and
 - explicit creator and provenance text.
 
-The consent must be approved, effective, unexpired, unrevoked, match the capture
-subject, and allow `private-zero-shot-evaluation`. The source session is
+The capture's subject must be Cole's pinned subject, `cole-self`
+(`models.COLE_SUBJECT`); any other is refused. No consent record is bound or read:
+Cole's standing decision (D-050) permits zero-shot evaluation of his own voice. The
+source session is
 independently revalidated through intake, including its `READY`, manifest,
 mini-generated `intake-qc.json`,
 audio format, byte count, and every file digest. The selected entry must be an
@@ -72,7 +73,7 @@ resample, normalization, denoising, or other processing is allowed—the source
 and output hash, byte count, and `AudioSpec` must be identical.
 
 The manifest binds the prompt ID, exact transcript, subject, session, prompt
-suite, content-addressed `raw/<manifest-sha256>` path, source QC report, consent,
+suite, content-addressed `raw/<manifest-sha256>` path, source QC report,
 headphone review, copied output, purpose, author, timestamp, and provenance
 statement. Repeating the identical publication is idempotent after complete
 revalidation. Reusing a reference ID for different evidence fails as a
@@ -114,8 +115,10 @@ runbook. A deliberately smaller positive threshold can be recorded for a pilot
 manifest, but it is visible in the immutable contract and must not be treated as
 the production gate.
 
-Fine-tuning consent is separately revalidated for
-`private-fine-tuning`. `publish_dataset_manifest` atomically writes only:
+A dataset is of Cole's pinned subject only, checked again on every validation; no
+consent record is bound or read (D-050). A reference or dataset manifest written
+before D-050 keeps its `consent` binding and still validates; the record it names is
+never read. `publish_dataset_manifest` atomically writes only:
 
 ```text
 derived/datasets/<dataset-id>/manifest.json
@@ -147,7 +150,7 @@ without following the final symlink and refuses files larger than 16 MiB.
 
 Every capture suite used by the selected sources must be supplied explicitly as
 `SUITE_ID=PATH`; the declared key must equal the strict suite contract's
-embedded ID. A build revalidates all raw, QC, transcript, review, consent, split,
+embedded ID. A build revalidates the subject and all raw, QC, transcript, review, split,
 and holdout evidence and then atomically publishes the resulting manifest.
 
 ```sh
@@ -157,9 +160,7 @@ voice-lab dataset build \
   --corpus-stage pilot \
   --selection-file /private/operator-input/pilot-selection.json \
   --prompt-suite cole-pilot-v1=/private/operator-input/cole-pilot-v1.json \
-  --prompt-suite cole-held-out-v1=/private/operator-input/cole-held-out-v1.json \
-  --consent-path provenance/consents/cole-self-v1.json \
-  --consent-sha256 '<approved-consent-sha256>'
+  --prompt-suite cole-held-out-v1=/private/operator-input/cole-held-out-v1.json
 
 voice-lab dataset validate \
   --asset-root /private/voice-assets \
@@ -245,9 +246,10 @@ these modules or their tests.
 
 The encrypted library vault is a separate storage boundary (D-020), governed by
 `VaultDestinationApproval` under `provenance/vault/destinations/<d>/approvals/`, never by a
-`HostedTransferApproval`. It needs no synthesis consent because Cole's host
-receives only ciphertext and runs no model. `hosted_transfer_allowed` remains
-`Literal[False]`. The vault copies existing transfer-approval records as library
+`HostedTransferApproval`. Cole's host receives only ciphertext and runs no model. A
+hosted transfer still needs its own `HostedTransferApproval` (consent records are retired,
+D-050, but this rule is not a consent record and stays). The vault copies existing
+transfer-approval records as library
 history; that does not authorize a dataset transfer to a hosted model service.
 See [LIBRARY_VAULT.md](LIBRARY_VAULT.md).
 

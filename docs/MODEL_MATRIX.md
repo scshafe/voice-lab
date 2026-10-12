@@ -248,8 +248,9 @@ never overwritten.
 
 Each successful result binds:
 
-- reference SHA-256 and exact, unexpired consent-file SHA-256 (checked again
-  after inference);
+- reference SHA-256 (checked again after inference) and the reference's subject,
+  which must be the pinned `cole-self` (no consent record is read, D-050; a request
+  written before names a consent file's digest, which is carried, never read);
 - request-bound performed-source SHA-256 and byte count for Seed;
 - model ID/revision, code revision, local snapshot-manifest hashes, and settings;
 - exact `pip freeze --all` bytes and dependency fingerprint;
@@ -272,7 +273,8 @@ enabled real smoke run should assert:
 6. ASR WER and speaker-embedding cosine are retained as diagnostics only; and
 7. a blinded human A/B/X listening pass remains the decision signal.
 
-Only checksum-bound, consented reference recordings may enter a worker.
+Only checksum-bound reference recordings of Cole's pinned subject may enter a worker
+(D-050).
 
 ## Offline audition orchestration
 
@@ -311,14 +313,16 @@ Persisted worker/model and executed-code records are parsed through strict v1
 contracts: the latter requires non-empty lab-worker and installed-distribution
 byte inventories plus its internal integrity digest. Validation cross-binds the
 candidate/model/code revisions, model and auxiliary manifests, executed-code
-path/digest, reference/consent/performed-source hashes, settings, runtime
+path/digest, reference/performed-source hashes (and a consent digest, only in
+evidence written before D-050), settings, runtime
 package/version, and applicable watermark flag across the request, worker
 result, and evidence files. Evidence parsing and its outer SHA-256 check use the
 same bounded file read.
 
 Before persistence or execution, path confinement requires exact native and
 normalized destinations under that experiment, references under `references`,
-consents under `provenance/consents`, and performed sources within the private
+consent paths (only in a plan written before D-050) under `provenance/consents`, and
+performed sources within the private
 asset root. Existing symlink components are rejected.
 
 Seed-VC plans additionally hash the performed source at plan construction and

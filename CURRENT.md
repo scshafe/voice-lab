@@ -231,5 +231,5 @@ a real cold/warm smoke. No release claim treats lock resolution as that smoke.
 - Install the verified application wheel non-editably under the content-addressed
   mini release root, seal its install receipt, and only then render/load intake.
 - Run candidate downloads/renders explicitly and sequentially.
-- Approve a consent record for `private-assistant-speech` on `home-host`, designate
-  a voice release, and register a speech caller (docs/SPEECH_API.md §11).
+- Designate a voice release and register a speech caller (docs/SPEECH_API.md §11; no
+  consent record is needed since D-050).

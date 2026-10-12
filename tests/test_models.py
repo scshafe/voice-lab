@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,7 +13,7 @@ from cole_voice_lab.audition import AuditionPlan, AuditionTrial
 from cole_voice_lab.canonical import canonical_json_bytes, canonical_sha256
 from cole_voice_lab.capture import CaptureContinuityEvidence
 from cole_voice_lab.datasets import DatasetEntry
-from cole_voice_lab.errors import ContractError
+from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.models import (
     RESERVED_PROMPT_LABELS,
     AudioFileEvidence,
@@ -20,7 +21,6 @@ from cole_voice_lab.models import (
     AudioSpec,
     CaptureDevice,
     CaptureManifest,
-    ConsentRecord,
     DistributionByteEvidence,
     EnvironmentEvidence,
     ExecutedCodeEvidence,
@@ -34,6 +34,7 @@ from cole_voice_lab.models import (
     ReferenceEvidence,
     WorkerModelEvidence,
     WorkerPackageByteEvidence,
+    require_cole_subject,
 )
 from cole_voice_lab.recording_contracts import (
     CaptureReservation,
@@ -238,67 +239,31 @@ def test_capture_manifest_requires_room_tone_and_unique_prompts() -> None:
         CaptureManifest(**(fields | {"captured_at": datetime(2026, 8, 17)}))
 
 
-def test_consent_cannot_be_approved_without_attestation() -> None:
-    with pytest.raises(ValidationError, match="attestation"):
-        ConsentRecord(
-            consent_id="consent-1",
-            subject_id="cole-self",
-            approved=True,
-            attestation="pending-subject-attestation",
-            allowed_purposes=("private-zero-shot-evaluation",),
-            allowed_execution_boundaries=("tailnet-local-host",),
-            hosted_transfer_allowed=False,
-            disclosure_required=True,
-            effective_at=datetime(2026, 8, 17, tzinfo=UTC),
-        )
+def test_only_coles_subject_passes_the_pin() -> None:
+    require_cole_subject("cole-self", what="the reference")
+    for other in ("someone-else", "cole", "cole-physical-diagnostic-1"):
+        with pytest.raises(SecurityError, match="not 'cole-self'"):
+            require_cole_subject(other, what="the reference")
 
 
-def test_consent_contract_rejects_incomplete_duplicate_and_revoked_approval() -> None:
-    now = datetime(2026, 8, 17, tzinfo=UTC)
-    base = {
-        "consent_id": "consent-1",
+def test_reference_evidence_names_no_consent_but_reads_one_written_before() -> None:
+    fields: dict[str, object] = {
+        "path": "/private/references/ref.wav",
+        "sha256": "a" * 64,
+        "transcript": "Words.",
         "subject_id": "cole-self",
-        "approved": True,
-        "attestation": "self-recorded-and-self-authorized",
-        "allowed_purposes": ("private-zero-shot-evaluation",),
-        "allowed_execution_boundaries": ("tailnet-local-host",),
-        "effective_at": now,
-        "expires_at": datetime(2026, 9, 17, tzinfo=UTC),
     }
-    with pytest.raises(ValidationError, match="effective timestamp"):
-        ConsentRecord(**(base | {"effective_at": None}))
-    with pytest.raises(ValidationError, match="explicit expiry"):
-        ConsentRecord(**(base | {"expires_at": None}))
-    with pytest.raises(ValidationError, match="purposes must be unique"):
-        ConsentRecord(
-            **(
-                base
-                | {
-                    "approved": False,
-                    "allowed_purposes": (
-                        "private-zero-shot-evaluation",
-                        "private-zero-shot-evaluation",
-                    ),
-                }
-            )
-        )
-    with pytest.raises(ValidationError, match="boundaries must be unique"):
-        ConsentRecord(
-            **(
-                base
-                | {
-                    "approved": False,
-                    "allowed_execution_boundaries": (
-                        "tailnet-local-host",
-                        "tailnet-local-host",
-                    ),
-                }
-            )
-        )
-    with pytest.raises(ValidationError, match="cannot remain approved"):
-        ConsentRecord(**(base | {"revoked_at": now}))
-    with pytest.raises(ValidationError, match="explicit timezone"):
-        ConsentRecord(**(base | {"effective_at": datetime(2026, 8, 17)}))
+    new = ReferenceEvidence.model_validate(fields)
+    assert new.consent_path is None and "consent_path" not in new.model_dump(mode="json")
+    stored = fields | {"consent_path": "/private/consent.json", "consent_sha256": "b" * 64}
+    old = ReferenceEvidence.model_validate(stored)
+    assert old.model_dump(mode="json") == stored
+    with pytest.raises(ValidationError, match="present together"):
+        ReferenceEvidence.model_validate(fields | {"consent_path": "/private/consent.json"})
+    with pytest.raises(ValidationError, match="never null"):
+        ReferenceEvidence.model_validate(fields | {"consent_path": None, "consent_sha256": None})
+    with pytest.raises(ValidationError, match="absolute"):
+        ReferenceEvidence.model_validate(stored | {"consent_path": "consent.json"})
 
 
 def test_voice_conversion_and_direct_tts_inputs_are_distinct() -> None:
@@ -307,8 +272,6 @@ def test_voice_conversion_and_direct_tts_inputs_are_distinct() -> None:
         sha256="a" * 64,
         transcript="Reference words.",
         subject_id="cole-self",
-        consent_path="/private/provenance/consent.json",
-        consent_sha256="b" * 64,
     )
     shared = {
         "experiment_id": "experiment-1",
@@ -424,8 +387,6 @@ def test_model_lock_and_worker_paths_have_explicit_semantics() -> None:
             sha256="a" * 64,
             transcript="Words.",
             subject_id="cole-self",
-            consent_path="/private/consent.json",
-            consent_sha256="b" * 64,
         )
 
     reference = ReferenceEvidence(
@@ -433,8 +394,6 @@ def test_model_lock_and_worker_paths_have_explicit_semantics() -> None:
         sha256="a" * 64,
         transcript="Words.",
         subject_id="cole-self",
-        consent_path="/private/consent.json",
-        consent_sha256="b" * 64,
     )
     with pytest.raises(ValidationError, match="execution paths"):
         ExperimentRequest(
@@ -579,7 +538,6 @@ def _worker_model_evidence_fields() -> dict[str, object]:
         "executed_code_evidence_path": "evidence/executed-code.json",
         "executed_code_evidence_sha256": "d" * 64,
         "reference_sha256": "e" * 64,
-        "consent_sha256": "f" * 64,
         "source_audio_sha256": None,
         "source_audio_size_bytes": None,
         "settings": {},
@@ -599,6 +557,12 @@ def test_worker_model_evidence_rejects_unsafe_or_partial_identity() -> None:
         WorkerModelEvidence(**(fields | {"source_audio_sha256": "a" * 64}))
     with pytest.raises(ValidationError, match="must be omitted"):
         WorkerModelEvidence(**(fields | {"watermarked": None}))
+    # A consent digest is evidence written before D-050 only: present, or omitted, never null.
+    assert "consent_sha256" not in WorkerModelEvidence(**fields).model_dump(mode="json")
+    stored = WorkerModelEvidence(**(fields | {"consent_sha256": "f" * 64}))
+    assert stored.model_dump(mode="json")["consent_sha256"] == "f" * 64
+    with pytest.raises(ValidationError, match="never null"):
+        WorkerModelEvidence(**(fields | {"consent_sha256": None}))
 
 
 # TM1: goldens from docs/PROMPT_CATALOG_V2.md §2.5, and canonical digests of synthetic
@@ -1076,3 +1040,30 @@ def test_prompt_suite_v2_accepts_its_boundaries() -> None:
     physical = _physical(_v2_room(labels=["test"]), _v2_step(labels=["test", "recovery"]))
     assert physical.purpose == "physical-test"
     assert _catalog(_v2_prompt(text="Legacy\u200b bytes."), version="v1")
+
+
+def test_no_generated_schema_offers_null_for_a_retired_consent_field() -> None:
+    # The historical consent fields (D-050) are present or absent, never null: the models refuse
+    # null (reject_explicit_null) and the generated schemas offer it nowhere.
+    schemas = Path(__file__).resolve().parents[1] / "schemas"
+    found: list[str] = []
+
+    def walk(node: object, where: str) -> None:
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                for name, schema in properties.items():
+                    if name in {"consent", "consent_id", "consent_path", "consent_sha256"}:
+                        found.append(f"{where}:{name}")
+                        assert "default" not in schema, f"{where}:{name}"
+                        assert {"type": "null"} not in schema.get("anyOf", []), f"{where}:{name}"
+                        assert schema.get("type") != "null", f"{where}:{name}"
+            for child in node.values():
+                walk(child, where)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child, where)
+
+    for path in sorted(schemas.glob("*.schema.json")):
+        walk(json.loads(path.read_text()), path.name)
+    assert len({entry.split(":")[0] for entry in found}) >= 8

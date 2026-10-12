@@ -20,7 +20,15 @@ from typing import Annotated, Final, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, StringConstraints, model_validator
 
-from ..models import F5_FAMILY, ContractModel, Sha256, StableId, has_hidden_control
+from ..models import (
+    F5_FAMILY,
+    ContractModel,
+    Sha256,
+    StableId,
+    has_hidden_control,
+    historical_field,
+    reject_explicit_null,
+)
 from ..recording_contracts import SpeechText, UtcTimestamp
 
 JOB_ID_PATTERN: Final = re.compile(r"^sp-[0-9a-f]{24}$")
@@ -40,7 +48,6 @@ type FailureCode = Literal[
     "render_timeout",
     "queue_timeout",
     "voice_release_changed",
-    "consent_changed",
     "internal_error",
 ]
 type EventType = Literal["speech.succeeded", "speech.failed", "speech.cancelled"]
@@ -115,14 +122,13 @@ class SpeechAudio(ContractModel):
 
 
 # What a caller is told of a failure: the code and one fixed sentence. The particulars
-# (paths, consent reasons, a worker's error) go to the job runner's own log only.
+# (paths, a release's mismatch, a worker's error) go to the job runner's own log only.
 FAILURE_DETAILS: Final[dict[str, str]] = {
     "runtime_unavailable": "the speech runtime is not available on this host",
     "render_failed": "a sentence could not be rendered",
     "render_timeout": "a sentence took longer than its deadline",
     "queue_timeout": "the job waited longer than the queue allows",
     "voice_release_changed": "the voice release changed or cannot be used",
-    "consent_changed": "the consent for assistant speech is no longer valid",
     "internal_error": "the job runner failed",
 }
 
@@ -354,8 +360,9 @@ class SpeechRenderRecord(ContractModel):
     text_characters: int = Field(ge=1, le=2000)
     release: VoiceReleaseRef
     model_family: StableId
-    consent_id: StableId
-    consent_sha256: Sha256
+    # Retired with consent records (D-050): a render names none; the fields stay readable.
+    consent_id: StableId | None = historical_field()
+    consent_sha256: Sha256 | None = historical_field()
     outcome: Literal["succeeded", "failed", "cancelled"]
     failure: FailureCode | None
     fingerprint: RenderFingerprint | None
@@ -372,6 +379,9 @@ class SpeechRenderRecord(ContractModel):
 
     @model_validator(mode="after")
     def _outcome_matches(self) -> SpeechRenderRecord:
+        reject_explicit_null(self, "consent_id", "consent_sha256")
+        if (self.consent_id is None) != (self.consent_sha256 is None):
+            raise ValueError("a stored consent id and digest are present together")
         if (self.outcome == "succeeded") != (self.output is not None):
             raise ValueError("only a render that succeeded names its output")
         if (self.outcome == "failed") != (self.failure is not None):

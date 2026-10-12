@@ -16,7 +16,6 @@ from pydantic import ValidationError
 
 from cole_voice_lab.canonical import canonical_sha256, sha256_file, write_canonical_json
 from cole_voice_lab.capture import expected_recording_paths, finalize_capture_session
-from cole_voice_lab.consent import approve_self_consent
 from cole_voice_lab.datasets import (
     CategoryAccounting,
     DatasetEntry,
@@ -59,8 +58,6 @@ class CorpusFixture:
     receipts: dict[str, IntakeReceipt]
     suites: dict[str, PromptSuite]
     selections: tuple[DatasetSelection, ...]
-    consent_path: str
-    consent_sha256: str
     gate_path: str
     gate_sha256: str
 
@@ -112,7 +109,9 @@ def _suite(
     )
 
 
-def _accept(layout: AssetLayout, *, session_id: str, suite: PromptSuite) -> IntakeReceipt:
+def _accept(
+    layout: AssetLayout, *, session_id: str, suite: PromptSuite, subject_id: str = "cole-self"
+) -> IntakeReceipt:
     incoming = layout.directory("incoming") / session_id
     incoming.mkdir(mode=0o700)
     for relative in expected_recording_paths(suite):
@@ -120,7 +119,7 @@ def _accept(layout: AssetLayout, *, session_id: str, suite: PromptSuite) -> Inta
     finalize_capture_session(
         incoming,
         session_id=session_id,
-        subject_id="cole",
+        subject_id=subject_id,
         prompt_suite=suite,
         device=CaptureDevice(device_id="4", display_name="miniDSP UMIK-1"),
         captured_at=NOW,
@@ -164,7 +163,7 @@ def _review(
     return path.relative_to(layout.root).as_posix(), digest
 
 
-def _corpus(tmp_path: Path) -> CorpusFixture:
+def _corpus(tmp_path: Path, *, subject_id: str = "cole-self") -> CorpusFixture:
     layout = AssetLayout.initialize(tmp_path / "private" / "voice-assets")
     suites = {
         "train-suite": _suite(
@@ -207,7 +206,9 @@ def _corpus(tmp_path: Path) -> CorpusFixture:
     receipts: dict[str, IntakeReceipt] = {}
     selections: list[DatasetSelection] = []
     for session_id, suite_id, prompt_id, split in session_and_prompt:
-        receipt = _accept(layout, session_id=session_id, suite=suites[suite_id])
+        receipt = _accept(
+            layout, session_id=session_id, suite=suites[suite_id], subject_id=subject_id
+        )
         receipts[session_id] = receipt
         review_path, review_sha256 = _review(layout, receipt, prompt_id)
         selections.append(
@@ -222,16 +223,6 @@ def _corpus(tmp_path: Path) -> CorpusFixture:
             )
         )
 
-    consent_file, consent_sha256 = approve_self_consent(
-        layout,
-        acknowledgement=True,
-        purposes=("private-zero-shot-evaluation", "private-fine-tuning"),
-        execution_boundaries=("capture-host", "tailnet-local-host"),
-        expires_at=NOW + timedelta(days=365),
-        subject_id="cole",
-        consent_id="cole-self-v1",
-        now=NOW,
-    )
     gate = PilotGateApproval(
         gate_id="pilot-gate-v1",
         pilot_manifest_sha256s=(receipts["train-session"].manifest_sha256,),
@@ -251,8 +242,6 @@ def _corpus(tmp_path: Path) -> CorpusFixture:
         receipts=receipts,
         suites=suites,
         selections=tuple(selections),
-        consent_path=consent_file.relative_to(layout.root).as_posix(),
-        consent_sha256=consent_sha256,
         gate_path=gate_file.relative_to(layout.root).as_posix(),
         gate_sha256=gate_sha256,
     )
@@ -265,8 +254,6 @@ def _manifest(fixture: CorpusFixture, *, dataset_id: str = "cole-corpus-v1") -> 
         corpus_stage="full-corpus",
         selections=fixture.selections,
         prompt_suites=fixture.suites,
-        consent_path=fixture.consent_path,
-        consent_sha256=fixture.consent_sha256,
         created_by="cole",
         minimum_holdout_seconds=0.01,
         pilot_gate_path=fixture.gate_path,
@@ -283,8 +270,12 @@ def test_build_and_publish_no_copy_dataset_with_exact_accounting(tmp_path: Path)
     }
     manifest = _manifest(fixture)
 
-    first = publish_dataset_manifest(fixture.layout, manifest, at=NOW + timedelta(seconds=3))
-    second = publish_dataset_manifest(fixture.layout, manifest, at=NOW + timedelta(seconds=3))
+    first = publish_dataset_manifest(fixture.layout, manifest)
+    second = publish_dataset_manifest(fixture.layout, manifest)
+    # No consent record is bound or read (D-050): the manifest names none.
+    assert manifest.consent is None
+    assert b"consent" not in (first.directory / "manifest.json").read_bytes()
+    assert not (fixture.layout.root / "provenance/consents").exists()
 
     assert first == second
     assert {entry.split for entry in manifest.entries} == {
@@ -319,8 +310,6 @@ def test_dataset_enforces_minimum_permanent_holdout(tmp_path: Path) -> None:
             corpus_stage="full-corpus",
             selections=fixture.selections,
             prompt_suites=fixture.suites,
-            consent_path=fixture.consent_path,
-            consent_sha256=fixture.consent_sha256,
             created_by="cole",
             minimum_holdout_seconds=600.0,
             pilot_gate_path=fixture.gate_path,
@@ -338,8 +327,6 @@ def test_dataset_builder_rejects_invalid_threshold_empty_input_and_duplicate_sui
         "dataset_id": "invalid-builder-input",
         "corpus_stage": "pilot",
         "prompt_suites": fixture.suites,
-        "consent_path": fixture.consent_path,
-        "consent_sha256": fixture.consent_sha256,
         "created_by": "cole",
         "clock": lambda: NOW + timedelta(seconds=2),
     }
@@ -428,8 +415,6 @@ def test_dataset_builder_refuses_physical_test_suites_before_any_entry(
             corpus_stage="pilot",
             selections=(selection,),
             prompt_suites={suite.suite_id: suite},
-            consent_path="provenance/consent/missing.json",
-            consent_sha256="0" * 64,
             created_by="cole",
             clock=lambda: NOW + timedelta(seconds=2),
         )
@@ -450,8 +435,6 @@ def test_full_corpus_requires_separate_pilot_gate(tmp_path: Path) -> None:
             corpus_stage="full-corpus",
             selections=fixture.selections,
             prompt_suites=fixture.suites,
-            consent_path=fixture.consent_path,
-            consent_sha256=fixture.consent_sha256,
             created_by="cole",
             minimum_holdout_seconds=0.01,
             clock=lambda: NOW + timedelta(seconds=2),
@@ -463,8 +446,6 @@ def test_full_corpus_requires_separate_pilot_gate(tmp_path: Path) -> None:
             corpus_stage="full-corpus",
             selections=fixture.selections,
             prompt_suites=fixture.suites,
-            consent_path=fixture.consent_path,
-            consent_sha256=fixture.consent_sha256,
             created_by="cole",
             minimum_holdout_seconds=0.01,
             pilot_gate_path=fixture.gate_path,
@@ -479,8 +460,6 @@ def test_pilot_dataset_can_be_built_without_full_corpus_gate(tmp_path: Path) -> 
         corpus_stage="pilot",
         selections=fixture.selections,
         prompt_suites=fixture.suites,
-        consent_path=fixture.consent_path,
-        consent_sha256=fixture.consent_sha256,
         created_by="cole",
         minimum_holdout_seconds=0.01,
         clock=lambda: NOW + timedelta(seconds=2),
@@ -507,8 +486,6 @@ def test_dataset_rejects_transcript_or_holdout_suite_mismatch(tmp_path: Path) ->
             corpus_stage="full-corpus",
             selections=fixture.selections,
             prompt_suites=wrong_suites,
-            consent_path=fixture.consent_path,
-            consent_sha256=fixture.consent_sha256,
             created_by="cole",
             minimum_holdout_seconds=0.01,
             pilot_gate_path=fixture.gate_path,
@@ -525,8 +502,6 @@ def test_dataset_rejects_transcript_or_holdout_suite_mismatch(tmp_path: Path) ->
             corpus_stage="full-corpus",
             selections=selections,
             prompt_suites=fixture.suites,
-            consent_path=fixture.consent_path,
-            consent_sha256=fixture.consent_sha256,
             created_by="cole",
             minimum_holdout_seconds=0.01,
             pilot_gate_path=fixture.gate_path,
@@ -560,7 +535,7 @@ def test_dataset_contract_rejects_overlap_across_splits(tmp_path: Path, overlap:
         DatasetManifest.model_validate(data)
 
 
-def test_dataset_requires_bound_passing_review_and_current_consent(tmp_path: Path) -> None:
+def test_dataset_requires_bound_passing_review(tmp_path: Path) -> None:
     fixture = _corpus(tmp_path)
     selection = fixture.selections[0]
     review_file = fixture.layout.root / selection.headphone_review_path
@@ -575,8 +550,6 @@ def test_dataset_requires_bound_passing_review_and_current_consent(tmp_path: Pat
             corpus_stage="full-corpus",
             selections=(changed, *fixture.selections[1:]),
             prompt_suites=fixture.suites,
-            consent_path=fixture.consent_path,
-            consent_sha256=fixture.consent_sha256,
             created_by="cole",
             minimum_holdout_seconds=0.01,
             pilot_gate_path=fixture.gate_path,
@@ -598,6 +571,51 @@ def test_dataset_publication_collision_and_stale_source_fail_closed(tmp_path: Pa
     source_path.write_bytes(source_path.read_bytes() + b"tamper")
     with pytest.raises(SecurityError, match="tampered"):
         validate_dataset_sources(fixture.layout, published.manifest)
+
+
+def test_a_dataset_is_of_the_pinned_subject_only(tmp_path: Path) -> None:
+    # No consent record ties a dataset to a subject any more: the subject is pinned in code.
+    fixture = _corpus(tmp_path, subject_id="someone-else")
+    with pytest.raises(SecurityError, match="not 'cole-self'"):
+        _manifest(fixture)
+    built = _manifest(_corpus(tmp_path / "cole"))
+    foreign = built.model_copy(update={"subject_id": "someone-else"})
+    with pytest.raises(SecurityError, match="not 'cole-self'"):
+        validate_dataset_sources(fixture.layout, foreign)
+
+
+def test_a_dataset_built_under_a_consent_record_still_validates_byte_for_byte(
+    tmp_path: Path,
+) -> None:
+    fixture = _corpus(tmp_path)
+    manifest = _manifest(fixture)
+    published = publish_dataset_manifest(fixture.layout, manifest)
+    manifest_path = published.directory / "manifest.json"
+    stored = json.loads(manifest_path.read_bytes())
+    stored["consent"] = {
+        "consent_id": "cole-self-v1",
+        "purpose": "private-fine-tuning",
+        "file": {
+            "path": "provenance/consents/cole-self-v1.json",
+            "sha256": "c" * 64,
+            "size_bytes": 1,
+        },
+    }
+    data = json.dumps(stored, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    os.chmod(published.directory, 0o700)
+    os.chmod(manifest_path, 0o600)
+    manifest_path.write_bytes(data + b"\n")
+    os.chmod(manifest_path, 0o400)
+    os.chmod(published.directory, 0o500)
+    revalidated = validate_published_dataset(fixture.layout, published.directory)
+    assert revalidated.manifest.consent is not None
+    # Republishing the same dataset (now without a consent binding) is idempotent.
+    assert publish_dataset_manifest(fixture.layout, manifest) == revalidated
+    assert manifest_path.read_bytes() == data + b"\n"
+    other = manifest.model_copy(update={"created_by": "someone-else"})
+    with pytest.raises(SecurityError, match="collision"):
+        publish_dataset_manifest(fixture.layout, other)
+    assert not (fixture.layout.root / "provenance/consents").exists()
 
 
 def test_transfer_plan_is_prohibited_by_default_and_payload_is_exact(tmp_path: Path) -> None:
@@ -817,7 +835,15 @@ def test_dataset_manifest_contract_validation_matrix(tmp_path: Path) -> None:
     cases: list[tuple[dict[str, Any], str]] = []
 
     wrong_consent = deepcopy(base)
-    wrong_consent["consent"]["purpose"] = "private-zero-shot-evaluation"
+    wrong_consent["consent"] = {
+        "consent_id": "cole-self-v1",
+        "purpose": "private-zero-shot-evaluation",
+        "file": {
+            "path": "provenance/consents/cole-self-v1.json",
+            "sha256": "c" * 64,
+            "size_bytes": 1,
+        },
+    }
     cases.append((wrong_consent, "authorize private fine-tuning"))
 
     missing_gate = deepcopy(base)
@@ -830,7 +856,7 @@ def test_dataset_manifest_contract_validation_matrix(tmp_path: Path) -> None:
 
     wrong_subject = deepcopy(base)
     wrong_subject["subject_id"] = "other-subject"
-    cases.append((wrong_subject, "match the consented subject"))
+    cases.append((wrong_subject, "match the dataset's subject"))
 
     future_review = deepcopy(base)
     future_review["entries"][0]["headphone_review"]["record"]["reviewed_at"] = NOW + timedelta(

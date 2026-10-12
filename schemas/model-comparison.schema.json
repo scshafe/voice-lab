@@ -390,8 +390,6 @@
         "seed_basis_sha256",
         "release_sha256",
         "designated",
-        "consent_id",
-        "consent_sha256",
         "fingerprint",
         "load_ms",
         "first_segment_ms",

@@ -265,7 +265,7 @@ BENCHMARK = MANUAL / "voice-lab-speech-benchmark.service"
 def test_the_benchmark_runs_in_the_speech_runners_sandbox() -> None:
     assert values(BENCHMARK, "Service", "ExecStart") == [
         f"{BINARY} families record --asset-root {LAB} --run ${{VOICE_LAB_BENCHMARK_RUN}} "
-        f"--benchmark --config {SPEECH_CONFIG} --consent-id ${{VOICE_LAB_BENCHMARK_CONSENT_ID}}"
+        f"--benchmark --config {SPEECH_CONFIG}"
     ]
     assert values(BENCHMARK, "Service", "Type") == ["oneshot"]
     assert values(BENCHMARK, "Service", "EnvironmentFile") == [

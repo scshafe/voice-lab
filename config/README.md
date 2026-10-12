@@ -12,5 +12,6 @@ each command. Do not rely on this example as a policy control.
 Before using any documented SSH value, verify the mini's host-key fingerprint
 out of band. Keep private keys and credentials outside this repository.
 
-The pending consent template deliberately cannot authorize synthesis. Cole must
-complete the explicit consent command before a human-reference bake-off runs.
+There is no consent template or consent command any more (D-050): Cole's standing
+decision permits his own voice for the bake-off, and only references of the pinned
+subject (`cole-self`) can be published.

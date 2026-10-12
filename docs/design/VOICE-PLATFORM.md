@@ -57,7 +57,7 @@ These are requirements of this design, not proposals:
 4. **The frontend is a cross-platform `scshafe-qt` desktop app** for macOS and Linux
    (no Windows), plus a **small read-only web view** for phone access, behind Pocket ID.
 5. **The name stays `voice-lab`**, and the repository becomes publishable: code only.
-   Recordings, weights and consent evidence never enter Git.
+   Recordings, weights and consent records (history since D-050) never enter Git.
 6. **Free, and on the owner's own hardware** (2026-10-06, D-028). No cloud service and
    nothing paid, anywhere in the platform: no object storage, no hosted GPU, no paid
    model or API, no paid signing or notarization, no hosted CI beyond what is free
@@ -81,8 +81,8 @@ These are requirements of this design, not proposals:
   phone memos and calibrated measurement sessions, longitudinal analysis, voice-model
   evaluation and speech in Cole's own voice live in one repository with one set of
   invariants, one API and one operator app (D-044).
-- **Every private byte on hardware Cole owns.** No recording, derived audio, weight or
-  consent record leaves Cole's hosts without an explicit, digest-bound approval
+- **Every private byte on hardware Cole owns.** No recording, derived audio or weight
+  leaves Cole's hosts without an explicit, digest-bound approval
   (AGENTS.md), and no copy ever goes to a cloud service (D-028). The second and
   offsite copies of recordings are ciphertext on Cole's own laptop and MacBook Air,
   sealed before they leave the PC.
@@ -304,7 +304,7 @@ route or command, except `speech`, the new capability of D-046.
 | view | `GET /view/…` (HTML) | voice-journey SPA views |
 
 Writes that are acts of judgement stay out of the API on purpose: publishing a
-reference, approving consent or a destination, writing a verdict, designating a
+reference, approving a destination, writing a verdict, designating a
 voice release, registering a speech caller, evicting a model, archiving a run. Those
 remain CLI commands or configuration on the PC with their explicit flags and digests.
 
@@ -408,17 +408,26 @@ one runtime lock, one training adapter, one speech backend and one registry entr
 
 ### 4.2 Consent gating and transfer approval
 
-The existing rules stay, with two scoped changes: a standing approval for the home
-host (D-021), and a consent record for fine-tuning and Speak (D-022).
+The transfer rules stay, with one scoped change: a standing approval for the home host
+(D-021). Consent records are retired (D-050, 2026-10-12): the bullets on consent below
+record the design as it was, and D-050's standing decision replaces them.
 
-- **Consent for synthesis.** Recognizable-human synthesis still requires a
-  checksum-bound reference and an approved, checksum-bound consent record with a
+- **Cole's own voice, by standing decision** (D-050). Cole's voice may be used for
+  fine-tuning, listening (Speak), assistant speech and benchmarks on his own hardware. No
+  consent record, purpose or execution boundary is required or read. The subject is pinned in
+  code to `cole-self`: designation, the speech API and job runner, reference publication,
+  dataset building, the offline workers and the benchmark refuse any other subject. Zero-shot
+  rendering still needs a checksum-bound reference. Consent records already on disk stay as
+  history. Rendered audio leaves the PC only to a registered caller and may reach Cole's own
+  devices through it (D-046).
+- *Superseded by D-050.* **Consent for synthesis.** Recognizable-human synthesis still
+  requires a checksum-bound reference and an approved, checksum-bound consent record with a
   matching subject and purpose. Offline workers already require the
   `tailnet-local-host` execution boundary; the PC is such a host, so no consent
   contract changes. `ConsentRecord.hosted_transfer_allowed` stays `Literal[False]`.
-- **Speak and fine-tuning** (decision 7, D-022). D-019 scoped Speak and fine-tuning
-  as "local listening … on the Mac that holds Cole's library", reading no consent
-  record, and left open whether they should require one. The owner has answered:
+- *Superseded by D-050.* **Speak and fine-tuning** (decision 7, D-022). D-019 scoped Speak
+  and fine-tuning as "local listening … on the Mac that holds Cole's library", reading no
+  consent record, and left open whether they should require one. The owner has answered:
   **both require an approved, checksum-bound consent record** once they run on the
   PC, because synthesis then happens on a different machine from the listener.
   - Fine-tuning needs a record whose purposes include `private-fine-tuning`; Speak
@@ -435,9 +444,9 @@ host (D-021), and a consent record for fine-tuning and Speak (D-022).
 
   D-019's second open question (retention for Speak clips) is unchanged and still
   open.
-- **Speech for registered callers** (D-046, D-047, 2026-10-11). Rendering through the
-  speech API needs an approved, checksum-bound consent record whose purposes include
-  `private-assistant-speech` and whose boundaries include `home-host`, checked when the job
+- *Superseded by D-050.* **Speech for registered callers** (D-046, D-047, 2026-10-11).
+  Rendering through the speech API needs an approved, checksum-bound consent record whose
+  purposes include `private-assistant-speech` and whose boundaries include `home-host`, checked when the job
   is queued and again before the worker starts; each render's ledger entry names the
   record's digest. The purpose `private-chloe-speech-rendering` is retired: stored records
   that name it still parse, and nothing grants or requires it. Rendered audio leaves the PC
@@ -576,7 +585,7 @@ Laptop stack backups ──pull──► PC /data/backups (unchanged; the fleet'
 | Code, tests with synthetic fixtures, schemas, prompt catalogs, policy, this document | Recordings and any derived audio, Voice Memos and `CloudRecordings.db` |
 | Model *locks*: ids, immutable revisions, file digests | Model weights, runtimes, caches |
 | Deployment templates (`deploy/stack/`, units, `.env.example`) | `.env`, tokens, keys, Pocket ID client secrets, the library key |
-| Generated JSON Schemas | Consent records, approvals, receipts, ledgers, run evidence |
+| Generated JSON Schemas | Approvals, receipts, ledgers, run evidence (consent records retired, D-050) |
 | Chain definitions without calibration paths | Calibration files, transcripts, lyrics, generated manifests about the corpus |
 | Placeholders (`<tailnet>.ts.net`, `100.64.0.x`) | Real tailnet name, tailnet IPs, home paths |
 
@@ -772,7 +781,7 @@ After phase 4 (capture) and phase 6 (publication) the two repositories are archi
 | **Corpus** | React Corpus view | Filterable table of all recordings, row detail, playback (Range), manual classification review |
 | **Analysis** | React Journey and Practice views | Range river, threads, vibrato, cause and effect; coach and goals |
 | **Referee** | React Referee view | Blind A/B pairs within a cluster |
-| **Models** | Swift Fine-tune and Speak | Fine-tune jobs with progress and cancel; Speak. Both refuse to start without an approved consent record for the home host (decision 7) |
+| **Models** | Swift Fine-tune and Speak | Fine-tune jobs with progress and cancel; Speak. Neither needs a consent record (D-050; decision 7 superseded) |
 | **Blind review** | static review pages | Blinded listening packages, score entry; never the reveal |
 | **Voice release** | (CLI only) | Read-only: the current voice release and its history, with each digest checked (D-045; promotion retired, D-044) |
 
@@ -1144,6 +1153,8 @@ Three independently shippable steps:
   callers (§3.6), with its own `private-assistant-speech` purpose. The consent purposes and
   boundary, the speech API, its job runner and delivery units are built ahead of the rest of
   this phase; they render nothing until the ROCm runtime (S-2) and a voice release exist.
+  Amended 2026-10-12 (D-050): consent records, their purposes and the `home-host` boundary
+  are retired; nothing in this phase builds or checks them.
 - **Acceptance:**
   - each candidate passes the automated smoke gate on `gfx1030` with evidence
     (code revision, weight revision, environment fingerprint, reference digest,
@@ -1154,16 +1165,14 @@ Three independently shippable steps:
     is not;
   - an F5-TTS fine-tune completes on the PC, with timing recorded against the Air's
     two-hour baseline;
-  - fine-tuning and Speak each refuse without an approved consent record for the home
-    host, and with a record whose digest, subject, purpose or boundary does not
-    match; each run and clip records the consent digest;
+  - fine-tuning and Speak run with no consent record (D-050), and a run of another subject
+    than `cole-self` is never designated, served or benchmarked;
   - a blind review completes in the app;
   - Cole designates a voice release from a finished PC run; a registered caller's speech
     job renders with it, its webhook verifies with the Standard Webhooks algorithm, its
     audio plays on Cole's phone through the caller, and the ledger names the job, the
-    release, the consent digest and the output digest; the API refuses the base weights,
-    another run, a caller not registered, a callback URL not on the allowlist, and a job
-    without an approved `private-assistant-speech` record for `home-host`;
+    release and the output digest; the API refuses the base weights, another run, a release
+    of another subject, a caller not registered and a callback URL not on the allowlist;
   - synthesis time on `gfx1030` is recorded for short and maximum-length texts.
 - **Rollback:** the Air's MLX and MPS runtimes stay registered and runnable; nothing
   evicts them.
@@ -1248,7 +1257,9 @@ record the other answers.
   stored on the client. Both require an approved, checksum-bound consent record
   whose purpose names them (`private-fine-tuning`; the new
   `private-home-host-synthesis` for Speak) and whose execution boundary is the new
-  `home-host`. This answers D-019's open consent question.
+  `home-host`. This answers D-019's open consent question. *Superseded in its consent part
+  by D-050 (2026-10-12): no consent record is required; Cole's standing decision and the
+  pinned subject replace it.*
 - **D-023 — The vault reverses direction, and every copy stays on Cole's hardware**
   (decision 3). D-020's vault host was the Ubuntu PC holding ciphertext from the Mac.
   The PC now holds plaintext and seals; the vault moves to the laptop (nightly), a
@@ -1291,7 +1302,7 @@ sure everything is free and running on my hardware (no cloud or paid services)".
 | 4 | Keep voice-journey's analysis code public | **Yes** | D-027 |
 | 5 | ROCm outcomes | **Spike, then decide**. On GPU failure: fp32 GPU, then the PC's CPU, then the Air's Apple runtime with a transfer approval, else drop with a recorded reason. **No hosted GPU** | D-026, D-028 |
 | 6 | Standing home-host approval | **Adopted** | D-021 |
-| 7 | Consent for fine-tuning and Speak | **Both require** an approved, checksum-bound consent record whose purpose names fine-tuning or synthesis on the home host (the PC). Resolves D-019's open question | D-022 |
+| 7 | Consent for fine-tuning and Speak | **Both require** an approved, checksum-bound consent record whose purpose names fine-tuning or synthesis on the home host (the PC). Resolves D-019's open question. *Superseded 2026-10-12: no consent record; a standing decision for Cole's own voice and the pinned subject* | D-022, D-050 |
 | 8 | Audio on the phone | **Off**: the web view shows summaries only | D-025 |
 | 9 | HTTP framework | **The standard library**, per the vault server's precedent | D-031 |
 | 10 | Python version | **3.12 throughout**: `scshafe-qt` widens to `>=3.12` in its own release | D-031 |
@@ -1311,8 +1322,8 @@ go to the phone.
   owns, and leaves the PC only as ciphertext; no cloud service and nothing paid
   anywhere in the system; fail-closed, content-addressed intake; a
   network-facing process that cannot rewrite history; model workers without network
-  access; consent and transfer approvals bound to digests; a repository guard that
-  keeps every private byte out of Git.
+  access; transfer approvals bound to digests; the one synthesized subject pinned in
+  code; a repository guard that keeps every private byte out of Git.
 - **Reproducible ML evaluation.** Pinned code and weight revisions, isolated runtimes
   behind a versioned worker contract, identical held-out inputs across candidates,
   blind listening as the decision signal, and one checksum-bound, owner-designated voice

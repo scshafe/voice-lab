@@ -33,9 +33,11 @@ Contents:
   (D-028).
 - **Cole's voice release only** (D-045). Never the base weights, a zero-shot reference,
   another subject or an undesignated run.
-- **Consent** (D-047). An approved, checksum-bound record whose purposes include
-  `private-assistant-speech` and whose boundaries include `home-host`, checked before a job is
-  queued and again before the worker starts.
+- **Cole's own voice, by standing decision** (D-050). No consent record is required or read:
+  Cole's standing decision permits his own voice for assistant speech on his own hardware, and
+  the subject is pinned in code (`subject_id`, `cole-self`). Consent records written before
+  stay on disk as history. (D-047's consent record for `private-assistant-speech` on
+  `home-host` is retired.)
 - **A queued job in the one GPU slot** (D-046). No always-on synthesis endpoint, and no
   audio streamed while it is synthesized: finished sentences are published as they complete,
   and the job's event stream only announces them.
@@ -60,12 +62,12 @@ Contents:
 caller (agent server, a tailnet node)
   │ POST /api/v1/speech  {text, callback_url, idempotency_key}   bearer: Pocket ID machine token
   ▼
-door (oauth2-proxy) ─► API container ── checks: token → caller, limits, release, consent, GPU slot
+door (oauth2-proxy) ─► API container ── checks: token → caller, limits, release, GPU slot
   │                         │ writes state/speech/jobs/<id>/ + queue/<id>
   │ 202 {id, state: queued, links}
   ▼                         ▼
 caller follows            voice-lab-speech.service (long-running host unit, PrivateNetwork=yes, GPU)
-GET …/{id}/events           claims the job, re-checks release + consent, holds the GPU slot,
+GET …/{id}/events           claims the job, re-checks the release, holds the GPU slot,
 (or polls GET …/{id})       splits the text into sentences; for each, in order, the resident
   ◄── segment.ready n ──    model worker renders it (seeded) and the runner publishes
 GET …/segments/n/audio      segments/000n.wav; then joins speech.wav, writes the ledger
@@ -88,30 +90,28 @@ fields are common to every model family (D-048) except `model`, the family's own
 | --- | --- |
 | `release_id` | `vr-<sequence>`, for example `vr-0001` |
 | `sequence`, `previous_release_sha256` | the append-only chain: the first release names none |
-| `subject_id` | the run's and the consent record's subject: the configuration's pinned `subject_id` (`cole-self`) |
+| `subject_id` | the run's subject: always the pinned subject, `cole-self` |
 | `model_family` | the run's model family (`f5-tts`) |
 | `run_id`, `run_record_sha256` | the finished fine-tune run and the digest of its `run.json` |
 | `files` | every file the family needs, by role, with its path in the asset root and its SHA-256; for F5-TTS `checkpoint` (the run's recorded `model_last.pt`) and `reference` (the clip in the run's dataset) |
 | `model` | the family's section, tagged by `family`; for F5-TTS the reference prompt id, the SHA-256 of its transcript, and the runtime the run trained with (F5-TTS and torch versions, pretrained weights digest) |
-| `consent_id`, `consent_sha256` | the consent record at designation |
+| `consent_id`, `consent_sha256` | only in a release designated before D-050: the consent record it named, never read; a new release has neither |
 | `blind_review` | optional: a review id and the score sheet's digest |
 | `created_at`, `designated_by` | when, and the name Cole gives |
 
-`voice-lab voice release designate --asset-root … --run <id> --consent-id <id>
---designated-by <name> [--config <speech.json>] [--reference-prompt <id>] [--blind-review
-<id> --score-sheet-sha256 <sha>]` asks the run's family which files it binds (F5-TTS resolves
-them through the existing Speak seam, `finetune.resolve_speech_model`), checks the run
-(finished, not archived, of the pinned subject, `cole-self`: the configuration's `subject_id`
-can name no other) and the named consent record (approved for
-`private-assistant-speech` on `home-host`, of the same subject), hashes every file against the
-run's records, and prints the record it would write; with `--i-designate-this-run` it writes
-it. `voice release show` prints the current one; `voice release history` lists them all. The
+`voice-lab voice release designate --asset-root … --run <id> --designated-by <name>
+[--config <speech.json>] [--reference-prompt <id>] [--blind-review <id> --score-sheet-sha256
+<sha>]` asks the run's family which files it binds (F5-TTS resolves them through the existing
+Speak seam, `finetune.resolve_speech_model`), checks the run (finished, not archived, of the
+pinned subject, `cole-self`: neither the command nor the configuration can name another),
+hashes every file against the run's records, and prints the record it would write; with
+`--i-designate-this-run` it writes it. No consent record is named or read (D-050).
+`voice release show` prints the current one; `voice release history` lists them all. The
 newest record is current.
 
 A render refuses when the current release is of another subject than the configuration
-pins, or its run, a file or its consent record no longer hashes to what the release names
-(`voice_release_changed`, `consent_changed`): rotating the consent record, even to renew it,
-means designating again.
+pins, or its run or a file no longer hashes to what the release names
+(`voice_release_changed`).
 
 ## 4. Callers and the configuration
 
@@ -157,8 +157,10 @@ read the parts they need.
 
 `subject_id` is the one subject whose release may speak, and it is pinned in code: it may be
 left out, and any value but `cole-self` is refused (`config.SpeechSubject`, D-045), so a
-configuration file cannot make another subject's release speak. `runtime` names the runtime of
-the release's model family (`model_family`, D-048). Validation refuses: a duplicate caller id,
+configuration file cannot make another subject's release speak (D-050). A caller's
+`allowed_purposes` (`private-assistant-speech`, the only value) is its scope in the registry,
+not a consent purpose. `runtime` names the runtime of the release's model family
+(`model_family`, D-048). Validation refuses: a duplicate caller id,
 subject, secret path or secret file name; an empty audience list; an `http` webhook URL, one
 with credentials, a query or a fragment, one whose host is not a single label under
 `tailnet_suffix`, or one whose path has a dot segment, an empty segment, a path parameter
@@ -258,9 +260,9 @@ may invoke `private-assistant-speech` (`403 purpose_not_allowed`); the body (`41
 `422 invalid_request`, `422 unsupported_format`, `422 callback_not_allowed`); idempotency
 (`200` replay, `409 idempotency_conflict` or `409 idempotency_key_unverifiable`); a current
 voice release (`503 voice_release_unavailable`; its files
-are re-hashed by the job runner before every render, not by the API); the consent record the
-release names, unchanged and valid (`503 consent_unavailable`); a long job holding the GPU slot (`503 gpu_busy`, with
-`Retry-After`); the caller's queued jobs (`429 too_many_jobs`), its daily characters (UTC day,
+are re-hashed by the job runner before every render, not by the API; a release of another
+subject than the configuration pins is unavailable too); a long job holding the GPU slot
+(`503 gpu_busy`, with `Retry-After`); the caller's queued jobs (`429 too_many_jobs`), its daily characters (UTC day,
 `429 daily_budget_exhausted`), and the queue in all (`503 queue_full`).
 
 ### `GET /api/v1/speech/{id}`
@@ -283,9 +285,9 @@ States: `queued` → `running` → `succeeded` | `failed` | `cancelled`; a succe
 lists the sentences already rendered, in order. `audio` (the joined file) is present once the
 job has succeeded. `error` is `{code, detail}` for `failed`; the codes are
 `runtime_unavailable` (no runtime for the PC, or it cannot start), `render_failed`,
-`render_timeout`, `queue_timeout`, `voice_release_changed`, `consent_changed` and
-`internal_error`. `detail` is one fixed sentence per code: what went wrong in particular (a
-path, a consent reason, a worker's error) is in the job runner's log on the PC, never in a
+`render_timeout`, `queue_timeout`, `voice_release_changed` and `internal_error`. `detail` is
+one fixed sentence per code: what went wrong in particular (a path, a release's mismatch, a
+worker's error) is in the job runner's log on the PC, never in a
 status or a webhook. A job that fails or is cancelled part-way keeps the segments already
 published until retention.
 
@@ -387,11 +389,10 @@ text with the same release and steps is byte-identical, sentence by sentence.
 `PrivateNetwork=yes` and only the GPU's devices (`/dev/kfd` and the DRM nodes, groups
 `render` and `video`), writing only the speech state, the GPU slot's lock and the ledger's
 directory. It looks for queued jobs every quarter second. For each, oldest first, it claims
-the job; re-reads the release, refuses one of another subject, re-hashes what it names, and
-re-checks the consent record; holds the GPU slot; splits the text; renders each sentence
-through the narrow `SpeechBackend` port, checking before each one that the release is still
-the current one and its consent record still valid (so a revocation stops a render at its
-next sentence); checks each WAV (24 kHz, mono, 16-bit, complete) and publishes it
+the job; re-reads the release, refuses one of another subject and re-hashes what it names;
+holds the GPU slot; splits the text; renders each sentence through the narrow `SpeechBackend`
+port, checking before each one that the release is still the current one (so a new
+designation stops a render at its next sentence); checks each WAV (24 kHz, mono, 16-bit, complete) and publishes it
 (`status.json` lists it); joins them; writes the ledger entry, the final status and the outbox
 event. The text is deleted on every ending, first. It sweeps retention every few minutes. A
 cancel is honoured between sentences, and ends a wait for the GPU slot at once.
@@ -544,8 +545,9 @@ time, status code or error class, duration; never the secret, the signature or t
 written once by the job runner for every job it started rendering: job id, caller id, the
 text's keyed digest (HMAC-SHA256 under the install's `text-digest.key`, so a short reply cannot
 be found by hashing guesses; a text can be checked against it on the PC) and its length in
-code points, release id and its record's digest, the model family, consent id and digest, the
-model and runtime fingerprint (the family, each loaded file's role and digest, the runtime
+code points, release id and its record's digest, the model family (an entry written before
+D-050 also names a consent record's id and digest; none does now), the model and runtime
+fingerprint (the family, each loaded file's role and digest, the runtime
 identity, the device, the family's native sample rate, whether it is seeded, the family's
 render settings such as F5-TTS's flow steps, the voice-lab version), the job's seed, the number of sentences and each
 published sentence's digest, the outcome, the joined output's digest, size and duration when
@@ -586,28 +588,24 @@ procedure, with the commands: [deploy/speech/README.md](../deploy/speech/README.
 stack and door changes: `deploy/speech/compose.speech.yaml`; the host units:
 `deploy/host-manual/voice-lab-speech*`):
 
-1. **Consent.** Approve a new consent record, `cole-self-v2`, naming
-   `private-assistant-speech` and `home-host` (`consent preview`, then `consent approve-self
-   --consent-id cole-self-v2`, RUNBOOK §1); `cole-self-v1` is approved already and cannot be
-   replaced. Only Cole.
-2. **The runtime.** Provision the ROCm F5-TTS runtime on the PC (torch 2.14.0+rocm7.2,
+1. **The runtime.** Provision the ROCm F5-TTS runtime on the PC (torch 2.14.0+rocm7.2,
    torchcodec 0.16.0+cpu, from spike S-2; its hash-locked lock is a follow-up). Until then
    every job fails `runtime_unavailable`.
-3. **The voice release.** `voice-lab voice release designate --run <id> --consent-id
-   cole-self-v2 --config /etc/voice-lab/speech.json` on the PC.
-4. **Pocket ID.** Create the caller's confidential client with `client_credentials`; read one
+2. **The voice release.** `voice-lab voice release designate --run <id> --config
+   /etc/voice-lab/speech.json` on the PC. Only Cole; no consent record is needed (D-050).
+3. **Pocket ID.** Create the caller's confidential client with `client_credentials`; read one
    token's claims locally to fill `subject` and `audiences`.
-5. **The configuration and secrets.** Write `/etc/voice-lab/speech.json`; create each
+4. **The configuration and secrets.** Write `/etc/voice-lab/speech.json`; create each
    caller's webhook secret file (root:root 0600) and give the caller the same secret by a
    private channel.
-6. **The door and the stack.** The `EXTRA_JWT_ISSUERS` change and the read-only bind of
+5. **The door and the stack.** The `EXTRA_JWT_ISSUERS` change and the read-only bind of
    `/etc/voice-lab/speech.json` into the API container (infra's `host.conf` grants binds).
-7. **Host units.** Create the ledger's directory, then install and enable
+6. **Host units.** Create the ledger's directory, then install and enable
    `voice-lab-speech.service` (long-running, with the resident worker) and
    `voice-lab-speech-webhooks.{path,service,timer}` by hand; through the runner lane's
    host-unit install once infra's validator accepts GPU devices and `LoadCredential=` (which
    would also restart the runner on every deploy; until then it restarts itself).
-8. **The tailnet policy.** Allow the PC to reach each caller's node on 443 for webhooks, and
+7. **The tailnet policy.** Allow the PC to reach each caller's node on 443 for webhooks, and
    the caller's node to reach `tag:voice-lab` on 443.
 
 ## 12. Not in v1

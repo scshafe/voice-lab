@@ -35,10 +35,8 @@ from speech_fixtures import (
 from cole_voice_lab.api.contracts import REFUSAL_CODES
 from cole_voice_lab.api.routing import RouteRefusal, RouteRequest
 from cole_voice_lab.canonical import sha256_file
-from cole_voice_lab.consent import revoke_consent
 from cole_voice_lab.speech.contracts import GpuSlotHolder
 from cole_voice_lab.speech.gpu import hold_slot
-from cole_voice_lab.speech.release import consent_path, current_release
 from cole_voice_lab.speech.routes import (
     MAX_EVENT_STREAMS,
     byte_range,
@@ -264,20 +262,18 @@ def test_a_long_job_in_the_gpu_slot_refuses_speech_at_once(rig: SpeechRig) -> No
     assert answer(rig, "POST", "/api/v1/speech", {"text": "Now?"})[0] == 202
 
 
-def test_without_a_release_or_consent_speech_is_unavailable(tmp_path: Path) -> None:
+def test_without_a_release_speech_is_unavailable_and_no_consent_is_needed(
+    tmp_path: Path,
+) -> None:
     lab = build_lab(tmp_path, release=False)
     for rig in start_speech_rig(lab):
         status, refusal = answer(rig, "POST", "/api/v1/speech", {"text": "Hi."})
         assert (status, refusal["error"]) == (503, "voice_release_unavailable")
+        # Designating is all it takes: the lab holds no consent record (D-050).
         lab.designate()
-        release, _ = current_release(lab.layout)
-        revoke_consent(
-            consent_path(lab.layout, release.consent_id),
-            expected_sha256=release.consent_sha256,
-            at=NOW - timedelta(minutes=1),
-        )
-        status, refusal = answer(rig, "POST", "/api/v1/speech", {"text": "Hi."})
-        assert (status, refusal["error"]) == (503, "consent_unavailable")
+        assert not (lab.layout.root / "provenance/consents").exists()
+        status, job = answer(rig, "POST", "/api/v1/speech", {"text": "Hi."})
+        assert (status, job["state"]) == (202, "queued")
 
 
 def test_a_release_of_another_subject_is_unavailable(tmp_path: Path) -> None:

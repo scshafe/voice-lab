@@ -203,6 +203,7 @@
     },
     "ConsentEvidenceBinding": {
       "additionalProperties": false,
+      "description": "A retired consent record's binding (D-050): only manifests written before carry one.",
       "properties": {
         "consent_id": {
           "$ref": "#/$defs/StableId"
@@ -720,7 +721,6 @@
     "created_at",
     "created_by",
     "subject_id",
-    "consent",
     "pilot_gate",
     "entries",
     "category_accounting",

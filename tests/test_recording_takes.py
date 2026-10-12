@@ -1092,9 +1092,9 @@ def test_prepared_corpus_gate_verifies_once_then_checks_exact_sources(
     store = RecordingTakeStore(fixture.layout, clock=lambda: NOW)
     catalog = fixture.suites["train-suite"]
     gate = store.prepare_corpus_gate(
-        catalog, "cole", approval_path=fixture.gate_path, approval_sha256=fixture.gate_sha256
+        catalog, "cole-self", approval_path=fixture.gate_path, approval_sha256=fixture.gate_sha256
     )
-    group = store.open_group(catalog, "cole", DEVICE, "host", prepared_gate=gate)
+    group = store.open_group(catalog, "cole-self", DEVICE, "host", prepared_gate=gate)
 
     # Tamper with a source the gate covers: a pilot session's audio. The raw store
     # also holds other sessions, and directory order differs between filesystems.
@@ -1139,7 +1139,7 @@ def test_prepared_corpus_gate_verifies_once_then_checks_exact_sources(
             process_generation="helper",
         )
         assert reservation.group.gate == gate
-        assert store.open_group(catalog, "cole", DEVICE, "host", prepared_gate=gate) == group
+        assert store.open_group(catalog, "cole-self", DEVICE, "host", prepared_gate=gate) == group
     else:
         with pytest.raises(SecurityError, match="changed"):
             store.reserve(
@@ -1157,12 +1157,12 @@ def test_gate_subject_catalog_and_time_are_verified(rig: Rig, tmp_path: Path) ->
     store = RecordingTakeStore(fixture.layout, clock=lambda: NOW)
     kwargs = dict(approval_path=fixture.gate_path, approval_sha256=fixture.gate_sha256)
     with pytest.raises(ContractError, match="only a corpus"):
-        store.prepare_corpus_gate(synthetic_catalog(2), "cole", **kwargs)
+        store.prepare_corpus_gate(synthetic_catalog(2), "cole-self", **kwargs)
     with pytest.raises(ContractError, match="another subject"):
         store.prepare_corpus_gate(fixture.suites["train-suite"], "different", **kwargs)
     store.clock = lambda: datetime(2026, 1, 1, tzinfo=UTC)
     with pytest.raises(ContractError, match="future"):
-        store.prepare_corpus_gate(fixture.suites["train-suite"], "cole", **kwargs)
+        store.prepare_corpus_gate(fixture.suites["train-suite"], "cole-self", **kwargs)
 
 
 def test_store_rejects_unsafe_metadata_locks_and_concurrent_writers(rig: Rig) -> None:

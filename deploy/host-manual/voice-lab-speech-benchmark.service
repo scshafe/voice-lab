@@ -6,8 +6,9 @@
 # (0644; no secret in it):
 #
 #   VOICE_LAB_BENCHMARK_RUN=<run id>
-#   VOICE_LAB_BENCHMARK_CONSENT_ID=<a consent record approved for private-home-host-synthesis
-#                                   on home-host>
+#
+# (No consent record is named any more, D-050; a VOICE_LAB_BENCHMARK_CONSENT_ID line left in
+# the file from before is ignored.) Only a finished run of the pinned subject renders.
 #
 #   sudoedit /etc/voice-lab/speech-benchmark.env
 #   sudo systemctl start voice-lab-speech-benchmark.service
@@ -44,7 +45,7 @@ UMask=0077
 EnvironmentFile=/etc/voice-lab/speech-benchmark.env
 # The marker the command requires before it renders (with no network but loopback).
 Environment=VOICE_LAB_SANDBOX=voice-lab-speech-benchmark
-ExecStart=/opt/voice-lab/current/bin/voice-lab families record --asset-root /data/voice-lab/lab --run ${VOICE_LAB_BENCHMARK_RUN} --benchmark --config /etc/voice-lab/speech.json --consent-id ${VOICE_LAB_BENCHMARK_CONSENT_ID}
+ExecStart=/opt/voice-lab/current/bin/voice-lab families record --asset-root /data/voice-lab/lab --run ${VOICE_LAB_BENCHMARK_RUN} --benchmark --config /etc/voice-lab/speech.json
 TimeoutStartSec=2h
 PrivateNetwork=yes
 IPAddressDeny=any

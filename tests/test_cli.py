@@ -139,69 +139,19 @@ def test_prompts_show_v2_adds_instructions_labels_and_no_spoken_prompt(
     )
 
 
-def test_assets_and_pending_consent_flow(tmp_path: Path, capsys: object) -> None:
+def test_assets_init_writes_no_consent_record_and_the_consent_command_is_gone(
+    tmp_path: Path, capsys: object
+) -> None:
     root = tmp_path / "private" / "voice-assets"
     assert main(["assets", "init", "--asset-root", str(root)]) == 0
     result = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert result["asset_root"] == str(root)
-
-    assert main(["consent", "status", "--asset-root", str(root)]) == 0
-    status = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
-    assert status["record"]["approved"] is False
-
-
-def test_consent_cli_cannot_infer_attestation(tmp_path: Path, capsys: object) -> None:
-    root = tmp_path / "private" / "voice-assets"
-    assert main(["assets", "init", "--asset-root", str(root)]) == 0
-    capsys.readouterr()  # type: ignore[attr-defined]
-
-    scope_args = [
-        "--purpose",
-        "private-zero-shot-evaluation",
-        "--execution-boundary",
-        "tailnet-local-host",
-        "--expires-at",
-        "2026-09-17T00:00:00Z",
-    ]
-    assert main(["consent", "preview", *scope_args]) == 0
-    preview = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
-    assert preview["approved"] is False
-    assert (
-        main(
-            [
-                "consent",
-                "approve-self",
-                "--asset-root",
-                str(root),
-                *scope_args,
-                "--reviewed-scope-sha256",
-                preview["scope_sha256"],
-            ]
-        )
-        == 2
-    )
-    assert "explicit" in capsys.readouterr().err  # type: ignore[attr-defined]
-
-
-def test_consent_cli_confines_record_ids(tmp_path: Path, capsys: object) -> None:
-    root = tmp_path / "private" / "voice-assets"
-    assert main(["assets", "init", "--asset-root", str(root)]) == 0
-    capsys.readouterr()  # type: ignore[attr-defined]
-
-    assert (
-        main(
-            [
-                "consent",
-                "status",
-                "--asset-root",
-                str(root),
-                "--consent-id",
-                "../../../outside",
-            ]
-        )
-        == 2
-    )
-    assert "validation" in capsys.readouterr().err.lower()  # type: ignore[attr-defined]
+    # Consent records are retired (D-050): none is installed, and nothing manages them.
+    assert "pending_consent" not in result
+    assert not (root / "provenance/consents").exists()
+    with pytest.raises(SystemExit) as refused:
+        main(["consent", "status", "--asset-root", str(root)])
+    assert refused.value.code == 2
 
 
 def test_missing_asset_root_is_reported(capsys: object, monkeypatch: object) -> None:
@@ -371,20 +321,12 @@ def test_audition_plan_wires_reviewed_references_and_bound_sources(
     reference_path = root / "references/ref-a/reference.wav"
     reference_path.parent.mkdir(mode=0o700)
     reference_path.write_bytes(b"reference")
-    consent_path = root / "provenance/consents/cole-self-v1.json"
-    consent_path.write_text("{}", encoding="utf-8")
     source_path = root / "derived/performed/eval-short-neutral.wav"
     source_path.parent.mkdir(mode=0o700)
     source_path.write_bytes(b"source")
     manifest = SimpleNamespace(
         output=SimpleNamespace(path="references/ref-a/reference.wav", sha256="a" * 64),
         source=SimpleNamespace(transcript="Exact reference words.", subject_id="cole-self"),
-        consent=SimpleNamespace(
-            file=SimpleNamespace(
-                path="provenance/consents/cole-self-v1.json",
-                sha256="b" * 64,
-            )
-        ),
     )
     monkeypatch.setattr(  # type: ignore[attr-defined]
         cli_module,
@@ -440,7 +382,7 @@ def test_audition_plan_wires_reviewed_references_and_bound_sources(
     assert captured["source_audio_by_prompt"] == {"eval-short-neutral": source_path}
     references = captured["references"]
     assert references[0].path == str(reference_path)
-    assert references[0].consent_path == str(consent_path)
+    assert references[0].consent_path is None  # no consent record is bound (D-050)
 
 
 def test_audition_plan_rejects_performed_sources_outside_asset_root(
@@ -562,10 +504,6 @@ def test_dataset_build_reads_strict_selection_and_explicit_suite_mapping(
                 str(selection_path),
                 "--prompt-suite",
                 f"{suite_id}={suite_path}",
-                "--consent-path",
-                "provenance/consents/cole-self-v1.json",
-                "--consent-sha256",
-                "d" * 64,
                 "--minimum-holdout-seconds",
                 "12.5",
             ]
@@ -606,10 +544,6 @@ def test_dataset_build_rejects_non_strict_or_oversized_selection_json(
         str(selection_path),
         "--prompt-suite",
         f"{suite_id}={suite_path}",
-        "--consent-path",
-        "provenance/consents/cole-self-v1.json",
-        "--consent-sha256",
-        "d" * 64,
     ]
     assert main(base_args) == 2
     assert "unexpected" in capsys.readouterr().err  # type: ignore[attr-defined]
@@ -641,10 +575,6 @@ def test_dataset_build_rejects_prompt_suite_mapping_mismatch(
                 str(selection_path),
                 "--prompt-suite",
                 f"wrong-suite={suite_path}",
-                "--consent-path",
-                "provenance/consents/cole-self-v1.json",
-                "--consent-sha256",
-                "d" * 64,
             ]
         )
         == 2
@@ -1264,10 +1194,6 @@ def test_reference_review_publish_and_validate_operator_paths(
         "a" * 64,
         "--prompt-id",
         "pilot-neutral-01",
-        "--consent-path",
-        "provenance/consents/cole-self-v1.json",
-        "--consent-sha256",
-        "e" * 64,
         "--headphone-review-path",
         review["path"],
         "--headphone-review-sha256",
@@ -1301,84 +1227,6 @@ def test_reference_review_publish_and_validate_operator_paths(
     validation = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert validation["reference_sha256"] == "c" * 64
     assert validation["transcript"] == "Reference words."
-
-
-def test_consent_full_cli_lifecycle_is_digest_and_scope_bound(
-    tmp_path: Path, capsys: object
-) -> None:
-    root = tmp_path / "private-assets"
-    _initialize_assets(root, capsys)
-    assert main(["consent", "install-pending", "--asset-root", str(root)]) == 0
-    pending = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
-    assert pending["approved"] is False
-
-    scope_args = [
-        "--purpose",
-        "private-zero-shot-evaluation",
-        "--execution-boundary",
-        "tailnet-local-host",
-        "--expires-at",
-        "2030-01-01T00:00:00Z",
-    ]
-    assert main(["consent", "preview", *scope_args]) == 0
-    preview = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
-    bad_approve = [
-        "consent",
-        "approve-self",
-        "--asset-root",
-        str(root),
-        *scope_args,
-        "--expected-current-sha256",
-        pending["sha256"],
-        "--reviewed-scope-sha256",
-        "0" * 64,
-        "--i-am-the-subject-and-authorize",
-    ]
-    assert main(bad_approve) == 2
-    assert "exact --reviewed-scope-sha256" in capsys.readouterr().err  # type: ignore[attr-defined]
-
-    good_approve = bad_approve.copy()
-    good_approve[good_approve.index("0" * 64)] = preview["scope_sha256"]
-    assert main(good_approve) == 0
-    approved = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
-    assert approved["approved"] is True
-    assert approved["scope_sha256"] == preview["scope_sha256"]
-    assert main(["consent", "status", "--asset-root", str(root)]) == 0
-    status_output = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
-    assert status_output["record"]["approved"] is True
-    assert status_output["sha256"] == approved["sha256"]
-
-    revoke = [
-        "consent",
-        "revoke",
-        "--asset-root",
-        str(root),
-        "--expected-sha256",
-        approved["sha256"],
-    ]
-    assert main(revoke) == 2
-    assert "--confirm-revoke" in capsys.readouterr().err  # type: ignore[attr-defined]
-    assert main([*revoke, "--confirm-revoke"]) == 0
-    revoked = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
-    assert revoked["approved"] is False
-    assert revoked["revoked_at"] is not None
-
-
-def test_consent_scope_rejects_duplicate_purpose(capsys: object) -> None:
-    args = [
-        "consent",
-        "preview",
-        "--purpose",
-        "private-zero-shot-evaluation",
-        "--purpose",
-        "private-zero-shot-evaluation",
-        "--execution-boundary",
-        "capture-host",
-        "--expires-at",
-        "2030-01-01T00:00:00Z",
-    ]
-    assert main(args) == 2
-    assert "must be unique" in capsys.readouterr().err  # type: ignore[attr-defined]
 
 
 def test_audition_status_reports_not_started_persisted_and_mismatched_runs(

@@ -146,6 +146,7 @@ REMOVED_CHECKPOINT = FineTuneArchivedFile(
     path="checkpoints/model_9.pt", sha256="c" * 64, size=1_024, kind="file"
 )
 CONSENT_HISTORY_BYTES = b'{"consent":"an earlier synthetic version"}\n'
+HISTORICAL_CONSENT = b'{"consent":"a synthetic record written before D-050"}\n'
 
 
 # -- sinks, passes and trees -------------------------------------------------------------
@@ -465,7 +466,8 @@ def add_fine_tune_runs(layout: AssetLayout, runtime: Path) -> None:
 
 
 def consent_history_name(data: bytes, consent_id: str = "cole-self-v1") -> str:
-    """The name the consent module gives an earlier version: its id and its digest."""
+    """The name the retired consent module (D-050) gave an earlier version: its id and its
+    digest."""
     return f"{consent_id}.{hashlib.sha256(data).hexdigest()}.json"
 
 
@@ -562,6 +564,9 @@ def libraries(tmp_path_factory: pytest.TempPathFactory, analyzer_build: Any) -> 
     accepted_root.mkdir(mode=0o700)
     fixture = _accepted(accepted_root)
     _publish(fixture)
+    # A consent record written before D-050: nothing reads it, but the library keeps it as
+    # history and a pass still classifies and copies it.
+    write_file(fixture.layout.root, "provenance/consents/cole-self-v1.json", HISTORICAL_CONSENT)
     libraries = Libraries(legacy, native, fixture.layout)
     # A pass leaves SQLite's shared-memory files beside the database, as the service does.
     run_pass(legacy, (CorpusDatabaseSource(),), classes=("prompt-database",))
@@ -3356,8 +3361,8 @@ def test_records_written_in_place_are_carried_only_once_their_bytes_are_in(
     names = {"capture-continuity", "lab-approvals"}
     sources = tuple(source for source in library_sources() if source.name in names)
     classes: tuple[FileClass, ...] = ("records",)
-    # consent._preserve_consent_version and capture_native._write_diagnostics create the file,
-    # then write its bytes, with no rename; a pass lists it in between.
+    # capture_native._write_diagnostics creates the file, then writes its bytes, with no
+    # rename (as the retired consent module did, D-050); a pass lists it in between.
     descriptors = {
         path: os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600) for path in written
     }

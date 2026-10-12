@@ -2,9 +2,9 @@
 
 @canonical cli_speech -- registered into ``voice-lab``'s parser by ``cli.build_parser``.
 ``voice release designate`` previews, then (with ``--i-designate-this-run``) writes, the
-next voice release (D-045): an act of judgement that is Cole's, never an agent's. It names
-the consent record explicitly and designates only the pinned subject's run (the
-configuration's ``subject_id`` with ``--config``, else ``cole-self``).
+next voice release (D-045): an act of judgement that is Cole's, never an agent's. It
+designates only a run of the pinned subject (``cole-self``; ``--config``, when given, is
+loaded and checked) and reads no consent record (D-050).
 ``voice release show|history`` print releases. ``speech run`` is the job runner with its
 resident model until SIGTERM (the host unit ``voice-lab-speech``, no network); ``--once`` is
 one pass by hand, refused (exit 2) while the unit runs; with ``--release-link`` it exits
@@ -30,7 +30,7 @@ from .models import utc_now
 from .paths import AssetLayout
 from .speech.config import load_speech_config
 from .speech.families import ReleaseBackend, family_ids
-from .speech.release import SPEECH_SUBJECT, BlindReviewRef, current_release, designate, history
+from .speech.release import BlindReviewRef, current_release, designate, history
 from .speech.runner import (
     EXIT_MISCONFIGURED,
     EXIT_OUTDATED,
@@ -65,17 +65,14 @@ def _designate(options: argparse.Namespace) -> int:
             review_id=options.blind_review, score_sheet_sha256=options.score_sheet_sha256
         )
     )
-    subject = (
-        SPEECH_SUBJECT if options.config is None else load_speech_config(options.config).subject_id
-    )
+    if options.config is not None:
+        load_speech_config(options.config)
     release, digest = designate(
         layout,
         run_id=options.run,
         designated_by=options.designated_by,
         now=utc_now(),
         reference_prompt_id=options.reference_prompt,
-        consent_id=options.consent_id,
-        subject_id=subject,
         blind_review=review,
         write=options.i_designate_this_run,
     )
@@ -185,12 +182,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     designate_parser.add_argument("--designated-by", required=True)
     designate_parser.add_argument("--reference-prompt")
     designate_parser.add_argument(
-        "--consent-id",
-        required=True,
-        help="the approved consent record for private-assistant-speech on home-host",
-    )
-    designate_parser.add_argument(
-        "--config", type=Path, help="the speech configuration whose subject_id is pinned"
+        "--config", type=Path, help="the speech configuration, loaded and checked"
     )
     designate_parser.add_argument("--blind-review")
     designate_parser.add_argument("--score-sheet-sha256")

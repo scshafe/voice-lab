@@ -1,5 +1,5 @@
-"""Shared fixtures of the speech API tests: a lab with a finished run, consent, a release,
-a configuration, tokens for callers, and a fake backend that writes synthetic audio.
+"""Shared fixtures of the speech API tests: a lab with a finished run, a release (no consent
+record: D-050), a configuration, tokens for callers, and a fake backend that writes synthetic audio.
 
 Everything is synthetic: the run is ``finetune_speech_runs.write_speech_run``'s (generated
 clips and checkpoint bytes), the fake backend writes a generated tone, and the F5 runtime,
@@ -29,13 +29,22 @@ from cole_voice_lab.api.auth import TokenVerifier
 from cole_voice_lab.api.contracts import ApiMeta
 from cole_voice_lab.api.server import ApiServer
 from cole_voice_lab.api.staging import IntakeStaging
-from cole_voice_lab.consent import approve_self_consent, install_pending_consent
-from cole_voice_lab.finetune import FineTuneRun
+from cole_voice_lab.canonical import write_new_private_file
+from cole_voice_lab.finetune import FineTuneDigestCache, FineTuneRun
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.speech.backend import PeakMemory, SpeechBackendError
 from cole_voice_lab.speech.config import SpeechCaller, SpeechConfig
 from cole_voice_lab.speech.contracts import F5RenderSettings, FileDigest, RenderFingerprint
-from cole_voice_lab.speech.release import VerifiedRelease, designate
+from cole_voice_lab.speech.families import family_for, run_family
+from cole_voice_lab.speech.release import (
+    VerifiedRelease,
+    VoiceRelease,
+    designate,
+    history,
+    record_bytes,
+    release_id,
+    run_record_path,
+)
 from cole_voice_lab.speech.routes import PREFIX, SpeechRoutes, caller_policy
 from cole_voice_lab.speech.runner import PassReport, SpeechRunner
 
@@ -85,26 +94,6 @@ def finished_run(layout: AssetLayout, run_id: str = "finetune-a", **changes: Any
         **changes,
     }
     return write_speech_run(layout, run_id, **fields)
-
-
-def approve_consent(
-    layout: AssetLayout,
-    *,
-    purposes: tuple[Any, ...] = ("private-assistant-speech",),
-    boundaries: tuple[Any, ...] = ("home-host",),
-    now: datetime = NOW - timedelta(days=1),
-) -> str:
-    _, pending = install_pending_consent(layout)
-    _, digest = approve_self_consent(
-        layout,
-        acknowledgement=True,
-        purposes=purposes,
-        execution_boundaries=boundaries,
-        expires_at=now + timedelta(days=365),
-        expected_current_sha256=pending,
-        now=now,
-    )
-    return digest
 
 
 def caller(**changes: Any) -> SpeechCaller:
@@ -210,44 +199,53 @@ class Lab:
     layout: AssetLayout
     run: FineTuneRun
     config: SpeechConfig
-    consent_sha256: str
 
     def designate(self, **options: Any) -> None:
-        options.setdefault("consent_id", "cole-self-v1")
         options.setdefault("run_id", self.run.run_id)
         designate(self.layout, designated_by="Cole", now=NOW, **options)
 
 
+def forge_release(layout: AssetLayout, run_id: str) -> VoiceRelease:
+    """Append a release of finished run ``run_id`` whatever its subject, as a hand-written
+    record would: ``designate`` refuses any subject but the pinned one, so a release of another
+    subject exists only if someone wrote it into the chain. Returns the forged release."""
+    family = family_for(run_family(layout, run_id))
+    cache = FineTuneDigestCache()
+    designated = family.designate(layout, run_id, reference_prompt_id=None, digests=cache)
+    releases = history(layout)
+    sequence = len(releases) + 1
+    forged = VoiceRelease(
+        release_id=release_id(sequence),
+        sequence=sequence,
+        previous_release_sha256=releases[-1][1] if releases else None,
+        subject_id=designated.subject_id,
+        model_family=family.family_id,
+        run_id=run_id,
+        run_record_sha256=cache.sha256(run_record_path(layout, run_id)),
+        files=designated.files,
+        model=designated.model,
+        created_at=NOW,
+        designated_by="someone else",
+    )
+    directory = layout.root / "provenance" / "voice-releases"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    write_new_private_file(directory / f"{sequence:04d}.json", record_bytes(forged), mode=0o400)
+    return forged
+
+
 def designate_another_subject(lab: Lab) -> None:
-    """Make the current release another subject's: a finished run and an approved consent
-    record of ``someone-else``, designated as such (the configuration cannot pin them)."""
+    """Make the current release another subject's: a finished run of ``someone-else`` whose
+    release was written into the chain by hand (no command or configuration can designate
+    it; ``forge_release``)."""
     finished_run(lab.layout, "finetune-other", subject_id="someone-else")
-    approve_self_consent(
-        lab.layout,
-        acknowledgement=True,
-        purposes=("private-assistant-speech",),
-        execution_boundaries=("home-host",),
-        expires_at=NOW + timedelta(days=30),
-        subject_id="someone-else",
-        consent_id="someone-else-v1",
-        now=NOW - timedelta(days=1),
-    )
-    designate(
-        lab.layout,
-        run_id="finetune-other",
-        designated_by="Cole",
-        now=NOW,
-        consent_id="someone-else-v1",
-        subject_id="someone-else",
-    )
+    forge_release(lab.layout, "finetune-other")
 
 
-def build_lab(tmp_path: Path, *, consent: bool = True, release: bool = True, **config: Any) -> Lab:
+def build_lab(tmp_path: Path, *, release: bool = True, **config: Any) -> Lab:
     root = tmp_path.resolve()
     layout = AssetLayout.initialize(root / "lab")
     run = finished_run(layout)
-    digest = approve_consent(layout) if consent else ""
-    lab = Lab(root, layout, run, speech_config(root, layout, **config), digest)
+    lab = Lab(root, layout, run, speech_config(root, layout, **config))
     if release:
         lab.designate()
     return lab

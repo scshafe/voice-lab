@@ -3,11 +3,11 @@
 @canonical cli_models -- registered into ``voice-lab``'s parser by ``cli.build_parser``.
 ``families record`` writes one comparison record of a finished run (designated or a
 candidate): its training summary, with ``--benchmark`` an inference benchmark through the
-speech backend of the configuration's runtime (holding the GPU slot, under the consent record
-``--consent-id`` names for ``private-home-host-synthesis`` on ``home-host``), and with
-``--blind-review`` a link to the blind review that judged it, made from the score sheet
-itself. ``families compare`` prints, per run, the newest training summary, benchmark and
-review side by side, and what keeps them from comparing like with like.
+speech backend of the configuration's runtime (holding the GPU slot; a run of the pinned
+subject only, and no consent record, D-050), and with ``--blind-review`` a link to the blind
+review that judged it, made from the score sheet itself. ``families compare`` prints, per
+run, the newest training summary, benchmark and review side by side, and what keeps them from
+comparing like with like.
 
 A benchmark renders Cole's voice, so it renders only inside the speech unit's sandbox: no
 network and only the GPU's devices. On the PC that is the oneshot unit
@@ -123,8 +123,8 @@ def _review(layout: AssetLayout, options: argparse.Namespace) -> QualityLink | N
 
 def _record(options: argparse.Namespace) -> int:
     layout = _layout(options)
-    if options.benchmark and (options.config is None or options.consent_id is None):
-        raise VoiceLabError("--benchmark needs --config and --consent-id")
+    if options.benchmark and options.config is None:
+        raise VoiceLabError("--benchmark needs --config")
     sandboxed = in_speech_sandbox()
     if options.benchmark and not sandboxed and not options.outside_the_sandbox:
         raise VoiceLabError(
@@ -156,8 +156,6 @@ def _record(options: argparse.Namespace) -> int:
                         layout,
                         options.run,
                         backend,
-                        consent_id=options.consent_id,
-                        subject_id=config.subject_id,
                         now=now,
                         work_directory=scratch,
                         segment_deadline_seconds=float(config.segment_deadline_seconds),
@@ -213,10 +211,6 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "only in the speech sandbox)",
     )
     record.add_argument("--config", type=Path, help="the speech configuration (its runtime)")
-    record.add_argument(
-        "--consent-id",
-        help="an approved consent record for private-home-host-synthesis on home-host",
-    )
     record.add_argument(
         OUTSIDE_THE_SANDBOX,
         dest="outside_the_sandbox",
