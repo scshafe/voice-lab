@@ -168,8 +168,9 @@ The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these co
 - Webhook secrets are files referenced by path, readable only by the `voice-lab` user and
   read only by the delivery process; the API never reads them, and none is in
   configuration or Git.
-- The API container only enqueues and serves finished files; the job runner renders with
-  no network; the delivery unit reaches the tailnet only.
+- The API container only enqueues and serves finished files (whole sentences and the
+  joined audio); the job runner and its resident model worker render with no network; the
+  delivery unit reaches the tailnet only.
 - The job's text is deleted when the job ends; the render ledger keeps its SHA-256 and
   length. Rendered audio is kept 7 days by default, outside the asset root, so the vault
   never copies it.
@@ -182,9 +183,10 @@ The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these co
 - Network-exposed, background, or auto-started capture-console services.
   The separately approved, tailnet-only vault stores ciphertext and is not a
   capture console or synthesis endpoint.
-- An always-on or streaming synthesis endpoint, or one reachable beyond the tailnet.
-  Synthesis is a queued job for registered callers (D-046), amending "long-running
-  synthesis endpoints" here.
+- An always-on synthesis endpoint, audio streamed while it is being synthesized, or a
+  synthesis endpoint reachable beyond the tailnet. Synthesis is a queued job for
+  registered callers whose finished sentences may be fetched as they complete (D-046),
+  amending "long-running synthesis endpoints" here.
 - Secrets, OAuth tokens, host credentials, or private host keys in configuration.
   Vault bindings name keychain or credential items; server configuration contains token hashes,
   never raw tokens or encryption keys.

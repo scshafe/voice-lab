@@ -1232,10 +1232,29 @@ the API, under these rules (design §3.6, [docs/SPEECH_API.md](docs/SPEECH_API.m
   endpoint, Funnel stays off, nothing paid, no cloud (D-028 stands). Human recordings still
   never go to a hosted service.
 - **A queued job, completed asynchronously.** Synthesis is a job in the one GPU slot, never
-  an always-on or streaming endpoint. `POST /api/v1/speech` answers `202` with a job; the
-  caller polls it or receives a signed webhook when it ends. The API process only enqueues;
-  the network-less job runner renders; delivery of webhooks runs in a network-capable process
-  of its own, never in the job runner.
+  an always-on synthesis endpoint. `POST /api/v1/speech` answers `202` with a job; the
+  caller polls it or receives a signed webhook when it ends (webhooks are terminal only). The
+  API process only enqueues and serves finished files; the network-less job runner renders;
+  delivery of webhooks runs in a network-capable process of its own, never in the job runner.
+- **Progressive delivery of finished sentences.** The job runner splits the text into
+  sentences and renders them one after another. Each finished sentence is published at once
+  as a segment of the job: the job's status lists the ready segments, each can be fetched
+  (`…/segments/{n}/audio`), and a per-job event stream (`…/events`, server-sent events:
+  `segment.ready`, then the terminal event) announces them. The joined audio is served at
+  `…/audio` once the job has succeeded. First audio therefore arrives after about one
+  sentence's render rather than the whole text's. Audio is never streamed while it is being
+  synthesized: a segment is published only when it is complete and checked.
+- **A resident speech worker.** The F5-TTS model and the current voice release stay loaded
+  in the GPU slot between jobs, in one long-running worker process on the network-less host
+  side, instead of a process per request (a cold start costs about 20 s). It is unloaded after
+  an idle time (15 minutes by default) or when the release changes. It needs about 1.3–3 GiB
+  of the card's 16 GB, which llama-swap's models share.
+- **Reproducible renders.** Sentences are rendered sequentially, never in F5-TTS's thread
+  pool, each with a seed derived from the job's seed, which is derived from the text, the
+  release and the flow steps. A rerun of the same text with the same release gives the same
+  bytes, which phase 5's rerun acceptance needs; upstream's threaded chunking does not.
+- **Flow steps.** The number of flow steps (`nfe`) is a configuration setting, 32 by default
+  until Cole compares 16 and 32 by ear; each render's ledger entry records it.
 - **Registered callers.** Each caller is listed in a caller registry: an id, the Pocket ID
   issuer and subject (and audience) its machine tokens carry, the consent purposes it may
   invoke, an allowlist of webhook URLs (`https` on `*.ts.net` tailnet hosts only), a path to
@@ -1250,8 +1269,10 @@ the API, under these rules (design §3.6, [docs/SPEECH_API.md](docs/SPEECH_API.m
 - **Retention.** Rendered audio is kept for a bounded time, 7 days by default and
   configurable, then deleted; the job then reads `expired`. The ledger stays.
 - **Amends** SECURITY.md ("Deliberately avoided: long-running synthesis endpoints" becomes
-  "an always-on or streaming synthesis endpoint, or one beyond the tailnet"), the design's
-  non-goal "No long-running synthesis endpoint", and D-025 as above.
+  "an always-on synthesis endpoint, audio streamed while it is synthesized, or an endpoint
+  beyond the tailnet"), the design's non-goal "No long-running synthesis endpoint", D-019's
+  process per Speak request where the speech API is concerned (the resident worker), and
+  D-025 as above.
 
 Recommended in this decision, for Cole to confirm in review:
 
@@ -1263,17 +1284,43 @@ Recommended in this decision, for Cole to confirm in review:
   disclosure rule.
 - **Retention 7 days**, as above; the job's status record is kept 30 days, the ledger for
   ever.
-- **Priority against long jobs.** Speech waits behind no queued GPU job: it runs next when the
-  slot frees, ahead of any queued fine-tune or audition, and never preempts a running one. If a
-  long job holds the slot (a fine-tune takes hours), `POST /api/v1/speech` is refused at once,
-  `503 gpu_busy` with `Retry-After` from the holder's estimate, so the agent can answer in
-  text instead of waiting. A speech job not started within 10 minutes of its submission
-  expires as `queue_timeout`.
+- **Sharing the GPU slot.** Nothing preempts a running job. While a fine-tune or audition
+  holds the slot (a fine-tune takes hours), `POST /api/v1/speech` is refused at once, `503
+  gpu_busy` with `Retry-After` from the holder's expected end, so the agent can answer in text
+  instead of waiting. The resident speech worker holds the slot while its model is loaded, but
+  yields it: a long job that wants the slot says so, and the worker unloads as soon as it has
+  no speech job in hand (at most one job's wait for the long job), rather than only after its
+  idle time. Queued speech goes before a long job that has not started. A speech job not
+  started within 10 minutes of its submission fails `queue_timeout`.
 - **Format.** WAV, 24 kHz mono 16-bit, the synthesizer's own output. The API image has no
   ffmpeg; Ogg Opus is reserved and refused until the job runner encodes it with the host's
   ffmpeg.
 - **Limits.** 1–2,000 code points per request (as Speak), at most 4 queued or running jobs
   per caller, 50,000 characters per caller per UTC day, 32 jobs queued in all.
+
+Measured on 2026-10-11 on the PC (spike S-2: RX 6900 XT, `gfx1030`, ROCm; F5-TTS 1.1.22 with
+the pinned base weights and F5-TTS's public English reference clip, so no recording of Cole's).
+fp16 runs natively, without an HSA override. Warm real-time factor about 0.70–0.78 at 32 flow
+steps and 0.35–0.39 at 16: one 15-word sentence takes 6.2 s at 32 steps and 3.1 s at 16; 62
+words 23.6 s and 11.8 s; 206 words 84 s and 42 s. A cold start is about 20 s (7.4 s imports,
+2.4 s loading, and a first request that warms the kernels). The CPU is about 19× slower than
+real time, unusable; fp32 on the GPU is only 8–16% slower than fp16. torch 2.6.0+rocm6.2.4
+and 2.14.0+rocm7.2 are within 2% of each other; PyPI's torchcodec 0.16.0 x86_64 wheel needs
+CUDA 13, so the `+cpu` build is used, and F5-TTS's README pin `torch==2.9.1+rocm7.2` does not
+exist. Upstream renders a long text's chunks in a thread pool sharing the global RNG: such
+outputs differ between runs and peak VRAM rises to 7.3 GiB, against 1.6 GiB and identical
+bytes when chunks are rendered sequentially with their own seeds. These figures scale with the
+reference clip's length and the speaking rate; a release of Cole's own voice must be measured
+again. Evidence (SHA-256 of the spike's records, which stay on the PC): `a-fp16.json`
+c4f22f64e9dd05ace20a2bef2a9b041f9792fa955fe731c2fa246be29336ff5d, `b-fp16.json`
+0f03cc2f998bbffaf37032852c94f1e7f0cf650d8deef743ede15eaf0789b5ea, `a-fp32.json`
+122f3151d76941eae51846c28e939f0b023f8d63e7bfcd8bc7dd54bd3d1fa9ff, `cpu-a.json`
+911a39ef40d17b50bd96dd8a8dc0f5621c85f9e45582989f5f8643b19a423246, `a-cold1.json`
+198876f0f0dfd81d60650cb7b4e1cd2fb0685ecd7aa5342146f25dfd72e8b7ae, `pip-freeze-ft.txt`
+8fd91a33f988720dadd128e48b7e0c2d7e1b4d4171d797526efef823d0b95885, `bench.py`
+41d1017743eac551a7931ff55971ee17dc72fc5a3171f980a7e114b7b6dcef2f. The spike's fp16 attention
+patch is not adopted. The PC's runtime lock (hash-locked, based on that freeze: torch
+2.14.0+rocm7.2, torchcodec 0.16.0+cpu) is a follow-up.
 
 ## D-047 — Consent for synthesis on the home host
 

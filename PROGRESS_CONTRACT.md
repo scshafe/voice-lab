@@ -25,7 +25,8 @@ D-044.)
 
 ## Non-goals for v0.1
 
-- A public, unauthenticated, always-on or streaming synthesis service.
+- A public, unauthenticated or always-on synthesis service, or audio streamed while it is
+  synthesized.
 - Uploading biometric media to a hosted model service.
 - Automatic acceptance of a full training corpus before the pilot quality gate.
 - Pretending direct TTS and performed-source voice conversion are identical

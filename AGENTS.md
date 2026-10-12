@@ -49,8 +49,10 @@ speaking with the one voice release Cole designates, for callers he registers
   designates by CLI (D-045). Never the base weights, a zero-shot reference, another
   subject or an undesignated run.
 - Speech synthesis over the API is a queued job in the one GPU slot for registered
-  tailnet callers, completed asynchronously (polling or a signed webhook); never an
-  always-on, streaming or public endpoint. It needs an approved consent record for
+  tailnet callers, completed asynchronously (polling, a per-job event stream of finished
+  sentence segments, or a signed terminal webhook); never an always-on synthesis endpoint,
+  audio streamed while it is synthesized, or a public endpoint. Sentences render
+  sequentially with derived seeds, so reruns are byte-identical. It needs an approved consent record for
   `private-assistant-speech` on `home-host`. Rendered audio leaves the PC only to a
   registered caller, is deleted after its retention, and every render is in the
   append-only render ledger, which holds the text's digest, never the text (D-046,

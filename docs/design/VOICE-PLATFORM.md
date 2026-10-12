@@ -117,10 +117,11 @@ These are requirements of this design, not proposals:
   the `cole-voice-lab-common-v1` normalization id stay for ever, although the package
   and its variables are renamed in phase 6 ([§13](#13-owner-decisions-2026-10-06),
   decision 2).
-- **No always-on or streaming synthesis endpoint** (SECURITY.md, "Deliberately
-  avoided", as amended by D-046). Synthesis stays a queued, one-at-a-time job in the GPU
-  slot, as Speak is today. Registered callers on the tailnet may request it and learn of
-  its completion by polling or a signed webhook (§3.6).
+- **No always-on synthesis endpoint, and no audio streamed while it is synthesized**
+  (SECURITY.md, "Deliberately avoided", as amended by D-046). Synthesis stays a queued,
+  one-at-a-time job in the GPU slot. Registered callers on the tailnet may request it, fetch
+  each sentence as soon as it is finished, and learn of the job's end by polling, its event
+  stream or a signed webhook (§3.6).
 
 ## 2. Today and target
 
@@ -299,7 +300,7 @@ route or command, except `speech`, the new capability of D-046.
 | referee | `GET /api/v1/referee/next`, `POST /api/v1/referee/verdicts`, `GET /api/v1/referee/results` | voice-journey referee |
 | jobs | `POST /api/v1/jobs` (`pipeline`, `finetune`, `audition`, `synthesize`), `GET …/{id}`, `GET …/{id}/events` (SSE), `POST …/{id}/cancel` | voice-lab recording service fine-tune supervisor (`FINETUNE.JOB_ACTIVE`, one GPU slot) |
 | blind | `GET /api/v1/blind/{package}/items`, `GET …/items/{index}/audio`, `POST /api/v1/blind/{package}/scores` | voice-lab `blind` (blinded indices only; the reveal is never served) |
-| speech | `POST /api/v1/speech`, `GET …/{id}`, `GET …/{id}/audio` (Range), `POST …/{id}/cancel`; registered callers only, with machine tokens (§3.6) | new (D-046); renders through Speak's seam, `finetune.synthesize_speech` |
+| speech | `POST /api/v1/speech`, `GET …/{id}`, `GET …/{id}/segments/{n}/audio` and `GET …/{id}/audio` (Range), `GET …/{id}/events` (SSE), `POST …/{id}/cancel`; registered callers only, with machine tokens (§3.6) | new (D-046); renders through Speak's seam, `finetune.synthesize_speech` |
 | view | `GET /view/…` (HTML) | voice-journey SPA views |
 
 Writes that are acts of judgement stay out of the API on purpose: publishing a
@@ -347,13 +348,18 @@ replacement for the door.
 Added 2026-10-11 (D-044 to D-047); specified in [SPEECH_API.md](../SPEECH_API.md).
 voice-lab renders text as speech in Cole's voice for callers listed in a caller registry
 (Cole's own agent server, later). Only the voice release Cole designates speaks (D-045).
-`POST /api/v1/speech` answers `202` with a job; the caller polls `GET /api/v1/speech/{id}`
-or receives a signed webhook (Standard Webhooks) at a registered tailnet URL, then fetches
-`…/audio`. The API container only enqueues; a new host unit, `voice-lab-speech`, renders in
-the one GPU slot with no network; a second, `voice-lab-speech-webhooks`, delivers webhooks
-over the tailnet only. Every render is in an append-only ledger (the text's digest, never
-the text), and rendered audio is deleted after 7 days. Synthesis speed on the PC is not
-measured yet (spike S-2), which is why the API is asynchronous.
+`POST /api/v1/speech` answers `202` with a job. The job runner splits the text into
+sentences and publishes each as soon as it is rendered, so the caller can start playing after
+about one sentence's render; it lists them by polling `GET /api/v1/speech/{id}` or follows the
+job's event stream, fetches `…/segments/{n}/audio`, and gets the joined `…/audio` and a signed
+terminal webhook (Standard Webhooks) at a registered tailnet URL when the job ends. The API
+container only enqueues and serves finished files; a new host unit, `voice-lab-speech`, keeps
+a resident model worker for the voice release in the one GPU slot (unloaded when idle or when
+a long job wants the slot) and renders with no network; a second, `voice-lab-speech-webhooks`,
+delivers webhooks over the tailnet only. Every render is in an append-only ledger (the text's
+digest, never the text), and rendered audio is deleted after 7 days. Spike S-2 measured a warm
+real-time factor of about 0.7 at 32 flow steps on the PC (D-046); a whole long reply still
+takes minutes, which is why the API is asynchronous and progressive.
 
 ## 4. Data and privacy model
 
@@ -879,7 +885,7 @@ Facts, accessed 2026-10-06:
 
 | Model | Status on ROCm | gfx1030 | Risks | Sources |
 | --- | --- | --- | --- | --- |
-| **F5-TTS** | **Officially documented** for AMD: the README's ROCm section gives `torch==2.9.1+rocm7.2`, and `torch==2.5.1+rocm6.2` "for older GPUs (RDNA1/2/3 only)" | Expected, not reported | Attention defaults to torch; one AMD report had to force fp32 | [README](https://github.com/SWivid/F5-TTS), [#1236](https://github.com/SWivid/F5-TTS/issues/1236) |
+| **F5-TTS** | **Officially documented** for AMD: the README's ROCm section gives `torch==2.9.1+rocm7.2`, and `torch==2.5.1+rocm6.2` "for older GPUs (RDNA1/2/3 only)" | Expected, not reported. Inference measured on the PC 2026-10-11 (S-2, D-046): fp16 native, warm RTF ≈0.7 at 32 steps; fine-tuning not yet | Attention defaults to torch; one AMD report had to force fp32 | [README](https://github.com/SWivid/F5-TTS), [#1236](https://github.com/SWivid/F5-TTS/issues/1236) |
 | **Chatterbox Turbo / multilingual** | **Community reports** on RX 7900 XTX and RX 7800 XT; a third-party server documents ROCm and the RX 6000 override | Not reported | Pins torch 2.6.0 (a `+rocm6.2.4` wheel exists) and transformers 5.2.0; SDPA, no custom kernels; MIOpen workspace warnings | [repo](https://github.com/resemble-ai/chatterbox), [#192](https://github.com/resemble-ai/chatterbox/issues/192), [#445](https://github.com/resemble-ai/chatterbox/issues/445), [#293](https://github.com/resemble-ai/chatterbox/issues/293), [Chatterbox-TTS-Server](https://github.com/devnen/Chatterbox-TTS-Server) |
 | **Qwen3-TTS** | **Community reports** for inference on RDNA3 (with fp32 workaround) | Not reported | flash-attn optional for inference, but the fine-tuning script hard-codes `flash_attention_2`, so **fine-tuning is blocked** on ROCm without a patch (#372, open); an MI300X segfault with flash-attn (#340) | [repo](https://github.com/QwenLM/Qwen3-TTS), [#93](https://github.com/QwenLM/Qwen3-TTS/issues/93), [#340](https://github.com/QwenLM/Qwen3-TTS/issues/340), [#372](https://github.com/QwenLM/Qwen3-TTS/issues/372) |
 | **Seed-VC** | **Unknown**: no ROCm or AMD reports found | Unknown | Pure PyTorch, BigVGAN without its CUDA kernel, `torch.cuda` device checks (true on ROCm); pins torch 2.4.0 (`+rocm6.1` exists); `--compile` depends on Triton; repository unmaintained since 2025-04 | [repo](https://github.com/Plachtaa/seed-vc), [requirements](https://github.com/Plachtaa/seed-vc/blob/main/requirements.txt) |
