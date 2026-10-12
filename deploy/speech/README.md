@@ -92,6 +92,12 @@ it had claimed but not started (the job is queued again) and exits with status 7
 `Restart=on-failure` starts the new code ten seconds later. So a busy runner picks up a deploy
 after its current job, not after its idle time.
 
+A link that is missing, dangling or unreadable is not a deploy, and restarting cannot fix it:
+the runner gives back what it holds, logs "stopping, not restarting: … does not resolve" and
+exits 78, and the unit's `RestartPreventExitStatus=78` leaves it stopped rather than restarting
+it every ten seconds. Fix the link (the runner lane's activation, or infra's restore of the
+host), then `sudo systemctl start voice-lab-speech.service`.
+
 The long-term fix is for the runner lane to own the unit, so that a deploy installs and
 restarts it like the units in `deploy/host/`. That needs infra's host-unit validator to accept
 GPU device access (`DeviceAllow=` for `/dev/kfd` and the DRM nodes, `SupplementaryGroups=render
@@ -119,24 +125,36 @@ for the pass to end.
 ## The text key
 
 `/data/voice-lab/state/speech/text-digest.key` (32 random bytes, `voice-lab`, 0600) is the key
-of the keyed digests that name each job's text and request and that the render ledger keeps.
-It is made when the speech state is first created and never replaced automatically.
+of the keyed digests that name each job's text and request and that the render ledger keeps
+for ever. It is made only on a new install, when there is no job record and no ledger entry
+yet, and never made again or replaced automatically after that: a lost key is a loss to be
+decided on, not hidden. Problems are logged once per change, never with the key
+(`journalctl -u voice-lab-speech`, the API container's log), and the API checks the file on
+every request, so it never keeps using a key that vanished and uses a replaced one from then
+on (logging "the text key changed on disk").
 
 - **Unusable** (empty, the wrong size, open to group or others, a link or not a regular
-  file): submits answer `500 internal_error`, and the API's and the runner's logs name the
-  problem without the key (`journalctl -u voice-lab-speech`, the API container's log:
-  "the text key cannot be used: … is 0 bytes, not 32 bytes"). A wrong mode is repaired with
-  `chmod 0600` (as `voice-lab`). Anything else: stop the API and the runner, move the file
-  aside (`mv text-digest.key text-digest.key.broken-<date>`), start them again; the first to
-  start makes a new key. Keep the old file if it may still be the real key (a size or mode
-  problem only); it is needed to check a text against old ledger entries.
-- **Missing while jobs exist** (deleted, or the state restored without it): the next start
-  makes a new key and logs "text-digest.key was missing while N job record(s) exist". Jobs and
-  their audio are unaffected, but the earlier jobs' digests were made under the old key: a
-  caller that replays an earlier idempotency key gets `409 idempotency_key_unverifiable` and
-  must use a new one, and the earlier ledger entries can be checked against a text only with
-  the old key. Restore the old key from a backup instead, if there is one, before anything
-  starts.
+  file): submits answer `500 internal_error` and the logs say why ("the text key cannot be
+  used: … is 0 bytes, not 32 bytes"). A wrong mode is repaired with `chmod 0600` (as
+  `voice-lab`). Anything else is a lost key: move the file aside
+  (`mv text-digest.key text-digest.key.broken-<date>`), then as below. Keep the old file if it
+  may still be the real key (a mode or link problem); it is needed to check a text against the
+  earlier ledger entries.
+- **Missing once jobs or ledger entries exist** (deleted, or the state restored without it):
+  submits answer `500 internal_error` and the logs say "… is missing and is not made again (N
+  job record(s) and M ledger entr(ies) were named by it)". Restore it from a backup if there
+  is one. Otherwise, as `voice-lab`, make a new one and accept the loss:
+
+  ```sh
+  sudo -u voice-lab /opt/voice-lab/current/bin/voice-lab speech new-text-key \
+    --config /etc/voice-lab/speech.json --i-accept-the-lost-key
+  ```
+
+  It refuses while a key file is there, prints how many records and entries the lost key
+  named, and the API picks the new key up at its next request. Jobs and their audio are
+  unaffected, but the earlier digests were made under the old key: a caller that replays an
+  earlier idempotency key gets `409 idempotency_key_unverifiable` and must use a new one, and
+  the earlier ledger entries can be checked against a text only with the old key.
 
 ## Rollback
 
@@ -144,8 +162,10 @@ It is made when the speech state is first created and never replaced automatical
   `404` under `/api/v1/speech`) and redeploy the stack.
 - **Stop the host side:** `sudo systemctl disable --now voice-lab-speech.service
   voice-lab-speech-webhooks.path voice-lab-speech-webhooks.timer`. Stopping the runner
-  mid-job leaves that job `running`; the next start fails it `internal_error`. Jobs still
-  queued wait, and fail `queue_timeout` if the runner is not back within their queue time.
+  mid-job ends that job `failed internal_error` after the sentence being rendered, with its
+  ledger entry (only a kill leaves it `running`, and the next start then fails it and
+  withdraws its sentences). Jobs still queued wait, and fail `queue_timeout` if the runner is
+  not back within their queue time.
 - **Withdraw consent:** `consent revoke --consent-id cole-self-v2 --expected-sha256 <digest>`.
   The API refuses new jobs at once (`503 consent_unavailable`), queued jobs fail
   `consent_changed` when the runner reaches them, and a render in progress stops before its

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
+import struct
 import time
 from collections.abc import Iterator
 from datetime import timedelta
@@ -526,3 +528,41 @@ def test_a_caller_holds_at_most_four_event_streams(rig: SpeechRig) -> None:
         assert response is not None and response.events is not None
         response.events.close()
     assert routes.open_streams("agent-server") == 0
+
+
+# -- third review -------------------------------------------------------------------------------
+
+
+def _reset_mid_body(rig: SpeechRig, path: str) -> None:
+    """A GET with a declared body that the client resets part-way through."""
+    with socket.create_connection(("127.0.0.1", rig.port), timeout=5) as connection:
+        connection.sendall(
+            (
+                f"GET {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {caller_token()}\r\n"
+                "Content-Length: 10\r\n\r\nabc"
+            ).encode()
+        )
+        time.sleep(0.2)  # the server is reading the rest of the body
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+
+
+def test_a_stream_whose_client_resets_before_it_starts_gives_its_place_back(
+    rig: SpeechRig,
+) -> None:
+    _, job = answer(rig, "POST", "/api/v1/speech", {"text": "Wait for me."})
+    for _ in range(MAX_EVENT_STREAMS + 1):
+        _reset_mid_body(rig, job["links"]["events"])
+    deadline = time.monotonic() + 5
+    while rig.routes.open_streams("agent-server") and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert rig.routes.open_streams("agent-server") == 0
+    status, _ = answer(rig, "GET", job["links"]["self"])
+    assert status == 200
+
+
+def test_a_stream_response_that_is_dropped_unsent_gives_its_place_back(rig: SpeechRig) -> None:
+    _, job = answer(rig, "POST", "/api/v1/speech", {"text": "Wait for me."})
+    response = rig.routes(_events_request(job["links"]["events"]))
+    assert response is not None and rig.routes.open_streams("agent-server") == 1
+    del response  # never sent and never closed: collected
+    assert rig.routes.open_streams("agent-server") == 0

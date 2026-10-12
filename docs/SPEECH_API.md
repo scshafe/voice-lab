@@ -356,8 +356,10 @@ queue/<id>                    empty; the job runner looks for these
 idempotency/<caller>/<sha256 of the key>.json
 text-digest.key               32 random bytes, made once (0600): the key of the text's and the
                               request's digests (HMAC-SHA256); never in the asset root, so
-                              never in the vault. Never replaced when unusable (the log
-                              says why; deploy/speech/README.md, "The text key")
+                              never in the vault. Made only on a new install (no job
+                              record, no ledger entry); never made again or replaced
+                              automatically after that (the log says why, once per
+                              change; deploy/speech/README.md, "The text key")
 .runner.lock                  held by the job runner for each pass
 .runner.instance.lock         held by the one runner process (the unit, or a pass by hand)
 outbox/<event id>.json        a webhook event waiting for the delivery process
@@ -395,12 +397,24 @@ event. The text is deleted on every ending, first. It sweeps retention every few
 cancel is honoured between sentences, and ends a wait for the GPU slot at once.
 
 Every error ends the job with a code (`internal_error` when nothing more precise fits); the
-particulars go to the unit's journal. When the ledger entry cannot be written the job fails
-`internal_error` and its published segments are unlisted and deleted, so nothing is served
-without its ledger entry. A runner that stops leaves nothing owned for ever: at its next
+particulars go to the unit's journal.
+
+**The ledger and what is served.** Each sentence is served as soon as it is published, while
+the job renders and before its ledger entry exists: that is what serving sentences during a
+render means. Once a job has ended, nothing of it is served without its ledger entry: when the
+entry cannot be written the job fails `internal_error` and its published segments are
+unlisted and deleted; and a job that a killed runner left `running` without an entry has its
+segments withdrawn the same way when the next pass recovers it (a job whose entry was written
+before the kill keeps them). A runner that stops leaves nothing owned for ever: at its next
 start (and every pass) a job it left `running` ends `cancelled` when a cancel asked for it and
 fails `internal_error` otherwise, and a job it had claimed but not started is queued again, or
-ends `cancelled` when a cancel asked for it, or `queue_timeout` once its queue time is up. A cancel's claim the API never finished is
+ends `cancelled` when a cancel asked for it, or `queue_timeout` once its queue time is up.
+
+**Stopping.** A stop (SIGTERM, `systemctl stop`) is honoured between jobs, while a job waits
+for the GPU slot (the job is queued again) and between sentences: the job in hand ends
+`failed internal_error` with its ledger entry and the sentences it published. So a stop waits
+for at most the sentence being rendered, which the unit's `TimeoutStopSec=150s` covers at the
+default `segment_deadline_seconds`; only a kill leaves a job `running` for recovery. A cancel's claim the API never finished is
 ended `cancelled` after a minute.
 
 **Deploys.** The unit runs `/opt/voice-lab/current/bin/voice-lab … --release-link
@@ -409,6 +423,10 @@ model loaded or not, the runner checks that its own code is still in the release
 points at; when a deploy has moved it, the job being rendered (if any) has finished, and the
 runner unloads the model, gives back the slot and any job it claimed but had not started, and
 exits 75, and systemd starts the new code (deploy/speech/README.md, "Deploys and the runner").
+A link that is missing, dangling or unreadable is not a deploy, and a restart cannot fix it:
+the runner gives back what it holds the same way, logs "stopping, not restarting" and exits 78,
+which the unit's `RestartPreventExitStatus=78` leaves stopped until the link is fixed and the
+unit started. While a pass by hand runs, a starting unit logs once that it waits for it.
 
 **One runner.** The unit holds `.runner.instance.lock` for its life. `voice-lab speech run
 --config … --once` (one pass by hand, then unload) is refused at once (exit 2) while the unit

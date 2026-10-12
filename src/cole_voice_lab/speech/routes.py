@@ -428,7 +428,8 @@ class SpeechRoutes:
 
 class _CountedStream:
     """An event stream that gives its caller's stream count back exactly once: when it ends,
-    or when the server closes it (the server always does, even before the first chunk)."""
+    or when the server closes it (it does on every path, even when the client goes away
+    before the first chunk), or, failing both, when it is collected."""
 
     def __init__(self, events: Iterator[bytes], done: Callable[[], None]) -> None:
         self._events = events
@@ -454,6 +455,9 @@ class _CountedStream:
                 close()
         finally:
             done()
+
+    def __del__(self) -> None:
+        self.close()
 
 
 def _event(name: str, identifier: str, model: ContractModel) -> bytes:

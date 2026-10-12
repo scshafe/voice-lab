@@ -148,6 +148,17 @@ class _Body(io.RawIOBase):
         return data
 
 
+def _close_response(response: RouteResponse) -> None:
+    """Close what a response that will never be sent holds."""
+    try:
+        if response.stream is not None:
+            response.stream.close()
+    finally:
+        close = getattr(response.events, "close", None)
+        if close is not None:
+            close()
+
+
 class _ApiHandler(BaseHTTPRequestHandler):
     server: ApiServer
     server_version = "voice-lab-api"
@@ -389,10 +400,16 @@ class _ApiHandler(BaseHTTPRequestHandler):
         return _Body(self).read(length)
 
     def _send_route(self, response: RouteResponse) -> None:
-        if self._unread > MAX_CHUNK_BYTES:
-            self.close_connection = True
-        else:
-            self._discard_body()
+        try:
+            if self._unread > MAX_CHUNK_BYTES:
+                self.close_connection = True
+            else:
+                self._discard_body()
+        except BaseException:
+            # The client went away while its body drained: the answer is never sent, so what
+            # it holds (an open file, an event stream's place) is given back here.
+            _close_response(response)
+            raise
         if response.events is not None:
             self._send_events(response)
             return
