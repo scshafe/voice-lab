@@ -1,4 +1,4 @@
-"""Build voice-lab-desktop as a macOS app bundle, ad-hoc signed (design §6.3, S-7, D-041).
+"""Build voice-lab-desktop as a signed macOS app bundle (design §6.3, S-7, D-041, D-043).
 
     scripts/build-desktop-bundle                                the plan; nothing is built
     scripts/build-desktop-bundle --execute --allow-network      build, wheels from PyPI
@@ -16,16 +16,18 @@ separate build environment, on macOS only (the Air, until the repository is publ
    --frozen``); from PyPI with ``--allow-network``, or from ``--wheelhouse`` alone;
 3. ``cole-voice-lab`` and ``voice-lab-desktop`` from this checkout (built here, offline);
 4. PyInstaller; the capture worker is the same executable (``--capture-worker``);
-5. ad-hoc signing (``codesign --sign -``: free; no Developer ID, no notarization; decision
-   13, D-028) with the hardened runtime and the entitlements a Python bundle needs, then
+5. signing, free (no Developer ID, no notarization; decision 13, D-028): ad-hoc
+   (``codesign --sign -``) by default, or with ``--signing-identity`` a local certificate
+   (D-043; ``scripts/mac-signing-identity``), whose microphone permission survives rebuilds;
+   with the hardened runtime and the entitlements a Python bundle needs, then
    ``codesign --verify --strict --deep``; the Info.plist checked with ``plutil -lint`` and
    key by key;
 6. a zip (``ditto``) and its SHA-256, and ``build-desktop-bundle.json``, the build's record.
 
 Everything goes into ``--output`` (default ``apps/desktop/dist/macos``, ignored by Git):
 a new directory, or with ``--replace`` one this script made. Exit status: 0 done, 1 a step
-failed, 64 usage, 69 not on macOS or a tool is missing. The first run of an ad-hoc-signed
-app is in ``apps/desktop/docs/INSTALL-MACOS.md``.
+failed, 64 usage, 69 not on macOS or a tool is missing. The first run of the app is in
+``apps/desktop/docs/INSTALL-MACOS.md``.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -62,13 +65,19 @@ MARKER: Final = ".build-desktop-bundle"
 RECORD: Final = "build-desktop-bundle.json"
 RECORD_SCHEMA: Final = "voice-lab-desktop.macos-bundle-build/v1"
 
+#: ``codesign --sign``: ``-`` is an ad-hoc signature; a certificate's SHA-1 or plain name
+#: signs with that local identity (D-043).
+AD_HOC: Final = "-"
+SIGN_STEP: Final = "signing"
+_SIGNING_IDENTITY: Final = re.compile(r"-|[0-9A-Fa-f]{40}|[A-Za-z0-9][A-Za-z0-9 ._()-]{0,127}")
+
 EX_FAILED: Final = 1
 EX_USAGE: Final = 64
 EX_UNAVAILABLE: Final = 69
 
-#: With the hardened runtime: the microphone; ad-hoc signed libraries have no Team ID, which
-#: library validation would refuse (Qt, PortAudio, FFmpeg are separate dylibs); ctypes and
-#: cffi callbacks (sounddevice's audio callback) need executable memory they write.
+#: With the hardened runtime: the microphone; ad-hoc or self-signed libraries have no Team ID,
+#: which library validation would refuse (Qt, PortAudio, FFmpeg are separate dylibs); ctypes
+#: and cffi callbacks (sounddevice's audio callback) need executable memory they write.
 ENTITLEMENTS: Final = {
     "com.apple.security.device.audio-input": True,
     "com.apple.security.cs.disable-library-validation": True,
@@ -110,6 +119,7 @@ class Options:
     wheelhouse: Path | None = None
     replace: bool = False
     hardened_runtime: bool = True
+    signing_identity: str = AD_HOC
 
 
 @dataclass
@@ -243,7 +253,13 @@ def plan(options: Options, layout: Layout) -> list[Step]:
         if options.wheelhouse is not None
         else ()
     )
-    signing: tuple[str, ...] = ("/usr/bin/codesign", "--force", "--deep", "--sign", "-")
+    signing: tuple[str, ...] = (
+        "/usr/bin/codesign",
+        "--force",
+        "--deep",
+        "--sign",
+        options.signing_identity,
+    )
     if options.hardened_runtime:
         signing += ("--options", "runtime", "--entitlements", str(layout.entitlements))
     return [
@@ -299,7 +315,7 @@ def plan(options: Options, layout: Layout) -> list[Step]:
                 str(layout.spec),
             ),
         ),
-        Step("ad-hoc signing", (*signing, "--timestamp=none", str(layout.app))),
+        Step(SIGN_STEP, (*signing, "--timestamp=none", str(layout.app))),
         Step(
             "the signature, checked",
             ("/usr/bin/codesign", "--verify", "--strict", "--deep", "--verbose=2", str(layout.app)),
@@ -437,6 +453,7 @@ def build(
         "git_revision": _git("rev-parse", "HEAD"),
         "git_dirty": bool(_git("status", "--porcelain")),
         "hardened_runtime": options.hardened_runtime,
+        "signing_identity": options.signing_identity,
         "entitlements": sorted(ENTITLEMENTS) if options.hardened_runtime else [],
         "requirements_sha256": {
             path.name: sha256_file(path)
@@ -460,7 +477,7 @@ class _Parser(argparse.ArgumentParser):
 def parse(argv: Sequence[str] | None) -> Options:
     ap = _Parser(
         prog="build-desktop-bundle",
-        description="Build voice-lab-desktop as an ad-hoc-signed macOS app bundle "
+        description="Build voice-lab-desktop as a signed macOS app bundle "
         "(preview unless --execute).",
     )
     ap.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="the build directory")
@@ -480,7 +497,15 @@ def parse(argv: Sequence[str] | None) -> Options:
         action="store_true",
         help="sign without the hardened runtime (if the hardened build will not start)",
     )
+    ap.add_argument(
+        "--signing-identity",
+        default=AD_HOC,
+        help="'-' (ad-hoc, the default), or a local certificate's SHA-1 or name (D-043; "
+        "scripts/mac-signing-identity creates one)",
+    )
     args = ap.parse_args(argv)
+    if not _SIGNING_IDENTITY.fullmatch(args.signing_identity):
+        ap.error("--signing-identity: '-', a certificate's SHA-1 or a plain certificate name")
     return Options(
         output=args.output.absolute(),
         python=args.python,
@@ -490,6 +515,7 @@ def parse(argv: Sequence[str] | None) -> Options:
         wheelhouse=args.wheelhouse.absolute() if args.wheelhouse else None,
         replace=args.replace,
         hardened_runtime=not args.no_hardened_runtime,
+        signing_identity=args.signing_identity,
     )
 
 
@@ -526,7 +552,7 @@ def main(
         return exc.status
     print(f"built {record['app']}")
     print(f"{record['archive_sha256']}  {record['archive']}")
-    print("First run of an ad-hoc-signed app: apps/desktop/docs/INSTALL-MACOS.md")
+    print("First run: apps/desktop/docs/INSTALL-MACOS.md")
     return 0
 
 

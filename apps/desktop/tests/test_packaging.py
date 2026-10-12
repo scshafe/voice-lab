@@ -285,7 +285,7 @@ def test_the_build_signs_checks_zips_and_records(
     assert _darwin(bundle, ["--output", str(output)], runner) == 0
     whats = [step.what for step in runner.steps]
     assert whats[0] == "the build environment" and whats[-1] == "the zip to copy elsewhere"
-    sign = next(step for step in runner.steps if step.what == "ad-hoc signing")
+    sign = next(step for step in runner.steps if step.what == bundle.SIGN_STEP)
     assert sign.argv[:5] == ("/usr/bin/codesign", "--force", "--deep", "--sign", "-")
     assert "--options" in sign.argv and str(output / "entitlements.plist") in sign.argv
     entitlements = plistlib.loads((output / "entitlements.plist").read_bytes())
@@ -295,6 +295,7 @@ def test_the_build_signs_checks_zips_and_records(
     archive = output / "voice-lab-desktop-0.1.0-macos.zip"
     assert record["archive_sha256"] == bundle.sha256_file(archive)
     assert record["hardened_runtime"] is True and record["bundle_identifier"] == bundle.BUNDLE_ID
+    assert record["signing_identity"] == "-"
     assert set(record["requirements_sha256"]) == {
         "development-build.txt",
         "desktop-bundle-macos.txt",
@@ -307,13 +308,42 @@ def test_the_build_signs_checks_zips_and_records(
     plain = FakeMac(bundle)
     args = ["--output", str(output), "--replace", "--no-hardened-runtime"]
     assert _darwin(bundle, args, plain) == 0
-    sign = next(step for step in plain.steps if step.what == "ad-hoc signing")
+    sign = next(step for step in plain.steps if step.what == bundle.SIGN_STEP)
     assert "--options" not in sign.argv and "--entitlements" not in sign.argv
     stranger = tmp_path / "someone-elses"
     stranger.mkdir()
     (stranger / "keep.txt").write_text("mine")
     assert _darwin(bundle, ["--output", str(stranger), "--replace"], FakeMac(bundle)) == 64
     assert (stranger / "keep.txt").read_text() == "mine"
+
+
+def test_a_local_signing_identity_signs_the_bundle_and_is_recorded(
+    bundle: ModuleType, tmp_path: Path
+) -> None:
+    # D-043: a stable local certificate keeps the microphone permission across rebuilds.
+    output = tmp_path / "out"
+    runner = FakeMac(bundle)
+    args = ["--output", str(output), "--signing-identity", "voice-lab local signing"]
+    assert _darwin(bundle, args, runner) == 0
+    sign = next(step for step in runner.steps if step.what == bundle.SIGN_STEP)
+    assert sign.argv[:5] == (
+        "/usr/bin/codesign",
+        "--force",
+        "--deep",
+        "--sign",
+        "voice-lab local signing",
+    )
+    record = __import__("json").loads((output / "build-desktop-bundle.json").read_text())
+    assert record["signing_identity"] == "voice-lab local signing"
+
+
+@pytest.mark.parametrize("identity", ["", "--deep", 'a "quote"', "line\nbreak", "x" * 129])
+def test_a_signing_identity_that_is_not_a_hash_or_a_plain_name_is_refused(
+    bundle: ModuleType, identity: str
+) -> None:
+    with pytest.raises(SystemExit) as exited:
+        bundle.main([f"--signing-identity={identity}"])
+    assert exited.value.code == 64
 
 
 def test_a_bundle_without_the_microphone_text_fails_the_build(

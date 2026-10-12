@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+# The local code-signing identity this Mac's builds use, created once (D-043).
+# The plan by default; --execute creates it in the login keychain; --show prints its SHA-1.
+export PYTHONDONTWRITEBYTECODE=1
+repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+python=/opt/homebrew/bin/python3.12
+if [ ! -x "$python" ]; then
+  echo "mac-signing-identity: $python is missing (brew install python@3.12)" >&2
+  exit 69
+fi
+exec "$python" -I -B "$repo_dir/scripts/mac_signing_identity.py" "$@"

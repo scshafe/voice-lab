@@ -10,13 +10,14 @@ import argparse
 import json
 import os
 import plistlib
+import re
 import stat
 import subprocess
 import sys
 import zipfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import AfterValidator, Field, model_validator
 
@@ -43,6 +44,12 @@ from .runtime import (
     missing_recording_python_distribution_message,
     recording_distribution_files,
 )
+
+#: ``codesign --sign -``: an ad-hoc signature (the default). A certificate's SHA-1 or common
+#: name signs with that identity instead (D-043: a stable local identity keeps the microphone
+#: permission across rebuilds, where an ad-hoc signature's requirement changes every build).
+AD_HOC_IDENTITY: Final = "-"
+_SIGNING_IDENTITY: Final = re.compile(r"-|[0-9A-Fa-f]{40}|[A-Za-z0-9][A-Za-z0-9 ._()-]{0,127}")
 
 _BUILD_ENVIRONMENT = {
     "PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -224,11 +231,52 @@ class NativeRecordingApplicationRelease(ContractModel):
     synthetic_only: bool
 
 
-def _run(arguments: Sequence[str], *, cwd: Path | None = None, timeout: int = 300) -> str:
+def require_signing_identity(identity: str) -> str:
+    """A ``codesign --sign`` identity: ``-`` (ad-hoc), a certificate's SHA-1, or a plain
+    certificate name.
+
+    Raises: ``ContractError`` for anything else (an option, a control character, a quote)."""
+    if not _SIGNING_IDENTITY.fullmatch(identity):
+        raise ContractError(
+            "the signing identity must be '-' (ad-hoc), a certificate's SHA-1 or a plain name"
+        )
+    return identity
+
+
+def _codesign_command(identity: str, entitlements: Path, path: Path) -> tuple[str, ...]:
+    """Sign ``path`` with the hardened runtime and the audio-input entitlement."""
+    return (
+        "/usr/bin/codesign",
+        "--force",
+        "--sign",
+        identity,
+        "--options",
+        "runtime",
+        "--entitlements",
+        str(entitlements),
+        "--timestamp=none",
+        str(path),
+    )
+
+
+def _signing_environment(identity: str) -> dict[str, str]:
+    """An identity is looked up in the user's keychains, which ``codesign`` finds from HOME."""
+    if identity == AD_HOC_IDENTITY:
+        return _BUILD_ENVIRONMENT
+    return {**_BUILD_ENVIRONMENT, "HOME": str(Path.home())}
+
+
+def _run(
+    arguments: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    timeout: int = 300,
+    environment: dict[str, str] | None = None,
+) -> str:
     completed = subprocess.run(
         tuple(arguments),
         cwd=cwd,
-        env=_BUILD_ENVIRONMENT,
+        env=environment if environment is not None else _BUILD_ENVIRONMENT,
         capture_output=True,
         text=True,
         check=False,
@@ -428,8 +476,12 @@ def create_native_recording_application(
     python: Path,
     settings: NativeRecordingApplicationSettings,
     synthetic_pcm: Path | None = None,
+    signing_identity: str = AD_HOC_IDENTITY,
 ) -> NativeRecordingApplicationRelease:
     """Build a new preview, frozen code/service runtime and private signed identities.
+
+    ``signing_identity`` is what ``codesign --sign`` gets for the helper and then the bundle:
+    ``-`` (ad-hoc, the default) or a local certificate (D-043).
 
     Never overwrite an output, install, launch, capture, play, download or transfer.
     Partial failed-build artifacts remain reviewable beside the chosen output. The release
@@ -441,8 +493,10 @@ def create_native_recording_application(
     to another subject, when the platform is not macOS, when the output is not a new
     ``*Preview.app`` or already exists, or when a build command fails; ``SecurityError`` for
     an unsafe diagnostic marker, synthetic PCM or release source; ``OSError`` when a file
-    cannot be read or written.
+    cannot be read or written. ``ContractError`` also, before anything else, for a signing
+    identity that is not ``-``, a SHA-1 or a plain name.
     """
+    signing_identity = require_signing_identity(signing_identity)
     layout = AssetLayout.validate(Path(settings.asset_root))
     # Refuse a root/purpose mismatch before any release work exists.
     _require_release_root(layout, settings.purpose, settings.subject_id)
@@ -631,18 +685,8 @@ def create_native_recording_application(
     _write_private(entitlements, plistlib.dumps({"com.apple.security.device.audio-input": True}))
     for signed in (helper, target):
         _run(
-            (
-                "/usr/bin/codesign",
-                "--force",
-                "--sign",
-                "-",
-                "--options",
-                "runtime",
-                "--entitlements",
-                str(entitlements),
-                "--timestamp=none",
-                str(signed),
-            )
+            _codesign_command(signing_identity, entitlements, signed),
+            environment=_signing_environment(signing_identity),
         )
     _run(("/usr/bin/codesign", "--verify", "--strict", "--deep", "--verbose=2", str(target)))
     client_build = RecordingBuildIdentity(
@@ -720,15 +764,23 @@ def create_native_recording_application(
     _write_private(
         runtime / "native-build-environment.json", canonical_json_bytes(native_environment)
     )
+    signing_note = (
+        b"Local ad-hoc signing is not Developer ID/notarization and does not promise "
+        b"microphone permission persistence."
+        if signing_identity == AD_HOC_IDENTITY
+        else b"Signed with a local certificate (D-043), not Developer ID/notarization; a "
+        b"microphone permission granted to it persists across rebuilds signed the same way."
+    )
     _write_private(
         runtime / "README.txt",
         b"Local native preview; not installed or launched. Keep this app and adjacent runtime "
         b"together at their configured paths. No recordings or models are bundled. The Python "
         b"base runtime and macOS are external and checksum-bound; replacing them requires "
-        b"rebuilding. Local ad-hoc signing is not Developer ID/notarization and does not promise "
-        b"microphone permission persistence. Hardware permission attribution remains unverified "
-        b"until approved. The frozen previous Qt release remains separate; it cannot edit "
-        b"native-format drafts, which remain preserved.\n",
+        b"rebuilding. "
+        + signing_note
+        + b" Hardware permission attribution remains unverified until approved. The frozen "
+        b"previous Qt release remains separate; it cannot edit native-format drafts, which "
+        b"remain preserved.\n",
     )
     parent = os.open(runtime, os.O_RDONLY | os.O_NOFOLLOW)
     try:
@@ -855,6 +907,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--synthetic-pcm", type=Path)
+    parser.add_argument(
+        "--signing-identity",
+        default=AD_HOC_IDENTITY,
+        help="codesign identity: '-' (ad-hoc, the default), or a local certificate's SHA-1 or "
+        "name (D-043; scripts/mac-signing-identity creates one)",
+    )
     options = parser.parse_args(argv)
     try:
         with open_regular_no_follow(
@@ -871,6 +929,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             python=options.python,
             settings=settings,
             synthetic_pcm=options.synthetic_pcm,
+            signing_identity=options.signing_identity,
         )
     except (VoiceLabError, OSError, ValueError) as error:
         parser.error(str(error))

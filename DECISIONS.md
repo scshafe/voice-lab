@@ -1094,3 +1094,44 @@ of a catalog through the capture worker of D-039, one take per private directory
   owner sets `prompted_uploads = true` in that machine's `config.toml`; they then upload as
   class `capture` through `/api/v1/intake` with the D-021 ledger, which the standing home-host
   approval must cover.
+
+## D-043 — A stable local signing identity on Cole's Mac; the Mac agent
+
+Recorded 2026-10-11 (after phase 4; amends design §6.3 and D-041's "ad-hoc signed").
+
+**Why.** The project's agent works on the PC. It cannot build macOS apps, and by design it
+cannot reach the Mac. Since the move to scshafe-dev, nothing has built or tested the Swift
+app or produced a `.app` from a commit: `scripts/verify` skips the native suites off macOS.
+Ad-hoc signing made each build cost Cole a microphone prompt. macOS binds a TCC grant to the
+code's designated requirement. An ad-hoc signature's requirement is its code hash, which
+every build changes.
+
+**The Mac agent.** Cole keeps a workspace on the Mac (`~/voice-lab-mac`: a clone and a
+`CLAUDE.md` copied from `docs/mac-agent/CLAUDE.template.md`) and starts an agent there. It
+runs `scripts/mac-refresh`. One command fetches a commit (`main`, or a pull request's head),
+runs `scripts/verify` with the Swift suites, builds the Swift app and voice-lab-desktop,
+and, when asked, installs both into `/Applications`. The app each install replaces is kept,
+and every run leaves a report the agent can post on a pull request. The Mac agent never
+pushes, opens pull requests or merges, and never reads recordings. Installs default to
+commits on `main` and never put an older Swift app over a newer one: an older native build
+cannot open a library a newer one has opened. Overriding either needs Cole's go-ahead.
+
+**The signing identity.** `scripts/mac-signing-identity` creates, once, a self-signed
+code-signing certificate `voice-lab local signing` in Cole's login keychain:
+- RSA 3072, ten years, extended key usage codeSigning, not a CA;
+- trusted for code signing in the user's trust settings only;
+- its key usable by `codesign` and never exported.
+
+Both builders take `--signing-identity`, and `scripts/mac-refresh` passes this identity when
+the keychains hold it. A certificate's designated requirement is the bundle identifier plus
+the certificate, so a microphone grant survives rebuilds.
+
+Ad-hoc stays the builders' default and the fallback. It is still free: no Developer ID and no
+notarization (D-028). Locally built apps are not quarantined, so Gatekeeper is unchanged; a
+build copied to another Mac still takes the Gatekeeper steps there, and the identity helps
+only on the Mac that holds its key. Anything signed with that key would carry these apps'
+microphone grants on this Mac, which is why the key stays in the login keychain. The
+hardened runtime's entitlements are unchanged: a self-signed identity, like an ad-hoc one,
+has no Team ID.
+
+Nothing of this has run on a Mac yet. The Mac agent's first refresh is the check.

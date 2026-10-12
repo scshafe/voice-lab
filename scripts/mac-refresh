@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+# voice-lab's macOS apps on this Mac from a commit of scshafe/voice-lab (docs/mac-agent/README.md).
+# The plan by default; --execute --allow-network fetches, verifies and builds; --install installs.
+export PYTHONDONTWRITEBYTECODE=1
+repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+python=/opt/homebrew/bin/python3.12
+if [ ! -x "$python" ]; then
+  echo "mac-refresh: $python is missing (brew install python@3.12)" >&2
+  exit 69
+fi
+exec "$python" -I -B "$repo_dir/scripts/mac_refresh.py" "$@"

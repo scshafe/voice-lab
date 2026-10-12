@@ -757,7 +757,10 @@ Swift app stays the macOS prompted-capture path, and nothing about D-015 is rela
   process started from a terminal. Built with PyInstaller or Briefcase (spike S-7):
   on GitHub's free macOS runners once the repository is public, and on the Air
   until then. **Ad-hoc signed** (`codesign --sign -`), which is free; there is no
-  paid Developer ID and no notarization (decision 13, D-028).
+  paid Developer ID and no notarization (decision 13, D-028). On Cole's Mac, builds
+  are signed with a free self-signed local identity instead, so the microphone
+  permission survives rebuilds; the Mac agent builds and installs them
+  (`scripts/mac-refresh`, D-043).
 - **First run on macOS.** Gatekeeper blocks an ad-hoc-signed app that carries the
   quarantine attribute (one downloaded with a browser). The app's install page,
   written with phase 4, documents how to allow it once:

@@ -238,8 +238,12 @@ the understood subset is refused instead of guessed. The only `RECORD` rows it d
 `../../../bin/<name>` launchers a distribution declares as `console_scripts` or `gui_scripts`
 entry points; every other row that leaves the distribution's own tree is still refused.
 
-The builder's arguments are `--output`, `--settings`, `--source-root`, `--python` and
-`--synthetic-pcm`. Its first check binds the declared purpose to the root
+The builder's arguments are `--output`, `--settings`, `--source-root`, `--python`,
+`--synthetic-pcm` and `--signing-identity`. The last is `-` (ad-hoc, the default), or a
+local certificate's SHA-1 or name: with the stable identity `voice-lab local signing`
+(`scripts/mac-signing-identity`, D-043), a microphone permission survives rebuilds.
+`scripts/mac-refresh` builds and installs the app that way on Cole's Mac
+(docs/mac-agent/README.md). Its first check binds the declared purpose to the root
 (`_require_release_root`): the root is a marked physical-test root exactly when the
 purpose is `physical-test`, and a marked root must belong to the settings' subject.
 There is no `--expect-catalog-sha256`; argparse refuses it as an unrecognized
