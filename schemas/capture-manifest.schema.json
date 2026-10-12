@@ -185,6 +185,265 @@
       "title": "CaptureDevice",
       "type": "object"
     },
+    "MeasurementSegment": {
+      "additionalProperties": false,
+      "description": "One segment of a UMIK-1 measurement session as it was recorded (its take in the\npackage is ``path``). Values the session did not record are null.",
+      "properties": {
+        "clipped_samples": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clipped Samples"
+        },
+        "duration_seconds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_Finite"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_overflows": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Overflows"
+        },
+        "key": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_MeasurementText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mode"
+        },
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "peak_dbfs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_Finite"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rms_dbfs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_Finite"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        }
+      },
+      "required": [
+        "key",
+        "path"
+      ],
+      "title": "MeasurementSegment",
+      "type": "object"
+    },
+    "MeasurementSession": {
+      "additionalProperties": false,
+      "description": "What a UMIK-1 measurement session recorded about itself beyond its audio\n(``journey.measurement_package``): the mouth-to-capsule distance, the input level and\nhow it was pinned, the calibration file, the client, and each segment's label, start,\nduration and levels. Absolute levels and spectra are comparable across sessions only at\nthe same distance and level, so these travel with the takes.",
+      "properties": {
+        "calibration_file": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_MeasurementText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "client": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_MeasurementText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "controlled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Controlled"
+        },
+        "distance_cm": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 10000,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Distance Cm"
+        },
+        "input_level_control": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_MeasurementText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_level_muted": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Level Muted"
+        },
+        "input_level_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_MeasurementText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_volume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_Finite"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "level_pinned_at": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Level Pinned At"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.measurement-session/v1",
+          "default": "cole-voice-lab.measurement-session/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "segments": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MeasurementSegment"
+          },
+          "title": "Segments",
+          "type": "array"
+        },
+        "source_session_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Source Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_session_id",
+        "distance_cm",
+        "input_volume"
+      ],
+      "title": "MeasurementSession",
+      "type": "object"
+    },
     "Sha256": {
       "pattern": "^[0-9a-f]{64}$",
       "type": "string"
@@ -192,6 +451,16 @@
     "StableId": {
       "maxLength": 128,
       "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "_Finite": {
+      "maximum": 1000000,
+      "minimum": -1000000,
+      "type": "number"
+    },
+    "_MeasurementText": {
+      "maxLength": 500,
+      "minLength": 1,
       "type": "string"
     }
   },
@@ -229,6 +498,17 @@
       "default": "mono-48000-pcm-s24le",
       "title": "Intended Format",
       "type": "string"
+    },
+    "measurement": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MeasurementSession"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "processing_applied": {
       "default": [],

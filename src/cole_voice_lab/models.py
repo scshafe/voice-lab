@@ -12,8 +12,10 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    SerializerFunctionWrapHandler,
     StringConstraints,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -335,6 +337,50 @@ class CaptureDevice(ContractModel):
     calibration_sha256: Sha256 | None = None
 
 
+type _MeasurementText = Annotated[str, StringConstraints(min_length=1, max_length=500)]
+type _Finite = Annotated[float, Field(allow_inf_nan=False, ge=-1_000_000, le=1_000_000)]
+
+
+class MeasurementSegment(ContractModel):
+    """One segment of a UMIK-1 measurement session as it was recorded (its take in the
+    package is ``path``). Values the session did not record are null."""
+
+    key: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")]
+    path: str = Field(min_length=1, max_length=1024)
+    label: _MeasurementText | None = None
+    mode: Annotated[str, StringConstraints(min_length=1, max_length=32)] | None = None
+    started_at: Annotated[str, StringConstraints(min_length=1, max_length=64)] | None = None
+    duration_seconds: _Finite | None = None
+    peak_dbfs: _Finite | None = None
+    rms_dbfs: _Finite | None = None
+    clipped_samples: Annotated[int, Field(ge=0)] | None = None
+    input_overflows: Annotated[int, Field(ge=0)] | None = None
+
+
+class MeasurementSession(ContractModel):
+    """What a UMIK-1 measurement session recorded about itself beyond its audio
+    (``journey.measurement_package``): the mouth-to-capsule distance, the input level and
+    how it was pinned, the calibration file, the client, and each segment's label, start,
+    duration and levels. Absolute levels and spectra are comparable across sessions only at
+    the same distance and level, so these travel with the takes."""
+
+    schema_version: Literal["cole-voice-lab.measurement-session/v1"] = (
+        "cole-voice-lab.measurement-session/v1"
+    )
+    source_session_id: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    #: As recorded; null only when the recorded value is outside what this contract holds.
+    distance_cm: Annotated[float, Field(gt=0, le=10_000, allow_inf_nan=False)] | None
+    input_volume: _Finite | None
+    input_level_source: _MeasurementText | None = None
+    input_level_control: _MeasurementText | None = None
+    input_level_muted: bool | None = None
+    level_pinned_at: Annotated[str, StringConstraints(min_length=1, max_length=64)] | None = None
+    controlled: bool | None = None
+    calibration_file: _MeasurementText | None = None
+    client: _MeasurementText | None = None
+    segments: tuple[MeasurementSegment, ...] = ()
+
+
 class CaptureManifest(ContractModel):
     schema_version: Literal["cole-voice-lab.capture-manifest/v1"] = (
         "cole-voice-lab.capture-manifest/v1"
@@ -349,6 +395,17 @@ class CaptureManifest(ContractModel):
     intended_format: Literal["mono-48000-pcm-s24le"] = "mono-48000-pcm-s24le"
     processing_applied: tuple[str, ...] = ()
     files: tuple[AudioFileEvidence, ...] = Field(min_length=1)
+    #: A UMIK-1 measurement session's own record (distance, level, segments). Absent from
+    #: every other manifest, and then not serialized at all, so manifests written before it
+    #: existed keep their exact canonical bytes and digests.
+    measurement: MeasurementSession | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_measurement(self, handler: SerializerFunctionWrapHandler) -> Any:
+        data = handler(self)
+        if isinstance(data, dict) and data.get("measurement") is None:
+            data.pop("measurement", None)
+        return data
 
     @field_validator("captured_at", "finalized_at")
     @classmethod
@@ -371,6 +428,10 @@ class CaptureManifest(ContractModel):
             raise ValueError("capture session requires room tone")
         if self.processing_applied:
             raise ValueError("raw capture manifests cannot declare signal processing")
+        if self.measurement is not None:
+            unknown = {segment.path for segment in self.measurement.segments} - set(paths)
+            if unknown:
+                raise ValueError("measurement segments must name the manifest's own files")
         return self
 
 

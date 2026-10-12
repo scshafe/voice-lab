@@ -261,6 +261,27 @@ Deviations and open items:
   install guards, rollback copies and the report. Nothing has run on a Mac yet; the Mac
   agent's first refresh is that check (owner step 15).
 
+### 2026-10-12, measurement sessions keep their own record on the PC
+
+- **The gap.** Since 4b, measurement sessions travel as capture packages through
+  `/api/v1/intake`, and the capture manifest had nowhere to put what `session.json` records
+  beyond the audio. That is the mouth-to-capsule distance, the input level and its pin, the
+  calibration file, the client, and each segment's label, start, duration and levels.
+  Those stayed on the recording machine only, and `--prune-accepted` would have deleted
+  them. This was phase 3's open follow-up 6.
+- **The fix.** `CaptureManifest` gains an optional `measurement` block
+  (`cole-voice-lab.measurement-session/v1`):
+  - The one mapping (`journey.measurement_package.measurement_session`) fills it, so the
+    app and the server's compatibility path still build the same bytes.
+  - It is checksum-bound with the takes, kept in `raw/` and carried by the vault.
+  - A value the contract cannot hold is null, so the intake never refuses a session over
+    its metadata. Its segments must name the manifest's own files.
+  - Manifests without the block do not serialize the key at all, so every package already
+    accepted keeps its exact bytes and digest.
+- **Packages already built** (none from real sessions are known) are reused as they are,
+  without the block: a rebuilt package would name another digest, and the intake treats
+  that as a collision.
+
 ## scshafe-qt asks
 
 What voice-lab-desktop needs from scshafe-qt (design §6.4), as the API its stand-ins in
