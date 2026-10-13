@@ -1088,6 +1088,34 @@ and the commit, never with audio. The matrix's Swift-UI parity rows and its phys
 judges the app and the hardware against them. A simulated run is only ever "simulated: harness
 check only". Running the harness on real hardware is the owner's.
 
+**Verdict, macOS: passed** (2026-10-13; Recording v1 step 8). The run was the owner's, by the
+Mac agent on the Air, with the UMIK-1, not simulated, at commit `bbc269f` (`main`, #62). The
+report's continuity block:
+
+- Host Darwin 27.0.0 (arm64), PortAudio host API Core Audio, device `UMIK-1 [Core Audio]`.
+- Blocks of 1,024 frames; tolerance ±64 frames.
+- Takes 43 (20 cold starts, 20 warm, 2 of 60 s, 1 stopped at its maximum duration):
+  successful 43, re-validated 43.
+- Largest ADC deviation between blocks 1.736 frames (every take between 1.464 and 1.736).
+- Overflows 0, underflows 0, an ADC time on every block.
+
+The jitter is about 36 µs, far inside the ±64-frame tolerance. A tighter tolerance would
+need its own decision, made with this data. Of the performance rows the harness measures,
+`stop_to_sealed_review` missed its target: p95 339.8 ms against 300 ms. The others passed:
+record to first confirmed frames p95 223.4 ms (target 250), cold device start p95 244.5 ms
+(750), stop reaches the controller p95 0.1 ms (50), worker memory growth 19.2 MB (64 MiB),
+and exact timer/frame agreement. These rows are not part of S-1's verdict; the slower stop
+is a performance follow-up. The acceptance matrix's 37 other rows (Swift-UI parity, physical
+gates) remain the owner's (step 10).
+
+Consequences:
+
+- On macOS, takes recorded by voice-lab-desktop may leave the machine. The owner sets
+  `corpus_sync = true` (and `prompted_uploads = true` for the session flow) in that Mac's
+  `config.toml`.
+- The Swift app stays until the owner's parity sign-off (Recording v1 step 10), and
+  docs/S-1.md's Linux run (ALSA `hw:`) is still to do.
+
 ## D-041 — Packaging the desktop app (spike S-7)
 
 Recorded 2026-10-11 (phase 4c; design §6.3). **Linux**: the uv tool (`uv tool install
