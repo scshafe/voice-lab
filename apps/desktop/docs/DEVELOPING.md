@@ -25,8 +25,9 @@ pins them exactly for `uv sync` and `uv tool install`.
 | `config.py` | settings: `config.toml`, the environment, the Settings dialog's writes; no server in the code |
 | `net.py`, `tasks.py` | the one HTTP client (no cookies, no redirects); the worker pool whose results come back on the GUI thread |
 | `playback.py` | the one player: PyAV decode, NumPy shaping (gain, 8 kHz low-pass), PortAudio out (D-038) |
-| `screens/` | `status.py`, `uploads.py`, `prompts.py` (Record → Prompts), `corpus.py`, `journey.py`, `practice.py`, `referee.py` |
-| `corpus/` | the corpus client (D-052, [CORPUS-CLIENT.md](CORPUS-CLIENT.md)): the PC's catalog cached and pinned per session, the local spool of takes with their outboxes, and the sync engine that sends them in order, offline-first; no UI of its own (the prompt studio, step 6, is built on it) |
+| `screens/` | `status.py`, `uploads.py`, `studio.py` and `studio_takes.py` (Record → Prompts: the prompt studio and its takes), `prompts.py` (its session flow, `prompts_mode = "sessions"`), `corpus.py`, `journey.py`, `practice.py`, `referee.py` |
+| `studio/` | the prompt studio's rules ([PROMPT-STUDIO.md](PROMPT-STUDIO.md)): how a prompt is shown, each prompt's status from the PC's library and this machine's takes, coverage, the filters and the next missing prompt, the status line's words, a prompt's takes merged from both, and their audio (dB display bins, exact clips, the live waveform); no QObject |
+| `corpus/` | the corpus client (D-052, [CORPUS-CLIENT.md](CORPUS-CLIENT.md)): the PC's catalog cached and pinned per session, the PC's library as last read, the local spool of takes with their outboxes, and the sync engine that sends them in order, offline-first; no UI of its own (the prompt studio is built on it) |
 | `prompted/` | Record → Prompts' catalogs (built-in pilots or a file), its local take store (sessions, takes, decisions, trim recipes), the waveform bins, the capture package and its upload (D-042) |
 | `formatting.py`, `journey_charts.py`, `education.py` | the SPA's display rules (`fmt.js`), its chart geometry as `SuiChart` specs (`chartUtils.js` and the chart components), the Journey tabs' static texts |
 | `measurement/` | voice-journey-capture's UMIK-1 ritual: the chain, devices, level readers, the pin, the recorder, the session package, the local store and its upload; `controller.py` is the Measurement screen's model |
@@ -34,7 +35,7 @@ pins them exactly for `uv sync` and `uv tool install`.
 | `cli.py` | the command line and the windows (`--capture-worker` is routed before settings and Qt) |
 | `desktop_entry.py`, `resources/` | the Linux desktop entry (`--install-desktop-entry`) and the icon it and the window use |
 | `packaging/macos/build_bundle.py` | not in the wheel: the macOS app bundle's build (`scripts/build-desktop-bundle`; docs/INSTALL-MACOS.md) |
-| `qml/Main.qml`, `qml/screens/` | the main window and its screens (`PlayerBar.qml`, `ScreenPage.qml`, `Card.qml` are shared) |
+| `qml/Main.qml`, `qml/screens/` | the main window and its screens (`PlayerBar.qml`, `ScreenPage.qml`, `Card.qml` are shared; `StudioScreen.qml` and `screens/studio/` are the prompt studio) |
 | `qml/VoiceLab/StandIn/` | stand-ins for scshafe-qt's gaps, each marked for removal |
 
 ## Tests
@@ -65,6 +66,13 @@ Nothing needs a microphone, a speaker, the network or the real server:
   made of generated tones with the worker's evidence. The PC goes down and comes back, the
   app "restarts" as new objects over the same data dir, and another client changes takes
   behind the client's back.
+- **The prompt studio.** `tests/studio/` drives Record → Prompts offscreen over the same PC
+  rig, with a stand-in recorder that leaves the worker's files (a generated tone and evidence
+  bound to it): the catalog and its coverage, Continue Missing, the filters, Record → Stop →
+  Save into the spool, a layout the transport never moves (item geometries compared across
+  states), the catalog switch, offline, and the status line for each `SyncStatus`. One test
+  runs the real worker on its simulated UMIK-1. Tests of the session flow set
+  `prompts_mode = "sessions"` (`tests/prompted/conftest.py`).
 - **The checklist.** Each item of `docs/design/PHASE-4-CHECKLIST.md` names its tests, which
   carry `@pytest.mark.checklist(...)`; `tests/test_checklist.py` fails when the two drift.
 

@@ -9,7 +9,9 @@
   ``restore`` and ``set_trim`` change it here and queue the change for the PC;
 - the sync engine (``sync.py``), run off the GUI thread on the app's task pool
   (``tasks.py``): soon after every local change, and on a timer that backs off while the
-  PC cannot be reached (``SyncScheduler``).
+  PC cannot be reached (``SyncScheduler``);
+- the PC's library as last read (``library.py``), which each pass refreshes: the studio's
+  coverage counts it with the takes here.
 
 ``status()`` is the whole state as a plain value (``SyncStatus``); ``add_listener`` calls
 back on the GUI thread whenever it may have changed. Nothing here is a QObject: the studio's
@@ -27,6 +29,8 @@ from typing import TYPE_CHECKING, Final
 
 from PySide6.QtCore import QTimer
 
+from cole_voice_lab.api.corpus_contracts import TakeHistory
+from cole_voice_lab.corpus_read_model import LibraryTake
 from cole_voice_lab.corpus_take_store import TakeDecisionName
 from cole_voice_lab.corpus_takes import TakeClient
 from cole_voice_lab.models import Prompt, utc_now
@@ -37,6 +41,7 @@ from ..capture.types import CapturedTake
 from ..measurement import home_host
 from ..tasks import Tasks
 from .catalog import CatalogCache, PinnedCatalog
+from .library import LibraryCache
 from .records import Notice
 from .spool import (
     CorpusSpool,
@@ -45,6 +50,7 @@ from .spool import (
     default_capture_host,
     default_client,
     doubling,
+    restore_target,
 )
 from .status import HELD_FOR_S1, NO_CATALOG, SyncStatus
 from .sync import PassResult, SyncEngine, TakeUploader
@@ -181,6 +187,7 @@ class CorpusClient:
         )
         self.catalog = CatalogCache(self.root / "catalog", clock=clock)
         self.catalog.open_session()
+        self.library = LibraryCache(self.root / "library", clock=clock)
         self.enabled = enabled
         self.engine = SyncEngine(
             self.spool,
@@ -191,6 +198,7 @@ class CorpusClient:
             clock=clock,
             sleep=sleep,
             monotonic=monotonic,
+            library=self.library,
         )
         self._tasks = tasks
         self._listeners: list[Callable[[], None]] = []
@@ -357,15 +365,71 @@ class CorpusClient:
         self._poke()
         return take
 
-    def restore(self, take_id: str) -> SpooledTake:
-        take = self.spool.restore(take_id)
+    def restore(self, take_id: str, to: TakeDecisionName | None = None) -> SpooledTake:
+        """Back to the decision before; ``to`` when that is not known here (``SpoolError``
+        ``RESTORE_UNKNOWN`` without it: the UI asks)."""
+        take = self.spool.restore(take_id, to)
         self._poke()
         return take
+
+    def restore_target(self, take_id: str) -> TakeDecisionName | None:
+        """What Restore would set the take back to (``None``: not known here)."""
+        return restore_target(self.spool.take(take_id).sync)
+
+    @property
+    def ready(self) -> bool:
+        """This machine's takes were listed (what an earlier run left was recovered)."""
+        return self.spool.listed
+
+    def prepare(self) -> None:
+        """The first listing (with the recovery of what an earlier run left) and the PC's
+        library as last read, parsed: slow work for a worker thread at start."""
+        self.spool.takes()
+        _ = self.library.latest
 
     def set_trim(self, take_id: str, start_frame: int | None, end_frame: int | None) -> SpooledTake:
         take = self.spool.set_trim(take_id, start_frame, end_frame)
         self._poke()
         return take
+
+    # -- the PC's takes (read only; call off the GUI thread) --------------------------------------
+
+    def prompt_history(self, prompt_id: str) -> TakeHistory:
+        """Every take the PC counts for ``prompt_id`` of its active version, newest first.
+
+        Raises: ``ConfigError`` without a server; the API's errors (``ApiError``,
+        ``SignInRequired``)."""
+        return self.engine.api().prompt_takes(prompt_id)
+
+    def remote_take(self, pc: LibraryTake, prompt_id: str) -> SpooledTake:
+        """A take of the PC's history recorded elsewhere, noted here (``learn_remote``) so
+        that ``decide``, ``restore`` and ``set_trim`` work on it; one already here is
+        refreshed from ``pc`` instead. Its origin (a Swift take imported from the Mac) is the
+        PC's.
+
+        Raises: ``SpoolError``."""
+        take = self.spool.learn_remote(pc, prompt_id)
+        self._notify()
+        return take
+
+    def observe_history(self, history: TakeHistory) -> int:
+        """The PC's history of a prompt, read again: each take here takes a newer state the
+        PC shows (never an older one). Returns: how many changed (the listeners hear it)."""
+        changed = 0
+        known = {take.take_id for take in self.spool.takes()}
+        for pc in history.takes:
+            if pc.take_id in known and self.spool.observe(pc.take_id, pc):
+                changed += 1
+        if changed:
+            self._notify()
+        return changed
+
+    def take_audio(self, take_id: str) -> bytes:
+        """A take's ``original.wav`` from the PC, in memory (never written here, D-038); the
+        PC serves it only under its playback approval.
+
+        Raises: as ``prompt_history``."""
+        return self.engine.api().take_audio(take_id)
 
     # -- what it says -------------------------------------------------------------------------
 
@@ -376,8 +440,10 @@ class CorpusClient:
         self.spool.dismiss(notice_id)
         self._notify()
 
-    def status(self) -> SyncStatus:
-        takes = self.spool.takes()
+    def status(self, *, wait: bool = True) -> SyncStatus:
+        """The client now. ``wait=False`` never waits for the first listing (the GUI thread
+        while it runs elsewhere): the takes are then the ones listed so far."""
+        takes = self.spool.takes() if (wait or self.spool.listed) else self.spool.peek()
         record = self.spool.sync_record()
         last = self._last
         state = self.catalog.state
@@ -394,7 +460,7 @@ class CorpusClient:
             last_attempt_at=record.last_attempt_at,
             last_error=record.last_error or "",
             upload_blocked=last.upload_blocked if last is not None else "",
-            takes=len(takes),
+            takes=sum(1 for take in takes if not take.remote),
             queued=sum(len(take.sync.outbox) for take in takes),
             waiting_takes=sum(
                 1 for take in takes if take.sync.outbox or take.sync.refresh is not None
@@ -420,4 +486,5 @@ class CorpusClient:
             can_record=pinned is not None,
             record_blocked="" if pinned is not None else NO_CATALOG,
             notices=self.spool.notices(),
+            ready=self.spool.listed,
         )

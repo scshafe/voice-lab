@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import AppRig, RecordingOutput, Window, open_window
+from conftest import AppRig, RecordingOutput, Window, offline_corpus, open_window
 from helpers import new_ritual, record_segment, record_session
 from home_rig import SERVER_URL, HomeRig, home_rig
 from synthetic import ISSUER, mint
@@ -41,7 +41,12 @@ def uploads_rig(data_dir: Path, tmp_path: Path, home: HomeRig) -> Iterator[AppRi
     output = RecordingOutput()
     opened: list[str] = []
     model = AppModel(
-        config, signed_tokens(), http=new_http(), output=output, open_url=opened.append
+        config,
+        signed_tokens(),
+        http=new_http(),
+        output=output,
+        open_url=opened.append,
+        corpus_factory=offline_corpus,  # Uploads, not the studio
     )
     model.uploads.client_factory = home.client_factory()
     model.uploads.sleep = home.publish

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import shiboken6
-from conftest import RecordingOutput
+from conftest import RecordingOutput, offline_corpus
 from voice_lab_desktop.app import AppModel
 from voice_lab_desktop.config import Config
 from voice_lab_desktop.net import new_http
@@ -27,6 +27,7 @@ EXPOSED = (
     "status",
     "uploads",
     "prompts",
+    "studio",
     "measurement",
     "corpus",
     "journey",
@@ -45,6 +46,7 @@ def app(tmp_path: Path, name: str) -> AppModel:
         output=RecordingOutput(),
         open_url=lambda _url: None,
         recorder_factory=lambda: None,  # type: ignore[arg-type,return-value]
+        corpus_factory=offline_corpus,
     )
 
 
@@ -58,6 +60,8 @@ def test_every_model_qml_reads_keeps_its_class_metaobject(tmp_path: Path) -> Non
         assert metaobject(first) == metaobject(second)
         for name in EXPOSED:
             assert metaobject(getattr(first, name)) == metaobject(getattr(second, name)), name
+        # The studio's takes, which QML reads through the studio (app.studioModel.takes).
+        assert metaobject(first.studio.take_review) == metaobject(second.studio.take_review)
     finally:
         first.shutdown()
         second.shutdown()

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import offline_corpus
 from home_rig import SERVER_URL, HomeRig, home_rig
 from synthetic import ISSUER, mint
 from voice_lab_desktop.app import AppModel
@@ -61,6 +62,7 @@ def app(data_dir: Path, tmp_path: Path, home: HomeRig, *, prompted_uploads: bool
         http=new_http(),
         open_url=lambda _url: None,
         recorder_factory=lambda: FakeRecorder(),
+        corpus_factory=offline_corpus,  # the session flow's uploads, not the studio
     )
     model.uploads.client_factory = home.client_factory()
     model.uploads.sleep = home.publish

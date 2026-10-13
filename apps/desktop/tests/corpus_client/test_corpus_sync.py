@@ -14,11 +14,12 @@ import stat
 from pathlib import Path
 from typing import Any
 
+import pytest
 from corpus_rig import PC, bind_library, capture, client, record
 from voice_lab_desktop.api import ApiUnavailable
 from voice_lab_desktop.corpus.client import PendingTake
 from voice_lab_desktop.corpus.records import DecisionOp, LocalTrim, TrimOp, UploadOp
-from voice_lab_desktop.corpus.spool import SpooledTake
+from voice_lab_desktop.corpus.spool import SpooledTake, SpoolError
 
 from cole_voice_lab.corpus_read_model import LibraryTake
 from cole_voice_lab.corpus_requests import outcomes_directory, queued_requests, read_outcome
@@ -197,7 +198,10 @@ def test_a_change_made_elsewhere_is_adopted_and_the_queued_ones_dropped(
     assert len(outcomes) == 2 and queued_requests(pc.layout) == ()
     assert_pc_shows(pc, corpus.spool.take(take.take_id))
     # A change made after the adoption chains on the PC's revision and applies.
-    corpus.restore(take.take_id)
+    # What it was before the other client's removal is not known here: Restore asks.
+    with pytest.raises(SpoolError, match="not known here"):
+        corpus.restore(take.take_id)
+    corpus.restore(take.take_id, "draft")
     (op,) = corpus.spool.take(take.take_id).sync.outbox
     assert isinstance(op, DecisionOp) and (op.decision, op.expected_revision) == ("draft", 1)
     assert corpus.run_pass().applied == 1

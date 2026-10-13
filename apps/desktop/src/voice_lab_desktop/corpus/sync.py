@@ -5,7 +5,9 @@ to the app's task pool). A pass:
 
 1. asks the PC for its active catalog (``CatalogCache.refresh``, ``If-None-Match``). No
    answer, or a refusal: the pass stops there and nothing in any outbox changes. This read
-   sends nothing of the corpus, so it runs even while sending is held;
+   sends nothing of the corpus, so it runs even while sending is held, and so does the last
+   step's read of the PC's library (``LibraryCache.refresh``, ``If-None-Match``), which the
+   prompt studio counts coverage from;
 2. sends nothing while the settings hold ``corpus_sync`` off (``enabled``, read before every
    operation): off until spike S-1 has passed on this platform (D-042's reason);
 3. takes the takes in the order they were saved and, for each, the operations at the front
@@ -61,6 +63,7 @@ from ..auth import AuthError, SignInRequired
 from ..config import ConfigError
 from ..measurement import home_host
 from .catalog import CatalogCache, CatalogError
+from .library import LibraryCache, LibraryError
 from .records import ChangeOp, DecisionOp, NoticeKind, UploadOp, UploadReceipt
 from .spool import CorpusSpool, SpooledTake, backoff
 
@@ -180,6 +183,9 @@ class PassResult:
     refused: int = 0
     #: Takes whose outbox still holds operations after the pass.
     waiting: int = 0
+    #: The PC's library changed since it was last read (``library_error``: why it was not).
+    library_changed: bool = False
+    library_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -205,9 +211,11 @@ class SyncEngine:
         monotonic: Callable[[], float] = time.monotonic,
         request_wait_seconds: float = REQUEST_WAIT_SECONDS,
         poll_seconds: float = POLL_SECONDS,
+        library: LibraryCache | None = None,
     ) -> None:
         self.spool = spool
         self.catalog = catalog
+        self.library = library
         self.api = api
         self.uploader = uploader
         self.enabled = enabled
@@ -258,6 +266,25 @@ class SyncEngine:
             result.offline, result.error = _network(exc), _message(exc)
             return
         result.reached = True
+        try:
+            self._send(api, result, force=force)
+        finally:
+            if not (result.offline or result.sign_in_required):
+                self._refresh_library(api, result)
+
+    def _refresh_library(self, api: ApiClient, result: PassResult) -> None:
+        """The PC's library, read last (after this pass's uploads and changes). A failure says
+        nothing about the takes: it is noted and the pass ends as it was."""
+        if self.library is None:
+            return
+        try:
+            result.library_changed = self.library.refresh(api)
+        except SignInRequired as exc:
+            result.sign_in_required, result.error = True, str(exc)
+        except (LibraryError, *TRANSIENT) as exc:
+            result.library_error = f"the PC's library: {_message(exc)}"
+
+    def _send(self, api: ApiClient, result: PassResult, *, force: bool) -> None:
         if not self.enabled():
             result.gated = True
             return
@@ -305,31 +332,34 @@ class SyncEngine:
             if not self.enabled():
                 result.gated = True
                 return False
-            op = take.sync.outbox[0]
-            if not force and op.not_before is not None and self.clock() < op.not_before:
-                return False
-            request_id = None if isinstance(op, UploadOp) else op.request_id
-            try:
-                with self.spool.sending(request_id):
+            # The operation is read and marked in flight in one step: nothing folds into it
+            # from here, so what is sent is what is kept.
+            with self.spool.sending_head(take_id) as head:
+                if head is None:
+                    return True
+                take, op = head
+                if not force and op.not_before is not None and self.clock() < op.not_before:
+                    return False
+                request_id = None if isinstance(op, UploadOp) else op.request_id
+                try:
                     if isinstance(op, UploadOp):
                         proceed = uploads is not None and self._upload(take, op, uploads, result)
-                    elif take.sync.upload != "accepted":
-                        proceed = False
+                    elif take.sync.upload not in ("accepted", "remote"):
+                        proceed = False  # the take's upload comes first
                     else:
                         proceed = self._change(take, op, api, result)
-            except (_Stop, SignInRequired):
-                raise
-            except ApiUnavailable as exc:
-                self.spool.tried(take_id, request_id, error=str(exc), retry_at=None)
-                raise _Stop(str(exc), offline=exc.status is None) from exc
-            except TRANSIENT as exc:
-                message = _message(exc)
-                self.spool.tried(
-                    take_id, request_id, error=message, retry_at=self._retry_at(op.attempts + 1)
-                )
-                result.error = f"{take_id}: {message}"
-                result.offline = result.offline or _network(exc)
-                return False
+                except (_Stop, SignInRequired):
+                    raise
+                except ApiUnavailable as exc:
+                    self.spool.tried(take_id, request_id, error=str(exc), retry_at=None)
+                    raise _Stop(str(exc), offline=exc.status is None) from exc
+                except TRANSIENT as exc:
+                    message = _message(exc)
+                    retry_at = self._retry_at(op.attempts + 1)
+                    self.spool.tried(take_id, request_id, error=message, retry_at=retry_at)
+                    result.error = f"{take_id}: {message}"
+                    result.offline = result.offline or _network(exc)
+                    return False
             if not proceed:
                 return False
 

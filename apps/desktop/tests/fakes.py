@@ -237,6 +237,13 @@ class FakeIntake:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.server.server_address[1]}"
 
+    @property
+    def intake_requests(self) -> list[Seen]:
+        """The requests to the measurement intake (``/api/intake/``): what an upload sends.
+        Anything else the app asks the same server for (a read of another API) is not."""
+        with self.lock:
+            return [seen for seen in self.requests if seen.path.startswith("/api/intake/")]
+
     def start(self) -> FakeIntake:
         self.thread.start()
         return self

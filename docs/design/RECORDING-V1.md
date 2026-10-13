@@ -367,3 +367,111 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   plans pin every file of each package; approvals are per destination, so a moved home host
   gets a second approval; a never-sent stale package is packaged again, a sent one never is;
   and the export's directories are never reached through a link.
+- 2026-10-12: step 6a, the prompt studio's fixed workspace and its corpus-first loop
+  (apps/desktop/docs/PROMPT-STUDIO.md). Record → Prompts is now the studio
+  (`screens/studio.py`, `studio/`, `StudioScreen.qml`) over the step-5 client. Phase 4c's
+  session flow stays, behind `prompts_mode = "sessions"` in `config.toml`.
+  - **The workspace.** The library shows coverage (`n / N`), Continue Missing, search, Show,
+    Labels, the pinned catalog version and every prompt's status. Then come the header with
+    its label chips, the script card (PROMPT · READ ALOUD, or a banner and INSTRUCTIONS), the
+    timer, the 56-point Record/Stop footer and the status line. The take picker, waveform,
+    trim and playback regions are held at their final size for 6b. Every region's geometry
+    depends on the window alone; a test compares them across idle, recording, review,
+    saving, saved and failed.
+  - **The loop.** Record binds a take to the selected prompt of the pinned version
+    (`begin_take`) and starts the worker; Stop ends it. Save (`save_take`, then `kept`, off
+    the GUI thread) keeps it here at once. Save & Next then selects the next prompt without
+    a kept take, in catalog order, wrapping once; filters never change it. Retake, or
+    leaving a take under review, saves that take as an undecided draft rather than losing
+    it. Discard removes a failed take.
+  - **Coverage.** It counts the PC's library and this machine's takes, the better of the two
+    per prompt. A PC row counts only for the same prompt (id and digest), so a pending
+    version switch still counts the shared prompts. To know what the PC has while offline,
+    the client now keeps the PC's library (`corpus/library.py`, `library/library.json`),
+    read last in every pass that reached the PC, with `If-None-Match`, also while sending
+    is held.
+  - **Catalog and status line.** A new active version on the PC is announced and switches at
+    the next session, or at Switch now between takes. With no cached catalog the studio says
+    so and records nothing. The status line gives the take's state, then the `SyncStatus`:
+    held until S-1 (a plain statement), offline, queued and sent counts, takes waiting for
+    the PC's state, damaged takes, unsaved recordings, and notices until they are dismissed.
+  - **§5 ticked by 6a:** the fixed workspace without the text-size choice, Continue Missing,
+    search, Show, Labels, per-prompt status, label chips, the script card, the Record/Stop
+    footer and the status line; Save and Save & Next; Retake; corpus-first.
+  - **Left to 6b and 6c:** 6b adds the take picker and history, the live waveform, trims,
+    Zoom and Fit, playback, and Reject, Remove and Restore. 6c adds the keys: `toggleRecord`,
+    `saveNext` and `save` are what they call, and no shortcut is installed yet.
+  - **After review:** the prompt is always shown whole. The card sets it at 24 points, or at
+    the largest smaller size that fits, down to 16. Below the base height the waveform gives
+    way first (down to 64 points), then the card (down to 160). The longest catalog prompt
+    fits at 960×600 and 1440×900, idle and recording, and a test measures it. Every
+    sidebar and status line fits in two lines on the smallest window: the catalog line
+    reads `cole-corpus · v1`, Show and Labels stack, and a status names its cause in a few
+    words. The whole message goes to the take's place (a failure, a take that did not
+    start, no microphone) or to the status line's Details (a notice with Dismiss, why
+    uploads cannot start).
+- 2026-10-12: step 6b, transport and review (apps/desktop/docs/PROMPT-STUDIO.md), in the
+  regions 6a held: `TakeReviewModel` (`screens/studio_takes.py`, `app.studioModel.takes`),
+  `studio/takes.py` and `studio/audio.py`.
+  - **The take picker and History** list every take of the prompt, from this machine and
+    from the PC, with when, length, status and where it lives.
+    `CorpusClient.prompt_history` and `take_audio` read the PC's, the audio in memory and
+    under the PC's playback approval. *Changed elsewhere* marks a take whose state the
+    client adopted from the PC.
+  - **Decisions:** Remove, Reject (a reason is required) and Restore go through
+    `decide`/`restore`, and Save keeps a selected draft. A take recorded elsewhere is shown
+    and played, not decided: the client holds this machine's takes only. Deciding it from
+    here needs a client change, left open.
+  - **The waveform** uses the Swift app's fixed dB display scale, with Zoom (down to 50 ms)
+    and Fit. While recording it is live from the worker's partial WAV, the only level the
+    worker exposes, with the peak level.
+  - **Trims:** In and Out from the playhead or the handles, then Save trim (`set_trim`) or
+    Reset. The take under review keeps its trim until Save, or until Retake leaves it as a
+    draft.
+  - **Playback** goes through the one player. The preview is exactly the kept frames
+    (tests compare them to the original), with ±0.1 s steps inside them.
+  - **§5 ticked by 6b:** the live waveform; Retake, Remove, Reject, Restore; Save and Save &
+    Next; trims with In/Out, Save trim and Reset; Zoom and Fit; playback with ±0.1 s; take
+    history across every session.
+  - **Left to 6c:** the keys, through the slots the model already has.
+- 2026-10-13: step 6c, keys, takes recorded elsewhere, and polish. **§5 parity is reached.**
+  Every item of §5 is built and covered by an offscreen test on synthetic audio; the
+  checklist in apps/desktop/docs/PROMPT-STUDIO.md names each test. Cole signs parity off in
+  step 10, on the Mac, after S-1 (step 8).
+  - **Takes recorded elsewhere** are decided and trimmed in the studio. These are other
+    clients' takes and step 9's imported Swift takes. The corpus client notes such a take
+    from the PC's history (`RemoteTake`, `upload = "remote"`, no audio). Its changes chain
+    on the PC's revisions, fold, are refused and adopted, and wait offline, by step 5's
+    rules. A newer state in the PC's history is installed for a take with nothing queued,
+    never an older one. The picker shows the PC's `origin` (*imported from the Mac*), as
+    the PC's contracts carry it since #61; the tests import real packages of a synthetic
+    Mac library through the PC's publisher.
+  - **Keys:**
+    - R records and stops. Space stops a recording, or else plays and pauses; it never
+      starts one, which is the Swift app's rule.
+    - Return is Save & Next; ⌘S (Ctrl+S off macOS) is Save.
+    - In the waveform, ←/→ step 0.1 s and Home/End go to the kept edges.
+    - Keys are ignored while typing, with a menu or dialog open, on another screen, and
+      on repeats.
+  - **An unsaved trim edit** is asked about (Save trim, Discard edit or Cancel) before a
+    saved take is left for another take or prompt, Continue Missing, Record or another
+    screen.
+  - **Polish:**
+    - the header's text-size choice (24, 28 or 32 pt), kept per viewer;
+    - the picker's short line, whole at 960×600, whose open list is the take history;
+    - the dB display scale's name moved beside the timer, clear of the trim handles.
+  - **Review fixes** (an independent review of 6a to 6c, all on the 6c branch):
+    - The engine takes the operation it sends and marks it in flight in one step, so an
+      operator's change never folds into it.
+    - Restore asks (kept or draft) when the decision before is not known here.
+    - A prompt's status comes from the best-known state of each take. A stale kept on the PC
+      no longer hides a removal made here.
+    - A late history answer never moves the selection or the waveform.
+    - Closing the window and Quit ask about an unsaved trim edit.
+    - Discard is for failed takes only.
+    - Start-up recovery, the library cache's first parse and the partial-WAV reads run off
+      the GUI thread.
+    - A half-written note of a remote take is finished or removed at start.
+    - A remote take the PC no longer has counts for nothing.
+    - The layout tests wait for drawn frames. That exposed a trim row overflowing the
+      smallest window, now fixed.

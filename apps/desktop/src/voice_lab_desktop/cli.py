@@ -472,7 +472,7 @@ def run(config: Config, fixed_port: bool = False, start_screen: str | None = Non
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QDesktopServices
 
-    from .app import AppModel, keyring_store
+    from .app import AppModel, QuitGuard, keyring_store
     from .net import new_http
 
     model = AppModel(
@@ -488,8 +488,11 @@ def run(config: Config, fixed_port: bool = False, start_screen: str | None = Non
         print(f"{APP_NAME}: the window failed to load", file=sys.stderr)
         return 1
     app.aboutToQuit.connect(model.shutdown)
+    quit_guard = QuitGuard(model)  # Quit asks about an unsaved trim edit too
+    app.installEventFilter(quit_guard)
     model.start()
     code = int(app.exec())
+    app.removeEventFilter(quit_guard)
     teardown(engine, model.shutdown)
     return code
 
@@ -512,6 +515,7 @@ def smoke(config: Config) -> int:
     qInstallMessageHandler(handler)
     app = _application()
     from .app import SCREENS, AppModel
+    from .capture.process import WorkerRecorder
     from .measurement.simulated import SimulatedBackend, SimulatedLevelReader
     from .net import new_http
     from .tokens import MemoryStore
@@ -537,6 +541,8 @@ def smoke(config: Config) -> int:
             open_url=lambda url: None,
             measurement_backend=SimulatedBackend(speed=200, block_frames=4800),
             level_reader=SimulatedLevelReader(),
+            # Record → Prompts' worker on its simulated UMIK-1: the smoke opens no device.
+            recorder_factory=lambda: WorkerRecorder(simulated={"speed": 20.0}),
         )
         engine = load_main_window(model)
         ok = bool(engine.rootObjects())

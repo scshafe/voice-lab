@@ -94,7 +94,7 @@ def test_a_package_changed_on_disk_is_never_uploaded(client, recorded, sessions,
     path.write_bytes(bytes(data))
     summary = upload_pending(client, sessions, config.server_url)
     assert summary.failed == 1 and "changed on disk" in summary.last_error
-    assert intake.requests == []  # not even the manifest
+    assert intake.intake_requests == []  # not even the manifest
     assert sessions.sessions()[0].upload_state == "failed"
 
 
@@ -151,7 +151,7 @@ def test_aborted_sessions_are_never_uploaded(
     record_segment(ritual)
     ritual.abort("stopped by you")
     assert upload_pending(client, sessions, config.server_url).accepted == 0
-    assert intake.requests == []
+    assert intake.intake_requests == []
 
 
 def test_prune_accepted(client, recorded, sessions, config):

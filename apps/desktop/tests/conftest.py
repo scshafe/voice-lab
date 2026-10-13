@@ -201,6 +201,22 @@ def app_tokens() -> Tokens:
     )
 
 
+def offline_corpus(context: Any) -> Any:
+    """The prompt studio's corpus client for tests that are not about the studio: it never
+    contacts a server. No scheduler, so no sync pass ever runs; a read the studio would make
+    itself (a prompt's history) is refused as if no server were set (``ConfigError``). The
+    studio's own tests (``tests/studio``, ``tests/corpus_client``) use the real client."""
+    from voice_lab_desktop.config import ConfigError
+    from voice_lab_desktop.corpus.client import CorpusClient
+
+    def no_server() -> Any:
+        raise ConfigError("this test's app never contacts a server for the corpus")
+
+    return CorpusClient(
+        context.config.corpus_dir, api=no_server, uploader=no_server, enabled=lambda: False
+    )
+
+
 @dataclass
 class AppRig:
     """A signed-in app model over a synthetic server, and what it did outside."""
@@ -230,9 +246,11 @@ def make_rig(
     level_reader: Any = None,
 ) -> Iterator[AppRig]:
     """The app over a synthetic server. The measurement screen gets a simulated UMIK-1 and
-    level (never PortAudio) unless a test hands its own."""
+    level (never PortAudio) unless a test hands its own; Record → Prompts' capture worker
+    runs on its simulated UMIK-1 too."""
     from synthetic import ISSUER, serve
     from voice_lab_desktop.app import AppModel
+    from voice_lab_desktop.capture.process import WorkerRecorder
     from voice_lab_desktop.net import new_http
 
     with serve(tmp_path / "server", journey_config) as served:
@@ -256,6 +274,8 @@ def make_rig(
             measurement_backend=measurement_backend
             or SimulatedBackend(speed=200, block_frames=4800),
             level_reader=level_reader or SimulatedLevelReader(),
+            recorder_factory=lambda: WorkerRecorder(simulated={"speed": 20.0}),
+            corpus_factory=offline_corpus,  # the screens here are not the studio's
         )
         try:
             yield AppRig(model, output, opened, served, tmp_path)

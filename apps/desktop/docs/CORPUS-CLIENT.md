@@ -2,7 +2,7 @@
 
 `voice_lab_desktop/corpus/` is how the app records into the PC's corpus (D-051, D-052;
 [RECORDING-V1.md](../../../docs/design/RECORDING-V1.md) step 5). It has no window of its own:
-the prompt studio (step 6) is built on it. It is offline-first. A take, a decision or a trim
+the prompt studio ([PROMPT-STUDIO.md](PROMPT-STUDIO.md), step 6) is built on it. It is offline-first. A take, a decision or a trim
 is saved on this machine at once, then sent to the PC in order. Once the PC has them, the PC
 is canonical.
 
@@ -37,12 +37,16 @@ are canonical JSON, written atomically.
 | `takes/<take_id>/package/` | The take package (`cole-voice-lab.corpus-take/v1`). It is built once by `corpus_takes.build_take_package` and sent as built: a rebuilt manifest would be another package under the same take id. A local-only take has none. |
 | `takes/<take_id>/take.json` | `LocalTake`: the exact prompt and catalog version, the times, the device, the audio. It is never rewritten. |
 | `takes/<take_id>/state.json` | `TakeSync`: the decision and the trim here, the revisions the PC last confirmed, the upload state and receipt, and the **outbox**. |
+| `takes/<take_id>/remote.json` | `RemoteTake`, instead of `take.json`, for a take recorded elsewhere (another client's, or a Swift take imported from the Mac, D-053). It holds what the PC's history says the take is: the prompt it counts for, the prompt it was recorded against, its times, length and device, and the PC's `origin`. It names no audio, and none is kept here. Its `state.json` says `upload = "remote"`. |
+| `library/library.json` | `CachedLibrary`: the PC's library (each prompt's status and take count, the coverage) as last read, with its `ETag`. No audio, no prompt text. The prompt studio counts coverage from it and the takes here. |
 | `notices.json` | Notices for the UI that have not been dismissed yet. |
 | `sync.json` | When the client last reached the PC, and its last error. |
 
 A save writes `take.json` and `state.json` inside the recording directory, then renames the
 directory into `takes/`, under the spool's lock (a listing never sees half a save). At the
-next start:
+next start (the first listing, which the app runs off the GUI thread, `prepare`; the spool's
+lock is taken only for each move, and `peek` and `status(wait=False)` read what is listed so
+far without waiting):
 
 - a save a crash interrupted after its records were written is finished;
 - a take the worker finished but that was never saved is saved from its `rec-….json`;
@@ -57,7 +61,9 @@ Each take's `state.json` holds its outbox: the operations still to send, in orde
 
 - `upload`: the take package. While it is queued, it is always first.
 - `decision`: `kept`, `rejected` (with a reason), `removed`, or a restore (`kept` or `draft`,
-  the last one before the rejection or removal).
+  the last one before the rejection or removal). When that is not known here (a take
+  recorded elsewhere, noted while already rejected or removed, or a state adopted from the
+  PC), `restore` refuses without the operator's answer (`restore(take_id, to)`): no guess.
 - `trim`: `[start_frame, end_frame)`, or both `null` for the whole take.
 
 Each change has its own `request_id` (`req-` and 32 hex digits). The id is made once and kept
@@ -66,13 +72,38 @@ revision the PC last confirmed for its kind (decision or trim). When an earlier 
 same kind is still queued, it expects that change's revision plus 1.
 
 A new change is folded into the same kind's last queued change while the PC can know nothing
-of that one: it was never tried and is not being sent. The folded change keeps its id and
+of that one: it was never tried and is not being sent. The engine reads the operation it
+sends and marks it in flight in one step under the spool's lock (`sending_head`), so nothing
+folds into an operation from the moment it is picked. The folded change keeps its id and
 expected revision, and takes the new target. So the outbox holds at most a few changes,
 however long the PC is away. A change that was tried, or is being sent, is never altered: the
 PC may already know its id. Every operation counts
 its tries, its last error, and when it may next be tried. When an operation leaves the
 outbox, the take's `sent`, `refused` or `dropped` count goes up, and its `journal` keeps the
 last 20.
+
+## Takes recorded elsewhere
+
+The studio decides and trims every take of a prompt, not only this machine's. A take of the
+PC's history that this machine did not record is noted here when the operator first changes
+it (`remote_take`, from `GET /api/v1/corpus/prompts/{id}/takes`):
+
+- its decision and trim are the PC's, at the PC's revisions; its history starts there;
+- `decide`, `restore` and `set_trim` queue its changes in its outbox like any take's: each
+  expects the revision the PC last confirmed, unsent changes fold, a refusal adopts the PC's
+  state by the same verdict and refresh rules, and offline changes wait for the PC;
+- it has no upload: the engine sends its changes at once, and `take_not_found` gives up
+  without re-checking an upload (there is no package here): the take is then `gone`, never
+  sent again and never counted;
+- a note interrupted while it was written beside (`recording/rem-…`) is finished when both
+  records read back whole, and removed otherwise; it never counts as an unsaved recording;
+- it never claims audio: `audio` and `package` refuse, and the studio plays it from the PC
+  (`take_audio`, in memory);
+- `observe_history` installs a newer state the PC's history shows for any take with nothing
+  queued (another client changed it), never an older one; a take waiting for a refresh
+  takes it once it is fresh.
+
+`status().takes` counts this machine's takes only.
 
 ## Sync
 
@@ -130,6 +161,11 @@ under a new id.
 A pass the server stops answering mid-way ends there; nothing is lost, and the next pass
 resumes. A retried request reuses its id, so the PC never applies a change twice.
 
+Last, a pass that reached the PC reads its library (`GET /api/v1/corpus/library`,
+`If-None-Match`: a `304` rewrites nothing), also while sending is held: like the catalog, it
+sends nothing of the corpus. A PC that has no library yet leaves the last one read; a
+library that is not Cole's is not kept; neither stops the pass (`PassResult.library_error`).
+
 ## The catalog and sessions
 
 Making a `CorpusClient` starts a session. The session pins the PC's active catalog version
@@ -149,6 +185,10 @@ task pool. It offers:
 - `pinned` and `start_new_session()`;
 - `begin_take(prompt_id)`, then `save_take(pending, captured)` (or `discard_take`);
 - `decide`, `restore`, `set_trim`, `takes()`, `takes_for_prompt()`;
+- `prompt_history(prompt_id)` and `take_audio(take_id)`: the PC's takes of a prompt and a
+  take's audio (in memory), read straight from the PC, off the GUI thread;
+- `remote_take(pc_take, prompt_id)` and `observe_history(history)`: takes recorded elsewhere;
+- `library`, the PC's library as last read (`LibraryCache.latest`);
 - `notices()` and `dismiss_notice()`;
 - `status()`, a `SyncStatus` value;
 - `add_listener(fn)`, which is called on the GUI thread whenever the status may have changed.
