@@ -1,32 +1,41 @@
 """Each prompt's status, coverage, the library's filters and the next missing prompt.
 
 The studio records against the session's pinned catalog version (``corpus/catalog.py``). A
-prompt's status comes from two places:
+prompt's status comes from the best-known state of **each of its takes**:
 
-- **the PC's library** as last read (``corpus/library.py``): its row's status (``kept``,
-  ``needs-attention``, ``draft`` or ``missing``) and take count. A row counts for a pinned
-  prompt only when it names the same prompt, by id and digest: when the PC's active version
-  is another one (a switch is pending), unchanged prompts still count, changed ones do not;
-- **this machine's takes** (the spool): a take counts for the pinned prompt its recorded
-  prompt counts for in the pinned version (its prompt aliases included), with the decision
-  made here, which is ahead of the PC's while a change of it waits to be sent.
+- a take this machine knows (the spool: recorded here, or recorded elsewhere and noted
+  here) stands with its state here, which is ahead of the PC's while a change of it waits
+  to be sent, unless the PC's history shows it at a newer revision (another client changed
+  it); a take the PC no longer has (``gone``) counts for nothing;
+- a take only the PC knows stands with the PC's state, read from the prompt's history
+  (``GET /api/v1/corpus/prompts/{id}/takes``, cached per read of the PC's library).
 
-The better of the two stands (``kept`` > ``needs-attention`` > ``draft`` > ``missing``),
-except that the PC's status is not believed when the take it stands on is this machine's and
-is decided otherwise here (a change still on its way). ``recorded`` coverage is ``kept`` plus
-``needs-attention``, as on the PC. Search, Show and Labels never change coverage, Continue
-Missing or Save & Next (NATIVE_RECORDING_UX.md §4, "library filters").
+Without that history, the PC's library row (``kept``, ``needs-attention``, ``draft`` or
+``missing``; ``latest_take_id``, its newest kept, else undecided, take; ``take_count``)
+stands only for what it can say about takes this machine does not know: when every take the
+PC counts is known here, the takes here decide; when the row's newest kept (else undecided)
+take is one this machine does not know, or there is none, the PC's status stands with the
+takes here; otherwise the prompt's
+history is needed (``needs_history``), and until it is read the takes here decide. A status
+is never inferred from a count. A take counts for the pinned prompt its recorded prompt
+counts for (aliases included); a row counts only for the same prompt, by id and digest.
+
+``kept`` is a kept take that passed the PC's QC (or one the PC has not checked yet);
+``needs-attention`` kept takes none of which passed; ``draft`` an undecided take; ``missing``
+otherwise. ``recorded`` coverage is ``kept`` plus ``needs-attention``, as on the PC. Search,
+Show and Labels never change coverage, Continue Missing or Save & Next
+(NATIVE_RECORDING_UX.md §4, "library filters").
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Final, Literal
 
 from cole_voice_lab.api.corpus_contracts import CorpusLibrary
 from cole_voice_lab.canonical import canonical_sha256
-from cole_voice_lab.corpus_read_model import LibraryRow
+from cole_voice_lab.corpus_read_model import LibraryRow, LibraryTake
 from cole_voice_lab.recording_contracts import CatalogSnapshot
 
 from ..corpus.spool import SpooledTake
@@ -56,12 +65,11 @@ STATUS_TITLES: Final[dict[str, str]] = {
 class PromptState:
     """Where one prompt of the pinned version stands.
 
-    ``pc_takes``: takes the PC counts for it (as last read); ``local_takes``: this
-    machine's; ``here_only``: it is recorded here, and not yet on the PC as last read."""
+    ``takes``: its takes, each counted once (this machine's and the PC's); ``here_only``: it
+    is recorded here, and not yet on the PC as last read."""
 
     status: Status
-    pc_takes: int = 0
-    local_takes: int = 0
+    takes: int = 0
     here_only: bool = False
 
     @property
@@ -77,13 +85,27 @@ class PromptState:
 MISSING: Final = PromptState("missing")
 
 
-def _local_status(take: SpooledTake) -> Status | None:
-    decision = take.sync.decision.decision
-    if decision == "kept":
+@dataclass
+class States:
+    """``prompt_states``' answer: each prompt's state, and the prompts whose history the PC
+    must be asked for before their status is certain."""
+
+    states: dict[str, PromptState]
+    needs_history: list[str] = field(default_factory=list)
+
+
+def _status(decisions: Iterable[tuple[str, str | None]]) -> Status:
+    """The status of takes in the given (decision, QC) states (QC ``None``: not checked)."""
+    kept = [qc for decision, qc in decisions if decision == "kept"]
+    if any(qc in (None, "pass") for qc in kept):
         return "kept"
-    if decision == "draft":
-        return "draft"
-    return None  # rejected and removed takes cover nothing
+    if kept:
+        return "needs-attention"
+    return "draft" if any(d == "draft" for d, _ in decisions) else "missing"
+
+
+def _best(first: Status, second: Status) -> Status:
+    return first if RANK[first] >= RANK[second] else second
 
 
 def prompt_states(
@@ -93,53 +115,73 @@ def prompt_states(
     takes: Iterable[SpooledTake],
     *,
     digests: dict[str, str] | None = None,
-) -> dict[str, PromptState]:
+    histories: Mapping[str, Sequence[LibraryTake]] | None = None,
+) -> States:
     """Every pinned prompt's state (by prompt id), from the PC's library ``pc`` (``None``:
-    never read) and this machine's ``takes`` (``digests``: each view's prompt digest, when
-    the caller keeps them)."""
+    never read), the prompts' ``histories`` read from the PC for this library, and this
+    machine's ``takes`` (``digests``: each view's prompt digest, when the caller keeps
+    them)."""
     if digests is None:
         digests = {view.prompt_id: canonical_sha256(view.prompt) for view in views}
+    histories = histories or {}
     rows: dict[str, LibraryRow] = {}
     if pc is not None:
         for pc_row in pc.rows:
             if digests.get(pc_row.prompt_id) == pc_row.prompt_sha256:
                 rows[pc_row.prompt_id] = pc_row
     local: dict[str, list[SpooledTake]] = {}
-    by_id: dict[str, SpooledTake] = {}
     for take in takes:
+        if take.sync.upload == "gone":
+            continue  # the PC no longer has it: it counts for nothing
         current = take.counts_for(snapshot)
         if current is None or current.prompt_id not in digests:
             continue
         local.setdefault(current.prompt_id, []).append(take)
-        by_id[take.take_id] = take
-    states: dict[str, PromptState] = {}
+    answer = States({})
     for view in views:
         prompt_id = view.prompt_id
         row = rows.get(prompt_id)
-        mine = local.get(prompt_id, [])
-        pc_status: Status = row.status if row is not None else "missing"
-        if row is not None and row.latest_take_id in by_id:
-            standing = _local_status(by_id[row.latest_take_id])
-            implied = "draft" if row.status == "draft" else "kept"
-            if standing != implied and row.take_count <= 1:
-                pc_status = "missing"  # its one take is decided otherwise here
-        local_status: Status = "missing"
-        for take in mine:
-            status = _local_status(take)
-            if status is not None and RANK[status] > RANK[local_status]:
-                local_status = status
-        status = pc_status if RANK[pc_status] >= RANK[local_status] else local_status
-        here_only = status in RECORDED and pc_status not in RECORDED
+        mine = {take.take_id: take for take in local.get(prompt_id, [])}
+        history = histories.get(prompt_id)
         if not mine and row is None:
-            states[prompt_id] = MISSING
+            answer.states[prompt_id] = MISSING
             continue
-        states[prompt_id] = PromptState(
+        here = [(t.sync.decision.decision, None) for t in mine.values()]
+        if history is not None:
+            on_pc = {t.take_id: t for t in history}
+            states: list[tuple[str, str | None]] = []
+            for take_id in {*mine, *on_pc}:
+                known, there = mine.get(take_id), on_pc.get(take_id)
+                qc = there.qc_status if there is not None else None
+                if known is not None and (
+                    there is None or known.sync.decision.revision >= there.decision_revision
+                ):
+                    states.append((known.sync.decision.decision, qc))
+                elif there is not None:
+                    states.append((there.decision, qc))
+            status = _status(states)
+            pc_status = _status([(t.decision, t.qc_status) for t in history])
+            count = len({*mine, *on_pc})
+        else:
+            pc_ids = {i for i, t in mine.items() if t.sync.upload in ("accepted", "remote")}
+            pc_count = row.take_count if row is not None else 0
+            pc_status = row.status if row is not None else "missing"
+            count = pc_count + (len(mine) - len(pc_ids))
+            if row is None or pc_count == 0 or len(pc_ids) >= pc_count:
+                status = _status(here)  # every take the PC counts is known here
+            elif row.latest_take_id not in mine:
+                # The PC's newest kept (or undecided) take is one this machine does not know,
+                # or it has none: the PC's status stands for takes not known here.
+                status = _best(pc_status, _status(here))
+            else:
+                answer.needs_history.append(prompt_id)
+                status = _status(here)
+        answer.states[prompt_id] = PromptState(
             status=status,
-            pc_takes=row.take_count if row is not None else 0,
-            local_takes=len(mine),
-            here_only=here_only,
+            takes=count,
+            here_only=status in RECORDED and pc_status not in RECORDED,
         )
-    return states
+    return answer
 
 
 def covered(states: dict[str, PromptState]) -> int:

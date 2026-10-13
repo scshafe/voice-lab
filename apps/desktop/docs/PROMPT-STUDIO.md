@@ -22,11 +22,16 @@ whatever the take, the transport or the sync is doing. Only the window's size ch
   down to 64 points, then the script card down to 160 points; only a window shorter still
   scrolls.
 
-The prompt is always shown whole. It is set at the reading size, 24 points, when it fits the
-card, and otherwise at the largest smaller size that does, down to 16 points. The longest
-catalog prompt fits whole at every window size the app allows: at 17 points on the smallest
-(960×600), at 24 points at 1440×900. The size depends only on the card and the prompt, never
-on the transport.
+The prompt is always shown whole. It is set at the chosen reading size (24, 28 or 32
+points) when it fits the card, and otherwise at the largest smaller size that does, down to
+16 points. The size depends only on the card and the prompt, never on the transport or the
+sync line. What the layout tests assert (`test_the_longest_prompt_is_shown_whole`, for each
+reading size at 960×600 and at 1440×900): the rig catalog's longest prompt is whole at the
+chosen size or below it, never below 16 points, inside the card and without scrolling; the
+size and every region stay the same while recording, in review and with the sync line's
+**Details** shown; at 1440×900 the default 24 is untouched. Each geometry is read only after
+the window has drawn a frame, twice, the two the same. Exact sizes below the chosen one
+depend on the fonts installed, so no test pins them.
 
 | Region | What |
 | --- | --- |
@@ -53,10 +58,17 @@ on the transport.
    same, then selects the next missing prompt.
 4. **Retake** records the prompt again. The take it replaces is saved as an undecided draft,
    so no recording is lost. A take you leave by selecting another prompt is saved the same
-   way. A draft does not count as coverage: its prompt shows *Draft* under Needs attention.
+   way, and one left by closing the app stays on disk and is saved at the next start. A
+   draft does not count as coverage: its prompt shows *Draft* under Needs attention.
 5. A take that fails (a continuity break, a worker that stopped) says why in the status line.
-   **Discard** removes it (and can drop an unsaved take). Retake, or selecting another
-   prompt, discards a failed take too.
+   **Discard** removes it. Retake, or selecting another prompt, discards a failed take too.
+   Discard is for a failed take only: a good take is never discarded. To set one aside,
+   save it (or let Retake keep it as a draft), then **Remove** it.
+
+At start, the corpus client lists this machine's takes. That finishes what an earlier run
+left (it may copy and hash a WAV) and runs on a worker, as does the first read of the PC's
+library cache. Meanwhile the status line says *Checking this machine's takes* and Record
+stays off; the window answers throughout.
 
 Without a microphone (no UMIK-1), the header says *No microphone* and Record stays off.
 Click the chip to look again after plugging the UMIK-1 in.
@@ -70,7 +82,12 @@ Click the chip to look again after plugging the UMIK-1 in.
   Missing and Save & Next select none. After Stop, the take under review comes first.
 - **Decisions** go through the corpus client for every saved take: **Remove**, **Reject…**
   (a dialog: the reason is required, and the button stays off without one) and **Restore**.
-  The library's status and the coverage follow at once. **Save** on a selected draft keeps
+  Restore goes back to the decision before the rejection or removal. When this machine does
+  not know it (a take recorded elsewhere, first seen here already rejected or removed, or a
+  state adopted from the PC), it asks **Restore as kept**, **Restore as draft** or
+  **Cancel**; it never guesses. An imported take whose PC record carries the Mac's decision
+  before (`restore_decision`) uses that. The library's status and the coverage follow at
+  once. **Save** on a selected draft keeps
   it. A take recorded elsewhere (another client's, or a Swift take imported from the Mac,
   step 9, D-053) is noted in the client's spool when it is first changed
   ([CORPUS-CLIENT.md](CORPUS-CLIENT.md), "Takes recorded elsewhere"); its changes chain on the
@@ -91,8 +108,11 @@ Click the chip to look again after plugging the UMIK-1 in.
   goes back to the whole take. On the take under review, Save keeps the take with its trim,
   as does Retake (which saves the replaced take as a draft); looking at another take keeps
   the edit for it. Leaving a saved take with an edit not saved (another take or prompt,
-  Continue Missing, Record, another screen) asks **Save the trim?**: **Save trim**, **Discard
-  edit** or **Cancel**.
+  Continue Missing, Record, another screen, closing the window, Quit) asks **Save the
+  trim?**: **Save trim**, **Discard edit** or **Cancel**. Cancel stays, and keeps the app
+  open. An edit shows its In and Out in amber, with *edited* beside them where the row has
+  room. On the smallest window the row leaves out the *In* and *Out* captions: **Set In**
+  and **Set Out** name the times beside them.
 - **Playback** plays exactly the kept frames (D-012) through the app's one player, from the
   playhead. **−0.1 s** and **+0.1 s** move the playhead within the kept frames, also while
   playing. Nothing plays while a take is recorded.
@@ -116,14 +136,23 @@ a dialog is open (`menuOpen`), or on a held key's repeats.
 
 A prompt is **Recorded** when it has a kept take, **Needs review** when its kept takes all
 failed the PC's QC, **Draft** when it has only undecided takes, and **Missing** otherwise.
-Rejected and removed takes count for nothing. Two sources count:
+Rejected and removed takes count for nothing, and so does a take the PC no longer has. The
+status comes from the best-known state of **each take**:
 
-- the PC's library, as last read (each sync pass reads it; it is cached on disk, so offline
-  you still see what the PC had);
-- this machine's takes, with the decisions made here.
+- A take this machine knows (recorded here, or recorded elsewhere and changed here) stands
+  with its state here. That state is ahead of the PC's while a change waits to be sent. When
+  the PC's history shows the take at a newer revision (another client changed it), the PC's
+  state stands instead.
+- A take only the PC knows stands with the PC's state.
 
-The better of the two stands. *Recorded · this machine* means the PC does not show the
-prompt as recorded yet. When the PC has moved to another catalog version, its library still
+The PC's library (each sync pass reads it; it is cached on disk, so offline you still see
+what the PC had) gives only a status and a count per prompt. It is used alone only for takes
+this machine does not know. When it cannot be split (the PC's newest kept take is one known
+here, and the PC counts takes this machine does not know), the studio reads that prompt's
+history from the PC, cached until the library changes. Until then, only the takes here
+count. A status is never inferred from a count: a kept take removed here makes its prompt
+*Missing* at once, whatever the PC's row still says. Each take is counted once, here or on
+the PC. *Recorded · this machine* means the PC does not show the prompt as recorded yet. When the PC has moved to another catalog version, its library still
 counts the prompts the two versions share. The coverage count is the Recorded and Needs
 review prompts over the pinned version's prompts.
 
@@ -191,7 +220,10 @@ two keep their data apart: the studio in `<data dir>/corpus/`, the sessions in
 The keys are the screen's `Shortcut`s (`studioKey…`), enabled by `keysEnabled`; they call
 `studio.toggleRecord`, `studio.spaceKey`, `studio.saveNext` and `studio.save`; the waveform's
 own keys call `takes.seekBy`, `seekToStart` and `seekToEnd`. `takes.guard(action)` asks
-before an unsaved trim edit is left; `AppModel.navigate` goes through it too.
+before an unsaved trim edit is left; `AppModel.navigate` goes through it too, and so does
+closing: Main.qml's `onClosing` asks `app.mayClose()`, and `QuitGuard`, an event filter on
+the application (`cli.run`), holds Quit, which QApplication does not route through the
+window's close. `closeApproved` closes the window once the answer allows it.
 
 Tests: `tests/studio/` drives the screen offscreen over the PC rig
 (`tests/corpus_client/corpus_rig.py`), with a stand-in recorder that leaves the worker's files
@@ -200,7 +232,9 @@ Tests: `tests/studio/` drives the screen offscreen over the PC rig
 covers 6b: the picker over local and PC takes, each decision through the client, Reject's
 reason, trims with the preview's exact frames, Zoom and Fit, the steps, the live waveform,
 the geometry across states, and changed elsewhere. 6c: `test_studio_remote.py`,
-`test_studio_keys.py`, `test_studio_confirm.py`, `test_studio_polish.py`.
+`test_studio_keys.py`, `test_studio_confirm.py`, `test_studio_polish.py`. The layout tests
+(`geometry`) read every region only after the window has drawn a frame, then again after the
+next, and fail unless the two agree.
 
 ## Parity checklist (RECORDING-V1.md §5)
 
@@ -213,20 +247,20 @@ parity off in step 10, on the real Mac, after S-1 (step 8).
 | Library sidebar with coverage (`n / 1,886`) | yes | `test_the_workspace_loads_the_pinned_catalog_and_its_coverage` |
 | A prominent Continue Missing | yes | `test_continue_missing_walks_the_catalog_in_order` |
 | Search; Show (All / Missing / Needs attention); Labels | yes | `test_the_filters_and_the_search`, `test_show_labels_and_search_combine_with_and` |
-| Per-prompt status | yes | `test_the_workspace_loads…`, `test_record_stop_save_keeps_a_local_take`, `test_a_prompt_stands_on_the_better_of_the_pc_and_this_machine` |
+| Per-prompt status | yes | `test_the_workspace_loads…`, `test_record_stop_save_keeps_a_local_take`, `test_a_prompt_stands_on_the_best_known_state_of_each_take`, `test_the_pcs_count_never_makes_a_take_removed_here_kept`, `test_a_removal_here_is_never_hidden_by_the_pcs_kept` |
 | Header with label chips | yes | `test_the_workspace_loads…`, `test_labels_are_in_effective_order_and_titled_verbatim` |
 | A text-size choice | yes | `test_the_text_size_is_chosen_and_kept` |
-| Script card: PROMPT · READ ALOUD, or INSTRUCTIONS for silent prompts | yes | `test_the_category_alone_decides_what_is_read_aloud` (silent kinds as a unit test: the rig's catalog has no room tone), `test_the_longest_prompt_is_shown_whole` |
+| Script card: PROMPT · READ ALOUD, or INSTRUCTIONS for silent prompts | yes | `test_the_category_alone_decides_what_is_read_aloud` (silent kinds as a unit test: the rig's catalog has no room tone), `test_the_longest_prompt_is_shown_whole` (each reading size, 960×600 and 1440×900) |
 | Take picker, waveform, trim row, timer, playback row | yes | `test_the_picker_lists_this_machines_and_the_pcs_takes`, `test_zoom_and_fit`, `test_trims_save_and_reset…`, `test_steps_of_a_tenth_of_a_second` |
 | 56 pt Record/Stop footer and a status line | yes | `test_transport_never_moves_the_layout`, `test_the_sync_line_for_each_state`, `test_nothing_is_cut_off_on_the_smallest_window` |
-| Transport state never moves the layout | yes | `test_transport_never_moves_the_layout`, `test_transport_and_review_never_move_the_layout` (two window sizes) |
+| Transport state never moves the layout | yes | `test_transport_never_moves_the_layout` (with and without the sync line's Details), `test_transport_and_review_never_move_the_layout` (two window sizes, every region inside the content area), `test_the_longest_prompt_is_shown_whole` |
 | The live waveform while recording | yes | `test_the_live_waveform_while_recording` (from the worker's partial WAV) |
-| Take actions: Retake, Remove, Reject (with a reason), Restore | yes | `test_retake_keeps_the_earlier_take_as_a_draft…`, `test_each_decision_goes_through_the_client`, `test_reject_without_a_reason_is_impossible`, `test_takes_recorded_elsewhere_are_decided_and_trimmed_here` |
+| Take actions: Retake, Remove, Reject (with a reason), Restore | yes | `test_retake_keeps_the_earlier_take_as_a_draft…`, `test_a_good_take_is_never_discarded`, `test_each_decision_goes_through_the_client`, `test_reject_without_a_reason_is_impossible`, `test_takes_recorded_elsewhere_are_decided_and_trimmed_here`, `test_restore_asks_when_what_came_before_is_not_known` |
 | Save, or Save & Next in context; Return = Save & Next, ⌘S = Save | yes | `test_record_stop_save…`, `test_save_and_next_goes_to_the_next_missing_prompt`, `test_r_space_return_and_save` |
-| Trims with In/Out, Save trim and Reset | yes | `test_trims_save_and_reset_with_a_preview_of_exactly_the_kept_frames`, `test_another_take_save_discard_or_cancel` |
+| Trims with In/Out, Save trim and Reset | yes | `test_trims_save_and_reset_with_a_preview_of_exactly_the_kept_frames`, `test_another_take_save_discard_or_cancel`, `test_closing_the_window_or_quit_asks_first` |
 | Zoom and Fit | yes | `test_zoom_and_fit` |
 | Playback with −0.1 s and +0.1 s steps | yes | `test_steps_of_a_tenth_of_a_second` |
-| Take history across every session, with dates and status | yes | `test_the_picker_lists…`, `test_a_take_changed_elsewhere_shows_so`, `test_a_take_imported_from_the_mac_says_so` |
+| Take history across every session, with dates and status | yes | `test_the_picker_lists…`, `test_a_take_changed_elsewhere_shows_so`, `test_a_take_imported_from_the_mac_says_so`, `test_a_late_history_never_moves_the_selection` |
 | Keys R, Space, Return, ⌘S; ←/→/Home/End in the waveform | yes | `test_r_space_return_and_save`, `test_the_waveform_keys` |
 | Keys ignored while typing, in dialogs, on auto-repeat | yes | `test_keys_are_ignored_while_typing_in_menus_dialogs_and_elsewhere`, `test_the_waveform_keys`. The page's shortcuts are checked to refuse repeats (`autoRepeat: false`): QtTest cannot send a repeat through the window's shortcut map |
 | Corpus-first: no sessions, groups or packages; Continue Missing walks the whole catalog in order | yes | `test_the_workspace_loads…`, `test_continue_missing_walks_the_catalog_in_order` |

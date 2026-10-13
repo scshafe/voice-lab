@@ -8,6 +8,7 @@ never moves; and a take the client adopted from the PC shows as changed elsewher
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from voice_lab_desktop.prompted.audio import read_frames
 
 from .conftest import open_studio, ready, studio_app, wait_phase
 from .test_studio_screen import click, kept_elsewhere, prompt_ids, resize
+from .test_studio_screen import geometry as screen_geometry
 
 
 def recorded(qtbot: Any, window: Window, recorder: StudioRecorder) -> None:
@@ -185,11 +187,13 @@ def test_reject_without_a_reason_is_impossible(
     reason.accepted.emit()  # Return in the field
     assert studio.client.spool.take(take_id).sync.decision.decision == "kept"
     studio_window.find("studioRejectDialog").reject()
-    # The take under review is not a take yet: it is discarded, never rejected.
+    # The take under review is not a take yet: never rejected, never discarded (Save keeps
+    # it; Retake or leaving keeps it as a draft).
     recorded(qtbot, studio_window, recorder)
     assert takes.selectedKey == "review"
     assert not takes.canReject and not takes.canRemove
-    assert takes.actionNote == "Not saved yet: Save keeps it, Discard drops it"
+    assert takes.actionNote == "Not saved yet: Save keeps it; Retake or leaving keeps it as a draft"
+    assert not studio.canDiscard
 
 
 def test_trims_save_and_reset_with_a_preview_of_exactly_the_kept_frames(
@@ -363,13 +367,9 @@ SIX_B = (
 )
 
 
-def geometry(window: Window) -> dict[str, tuple[float, float, float, float]]:
-    found = {}
-    for name in SIX_B:
-        item = window.find(name)
-        corner = item.mapToScene(QPointF(0, 0))
-        found[name] = (corner.x(), corner.y(), item.width(), item.height())
-    return found
+def geometry(qtbot: Any, window: Window) -> dict[str, tuple[float, float, float, float]]:
+    """6b's regions, read once the window has laid out (``test_studio_screen.geometry``)."""
+    return screen_geometry(qtbot, window, SIX_B)
 
 
 def test_transport_and_review_never_move_the_layout(
@@ -378,32 +378,35 @@ def test_transport_and_review_never_move_the_layout(
     studio, takes = studio_window.model.studio, studio_window.model.studio.takes
     for size in ((1440, 900), (960, 600)):
         resize(qtbot, studio_window, *size)
-        idle = geometry(studio_window)
+        idle = geometry(qtbot, studio_window)
+        # Inside the content area (the 16-point inset), the trim row's last button included.
+        right = size[0] - 16
+        assert all(x + w <= right for x, _y, w, _h in idle.values()), idle
         seen = {}
         count = len(recorder.takes)
         studio.toggleRecord()
         qtbot.waitUntil(lambda count=count: len(recorder.takes) == count + 1, timeout=5000)
         recorder.last.advance(9_600)
         wait_phase(qtbot, studio, "recording")
-        seen["recording"] = geometry(studio_window)
+        seen["recording"] = geometry(qtbot, studio_window)
         studio.toggleRecord()
         wait_phase(qtbot, studio, "review")
         qtbot.waitUntil(lambda: takes.frameCount > 0, timeout=5000)
         takes.seekTo(2_400)
         takes.setIn()
-        seen["review, trimmed"] = geometry(studio_window)
+        seen["review, trimmed"] = geometry(qtbot, studio_window)
         studio.save()
         wait_phase(qtbot, studio, "ready")
         qtbot.waitUntil(lambda: takes.selectedKey.startswith("take-"), timeout=5000)
         qtbot.waitUntil(lambda: takes.frameCount > 0, timeout=5000)
-        seen["saved"] = geometry(studio_window)
+        seen["saved"] = geometry(qtbot, studio_window)
         preview(qtbot, studio_window)
-        seen["playing"] = geometry(studio_window)
+        seen["playing"] = geometry(qtbot, studio_window)
         takes.togglePlay()
         takes.zoomIn()
-        seen["zoomed"] = geometry(studio_window)
+        seen["zoomed"] = geometry(qtbot, studio_window)
         takes.remove()
-        seen["removed"] = geometry(studio_window)
+        seen["removed"] = geometry(qtbot, studio_window)
         for state, found in seen.items():
             assert found == idle, (size, state)
         takes.restore()
@@ -445,5 +448,48 @@ def test_a_take_changed_elsewhere_shows_so(
             qtbot.waitUntil(lambda: bool(window.items("studioHistoryStatus")), timeout=5000)
             status_line = window.items("studioHistoryStatus")[0]
             assert "changed elsewhere" in status_line.property("text")
+    finally:
+        model.shutdown()
+
+
+def test_a_late_history_never_moves_the_selection(
+    qtbot: Any, data_dir: Path, tmp_path: Path, pc: PC, recorder: StudioRecorder
+) -> None:
+    """The PC's history of the selected prompt, answering only once a take is starting (and
+    then recorded and under review), never changes the selection or the waveform."""
+    kept_elsewhere(pc, tmp_path, (1,))
+    ids = prompt_ids(pc)
+    model = studio_app(data_dir, tmp_path, pc, recorder)
+    try:
+        with open_studio(qtbot, model, tmp_path):
+            ready(qtbot, model)
+            studio, takes = model.studio, model.studio.takes
+            client = studio.client
+            real = client.prompt_history
+            asked, gate = threading.Event(), threading.Event()
+
+            def late(prompt_id: str) -> Any:
+                asked.set()
+                assert gate.wait(10)
+                return real(prompt_id)
+
+            client.prompt_history = late  # type: ignore[method-assign]
+            studio.selectPrompt(ids[1])  # its latest kept take is the PC's
+            qtbot.waitUntil(asked.is_set, timeout=5000)
+            assert takes.selectedKey == ""
+            studio.toggleRecord()
+            qtbot.waitUntil(lambda: len(recorder.takes) == 1, timeout=5000)
+            assert studio.phase == "starting"
+            gate.set()  # the answer comes in while the take starts
+            qtbot.waitUntil(lambda: len(takes.history) == 1, timeout=10000)
+            assert takes.selectedKey == "" and takes.frameCount == 0
+            recorder.last.advance(9_600)
+            wait_phase(qtbot, studio, "recording")
+            qtbot.waitUntil(lambda: takes.live and len(takes.bins) > 0, timeout=5000)
+            assert takes.selectedKey == ""
+            studio.toggleRecord()
+            wait_phase(qtbot, studio, "review")
+            qtbot.waitUntil(lambda: takes.frameCount > 0, timeout=5000)
+            assert takes.selectedKey == "review" and not takes.live
     finally:
         model.shutdown()

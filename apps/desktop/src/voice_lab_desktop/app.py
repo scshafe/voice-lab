@@ -19,7 +19,7 @@ from collections.abc import Callable
 from typing import Any, Final
 
 import httpx
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Property, QEvent, QObject, Signal, Slot
 from PySide6.QtQml import QQmlEngine
 
 from . import __version__
@@ -61,7 +61,26 @@ SCREEN_KEYS: Final = tuple(key for key, *_ in SCREENS)
 SIDEBAR_ROLES: Final = ("key", "section", "text", "iconName", "count", "status")
 
 
+class QuitGuard(QObject):
+    """Quit (⌘Q, the Dock's Quit) asks ``AppModel.mayClose`` first. QApplication quits
+    without closing QML windows, so Main.qml's ``onClosing`` alone would never see it; this
+    filter, on the application, holds the quit while the question is open (``closeApproved``
+    then closes the window, and the last window closed quits)."""
+
+    def __init__(self, model: AppModel) -> None:
+        super().__init__()
+        self._model = model
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 (Qt name)
+        if event.type() == QEvent.Type.Quit and not self._model.mayClose():
+            event.ignore()
+            return True
+        return super().eventFilter(watched, event)
+
+
 class AppModel(ViewModel):
+    #: The window may close now (the studio's unsaved trim edit was saved or discarded).
+    closeApproved = Signal()
     accountChanged = Signal()
     settingsChanged = Signal()
     navigationChanged = Signal()
@@ -252,6 +271,18 @@ class AppModel(ViewModel):
             self.studio.take_review.guard(lambda: self._navigate(key))
             return
         self._navigate(key)
+
+    @Slot(result=bool)
+    def mayClose(self) -> bool:  # noqa: N802 (QML name)
+        """Whether the window may close now. With an unsaved trim edit in the studio, the
+        operator is asked first (Save trim, Discard edit, Cancel): ``False``, and
+        ``closeApproved`` follows an answer that lets it close; Cancel keeps the app open."""
+        if self.studio is None or not self.studio.take_review.trim_at_risk():
+            return True
+        if self._v["screen"] != "prompts":
+            self._navigate("prompts")  # the question is the studio's
+        self.studio.take_review.guard(self.closeApproved.emit)
+        return False
 
     def _navigate(self, key: str) -> None:
         previous = self._v["screen"]

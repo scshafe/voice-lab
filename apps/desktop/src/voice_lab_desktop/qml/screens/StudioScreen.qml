@@ -26,6 +26,7 @@ Item {
     readonly property bool shown: app.screen === "prompts"
     readonly property bool menuOpen: libraryPane.menuOpen || detailsPopup.visible
                                      || takePicker.menuOpen || trimConfirm.visible
+                                     || restoreAsk.visible
                                      || sizeSelect.popup.visible
     // Typing in a field (the search, a dialog's) keeps the keys for the field.
     readonly property bool typing: {
@@ -97,6 +98,42 @@ Item {
                 text: "Save trim"
                 variant: "primary"
                 onClicked: studio.takes.confirmSaveTrim()
+            }
+        ]
+    }
+
+    // Restore, when what the take was before is not known here: asked, never guessed.
+    Connections {
+        target: studio.takes
+        function onRestoreChanged() {
+            if (studio.takes.restoreAskOpen && !restoreAsk.visible)
+                restoreAsk.open()
+            else if (!studio.takes.restoreAskOpen && restoreAsk.visible)
+                restoreAsk.close()
+        }
+    }
+    SuiDialog {
+        id: restoreAsk
+        objectName: "studioRestoreAsk"
+        title: "Restore this take as?"
+        description: "What this take was before it was set aside is not known on this machine."
+        onRejected: if (studio.takes.restoreAskOpen) studio.takes.restoreCancel()
+        actions: [
+            SuiButton {
+                objectName: "studioRestoreCancel"
+                text: "Cancel"
+                onClicked: studio.takes.restoreCancel()
+            },
+            SuiButton {
+                objectName: "studioRestoreAsDraft"
+                text: "Restore as draft"
+                onClicked: studio.takes.restoreAs("draft")
+            },
+            SuiButton {
+                objectName: "studioRestoreAsKept"
+                text: "Restore as kept"
+                variant: "primary"
+                onClicked: studio.takes.restoreAs("kept")
             }
         ]
     }
@@ -380,19 +417,26 @@ Item {
         // In and Out from the playhead, Save trim, Reset. The take under review keeps its edit
         // until Save; a take recorded elsewhere shows its trim.
         Item {
+            id: trimRow
             objectName: "studioTrimRow"
             x: studio.inset
             y: studio.trimY
             width: studio.contentWidth
             height: studio.trimHeight
+            // The In and Out captions only where the row has room for them (they depend on
+            // the window's size alone): on the smallest window, Set In and Set Out name the
+            // times beside them.
+            readonly property bool captions: width >= 520
             RowLayout {
                 anchors.fill: parent
                 spacing: SuiTheme.spaceXs
-                SuiText { text: "In"; variant: "caption" }
+                SuiText { text: "In"; variant: "caption"; visible: trimRow.captions }
                 SuiText {
                     objectName: "studioTrimIn"
                     text: studio.takes.inText
                     variant: "mono"
+                    tone: studio.takes.trimDirty ? "warn" : "default"
+                    Accessible.name: "In " + text
                 }
                 CompactButton {
                     objectName: "studioSetIn"
@@ -400,12 +444,19 @@ Item {
                     enabled: studio.takes.canEditTrim
                     onClicked: studio.takes.setIn()
                 }
-                Item { Layout.preferredWidth: SuiTheme.spaceSm }
-                SuiText { text: "Out"; variant: "caption" }
+                SuiText {
+                    Layout.leftMargin: SuiTheme.spaceSm
+                    text: "Out"
+                    variant: "caption"
+                    visible: trimRow.captions
+                }
                 SuiText {
                     objectName: "studioTrimOut"
+                    Layout.leftMargin: trimRow.captions ? 0 : SuiTheme.spaceSm
                     text: studio.takes.outText
                     variant: "mono"
+                    tone: studio.takes.trimDirty ? "warn" : "default"
+                    Accessible.name: "Out " + text
                 }
                 CompactButton {
                     objectName: "studioSetOut"
@@ -413,14 +464,7 @@ Item {
                     enabled: studio.takes.canEditTrim
                     onClicked: studio.takes.setOut()
                 }
-                Item { Layout.fillWidth: true }
-                SuiText {
-                    objectName: "studioTrimEdited"
-                    text: "edited"
-                    variant: "caption"
-                    tone: "warn"
-                    visible: studio.takes.trimDirty
-                }
+                Item { id: trimGap; Layout.fillWidth: true }
                 CompactButton {
                     objectName: "studioSaveTrim"
                     text: "Save trim"
@@ -434,6 +478,17 @@ Item {
                     enabled: studio.takes.canResetTrim
                     onClicked: studio.takes.resetTrim()
                 }
+            }
+            // "edited" sits in the gap and never takes room from the row: shown when it
+            // fits there (the times turn amber either way).
+            SuiText {
+                objectName: "studioTrimEdited"
+                x: trimGap.x + Math.round((trimGap.width - width) / 2)
+                anchors.verticalCenter: parent.verticalCenter
+                text: "edited"
+                variant: "caption"
+                tone: "warn"
+                visible: studio.takes.trimDirty && trimGap.width >= width + 2 * SuiTheme.spaceXs
             }
         }
 

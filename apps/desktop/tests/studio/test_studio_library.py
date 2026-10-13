@@ -109,13 +109,18 @@ def test_search_matches_title_id_text_instructions_guidance_and_labels() -> None
     assert not spoken.matches_search("kettle")
 
 
-def take(prompt: Prompt, decision: str, take_id: str) -> Any:
-    """A saved take as the merge reads it (its prompt, its decision here)."""
+def take(
+    prompt: Prompt, decision: str, take_id: str, *, upload: str = "pending", revision: int = 0
+) -> Any:
+    """A take of this machine as the merge reads it: its prompt, its decision here at its
+    revision, and whether the PC has it (``accepted`` or ``remote``)."""
     return SimpleNamespace(
         take_id=take_id,
         prompt_id=prompt.prompt_id,
         record=SimpleNamespace(prompt=prompt),
-        sync=SimpleNamespace(decision=SimpleNamespace(decision=decision)),
+        sync=SimpleNamespace(
+            decision=SimpleNamespace(decision=decision, revision=revision), upload=upload
+        ),
         counts_for=lambda snapshot: snapshot.current_prompt_for(prompt),
     )
 
@@ -130,7 +135,23 @@ def row(prompt: Prompt, status: str, *, count: int = 1, latest: str | None = Non
     )
 
 
-def test_a_prompt_stands_on_the_better_of_the_pc_and_this_machine() -> None:
+def on_pc(take_id: str, decision: str, revision: int = 1, qc: str | None = "pass") -> Any:
+    """A take in the PC's history of its prompt."""
+    return SimpleNamespace(
+        take_id=take_id, decision=decision, decision_revision=revision, qc_status=qc
+    )
+
+
+def merge(*, rows: Any = (), takes: Any = (), histories: Any = None) -> library.States:
+    suite = pilot()
+    shown = presentation.present(suite.prompts, suite.purpose)
+    pc = SimpleNamespace(rows=tuple(rows))
+    return library.prompt_states(
+        shown, CatalogSnapshot.embedded(suite), pc, takes, histories=histories
+    )  # type: ignore[arg-type]
+
+
+def test_a_prompt_stands_on_the_best_known_state_of_each_take() -> None:
     suite = pilot()
     snapshot = CatalogSnapshot.embedded(suite)
     shown = presentation.present(suite.prompts, suite.purpose)
@@ -143,29 +164,72 @@ def test_a_prompt_stands_on_the_better_of_the_pc_and_this_machine() -> None:
             row(a, "kept", latest="take-pc-a"),
             row(changed, "kept"),  # another revision of neutral-02: not this prompt
             row(c, "kept", latest="take-here-c"),
-            row(d, "needs-attention", count=2),
+            row(d, "needs-attention", count=2, latest="take-pc-d"),
             row(e, "draft", latest="take-pc-e"),
         )
     )
     takes = [
         take(b, "kept", "take-here-b"),
-        take(c, "removed", "take-here-c"),  # the PC's one take of it, removed here
+        take(c, "removed", "take-here-c", upload="accepted", revision=1),  # the PC's one take
         take(e, "rejected", "take-here-e"),
         take(f, "draft", "take-here-f"),
     ]
-    states = library.prompt_states(shown, snapshot, pc, takes)  # type: ignore[arg-type]
-    assert states["neutral-01"] == PromptState("kept", pc_takes=1)
-    assert states["neutral-02"] == PromptState("kept", local_takes=1, here_only=True)
+    answer = library.prompt_states(shown, snapshot, pc, takes)  # type: ignore[arg-type]
+    states = answer.states
+    assert states["neutral-01"] == PromptState("kept", takes=1)
+    assert states["neutral-02"] == PromptState("kept", takes=1, here_only=True)
     assert states["neutral-02"].title == "Recorded · this machine"
-    assert states["neutral-03"] == PromptState("missing", pc_takes=1, local_takes=1)
-    assert states["neutral-04"].status == "needs-attention" and states["neutral-04"].recorded
-    assert states["neutral-05"] == PromptState("draft", pc_takes=1, local_takes=1)
-    assert states["neutral-06"] == PromptState("draft", local_takes=1)
+    # The PC's one take, removed here: missing, and one take (never two).
+    assert states["neutral-03"] == PromptState("missing", takes=1)
+    assert states["neutral-04"] == PromptState("needs-attention", takes=2)
+    assert states["neutral-05"] == PromptState("draft", takes=2)
+    assert states["neutral-06"] == PromptState("draft", takes=1)
     assert states["neutral-07"] is library.MISSING
-    assert library.covered(states) == 3
+    assert library.covered(states) == 3 and answer.needs_history == []
     # Without the PC's library, only this machine's takes count.
     alone = library.prompt_states(shown, snapshot, None, takes)  # type: ignore[arg-type]
-    assert library.covered(alone) == 1 and alone["neutral-01"] is library.MISSING
+    assert library.covered(alone.states) == 1 and alone.states["neutral-01"] is library.MISSING
+
+
+def test_the_pcs_count_never_makes_a_take_removed_here_kept() -> None:
+    """The reviewer's case: the PC's only kept take, with two rejected siblings recorded
+    elsewhere, removed here (not sent yet). The PC's row still says kept, of three takes."""
+    prompt = next(p for p in pilot().prompts if p.prompt_id == "neutral-01")
+    pc_row = row(prompt, "kept", count=3, latest="take-k")
+    removed = take(prompt, "removed", "take-k", upload="remote", revision=2)
+    answer = merge(rows=[pc_row], takes=[removed])
+    # Not certain from the row: the PC's history is asked for; until then, never kept.
+    assert answer.needs_history == ["neutral-01"]
+    assert answer.states["neutral-01"] == PromptState("missing", takes=3)
+    # With the history: the removal here (revision 2) is ahead of the PC's kept (1).
+    history = {
+        "neutral-01": [
+            on_pc("take-k", "kept", 1),
+            on_pc("take-r1", "rejected"),
+            on_pc("take-r2", "rejected"),
+        ]
+    }
+    answer = merge(rows=[pc_row], takes=[removed], histories=history)
+    assert answer.needs_history == []
+    assert answer.states["neutral-01"] == PromptState("missing", takes=3)
+    # Another client kept a sibling since: the PC's newer state of that take stands.
+    history["neutral-01"][1] = on_pc("take-r1", "kept", 2)
+    assert merge(rows=[pc_row], takes=[removed], histories=history).states[
+        "neutral-01"
+    ] == PromptState("kept", takes=3)
+    # And a take changed on the PC after this machine's last note of it: the PC's state.
+    stale = take(prompt, "kept", "take-k", upload="remote", revision=1)
+    history["neutral-01"] = [on_pc("take-k", "removed", 2), on_pc("take-r1", "rejected")]
+    assert (
+        merge(rows=[pc_row], takes=[stale], histories=history).states["neutral-01"].status
+        == "missing"
+    )
+
+
+def test_a_take_the_pc_no_longer_has_counts_for_nothing() -> None:
+    prompt = next(p for p in pilot().prompts if p.prompt_id == "neutral-01")
+    gone = take(prompt, "kept", "take-g", upload="gone", revision=1)
+    assert merge(takes=[gone]).states["neutral-01"] is library.MISSING
 
 
 def test_continue_missing_walks_catalog_order_and_wraps_once() -> None:

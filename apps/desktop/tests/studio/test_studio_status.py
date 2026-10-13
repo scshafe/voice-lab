@@ -201,7 +201,7 @@ def test_the_window_shows_the_clients_status(qtbot: Any, studio_window: Window) 
         ),
     ]
     for value in states:
-        client.status = lambda value=value: value  # type: ignore[method-assign]
+        client.status = lambda value=value, **_: value  # type: ignore[method-assign]
         studio._client_changed()
         expected = status.notice_line(value.notices, {"neutral-01": "Neutral 01"})
         expected = expected or status.sync_line(value)

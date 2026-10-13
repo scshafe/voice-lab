@@ -364,3 +364,18 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
     - the header's text-size choice (24, 28 or 32 pt), kept per viewer;
     - the picker's short line, whole at 960×600, whose open list is the take history;
     - the dB display scale's name moved beside the timer, clear of the trim handles.
+  - **Review fixes** (an independent review of 6a to 6c, all on the 6c branch):
+    - The engine takes the operation it sends and marks it in flight in one step, so an
+      operator's change never folds into it.
+    - Restore asks (kept or draft) when the decision before is not known here.
+    - A prompt's status comes from the best-known state of each take. A stale kept on the PC
+      no longer hides a removal made here.
+    - A late history answer never moves the selection or the waveform.
+    - Closing the window and Quit ask about an unsaved trim edit.
+    - Discard is for failed takes only.
+    - Start-up recovery, the library cache's first parse and the partial-WAV reads run off
+      the GUI thread.
+    - A half-written note of a remote take is finished or removed at start.
+    - A remote take the PC no longer has counts for nothing.
+    - The layout tests wait for drawn frames. That exposed a trim row overflowing the
+      smallest window, now fixed.

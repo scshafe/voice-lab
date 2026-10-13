@@ -15,7 +15,8 @@ ends it, and the worker's validated take waits for review. Save keeps it
 (``save_take`` then the ``kept`` decision, off the GUI thread: durable on this machine at
 once, its upload queued); Save & Next then selects the next missing prompt. Retake records
 again; the take it replaces is not lost: it is saved as an undecided draft, as is a take left
-by selecting another prompt. Discard removes a failed take (or an unsaved one, on request).
+by selecting another prompt or closing the app. Discard removes a failed take only; a good
+take is never discarded (Remove sets a saved one aside).
 The take picker, Reject, Remove, Restore, the waveform, trims and playback are the takes
 model's (``screens/studio_takes.py``, step 6b; ``takes`` here); Save follows its selection
 (the take under review, or a draft of this machine). Keys are 6c's (``toggleRecord``,
@@ -35,9 +36,14 @@ from typing import Any, Final, Literal
 
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 
+from cole_voice_lab.api.corpus_contracts import TakeHistory
 from cole_voice_lab.canonical import canonical_sha256
+from cole_voice_lab.corpus_read_model import LibraryTake
 
+from ..api import ApiError
+from ..auth import AuthError
 from ..capture.types import PARTIAL_NAME, SAMPLE_RATE, CapturedTake, RunningTake, TakeRecorder
+from ..config import ConfigError
 from ..corpus.catalog import PinnedCatalog
 from ..corpus.client import CorpusClient, PendingTake
 from ..corpus.files import private_dir
@@ -65,7 +71,7 @@ STATE_TEXT: Final[dict[str, str]] = {
     "starting": "Starting the microphone",
     "recording": "Recording",
     "stopping": "Stopping · checking the audio",
-    "review": "Take recorded · Save keeps it, Retake records again",
+    "review": "Take recorded · Save keeps it, Retake keeps it as a draft",
     "saving": "Saving",
 }
 #: The reading sizes the header offers (the Swift app's Standard, Large, Extra large).
@@ -263,7 +269,18 @@ class StudioModel(ViewModel):
         self.take_review.setParent(self)
         self.take_review.takesChanged.connect(self._takes_changed)
         self.take_review.toast.connect(self.toast)
+        self.take_review.on_history = self.history_read
+        #: The PC's history of prompts whose status needs it (#3), per read of its library.
+        self._histories: dict[str, tuple[str | None, tuple[LibraryTake, ...]]] = {}
+        self._history_queue: list[str] = []
+        self._history_busy = False
+        self._unlisted = ""  # why this machine's takes could not be listed at start
         client.add_listener(self._client_changed)
+        if not client.ready:
+            # Listing this machine's takes recovers what an earlier run left (it may copy
+            # and hash a WAV), and the PC's library is parsed: both on a worker, while the
+            # studio says so.
+            context.tasks.submit(client.prepare, self._prepared)
         self._refresh()
 
     # -- lifecycle --------------------------------------------------------------------------
@@ -339,6 +356,19 @@ class StudioModel(ViewModel):
         if not self._closed:
             self._refresh()
 
+    def _prepared(self, _result: object, error: BaseException | None) -> None:
+        if error is not None:
+            if not isinstance(error, (OSError, SpoolError)):
+                raise error
+            self._unlisted = str(error) or type(error).__name__
+        if not self._closed:
+            self._refresh()
+
+    @property
+    def ready(self) -> bool:
+        """This machine's takes are listed (the start's recovery is done)."""
+        return self.client.ready
+
     def _refresh(self) -> None:
         pinned = self.client.pinned
         if pinned is not self._pinned and (
@@ -347,7 +377,7 @@ class StudioModel(ViewModel):
             or pinned.snapshot_sha256 != self._pinned.snapshot_sha256
         ):
             self._adopt_catalog(pinned)
-        self._takes = self.client.takes()
+        self._takes = self.client.takes() if self.client.ready else self.client.spool.peek()
         self._recount()
         self.take_review.refresh(self._takes, self.client.notices())
         self._update_status()
@@ -375,14 +405,23 @@ class StudioModel(ViewModel):
 
     def _recount(self) -> None:
         pinned = self._pinned
-        cached = self.client.library.latest
+        cached = self.client.library.peek()
         pc = cached.library if cached is not None else None
         if pinned is None:
             self._states = {}
         else:
-            self._states = library.prompt_states(
-                self._views, pinned.snapshot, pc, self._takes, digests=self._digests
+            tag = cached.tag if cached is not None else None
+            histories = {k: v for k, (t, v) in self._histories.items() if t == tag}
+            answer = library.prompt_states(
+                self._views,
+                pinned.snapshot,
+                pc,
+                self._takes,
+                digests=self._digests,
+                histories=histories,
             )
+            self._states = answer.states
+            self._ask_histories(answer.needs_history)
         if self._current is None:
             if self._order:
                 first = library.next_missing(self._order, self._states, None)
@@ -394,11 +433,49 @@ class StudioModel(ViewModel):
         self._update_prompt_status()
         self._update_transport()
 
+    def _ask_histories(self, prompts: list[str]) -> None:
+        """Read the PC's history of prompts whose status needs it, one at a time."""
+        for prompt_id in prompts:
+            if prompt_id not in self._history_queue:
+                self._history_queue.append(prompt_id)
+        if self._history_busy or not self._history_queue or self._closed:
+            return
+        prompt_id = self._history_queue.pop(0)
+        cached = self.client.library.peek()
+        tag = cached.tag if cached is not None else None
+        self._history_busy = True
+        client = self.client
+
+        def done(history: TakeHistory | None, error: BaseException | None) -> None:
+            self._history_busy = False
+            if self._closed:
+                return
+            if error is not None and not isinstance(error, (ApiError, AuthError, ConfigError)):
+                raise error
+            if history is not None:
+                self._remember_history(prompt_id, tag, history)
+            self._ask_histories([])
+
+        self.context.tasks.submit(lambda: client.prompt_history(prompt_id), done)
+
+    def _remember_history(self, prompt_id: str, tag: str | None, history: TakeHistory) -> None:
+        digest = self._digests.get(prompt_id)
+        if digest is not None and history.row.prompt_sha256 == digest:
+            known = self._histories.get(prompt_id)
+            self._histories[prompt_id] = (tag, tuple(history.takes))
+            if known != self._histories[prompt_id]:
+                self._recount()
+
+    def history_read(self, prompt_id: str, tag: str | None, history: TakeHistory) -> None:
+        """The takes model read a prompt's history: it serves the status too."""
+        if not self._closed:
+            self._remember_history(prompt_id, tag, history)
+
     def _state(self, prompt_id: str) -> PromptState:
         return self._states.get(prompt_id, library.MISSING)
 
     def _update_library(self) -> None:
-        sync = self.client.status()
+        sync = self.client.status(wait=False)
         total = len(self._views)
         catalog = status.catalog_line(sync)
         if self._pinned is None:
@@ -433,7 +510,7 @@ class StudioModel(ViewModel):
 
     def _coverage_source(self) -> str:
         cache = self.client.library
-        cached = cache.latest
+        cached = cache.peek()
         if cached is None:
             return "This machine's takes only: the PC's library has not been read yet"
         pinned = self._pinned
@@ -596,7 +673,7 @@ class StudioModel(ViewModel):
                 promptKind="spoken",
                 banner="",
                 promptText="",
-                placeholder=self.client.status().record_blocked
+                placeholder=self.client.status(wait=False).record_blocked
                 or "Your selected prompt will appear here.",
                 instructions="",
                 guidance="",
@@ -631,8 +708,7 @@ class StudioModel(ViewModel):
             self._set(self.promptChanged, promptStatus="", takesText="")
             return
         state = self._state(current)
-        unsent = [take for take in self._takes if take.prompt_id == current]
-        takes = state.pc_takes + sum(1 for take in unsent if take.sync.upload != "accepted")
+        takes = state.takes  # each take once, this machine's and the PC's
         if takes == 0:
             text = "No takes of this prompt yet"
         else:
@@ -643,7 +719,12 @@ class StudioModel(ViewModel):
 
     def _update_transport(self) -> None:
         phase = self._v["phase"]
-        ready = self._pinned is not None and self._current is not None and self._v["deviceOk"]
+        ready = (
+            self._pinned is not None
+            and self._current is not None
+            and self._v["deviceOk"]
+            and self.client.ready
+        )
         selected = self.take_review.selectedKey
         saveable = (phase == "review" and selected == "review") or (
             phase == "ready" and self.take_review.selected_draft() != ""
@@ -655,7 +736,7 @@ class StudioModel(ViewModel):
             canRetake=ready and phase in ("review", "failed"),
             canSave=saveable,
             canSaveNext=saveable,
-            canDiscard=phase in ("review", "failed"),
+            canDiscard=phase == "failed",  # a good take is never deleted
             canNavigate=self._navigable(),
         )
         self._update_navigation()
@@ -774,8 +855,9 @@ class StudioModel(ViewModel):
 
     @Slot()
     def discard(self) -> None:
-        """Remove the failed (or unsaved) take under review; nothing of it is kept."""
-        if self._v["phase"] not in ("review", "failed"):
+        """Remove a failed take; nothing of it is kept. A good take is never discarded: Save,
+        Retake or leaving keeps it (as a draft), and Remove sets it aside afterwards."""
+        if self._v["phase"] != "failed":
             return
         self._discard_pending()
         self.take_review.clear_review()
@@ -935,7 +1017,7 @@ class StudioModel(ViewModel):
     @Slot()
     def switchCatalog(self) -> None:  # noqa: N802
         """Start the next session now: the PC's active version is pinned (between takes)."""
-        if not self.client.status().switch_pending or self._v["phase"] not in ("ready",):
+        if not self.client.status(wait=False).switch_pending or self._v["phase"] not in ("ready",):
             return
 
         def go() -> None:
@@ -1016,6 +1098,14 @@ class StudioModel(ViewModel):
             return status.Line(STATE_TEXT[phase], "warn" if phase == "recording" else "info")
         if self._outcome is not None:
             return self._outcome
+        if not self.client.ready:
+            if self._unlisted:
+                return status.Line(
+                    "This machine's takes could not be read",
+                    "danger",
+                    f"This machine's takes could not be read: {self._unlisted}",
+                )
+            return status.Line("Checking this machine's takes", "info")
         if not self._v["deviceOk"]:
             label = self._v["deviceLabel"] or "checking the microphone"
             return status.Line(
@@ -1024,7 +1114,7 @@ class StudioModel(ViewModel):
         return status.Line("Ready to record", "neutral")
 
     def _update_status(self) -> None:
-        sync = self.client.status()
+        sync = self.client.status(wait=False)
         transport = self._transport_line(sync)
         titles = {view.prompt_id: view.title for view in self._views}
         notice = status.notice_line(sync.notices, titles)

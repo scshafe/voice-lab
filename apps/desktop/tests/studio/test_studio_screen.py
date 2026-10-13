@@ -234,7 +234,9 @@ def test_record_stop_save_keeps_a_local_take(
     click(studio_window, "studioRecord")
     wait_phase(qtbot, studio, "review")
     assert recorder.last.stops == 1
-    assert studio.canSave and studio.canSaveNext and studio.canRetake and studio.canDiscard
+    assert studio.canSave and studio.canSaveNext and studio.canRetake
+    # A good take is never discarded: Save, Retake or leaving keeps it.
+    assert not studio.canDiscard and not studio_window.find("studioDiscard").property("enabled")
     assert studio.client.takes() == []  # nothing is saved before Save
     click(studio_window, "studioSave")
     wait_phase(qtbot, studio, "ready")
@@ -339,6 +341,36 @@ def test_retake_keeps_the_earlier_take_as_a_draft_and_discard_drops_a_failed_one
     assert studio.phase == "ready" and list(recording.iterdir()) == []
 
 
+def test_a_good_take_is_never_discarded(
+    qtbot: Any, studio_window: Window, recorder: StudioRecorder
+) -> None:
+    """Discard is for a failed take only. A good take, stopped, is kept: as a draft by Retake
+    (or by leaving it), kept by Save; Remove sets a saved one aside afterwards."""
+    studio, takes = studio_window.model.studio, studio_window.model.studio.takes
+    take_one(qtbot, studio_window, recorder)
+    assert not studio.canDiscard and not studio_window.find("studioDiscard").property("enabled")
+    studio.discard()  # what a stray call would do: nothing
+    assert studio.phase == "review" and takes.selectedKey == "review"
+    assert list(studio.client.spool.recording_root.iterdir())  # still there
+    click(studio_window, "studioRetake")
+    qtbot.waitUntil(lambda: len(studio.client.takes()) == 1, timeout=5000)
+    (draft,) = studio.client.takes()
+    assert draft.sync.decision.decision == "draft"
+    recorder.last.advance(4_800)
+    wait_phase(qtbot, studio, "recording")
+    studio.toggleRecord()
+    wait_phase(qtbot, studio, "review")
+    assert not studio.canDiscard
+    click(studio_window, "studioSave")
+    wait_phase(qtbot, studio, "ready")
+    # Afterwards: Remove sets the draft aside (and Restore brings it back).
+    takes.selectTake(draft.take_id)
+    qtbot.waitUntil(lambda: takes.canRemove, timeout=5000)
+    click(studio_window, "studioRemoveTake")
+    assert studio.client.spool.take(draft.take_id).sync.decision.decision == "removed"
+    assert len(studio.client.takes()) == 2
+
+
 REGIONS = (
     "studioLibrary",
     "studioCoverage",
@@ -372,12 +404,54 @@ REGIONS = (
 )
 
 
-def geometry(window: Window) -> dict[str, tuple[float, float, float, float]]:
+def _regions(
+    window: Window, names: tuple[str, ...]
+) -> dict[str, tuple[float, float, float, float]]:
     found = {}
-    for name in REGIONS:
+    for name in names:
         item = window.find(name)
         corner = item.mapToScene(QPointF(0, 0))
         found[name] = (corner.x(), corner.y(), item.width(), item.height())
+    return found
+
+
+def drawn(qtbot: Any, window: Window) -> None:
+    """Wait until the window has laid out and drawn a new frame (and fail unless it did)."""
+    root = window.root
+    with qtbot.waitSignal(root.frameSwapped, timeout=5000) as frame:
+        root.update()
+    assert frame.signal_triggered
+
+
+def geometry(
+    qtbot: Any, window: Window, names: tuple[str, ...] = REGIONS
+) -> dict[str, tuple[float, float, float, float]]:
+    """Every region's place and size in the scene, read once the window has laid out: after
+    a frame is drawn, and again after the next one, the two the same (the layout settled)."""
+    drawn(qtbot, window)
+    first = _regions(window, names)
+    drawn(qtbot, window)
+    found = _regions(window, names)
+    assert found == first, "the layout was still moving"
+    return found
+
+
+def with_details(qtbot: Any, window: Window, idle: dict[str, Any]) -> dict[str, Any]:
+    """Make the sync line show a notice: Details appears beside it. Every region stays as in
+    ``idle``; only the sync text narrows to make room, in place, at the same height."""
+    model = window.model.studio
+    details = window.find("studioDetails")
+    assert not details.property("visible")
+    model.client.spool._notice(
+        model.client.takes()[0], "changed-elsewhere", "Changed elsewhere: the PC's state."
+    )
+    model.client.sync_now()
+    qtbot.waitUntil(lambda: details.property("visible"), timeout=5000)
+    found = geometry(qtbot, window)
+    sync, before = found["studioSyncText"], idle["studioSyncText"]
+    assert {**found, "studioSyncText": before} == idle
+    assert (sync[0], sync[1], sync[3]) == (before[0], before[1], before[3])
+    assert sync[2] < before[2] and sync[0] + sync[2] <= scene_rect(details)[0]
     return found
 
 
@@ -385,11 +459,8 @@ def test_transport_never_moves_the_layout(
     qtbot: Any, studio_window: Window, recorder: StudioRecorder
 ) -> None:
     studio = studio_window.model.studio
-    window = studio_window.root
-    window.resize(1440, 980)
-    qtbot.waitUntil(lambda: window.width() == 1440 and window.height() == 980, timeout=5000)
-    qtbot.wait(50)
-    idle = geometry(studio_window)
+    resize(qtbot, studio_window, 1440, 980)
+    idle = geometry(qtbot, studio_window)
     # Regions stack without overlap, at their final size.
     order = [
         "studioHeader",
@@ -410,31 +481,37 @@ def test_transport_never_moves_the_layout(
 
     studio.toggleRecord()
     qtbot.waitUntil(lambda: len(recorder.takes) == 1, timeout=5000)
-    seen["starting"] = geometry(studio_window)
+    seen["starting"] = geometry(qtbot, studio_window)
     recorder.last.advance(9_600)
     wait_phase(qtbot, studio, "recording")
-    seen["recording"] = geometry(studio_window)
+    seen["recording"] = geometry(qtbot, studio_window)
     studio.toggleRecord()
     wait_phase(qtbot, studio, "review")
-    seen["review"] = geometry(studio_window)
+    seen["review"] = geometry(qtbot, studio_window)
     studio.save()
-    seen["saving"] = geometry(studio_window)
+    seen["saving"] = geometry(qtbot, studio_window)
     wait_phase(qtbot, studio, "ready")
-    seen["saved"] = geometry(studio_window)
+    seen["saved"] = geometry(qtbot, studio_window)
+    for state, found in seen.items():
+        assert found == idle, state
+    # The sync line with a notice: Details appears beside it, and no region moves.
+    noted = with_details(qtbot, studio_window, idle)
+    seen = {}
     recorder.fail_next = "a lost buffer"
     studio.toggleRecord()
     qtbot.waitUntil(lambda: len(recorder.takes) == 2, timeout=5000)
+    recorder.last.advance(4_800)
+    wait_phase(qtbot, studio, "recording")
+    seen["recording"] = geometry(qtbot, studio_window)
     studio.toggleRecord()
     wait_phase(qtbot, studio, "failed")
-    seen["failed"] = geometry(studio_window)
+    seen["failed"] = geometry(qtbot, studio_window)
     for state, found in seen.items():
-        assert found == idle, state
+        assert found == noted, f"{state}, with Details"
 
     # Only the window's size moves it: taller gives the script and the waveform more room.
-    window.resize(1440, 1180)
-    qtbot.waitUntil(lambda: window.height() == 1180, timeout=5000)
-    qtbot.wait(50)
-    taller = geometry(studio_window)
+    resize(qtbot, studio_window, 1440, 1180)
+    taller = geometry(qtbot, studio_window)
     assert taller["studioScriptCard"][3] == pytest.approx(idle["studioScriptCard"][3] + 140)
     assert taller["studioWaveform"][3] == pytest.approx(idle["studioWaveform"][3] + 60)
     assert taller["studioFooter"][3] == 56
@@ -485,10 +562,11 @@ def test_without_a_microphone_nothing_records(
 
 
 def resize(qtbot: Any, window: Window, width: int, height: int) -> None:
+    """The window at ``width`` × ``height``, laid out and drawn at that size."""
     root = window.root
     root.resize(width, height)
     qtbot.waitUntil(lambda: (root.width(), root.height()) == (width, height), timeout=5000)
-    qtbot.wait(50)
+    drawn(qtbot, window)
 
 
 def scene_rect(item: Any) -> tuple[float, float, float, float]:
@@ -512,27 +590,45 @@ def assert_prompt_whole(window: Window, text: str) -> int:
     return size
 
 
+@pytest.mark.parametrize("chosen", [24, 28, 32])
 @pytest.mark.parametrize("size", [(960, 600), (1440, 900)])
 def test_the_longest_prompt_is_shown_whole(
-    qtbot: Any, studio_window: Window, recorder: StudioRecorder, pc: PC, size: tuple[int, int]
+    qtbot: Any,
+    studio_window: Window,
+    recorder: StudioRecorder,
+    pc: PC,
+    size: tuple[int, int],
+    chosen: int,
 ) -> None:
+    """At each reading size and window size: the longest prompt whole, at the chosen size or
+    the largest smaller one that fits (16 at least), the same while recording and in review,
+    with the sync line's Details shown or not, and no region moved."""
     studio = studio_window.model.studio
     longest = max(pc.catalog[1].suite.prompts, key=lambda prompt: len(prompt.text or ""))
     assert longest.text is not None and len(longest.text) >= 140
     studio.selectPrompt(longest.prompt_id)
+    studio.setReadingSize(chosen)
     resize(qtbot, studio_window, *size)
-    idle = geometry(studio_window)
+    idle = geometry(qtbot, studio_window)
     reading = assert_prompt_whole(studio_window, longest.text)
-    if size == (1440, 900):
-        assert reading == 24  # the reading size, untouched on a roomy window
+    assert reading <= chosen
+    if size == (1440, 900) and chosen == 24:
+        assert reading == 24  # the default, untouched on a roomy window
     studio.toggleRecord()
     qtbot.waitUntil(lambda: len(recorder.takes) == 1, timeout=5000)
     recorder.last.advance(4_800)
     wait_phase(qtbot, studio, "recording")
+    assert geometry(qtbot, studio_window) == idle
     assert assert_prompt_whole(studio_window, longest.text) == reading
-    assert geometry(studio_window) == idle
     studio.toggleRecord()
     wait_phase(qtbot, studio, "review")
+    assert geometry(qtbot, studio_window) == idle
+    assert assert_prompt_whole(studio_window, longest.text) == reading
+    studio.save()
+    wait_phase(qtbot, studio, "ready")
+    # A notice: Details shows on the status line; the prompt and every region stay.
+    assert geometry(qtbot, studio_window) == idle
+    with_details(qtbot, studio_window, idle)
     assert assert_prompt_whole(studio_window, longest.text) == reading
 
 

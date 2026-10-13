@@ -24,6 +24,17 @@ Window {
     Connections {
         target: app
         function onToast(text, tone) { toasts.show(text, { tone: tone }) }
+        function onCloseApproved() {
+            root.closeApproved = true
+            root.close()
+        }
+    }
+
+    // Closing (the window, or Quit) asks first about an unsaved trim edit in the studio.
+    property bool closeApproved: false
+    onClosing: (close) => {
+        if (!root.closeApproved && !app.mayClose())
+            close.accepted = false
     }
 
     SuiAppShell {

@@ -56,14 +56,15 @@ class LibraryCache:
     def _load(self) -> None:
         if self._loaded:
             return
-        self._loaded = True
         path = self.root / LIBRARY_FILE
-        if not path.exists():
-            return
         try:
-            self._latest = read_canonical_model(path, CachedLibrary, max_bytes=MAX_LIBRARY_BYTES)
+            if path.exists():
+                self._latest = read_canonical_model(
+                    path, CachedLibrary, max_bytes=MAX_LIBRARY_BYTES
+                )
         except (OSError, ContractError, SecurityError):
             self._latest = None
+        self._loaded = True  # last: peek() never sees it loaded before it is
 
     @property
     def loaded(self) -> bool:

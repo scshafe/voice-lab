@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import stat
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ from corpus_rig import PC
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (root objects come back as QQuickWindow)
 from studio_fakes import StudioRecorder
 
-from .conftest import open_studio, ready, studio_app
+from .conftest import open_studio, ready, studio_app, wait_phase
 from .test_studio_screen import assert_prompt_whole, click, prompt_ids, resize
 from .test_studio_takes import recorded, saved
 
@@ -83,3 +84,99 @@ def test_the_pickers_line_is_whole_on_the_smallest_window(
         )
         assert line.property("truncated") is False, line.property("text")
     assert "· 2.0 s · Not saved · here" in takes.takeOptions[0]["label"]
+
+
+def test_recovery_and_reads_at_start_run_off_the_gui_thread(
+    qtbot: Any,
+    data_dir: Path,
+    tmp_path: Path,
+    pc: PC,
+    recorder: StudioRecorder,
+    monkeypatch: Any,
+) -> None:
+    """The first listing of this machine's takes (which recovers what an earlier run left),
+    the PC library cache's first parse and the partial WAV's reads while recording all run
+    on workers: the window answers meanwhile and says it is checking; nothing records until
+    the takes are listed."""
+    from voice_lab_desktop.corpus.library import LibraryCache
+    from voice_lab_desktop.corpus.spool import CorpusSpool
+    from voice_lab_desktop.studio.audio import LiveWaveform
+
+    gui = threading.get_ident()
+    entered, gate = threading.Event(), threading.Event()
+    threads: dict[str, set[int]] = {"recover": set(), "parse": set(), "partial": set()}
+    recover, load, poll = CorpusSpool._recover, LibraryCache._load, LiveWaveform.poll
+
+    def slow_recover(self: Any) -> Any:
+        threads["recover"].add(threading.get_ident())
+        entered.set()
+        assert gate.wait(10)
+        return recover(self)
+
+    def watched_load(self: Any) -> Any:
+        if not self.loaded:
+            threads["parse"].add(threading.get_ident())
+        return load(self)
+
+    def watched_poll(self: Any) -> Any:
+        threads["partial"].add(threading.get_ident())
+        return poll(self)
+
+    monkeypatch.setattr(CorpusSpool, "_recover", slow_recover)
+    monkeypatch.setattr(LibraryCache, "_load", watched_load)
+    monkeypatch.setattr(LiveWaveform, "poll", watched_poll)
+    model = studio_app(data_dir, tmp_path, pc, recorder)
+    try:
+        with open_studio(qtbot, model, tmp_path) as window:
+            studio = model.studio
+            qtbot.waitUntil(entered.is_set, timeout=5000)
+            qtbot.waitExposed(window.root)
+            qtbot.waitUntil(
+                lambda: studio.statusText == "Checking this machine's takes", timeout=5000
+            )
+            assert not studio.ready and not studio.canRecord
+            assert not window.find("studioRecord").property("enabled")
+            studio.toggleRecord()
+            assert recorder.takes == []
+            gate.set()
+            qtbot.waitUntil(lambda: studio.ready and studio.canRecord, timeout=10000)
+            ready(qtbot, model)
+            studio.toggleRecord()
+            qtbot.waitUntil(lambda: len(recorder.takes) == 1, timeout=5000)
+            recorder.last.advance(9_600)
+            wait_phase(qtbot, studio, "recording")
+            qtbot.waitUntil(lambda: len(studio.takes.bins) > 0, timeout=5000)
+            assert threads["recover"] and threads["parse"] and threads["partial"]
+            for kind, seen in threads.items():
+                assert gui not in seen, kind
+    finally:
+        gate.set()
+        model.shutdown()
+
+
+def test_takes_that_cannot_be_listed_at_start_say_so(
+    qtbot: Any,
+    data_dir: Path,
+    tmp_path: Path,
+    pc: PC,
+    recorder: StudioRecorder,
+    monkeypatch: Any,
+) -> None:
+    from voice_lab_desktop.corpus.spool import CorpusSpool
+
+    def unreadable(self: Any) -> None:
+        raise PermissionError("the spool is not readable")
+
+    monkeypatch.setattr(CorpusSpool, "_recover", unreadable)
+    model = studio_app(data_dir, tmp_path, pc, recorder)
+    try:
+        with open_studio(qtbot, model, tmp_path):
+            studio = model.studio
+            qtbot.waitUntil(
+                lambda: studio.statusText == "This machine's takes could not be read",
+                timeout=10000,
+            )
+            assert studio.statusTone == "danger" and not studio.canRecord
+            assert studio.problemText.endswith("the spool is not readable")
+    finally:
+        model.shutdown()

@@ -104,7 +104,8 @@ def test_another_prompt_continue_missing_record_and_another_screen(
     wait_phase(qtbot, studio, "recording")
     studio.toggleRecord()
     wait_phase(qtbot, studio, "review")
-    studio.discard()
+    studio.save()
+    wait_phase(qtbot, studio, "ready")
     # Another screen: Cancel stays; Discard edit leaves.
     takes.selectTake(take_id)
     qtbot.waitUntil(lambda: takes.frameCount > 0, timeout=5000)
@@ -140,3 +141,45 @@ def test_the_take_under_review_keeps_its_edit(
     draft = next(t for t in studio.client.takes() if t.take_id != first)
     assert draft.sync.decision.decision == "draft"
     assert (draft.sync.trim.start_frame, draft.sync.trim.end_frame) == (2_400, 12_000)
+
+
+def test_closing_the_window_or_quit_asks_first(
+    qtbot: Any, studio_window: Window, recorder: StudioRecorder
+) -> None:
+    """With a trim edit not saved, Quit and closing the window ask "Save the trim?" too:
+    Cancel keeps the app open, the edit kept; Save trim saves it, then the window closes."""
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from voice_lab_desktop.app import QuitGuard
+
+    model, takes = studio_window.model, studio_window.model.studio.takes
+    root = studio_window.root
+    take_id = saved(qtbot, studio_window, recorder)
+    qtbot.waitUntil(lambda: takes.frameCount > 0, timeout=5000)
+    assert model.mayClose()  # nothing to ask about
+    edited(qtbot, studio_window)
+    # Quit (what ⌘Q sends the application, as cli.run guards it): held, and asked.
+    app = QCoreApplication.instance()
+    guard = QuitGuard(model)
+    app.installEventFilter(guard)
+    try:
+        quit_event = QEvent(QEvent.Type.Quit)
+        QCoreApplication.sendEvent(app, quit_event)
+    finally:
+        app.removeEventFilter(guard)
+    assert not quit_event.isAccepted()
+    answer(qtbot, studio_window, "studioConfirmCancel")
+    assert (
+        root.isVisible()
+        and takes.trimDirty
+        and trim_of(studio_window, take_id)
+        == (
+            None,
+            None,
+        )
+    )
+    # Closing the window, from another screen's route too: asked; Save trim, then closed.
+    root.close()
+    assert root.isVisible()
+    answer(qtbot, studio_window, "studioConfirmSave")
+    qtbot.waitUntil(lambda: not root.isVisible(), timeout=5000)
+    assert trim_of(studio_window, take_id) == (2_400, 12_000)

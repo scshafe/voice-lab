@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from PySide6.QtCore import Signal, Slot
 
@@ -41,7 +41,7 @@ from ..api import ApiError
 from ..auth import AuthError
 from ..capture.types import SAMPLE_RATE, CapturedTake
 from ..config import ConfigError
-from ..corpus.client import CorpusClient
+from ..corpus.client import CorpusClient, remote_origin
 from ..corpus.records import Notice
 from ..corpus.spool import SpooledTake, SpoolError
 from ..playback import PlaybackError
@@ -69,6 +69,7 @@ class TakeReviewModel(ViewModel):
     trimChanged = Signal()
     playChanged = Signal()
     confirmChanged = Signal()
+    restoreChanged = Signal()
 
     # -- the picker and the history
     takeOptions = qproperty("QVariantList", "takeOptions", takesChanged)
@@ -108,6 +109,8 @@ class TakeReviewModel(ViewModel):
     canPlay = qproperty(bool, "canPlay", playChanged)
     # -- the question before an unsaved trim edit is left
     confirmOpen = qproperty(bool, "confirmOpen", confirmChanged)
+    # -- Restore's question when what came before is not known here
+    restoreAskOpen = qproperty(bool, "restoreAskOpen", restoreChanged)
 
     def __init__(
         self,
@@ -152,6 +155,7 @@ class TakeReviewModel(ViewModel):
                 "playing": False,
                 "canPlay": False,
                 "confirmOpen": False,
+                "restoreAskOpen": False,
             },
         )
         self.client = client
@@ -178,6 +182,9 @@ class TakeReviewModel(ViewModel):
         self._live: audio.LiveWaveform | None = None
         self._pending_seek: int | None = None
         self._closed = False
+        self._live_reading = False
+        #: Told each PC history read (prompt id, library tag, history): the studio's status.
+        self.on_history: Callable[[str, str | None, TakeHistory], None] | None = None
         player = context.player
         player.changed.connect(self._player_changed)
         player.positionChanged.connect(self._player_position)
@@ -225,7 +232,7 @@ class TakeReviewModel(ViewModel):
         self._all_local = list(local)
         self._notices = notices
         self._rebuild()
-        cached = self.client.library.latest
+        cached = self.client.library.peek()
         tag = cached.tag if cached is not None else None
         if prompt is not None and tag is not None and tag != self._pc_tag:
             self._fetch_history(select_latest=False)
@@ -249,25 +256,42 @@ class TakeReviewModel(ViewModel):
         )
 
     def poll_live(self) -> None:
+        """Read what the worker wrote since (off the GUI thread, one read at a time)."""
         live = self._live
-        if live is None:
+        if live is None or self._live_reading:
             return
-        if live.poll():
-            peak = live.peak_dbfs
-            self._set(
-                self.waveChanged,
-                bins=live.bins(),
-                waveNote="Live · dB display scale",
-                levelPeak=max(0.0, (peak - audio.FLOOR_DB) / -audio.FLOOR_DB),
-                levelText=f"{peak:.1f} dBFS",
-            )
-        elif live.error:
-            self._set(
-                self.waveChanged,
-                waveNote=f"No live waveform: {live.error}",
-                levelText="",
-                levelPeak=0.0,
-            )
+        self._live_reading = True
+
+        def work() -> tuple[bool, list[float], float, str]:
+            grew = live.poll()
+            return grew, live.bins(), live.peak_dbfs, live.error
+
+        def done(
+            result: tuple[bool, list[float], float, str] | None, error: BaseException | None
+        ) -> None:
+            self._live_reading = False
+            if error is not None:
+                raise error
+            if self._closed or live is not self._live or result is None:
+                return
+            grew, bins, peak, problem = result
+            if grew:
+                self._set(
+                    self.waveChanged,
+                    bins=bins,
+                    waveNote="Live · dB display scale",
+                    levelPeak=max(0.0, (peak - audio.FLOOR_DB) / -audio.FLOOR_DB),
+                    levelText=f"{peak:.1f} dBFS",
+                )
+            elif problem:
+                self._set(
+                    self.waveChanged,
+                    waveNote=f"No live waveform: {problem}",
+                    levelText="",
+                    levelPeak=0.0,
+                )
+
+        self.context.tasks.submit(work, done)
 
     def end_live(self) -> None:
         if self._live is None:
@@ -400,7 +424,7 @@ class TakeReviewModel(ViewModel):
         self._pc_fetching = True
         self._pc_generation += 1
         generation = self._pc_generation
-        cached = self.client.library.latest
+        cached = self.client.library.peek()
         tag = cached.tag if cached is not None else None
         client = self.client
 
@@ -429,7 +453,12 @@ class TakeReviewModel(ViewModel):
                 note = ""
             self._set(self.takesChanged, historyNote=note)
             self._rebuild()
-            if select_latest and self._selected is None:
+            if self.on_history is not None:
+                self.on_history(prompt, tag, history)
+            # A late answer never takes the selection or the waveform from a take being
+            # recorded, nor from the take under review.
+            idle = not self.busy() and self._live is None and self._review is None
+            if select_latest and self._selected is None and idle:
                 self._select(takes.latest_kept(self._entries))
 
         def work() -> TakeHistory:
@@ -536,7 +565,7 @@ class TakeReviewModel(ViewModel):
         decision = entry.decision if entry is not None else ""
         note = ""
         if entry is not None and entry.key == REVIEW:
-            note = "Not saved yet: Save keeps it, Discard drops it"
+            note = "Not saved yet: Save keeps it; Retake or leaving keeps it as a draft"
         self._set(
             self.takesChanged,
             canRemove=decidable and decision in ("draft", "kept"),
@@ -575,9 +604,37 @@ class TakeReviewModel(ViewModel):
 
     @Slot()
     def restore(self) -> None:
-        """A rejected or removed take back to its decision before."""
-        if self._v["canRestore"]:
-            self._decide(self.client.restore, "Take restored")
+        """A rejected or removed take back to its decision before; when that is not known
+        here (a take recorded elsewhere, seen only rejected or removed), the operator is
+        asked: Restore as kept, or as draft. No guess."""
+        entry = self._selected
+        if not self._v["canRestore"] or entry is None:
+            return
+        if self._restore_target(entry) is None:
+            self._set(self.restoreChanged, restoreAskOpen=True)
+            return
+        self._decide(self.client.restore, "Take restored")
+
+    def _restore_target(self, entry: TakeEntry) -> str | None:
+        if entry.local is not None:
+            return self.client.restore_target(entry.take_id)
+        origin = remote_origin(entry.pc) if entry.pc is not None else None
+        return origin.restore_decision if origin is not None else None
+
+    @Slot(str)
+    def restoreAs(self, decision: str) -> None:  # noqa: N802
+        """The operator's answer: restore as ``kept`` or ``draft``."""
+        if not self._v["restoreAskOpen"] or decision not in ("kept", "draft"):
+            return
+        self._set(self.restoreChanged, restoreAskOpen=False)
+        to: Literal["kept", "draft"] = "kept" if decision == "kept" else "draft"
+        self._decide(
+            lambda take_id: self.client.restore(take_id, to), f"Take restored as {decision}"
+        )
+
+    @Slot()
+    def restoreCancel(self) -> None:  # noqa: N802
+        self._set(self.restoreChanged, restoreAskOpen=False)
 
     # -- the trim -----------------------------------------------------------------------------
 
