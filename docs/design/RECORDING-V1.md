@@ -164,35 +164,27 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
 
 ## 7. The owner's steps
 
-1. **Seed the PC's catalog** (step 2), once, after step 2 is deployed. On the PC, as you:
+1. **Seed the PC's catalog** (step 2), once. On the PC, as you, from your checkout:
 
    ```sh
-   # The two standard lists, checked against the pins (standard_prompt_sets.STANDARD_SET_SHA256).
-   d=$(mktemp -d) && cd "$d"
-   curl -fsSLo harvard.html https://www.cs.columbia.edu/~hgs/audio/harvard.html
-   curl -fsSLo cmuarctic.data http://festvox.org/cmu_arctic/cmuarctic.data
-   sha256sum harvard.html cmuarctic.data   # must print exactly these two lines; stop if not:
-   # f8c981aed97020642fd2423de787b3ccd2a7233f32fe07ebd26d2279c195cb75  harvard.html
-   # 60e3d9a4dc33732c9100baadd747312bdc1a200fc891766507397289753a25c7  cmuarctic.data
-   s=$(sudo -u voice-lab mktemp -d) && sudo install -o voice-lab -m 0600 harvard.html cmuarctic.data "$s"/
-
-   # The store, as the voice-lab user (the lab's owner); docs/CORPUS_STORE.md "Seeding a library".
-   vl() { sudo -u voice-lab /opt/voice-lab/current/bin/voice-lab "$@" --asset-root /data/voice-lab/lab; }
-   vl catalog init --subject-id cole-self --from-builtin pilot-v2 --drop-room-tones
-   vl catalog import-harvard --from-file "$s/harvard.html" --fetched-at 2026-09-16T04:17:51Z \
-     --source-url https://www.cs.columbia.edu/~hgs/audio/harvard.html
-   vl catalog import-arctic --from-file "$s/cmuarctic.data" --fetched-at 2026-09-16T04:17:51Z \
-     --source-url http://festvox.org/cmu_arctic/cmuarctic.data
-   vl catalog publish
-   vl catalog show --version 2 --json | grep catalog_sha256
-   #   must be 1ebd48cbc6f6a2b2ea0fe70d0cff8f1df1e91b3bbf2a5be52959ffba141ff90f; stop if not
-   vl catalog activate --subject-id cole-self --version 2
-   sudo -u voice-lab rm -r "$s"
+   cd ~/src/voice-lab && git pull --ff-only
+   scripts/seed-pc-catalog
    ```
 
-   Then `GET /api/v1/catalog` answers version 2 (1,886 prompts). The same files and
-   `--fetched-at` as the Mac's seeding give the same digests, so the Mac's takes name versions
-   the PC holds.
+   It asks for your sudo password and runs the lab's steps as the `voice-lab` user:
+   - it downloads the Harvard and ARCTIC lists and stops, writing nothing, unless both match
+     `standard_prompt_sets.STANDARD_SET_SHA256`;
+   - it runs docs/CORPUS_STORE.md "Seeding a library" with `--asset-root /data/voice-lab/lab`
+     and the Mac's `--fetched-at`: init from pilot-v2 without room tones, import Harvard, then
+     ARCTIC, publish;
+   - it activates version 2 for `cole-self` only when its `catalog_sha256` is `1ebd48cb…`, the
+     Mac's. The same files and `--fetched-at` give the same digests, so the Mac's takes name
+     versions the PC holds.
+
+   It continues from wherever the store is, so a stopped run is finished by running it again.
+   Once seeded, a run re-checks version 2 and activates it again, which rewrites what
+   `GET /api/v1/catalog` serves (version 2, 1,886 prompts). It says so when the deployed build
+   predates that route.
 2. **S-1 on the Mac** (step 8), with the UMIK-1: `scripts/s1-portaudio`, or ask the Mac agent.
 3. **The transfer approval for the Mac's takes** (step 9).
 4. **Sign off parity and retire the Swift app** (step 10).
@@ -215,6 +207,7 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   init|publish|activate` and by every intake pass, which reports a broken store but still
   publishes. `GET /api/v1/catalog` serves it with the snapshot's digest as its `ETag`, and
   never opens the store. Seeding the PC is owner step 1.
+- 2026-10-12: `scripts/seed-pc-catalog`, owner step 1 in one command.
 - 2026-10-12: step 3, takes into the PC. A take package (`corpus_takes`,
   `cole-voice-lab.corpus-take/v1`: the take, `qc.json`, `READY`, `original.wav` and the
   PortAudio worker's `continuity.json`, whose contract moved into the backend) rides the

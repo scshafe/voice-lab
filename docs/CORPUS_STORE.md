@@ -197,11 +197,14 @@ On the PC (D-052, docs/design/RECORDING-V1.md), the same store is the corpus for
 recording client: the owner runs these commands there as the `voice-lab` user with
 `--asset-root /data/voice-lab/lab`, the API serves the active version over `/api/v1`, and a
 client pins the version it records against (the recording service's relaunch pin is the
-Swift app's). `init`, `publish` and `activate` also rebuild the API's read model at once
-(`derived/corpus/`: the active version and its library of takes, `corpus_read_model`), so the
-library follows a newly active version without waiting for an upload. A take uploaded to the
-PC is accepted only when its own catalog version's snapshot is on the PC and counts
-its prompt (docs/HOME_HOST_INTAKE.md, "Take packages"); retiring a prompt or rewording it
+Swift app's). `scripts/seed-pc-catalog` runs the sequence below there, with the downloads, the
+pin checks and the digest check before activating (RECORDING-V1.md §7 step 1). `init`,
+`publish` and `activate` also rebuild the API's read model at once (`derived/corpus/`: the
+active version and its library of takes, `corpus_read_model`), so the library follows a newly
+active version without waiting for an upload. A take uploaded to the PC is accepted only when
+the catalog version it names is the one this store published under that id and number, and
+that version counts its prompt; until the store holds that version, the take waits in
+`incoming/` (docs/HOME_HOST_INTAKE.md, "Take packages"). Retiring a prompt or rewording it
 without `--keep-recordings` stops its takes counting in the library, but never removes them.
 
 Seeding a library, as the rollout's Step 7 does:
