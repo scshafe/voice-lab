@@ -34,6 +34,7 @@ JWKS, issuer, audience `voice-lab-desktop`, lifetime, and a one-subject allow-li
 | `PUT /api/v1/intake/sessions/{id}/files/{path}` | the path percent-encoded as one segment; `Content-Range: bytes S-E/T` (or `bytes */0` for an empty file). `S` must equal the bytes held (`range_not_contiguous` names them). A complete file is hashed: a mismatch discards it (`checksum_mismatch`) |
 | `POST /api/v1/intake/sessions/{id}/finalize` | re-hashes every file and renames the package to `incoming/{id}` in one step; idempotent |
 | `GET /api/v1/intake/sessions/{id}/receipt` | the intake receipt once accepted, `not_accepted` before |
+| `GET /api/v1/catalog` | `CatalogView`: the catalog version `cole-self` records against (D-052), from the corpus read model and the digest-checked snapshot; `ETag` is the snapshot's SHA-256 (`If-None-Match` → 304); `catalog_unavailable` (503) until the PC's catalog is seeded (docs/design/RECORDING-V1.md §7) |
 
 Limits: 8 open sessions; 4,096 files and 64 GiB per session; 8 GiB per file; 64 MiB per
 `PUT`; the intake disk floor (10 GiB free) plus the declared bytes, or
@@ -45,6 +46,8 @@ The API never writes `raw/` and never decides acceptance. The publisher
 (`voice-lab intake publish`, one pass, run by the PC's path unit) accepts each finalized
 package with `accept_capture_session`; a package it refuses is moved untouched to
 `incoming/.refused/<id>.<time>` with a record in `provenance/intake/refusals/<id>.json`.
+Each pass also refreshes the corpus read model (`derived/corpus/`) the catalog route serves
+(D-052); its summary's `read_model` says `current`, `no catalog` or the error.
 
 ## The capturing host
 

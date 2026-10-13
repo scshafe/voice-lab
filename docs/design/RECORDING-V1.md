@@ -162,12 +162,35 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
 
 ## 7. The owner's steps
 
-1. **Seed the PC's catalog** (step 2), once, as the `voice-lab` user. Use the pinned
-   Harvard and ARCTIC files: the copies the Mac was seeded from, or fresh downloads whose
-   SHA-256 matches `standard_prompt_sets.STANDARD_SET_SHA256`. Follow the command sequence in
-   docs/CORPUS_STORE.md "Seeding a library", with
-   `--asset-root /data/voice-lab/lab`. Activate only after version 2's
-   `catalog_sha256` is `1ebd48cb…`. The exact commands come with step 2's PR.
+1. **Seed the PC's catalog** (step 2), once, after step 2 is deployed. On the PC, as you:
+
+   ```sh
+   # The two standard lists, checked against the pins (standard_prompt_sets.STANDARD_SET_SHA256).
+   d=$(mktemp -d) && cd "$d"
+   curl -fsSLo harvard.html https://www.cs.columbia.edu/~hgs/audio/harvard.html
+   curl -fsSLo cmuarctic.data http://festvox.org/cmu_arctic/cmuarctic.data
+   sha256sum harvard.html cmuarctic.data   # must print exactly these two lines; stop if not:
+   # f8c981aed97020642fd2423de787b3ccd2a7233f32fe07ebd26d2279c195cb75  harvard.html
+   # 60e3d9a4dc33732c9100baadd747312bdc1a200fc891766507397289753a25c7  cmuarctic.data
+   s=$(sudo -u voice-lab mktemp -d) && sudo install -o voice-lab -m 0600 harvard.html cmuarctic.data "$s"/
+
+   # The store, as the voice-lab user (the lab's owner); docs/CORPUS_STORE.md "Seeding a library".
+   vl() { sudo -u voice-lab /opt/voice-lab/current/bin/voice-lab "$@" --asset-root /data/voice-lab/lab; }
+   vl catalog init --subject-id cole-self --from-builtin pilot-v2 --drop-room-tones
+   vl catalog import-harvard --from-file "$s/harvard.html" --fetched-at 2026-09-16T04:17:51Z \
+     --source-url https://www.cs.columbia.edu/~hgs/audio/harvard.html
+   vl catalog import-arctic --from-file "$s/cmuarctic.data" --fetched-at 2026-09-16T04:17:51Z \
+     --source-url http://festvox.org/cmu_arctic/cmuarctic.data
+   vl catalog publish
+   vl catalog show --version 2 --json | grep catalog_sha256
+   #   must be 1ebd48cbc6f6a2b2ea0fe70d0cff8f1df1e91b3bbf2a5be52959ffba141ff90f; stop if not
+   vl catalog activate --subject-id cole-self --version 2
+   sudo -u voice-lab rm -r "$s"
+   ```
+
+   Then `GET /api/v1/catalog` answers version 2 (1,886 prompts). The same files and
+   `--fetched-at` as the Mac's seeding give the same digests, so the Mac's takes name versions
+   the PC holds.
 2. **S-1 on the Mac** (step 8), with the UMIK-1: `scripts/s1-portaudio`, or ask the Mac agent.
 3. **The transfer approval for the Mac's takes** (step 9).
 4. **Sign off parity and retire the Swift app** (step 10).
@@ -185,3 +208,8 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
 ## 9. Progress
 
 - 2026-10-12: the plan (step 1).
+- 2026-10-12: step 2, the catalog on the PC. `corpus_read_model` records the subject's active
+  catalog in `derived/corpus/` (never vaulted). It is refreshed by `voice-lab catalog
+  init|publish|activate` and by every intake pass, which reports a broken store but still
+  publishes. `GET /api/v1/catalog` serves it with the snapshot's digest as its `ETag`, and
+  never opens the store. Seeding the PC is owner step 1.

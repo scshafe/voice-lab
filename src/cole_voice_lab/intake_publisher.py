@@ -11,7 +11,13 @@ where the API can read it:
   ``provenance/intake/refusals/<session_id>.json`` says why. Nothing is deleted.
 
 An operating failure (an ``OSError``, the disk floor) leaves the package where it is for the
-next pass. On the PC this runs as a systemd host unit with no network
+next pass.
+
+Every pass also refreshes the corpus's read model (``corpus_read_model``, D-052): the PC's one
+lab writer keeps what the read-only API serves current. A failure there is reported in the
+pass's summary and never holds back a package.
+
+On the PC this runs as a systemd host unit with no network
 (``deploy/host/voice-lab-intake.service``), started by a path unit whenever ``incoming/``
 changes; the API container cannot write ``raw/`` at all.
 """
@@ -30,6 +36,7 @@ from pydantic import Field, ValidationError
 
 from .canonical import open_regular_no_follow, write_canonical_json
 from .capture import READY_NAME, ReadyMarker
+from .corpus_read_model import refresh_active_catalog
 from .errors import ContractError, SecurityError
 from .intake import MIN_FREE_BYTES, IntakeReceipt, accept_capture_session
 from .models import ContractModel, Sha256, StableId, utc_now
@@ -69,6 +76,8 @@ class PublishSummary:
     accepted: list[IntakeReceipt] = field(default_factory=list)
     refused: list[IntakeRefusalRecord] = field(default_factory=list)
     deferred: list[dict[str, str]] = field(default_factory=list)
+    #: The corpus read model after the pass: ``"current"``, ``"no catalog"`` or the error.
+    read_model: str = "current"
 
 
 def _records(layout: AssetLayout, kind: str) -> Path:
@@ -158,4 +167,13 @@ def publish_pending(
                     receipt=receipt,
                 ),
             )
+    summary.read_model = _refresh_read_model(layout, clock)
     return summary
+
+
+def _refresh_read_model(layout: AssetLayout, clock: Callable[[], datetime]) -> str:
+    try:
+        record = refresh_active_catalog(layout, clock=clock)
+    except (ContractError, SecurityError, OSError) as error:
+        return f"error: {error}"
+    return "current" if record is not None else "no catalog"
