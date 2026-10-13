@@ -1150,9 +1150,11 @@ def _package_items(
     """A READY capture package: the marker, the manifest and QC it names, the files it lists.
 
     For an accepted raw session the intake receipt and the intake QC report it names are
-    bound too, and the directory must be named by the manifest digest.
+    bound too, and the directory must be named by the manifest digest. A raw take package
+    (``corpus_takes``, D-052) binds its two files, the WAV and the continuity evidence.
     """
     from .capture import ReadyMarker
+    from .corpus_takes import CorpusTakeManifest, declares_take
 
     root = layout.root
     ready_path = f"{directory}/{_READY}"
@@ -1164,13 +1166,25 @@ def _package_items(
         raise SourceChangedError(
             manifest_path, "mismatch", "does not match the digest its READY marker names"
         )
-    manifest = _parse(CaptureManifest, manifest_bytes, manifest_path)
     name = PurePosixPath(directory).name
     if name != (ready.manifest_sha256 if raw else f"capture-{ready.session_id}"):
         raise SourceChangedError(directory, "invalid", "is not named for the package it holds")
-    expected: dict[str, tuple[str | None, int | None]] = {
-        f"{directory}/{entry.path}": (entry.sha256, entry.size_bytes) for entry in manifest.files
-    }
+    expected: dict[str, tuple[str | None, int | None]]
+    if raw and declares_take(manifest_bytes):
+        take = _parse(CorpusTakeManifest, manifest_bytes, manifest_path)
+        expected = {
+            f"{directory}/{take.audio.path}": (take.audio.sha256, take.audio.size_bytes),
+            f"{directory}/{take.continuity.path}": (
+                take.continuity.sha256,
+                take.continuity.size_bytes,
+            ),
+        }
+    else:
+        manifest = _parse(CaptureManifest, manifest_bytes, manifest_path)
+        expected = {
+            f"{directory}/{entry.path}": (entry.sha256, entry.size_bytes)
+            for entry in manifest.files
+        }
     expected[ready_path] = _digest(ready_bytes)
     expected[manifest_path] = _digest(manifest_bytes)
     expected[f"{directory}/qc.json"] = (ready.qc_report_sha256, None)
@@ -2018,9 +2032,15 @@ def library_sources() -> tuple[ReplicationSource, ...]:
     job is queued again and a package publication is never resolved to its map), so analysis
     and packages come first and fall back with the takes. Because raw sessions fall back with
     the package maps, a take store commit during a pass also holds back every owner that names
-    raw sessions.
+    raw sessions. The PC's take records (D-052) name raw take packages and catalog snapshots.
     """
     return (
+        RecordTreeSource(
+            "corpus-takes",
+            frozenset({"corpus-take-states"}),
+            (ScanRoot("provenance/corpus-takes"),),
+            referents=frozenset({"raw-packages", "prompt-database"}),
+        ),
         RecordTreeSource(
             "recording-edits",
             _edit_record_rules(),

@@ -1041,7 +1041,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--playback-approval",
         metavar="TEXT",
-        help="the recorded operator approval for playback (audio and blind referee trials)",
+        help="the recorded operator approval for playback (journey audio, blind referee "
+        "trials and the corpus's take audio)",
     )
     group.add_argument(
         "--transcript-dir", help="local transcript text (default: under the data root)"

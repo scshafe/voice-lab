@@ -1,0 +1,453 @@
+{
+  "$defs": {
+    "AudioSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "encoding": {
+          "enum": [
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "maximum": 384000,
+          "minimum": 8000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sample_width_bytes": {
+          "enum": [
+            2,
+            3,
+            4
+          ],
+          "title": "Sample Width Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_rate_hz",
+        "channels",
+        "sample_width_bytes",
+        "encoding",
+        "frames",
+        "duration_seconds"
+      ],
+      "title": "AudioSpec",
+      "type": "object"
+    },
+    "CatalogReference": {
+      "additionalProperties": false,
+      "description": "A published catalog version by id, version, exact suite digest and snapshot digest.\n\n``catalog_sha256`` is the canonical digest of the suite alone (the digest every take\nand coverage projection keys on); ``snapshot_sha256`` is the sha256 of the exact\nsnapshot file bytes, so the alias half of the file is pinned too. ``suite_id`` and\n``purpose`` repeat what the snapshot's suite declares so contract-level checks (purpose\nagainst the capture gate) need no file read; the store verifies all of them against the\nsnapshot whenever a reference is materialized.",
+      "properties": {
+        "catalog_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "catalog_version": {
+          "$ref": "#/$defs/PositiveRevision"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation",
+            "physical-test"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "snapshot_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "snapshot_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "catalog_id",
+        "catalog_version",
+        "catalog_sha256",
+        "snapshot_sha256",
+        "suite_id",
+        "purpose",
+        "snapshot_path"
+      ],
+      "title": "CatalogReference",
+      "type": "object"
+    },
+    "PositiveRevision": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference",
+            "procedure"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "TakeAudio": {
+      "additionalProperties": false,
+      "description": "The take's one recording.",
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioSpec"
+        },
+        "path": {
+          "const": "original.wav",
+          "default": "original.wav",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 44,
+          "maximum": 95040044,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size_bytes",
+        "audio"
+      ],
+      "title": "TakeAudio",
+      "type": "object"
+    },
+    "TakeDecision": {
+      "additionalProperties": false,
+      "description": "What the operator decided about a take, at which revision (0: nothing yet, a draft).\n\n``reason`` is a rejection's, and only a rejection's; every decision after revision 0 says\nwhen it was made.",
+      "properties": {
+        "decided_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Decided At"
+        },
+        "decision": {
+          "$ref": "#/$defs/TakeDecisionName"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_Text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "minimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "decision",
+        "revision",
+        "reason",
+        "decided_at"
+      ],
+      "title": "TakeDecision",
+      "type": "object"
+    },
+    "TakeDecisionName": {
+      "enum": [
+        "draft",
+        "kept",
+        "rejected",
+        "removed"
+      ],
+      "type": "string"
+    },
+    "TakeId": {
+      "pattern": "^take-[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "TakeTrim": {
+      "additionalProperties": false,
+      "description": "The frames a take keeps, ``[start_frame, end_frame)``, or all of them (both ``None``),\nat which revision (0: never trimmed).",
+      "properties": {
+        "end_frame": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "End Frame"
+        },
+        "revision": {
+          "minimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "start_frame": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Start Frame"
+        }
+      },
+      "required": [
+        "revision",
+        "start_frame",
+        "end_frame"
+      ],
+      "title": "TakeTrim",
+      "type": "object"
+    },
+    "_Finding": {
+      "maxLength": 120,
+      "minLength": 1,
+      "type": "string"
+    },
+    "_Text": {
+      "maxLength": 500,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One take on the PC: what it is, and its current decision and trim.",
+  "properties": {
+    "accepted_at": {
+      "format": "date-time",
+      "title": "Accepted At",
+      "type": "string"
+    },
+    "audio": {
+      "$ref": "#/$defs/TakeAudio"
+    },
+    "capture_host": {
+      "$ref": "#/$defs/_Text"
+    },
+    "catalog": {
+      "$ref": "#/$defs/CatalogReference"
+    },
+    "decision": {
+      "$ref": "#/$defs/TakeDecision"
+    },
+    "device": {
+      "$ref": "#/$defs/_Text"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "prompt": {
+      "$ref": "#/$defs/Prompt"
+    },
+    "prompt_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "qc_findings": {
+      "items": {
+        "$ref": "#/$defs/_Finding"
+      },
+      "title": "Qc Findings",
+      "type": "array"
+    },
+    "qc_status": {
+      "enum": [
+        "pass",
+        "review",
+        "fail"
+      ],
+      "title": "Qc Status",
+      "type": "string"
+    },
+    "raw_path": {
+      "title": "Raw Path",
+      "type": "string"
+    },
+    "requested_at": {
+      "format": "date-time",
+      "title": "Requested At",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.corpus-take-state/v1",
+      "default": "cole-voice-lab.corpus-take-state/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "take_id": {
+      "$ref": "#/$defs/TakeId"
+    },
+    "trim": {
+      "$ref": "#/$defs/TakeTrim"
+    }
+  },
+  "required": [
+    "take_id",
+    "subject_id",
+    "prompt",
+    "prompt_sha256",
+    "catalog",
+    "manifest_sha256",
+    "raw_path",
+    "audio",
+    "requested_at",
+    "accepted_at",
+    "capture_host",
+    "device",
+    "qc_status",
+    "qc_findings",
+    "decision",
+    "trim"
+  ],
+  "title": "CorpusTakeState",
+  "type": "object"
+}

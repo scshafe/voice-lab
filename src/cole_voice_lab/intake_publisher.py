@@ -1,9 +1,12 @@
 """The intake publisher: the only process that publishes raw audio on the home host (D-021).
 
 @canonical intake_publisher -- one bounded pass over ``incoming/``. Each direct child that
-is not a dot entry is a finalized capture package; ``accept_capture_session`` (unchanged,
-intake.py) validates every byte and publishes it into ``raw/``. The outcome is recorded
-where the API can read it:
+is not a dot entry is a finalized capture package or take package (``corpus_takes``, D-052;
+``intake.validate_package`` tells them apart by the manifest's schema);
+``accept_capture_session`` (intake.py) validates every byte and publishes it into ``raw/``.
+A take is published only once ``corpus_takes.admit_take`` admits it (real audio, and a prompt
+its catalog version, a snapshot on this server, counts). The outcome is recorded where
+the API can read it:
 
 - accepted: ``provenance/intake/sessions/<session_id>.json``, naming the receipt;
 - refused (a contract or security failure): the package is moved, untouched, to
@@ -13,9 +16,11 @@ where the API can read it:
 An operating failure (an ``OSError``, the disk floor) leaves the package where it is for the
 next pass.
 
-Every pass also refreshes the corpus's read model (``corpus_read_model``, D-052): the PC's one
-lab writer keeps what the read-only API serves current. A failure there is reported in the
-pass's summary and never holds back a package.
+Every pass then writes the take store's record of each new take
+(``corpus_take_store.record_takes``: ``provenance/corpus-takes/<take_id>.json``, an undecided
+draft) and refreshes the corpus's read model (``corpus_read_model``: the active catalog and its
+library): the PC's one lab writer keeps what the read-only API serves current. A failure there
+is reported in the pass's summary and never holds back a package.
 
 On the PC this runs as a systemd host unit with no network
 (``deploy/host/voice-lab-intake.service``), started by a path unit whenever ``incoming/``
@@ -36,7 +41,8 @@ from pydantic import Field, ValidationError
 
 from .canonical import open_regular_no_follow, write_canonical_json
 from .capture import READY_NAME, ReadyMarker
-from .corpus_read_model import refresh_active_catalog
+from .corpus_read_model import refresh_active_catalog, refresh_library
+from .corpus_take_store import record_takes
 from .errors import ContractError, SecurityError
 from .intake import MIN_FREE_BYTES, IntakeReceipt, accept_capture_session
 from .models import ContractModel, Sha256, StableId, utc_now
@@ -76,6 +82,8 @@ class PublishSummary:
     accepted: list[IntakeReceipt] = field(default_factory=list)
     refused: list[IntakeRefusalRecord] = field(default_factory=list)
     deferred: list[dict[str, str]] = field(default_factory=list)
+    #: The takes whose records this pass wrote.
+    takes_recorded: list[str] = field(default_factory=list)
     #: The corpus read model after the pass: ``"current"``, ``"no catalog"`` or the error.
     read_model: str = "current"
 
@@ -148,7 +156,9 @@ def publish_pending(
         if candidate.name.startswith("."):
             continue
         try:
-            receipt = accept_capture_session(layout, candidate, min_free_bytes=min_free_bytes)
+            receipt = accept_capture_session(
+                layout, candidate, min_free_bytes=min_free_bytes, clock=clock
+            )
         except (ContractError, SecurityError, ValidationError, ValueError) as error:
             if not os.path.lexists(candidate):
                 summary.deferred.append({"session": candidate.name, "error": str(error)})
@@ -167,13 +177,20 @@ def publish_pending(
                     receipt=receipt,
                 ),
             )
-    summary.read_model = _refresh_read_model(layout, clock)
+    summary.read_model = _refresh_read_model(layout, summary, clock)
     return summary
 
 
-def _refresh_read_model(layout: AssetLayout, clock: Callable[[], datetime]) -> str:
+def _refresh_read_model(
+    layout: AssetLayout, summary: PublishSummary, clock: Callable[[], datetime]
+) -> str:
+    # The catalog record first: a take store that fails its checks holds back only the library.
     try:
         record = refresh_active_catalog(layout, clock=clock)
-    except (ContractError, SecurityError, OSError) as error:
+        states, recorded = record_takes(layout)
+        summary.takes_recorded.extend(recorded)
+        if record is not None:
+            refresh_library(layout, record, states)
+    except (ContractError, SecurityError, ValidationError, OSError) as error:
         return f"error: {error}"
     return "current" if record is not None else "no catalog"

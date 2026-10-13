@@ -87,7 +87,7 @@ switches on the next session; it never mixes versions in one take. This replaces
 recording service's "activate takes effect at relaunch" rule for HTTP clients, and supersedes
 docs/LIBRARY_VAULT.md's note that serving prompts from a remote store is out of scope.
 
-**The vault.** Every new path (`raw/takes/…`, the corpus records, `derived/corpus/`) is
+**The vault.** Every new path (raw take packages, the corpus records, `derived/corpus/`) is
 classified in `library_classification.py` before it exists: an unclassified path stops
 every vault pass.
 
@@ -102,9 +102,11 @@ every vault pass.
   - the audio (`AudioSpec`, SHA-256, size, frames);
   - the requested and first-frame times;
   - a summary of the continuity evidence, plus its digest.
-- **The take package** (`take.json`, `original.wav`, `continuity.json`, `READY`). It is
-  validated as strictly as a capture package: exact file set, canonical JSON, digests, a
-  canonical mono 48 kHz s24le WAV, and continuity evidence bound to that WAV.
+- **The take package** (`manifest.json` holding the take record above, `qc.json`, `READY`,
+  `original.wav`, `continuity.json`). It is validated as strictly as a capture package:
+  exact file set, canonical JSON, digests, a canonical mono 48 kHz s24le WAV, and
+  continuity evidence bound to that WAV. It uses a capture package's control files, so the
+  upload and the publisher carry it unchanged into `raw/<manifest_sha256>/`.
 - **`cole-voice-lab.corpus-take-state/v1`**: a take's current decision (with revision, reason
   and time) and its trim (`start_frame`, `end_frame`, revision).
 - **`cole-voice-lab.corpus-request/v1`**: a decision or trim request, with its expected
@@ -151,7 +153,7 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
 | --- | --- | --- |
 | 1 | This plan; D-051, D-052 | merged |
 | 2 | **Catalog on the PC.** The read model's active catalog; `GET /api/v1/catalog` (ETag = the snapshot's digest); classification of `derived/corpus/`; the owner's seeding steps | a synthetic store served over the API in tests; the owner seeds the PC |
-| 3 | **Takes in.** The take contracts and the strict validator; the publisher's dispatch and `raw/takes/`; the take records; `GET /api/v1/corpus/library`; `GET /api/v1/corpus/prompts/{id}/takes`; take audio behind the playback approval | a synthetic take uploaded end to end appears in the library |
+| 3 | **Takes in.** The take contracts and the strict validator; the publisher's dispatch into `raw/`; the take records; `GET /api/v1/corpus/library`; `GET /api/v1/corpus/prompts/{id}/takes`; take audio behind the playback approval | a synthetic take uploaded end to end appears in the library |
 | 4 | **Decisions and trims.** `POST /api/v1/corpus/takes/{id}/decision`, `PUT …/trim`; the corpus requests; revisions | conflicting revisions refused; the read model follows |
 | 5 | **The app's corpus client.** A local spool and sync (offline-first); the catalog from the PC; take upload, decisions and trims queued | an offline session syncs when back online, in tests |
 | 6 | **The prompt studio UI**, in several PRs: library, transport and waveform, review and history, keys, polish | the parity list (§5) checked off |
@@ -213,3 +215,15 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   init|publish|activate` and by every intake pass, which reports a broken store but still
   publishes. `GET /api/v1/catalog` serves it with the snapshot's digest as its `ETag`, and
   never opens the store. Seeding the PC is owner step 1.
+- 2026-10-12: step 3, takes into the PC. A take package (`corpus_takes`,
+  `cole-voice-lab.corpus-take/v1`: the take, `qc.json`, `READY`, `original.wav` and the
+  PortAudio worker's `continuity.json`, whose contract moved into the backend) rides the
+  existing upload and publisher, which tell it from a capture package by its manifest's
+  schema and publish it into `raw/<manifest_sha256>/` (not `raw/takes/`, so the upload, the
+  receipt lookup and the vault's raw source stay one path). The publisher refuses generated
+  audio and a prompt the take's catalog snapshot does not count, and records each take in
+  `provenance/corpus-takes/` (an undecided draft, rebuildable from `raw/`, copied by the
+  vault). The read model gains the library (`derived/corpus/library-<subject>.json`), rebuilt
+  by every pass and every `catalog` command; `GET /api/v1/corpus/library`,
+  `GET /api/v1/corpus/prompts/{id}/takes` and, behind the playback approval,
+  `GET /api/v1/corpus/takes/{id}/audio` serve it.

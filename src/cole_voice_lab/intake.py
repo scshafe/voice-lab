@@ -1,4 +1,10 @@
-"""Fail-closed, content-addressed intake for transferred capture packages."""
+"""Fail-closed, content-addressed intake for transferred packages.
+
+A package is a capture package (``validate_capture_package``) or, since the corpus moved to
+the PC (D-052), a take package (``corpus_takes``); ``validate_package`` tells them apart by
+the manifest's ``schema_version``. Both are published the same way, into
+``raw/<manifest_sha256>/`` with intake's own QC report and receipt.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import ValidationError, field_validator
 
@@ -33,6 +39,9 @@ from .diagnostic_roots import (
 from .errors import ContractError, SecurityError
 from .models import CaptureManifest, ContractModel, QcReport, Sha256, StableId, utc_now
 from .paths import AssetLayout, confined_path, validate_relative_path
+
+if TYPE_CHECKING:
+    from .corpus_takes import ValidatedTake
 
 MIN_FREE_BYTES = 10 * 1024**3
 MAX_CONTROL_FILE_BYTES = 1024 * 1024
@@ -75,6 +84,11 @@ class ValidatedPackage:
     qc_report_sha256: str
     ready: ReadyMarker
     _snapshot: PackageSnapshot
+
+    @property
+    def session_id(self) -> str:
+        """The id the intake protocol knows the package by: the capture session's."""
+        return self.manifest.session_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,6 +409,22 @@ def validate_capture_package(
     )
 
 
+def validate_package(
+    package: Path, *, allow_intake_receipt: bool = False
+) -> ValidatedPackage | ValidatedTake:
+    """A capture package, or a take package when its manifest declares a take (D-052).
+
+    Params and raises: as ``validate_capture_package`` and
+    ``corpus_takes.validate_take_package``, whichever the manifest's ``schema_version``
+    selects; a manifest that cannot be read is the capture validator's to refuse.
+    """
+    from .corpus_takes import is_take_package, validate_take_package  # it imports this module
+
+    if is_take_package(package):
+        return validate_take_package(package, allow_intake_receipt=allow_intake_receipt)
+    return validate_capture_package(package, allow_intake_receipt=allow_intake_receipt)
+
+
 def _same_filesystem(layout: AssetLayout) -> None:
     devices = {layout.directory(name).stat().st_dev for name in ("incoming", "tmp", "raw")}
     if len(devices) != 1:
@@ -408,13 +438,21 @@ def _existing_session_digest(raw_directory: Path, session_id: str) -> str | None
             raise SecurityError(f"unsafe member in content-addressed raw store: {candidate}")
         if not _SHA256_NAME.fullmatch(candidate.name):
             raise SecurityError(f"unexpected directory in content-addressed raw store: {candidate}")
-        manifest_path = candidate / MANIFEST_NAME
-        manifest = _read_canonical_model(manifest_path, CaptureManifest)
-        if manifest.session_id == session_id:
+        if _raw_session_id(candidate) == session_id:
             if found is not None and found != candidate.name:
                 raise SecurityError(f"multiple raw manifests claim session ID {session_id}")
             found = candidate.name
     return found
+
+
+def _raw_session_id(raw_package: Path) -> str:
+    """The session id of a published package: a capture session's, or a take's id."""
+    from .corpus_takes import CorpusTakeManifest, is_take_package  # it imports this module
+
+    manifest_path = raw_package / MANIFEST_NAME
+    if is_take_package(raw_package):
+        return _read_canonical_model(manifest_path, CorpusTakeManifest).take_id
+    return _read_canonical_model(manifest_path, CaptureManifest).session_id
 
 
 def _read_receipt(raw_package: Path) -> IntakeReceipt:
@@ -541,6 +579,16 @@ def _discard_verified_duplicate(stage: Path, tmp_root: Path) -> None:
     shutil.rmtree(stage)
 
 
+def _admit(layout: AssetLayout, package: ValidatedPackage | ValidatedTake) -> None:
+    """The asset root's own rules: guard #5 for a capture package, ``admit_take`` for a take."""
+    if isinstance(package, ValidatedPackage):
+        _require_intake_root(layout, package.manifest)
+        return
+    from .corpus_takes import admit_take  # it imports this module
+
+    admit_take(layout, package)
+
+
 def _require_intake_root(layout: AssetLayout, manifest: CaptureManifest) -> None:
     """Guard #5: physical-test packages enter only their own marked diagnostic root."""
     marker = read_diagnostic_root_marker(layout)
@@ -567,7 +615,7 @@ def accept_capture_session(
     available_bytes: int | None = None,
     clock: Callable[[], datetime] = utc_now,
 ) -> IntakeReceipt:
-    """Atomically claim, validate, and publish one complete capture package."""
+    """Atomically claim, validate, and publish one complete capture or take package."""
 
     if min_free_bytes < 0:
         raise ValueError("minimum free bytes cannot be negative")
@@ -597,21 +645,20 @@ def accept_capture_session(
     published = False
     publish_stage: Path | None = None
     try:
-        package = validate_capture_package(stage)
-        _require_intake_root(layout, package.manifest)
-        if source.name != package.manifest.session_id:
+        package = validate_package(stage)
+        _admit(layout, package)
+        if source.name != package.session_id:
             raise ContractError(
                 "incoming directory name must exactly match the manifest session ID"
             )
-        collision = _existing_session_digest(raw_root, package.manifest.session_id)
+        collision = _existing_session_digest(raw_root, package.session_id)
         if collision is not None and collision != package.manifest_sha256:
             raise SecurityError(
-                f"session ID collision: {package.manifest.session_id} "
-                f"already has manifest {collision}"
+                f"session ID collision: {package.session_id} already has manifest {collision}"
             )
         destination = raw_root / package.manifest_sha256
         if destination.exists():
-            existing = validate_capture_package(destination, allow_intake_receipt=True)
+            existing = validate_package(destination, allow_intake_receipt=True)
             receipt = _read_receipt(destination)
             if (
                 existing.manifest != package.manifest
@@ -633,7 +680,7 @@ def accept_capture_session(
             intake_report,
         )
         receipt = IntakeReceipt(
-            session_id=package.manifest.session_id,
+            session_id=package.session_id,
             manifest_sha256=package.manifest_sha256,
             source_qc_report_sha256=package.source_qc_report_sha256,
             intake_qc_report_sha256=intake_report_sha256,
@@ -641,10 +688,7 @@ def accept_capture_session(
             raw_path=f"raw/{package.manifest_sha256}",
         )
         write_canonical_json(publish_stage / RECEIPT_NAME, receipt)
-        final_package = validate_capture_package(
-            publish_stage,
-            allow_intake_receipt=True,
-        )
+        final_package = validate_package(publish_stage, allow_intake_receipt=True)
         if (
             final_package.manifest != package.manifest
             or final_package.source_qc_report != package.source_qc_report
@@ -655,7 +699,7 @@ def accept_capture_session(
         # cross-parent rename. Protect every child first, publish atomically, then
         # remove write permission from the published root immediately afterward.
         _make_read_only(publish_stage, protect_root=False)
-        validate_capture_package(publish_stage, allow_intake_receipt=True)
+        validate_package(publish_stage, allow_intake_receipt=True)
         os.rename(publish_stage, destination)
         publish_stage = None
         published = True
