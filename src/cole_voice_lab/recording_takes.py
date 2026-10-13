@@ -100,6 +100,18 @@ _STABLE_ID: TypeAdapter[StableId] = TypeAdapter(StableId)
 
 
 def read_recording_evidence[ModelT: ContractModel](path: Path, model: type[ModelT]) -> ModelT:
+    return read_recording_evidence_bytes(path, model)[0]
+
+
+def read_recording_evidence_bytes[ModelT: ContractModel](
+    path: Path, model: type[ModelT]
+) -> tuple[ModelT, bytes]:
+    """One private, canonical evidence file: the record and its exact bytes.
+
+    The bytes are what a reader copies verbatim (``corpus_import``: a Swift take's records
+    travel to the PC byte for byte).
+    Raises: ``SecurityError`` for a file that is not one private regular file within the
+    bound, or not canonical; ``ContractError`` when it is not a valid ``model``."""
     with open_regular_no_follow(path) as stream:
         metadata = os.fstat(stream.fileno())
         if metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) & 0o077:
@@ -113,7 +125,7 @@ def read_recording_evidence[ModelT: ContractModel](path: Path, model: type[Model
         raise ContractError("invalid versioned recording evidence") from error
     if payload != canonical_json_bytes(result) + b"\n":
         raise SecurityError("recording evidence is not canonical")
-    return result
+    return result, payload
 
 
 def sync_recording_evidence_directory(directory: Path) -> None:

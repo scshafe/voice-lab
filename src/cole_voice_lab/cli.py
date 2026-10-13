@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, get_args
 
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
-from . import cli_home_host, cli_models, cli_speech
+from . import cli_corpus_import, cli_home_host, cli_models, cli_speech
 from .audition import (
     AuditionPlan,
     audition_paths,
@@ -4498,6 +4498,7 @@ def build_parser() -> argparse.ArgumentParser:
     intake_scan.add_argument("--asset-root")
     intake_scan.set_defaults(handler=_intake_scan)
     cli_home_host.register(commands, intake_commands)
+    cli_corpus_import.register(commands)
     cli_speech.register(commands)
     cli_models.register(commands)
 

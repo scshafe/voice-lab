@@ -512,6 +512,16 @@ _RULES: Final = (
         example="tmp/.native-package-stage-native-1/audio/000-room-tone.wav",
     ),
     _rule(
+        "corpus-import-packages",
+        "tmp/corpus-import{/**}",
+        MAC_ONLY,
+        owner="corpus_import (voice-lab corpus-import plan)",
+        reason="the Swift app's takes packaged for the PC's corpus (D-053): copies of takes "
+        "and records the vault already carries, sent only under an approved plan (whose plan "
+        "and approval are host-transfers records)",
+        example=f"tmp/corpus-import/{_EXAMPLE_TAKE}/original.wav",
+    ),
+    _rule(
         "memos-mirror-temporaries",
         "memos{/**}/.*{/**}",
         MAC_ONLY,
@@ -844,9 +854,10 @@ _RULES: Final = (
         "host-transfers",
         "provenance/host-transfers/**",
         "records",
-        owner="the operator (data moves between the owner's hosts)",
+        owner="the operator (data moves between the owner's hosts) and corpus_import",
         reason="a move's approval record, its sha256 manifest and its parity report "
-        "(voice-journey into voice-lab, phase 3); immutable once written",
+        "(voice-journey into voice-lab, phase 3), and the Mac's take-export plans and their "
+        "transfer approvals (corpus_import, D-053); immutable once written",
         example="provenance/host-transfers/voice-journey-2026-10-10.txt",
         mode=0o400,
     ),

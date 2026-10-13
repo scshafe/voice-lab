@@ -8,12 +8,16 @@ intake's QC, the host and device), and what was decided about it: its decision a
 each with its own revision.
 
 Writer: the intake publisher only (the PC's one lab writer). ``record_takes`` runs on every
-pass and writes the revision-0 record (decision ``draft``, no trim) of every take package in
-``raw/`` that has none: of each take the pass accepted, and of any take an interrupted pass
-left without one. So the store at revision 0 is rebuildable from ``raw/``. Decisions and trims
-(``corpus_requests``, step 4) are the only later writes; they raise their revision and cannot
-be rebuilt, so the vault copies these records (``library_classification``:
-``corpus-take-states``) and the requests' outcomes.
+pass and writes the first record of every take package in ``raw/`` that has none: of each
+take the pass accepted, and of any take an interrupted pass left without one. A take's first
+record is an undecided, untrimmed draft at revision 0 (``initial_state``). An imported Swift
+take's (``corpus_take_imports``, D-053) carries the Mac's decision and trim instead, each at
+revision 1 when it is not the draft or the whole take, and says where it came from
+(``origin``; ``imported_state``). Either is built from the raw package alone, so the store's
+first records are rebuildable from ``raw/``. Decisions and trims (``corpus_requests``, step 4)
+are the only later writes; they raise their revision and cannot be rebuilt, so the vault
+copies these records (``library_classification``: ``corpus-take-states``) and the requests'
+outcomes.
 """
 
 from __future__ import annotations
@@ -27,12 +31,15 @@ from typing import Annotated, Final, Literal
 from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from .canonical import read_canonical_model, write_canonical_json
+from .corpus_take_imports import ValidatedTakeImport, validate_take_import_package
 from .corpus_takes import (
     TAKE_ID_PATTERN,
+    TAKE_IMPORT_SCHEMA,
+    TAKE_SCHEMA,
     TakeAudio,
     TakeId,
     ValidatedTake,
-    is_take_package,
+    package_schema,
     take_id_for,
     validate_take_package,
 )
@@ -106,8 +113,22 @@ class TakeTrim(ContractModel):
         return self
 
 
+class TakeOrigin(ContractModel):
+    """Where a take the PC did not receive from a recording client came from.
+
+    ``imported``: a take of the Swift app on the Mac (D-053), whose own id was
+    ``source_take_id``; its raw package keeps its seal, reservation, group and the Mac's
+    decision and trim as they were exported."""
+
+    kind: Literal["imported"]
+    source_take_id: TakeId
+
+
 class CorpusTakeState(ContractModel):
-    """One take on the PC: what it is, and its current decision and trim."""
+    """One take on the PC: what it is, and its current decision and trim.
+
+    ``origin`` is absent for a take a recording client uploaded (every record written before
+    D-053 included, byte for byte), and says ``imported`` for a Swift take."""
 
     schema_version: Literal["cole-voice-lab.corpus-take-state/v1"] = STATE_SCHEMA
     take_id: TakeId
@@ -130,6 +151,7 @@ class CorpusTakeState(ContractModel):
     qc_findings: tuple[_Finding, ...]
     decision: TakeDecision
     trim: TakeTrim
+    origin: TakeOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("requested_at", "accepted_at")
     @classmethod
@@ -195,8 +217,18 @@ def read_take_states(layout: AssetLayout) -> tuple[CorpusTakeState, ...]:
     return tuple(states)
 
 
-def initial_state(take: ValidatedTake, receipt: IntakeReceipt) -> CorpusTakeState:
-    """A published take's revision-0 record: an undecided, untrimmed draft."""
+_UNDECIDED: Final = TakeDecision(decision="draft", revision=0, reason=None, decided_at=None)
+_UNTRIMMED: Final = TakeTrim(revision=0, start_frame=None, end_frame=None)
+
+
+def _state(
+    take: ValidatedTake | ValidatedTakeImport,
+    receipt: IntakeReceipt,
+    *,
+    decision: TakeDecision,
+    trim: TakeTrim,
+    origin: TakeOrigin | None,
+) -> CorpusTakeState:
     manifest = take.manifest
     findings = sorted({finding for metric in take.qc_report.metrics for finding in metric.findings})
     return CorpusTakeState(
@@ -214,21 +246,59 @@ def initial_state(take: ValidatedTake, receipt: IntakeReceipt) -> CorpusTakeStat
         device=manifest.capture_device.display_name,
         qc_status=take.qc_report.status,
         qc_findings=tuple(findings),
-        decision=TakeDecision(decision="draft", revision=0, reason=None, decided_at=None),
-        trim=TakeTrim(revision=0, start_frame=None, end_frame=None),
+        decision=decision,
+        trim=trim,
+        origin=origin,
     )
 
 
+def initial_state(take: ValidatedTake, receipt: IntakeReceipt) -> CorpusTakeState:
+    """A published take's revision-0 record: an undecided, untrimmed draft."""
+    return _state(take, receipt, decision=_UNDECIDED, trim=_UNTRIMMED, origin=None)
+
+
+def imported_state(take: ValidatedTakeImport, receipt: IntakeReceipt) -> CorpusTakeState:
+    """A published imported take's first record: the Mac's decision and trim (D-053).
+
+    The decision (``draft``, ``kept``, ``rejected``, ``removed``) is the Mac's, at revision 1
+    unless it is ``draft`` (revision 0, undecided, whatever the Mac's revision was). A
+    rejection keeps its reason; a removal's stays in the raw package's ``mac-state.json``, since
+    only a rejection has one here. It was decided when the Mac's records say, else when the PC
+    accepted the take (a Save records no time on the Swift take). The trim is the Mac's
+    recipe at revision 1, unless it keeps the whole take (revision 0, untrimmed).
+    Raises: ``ValidationError`` only for a package that was never validated."""
+    mac = take.mac_state
+    decision = _UNDECIDED
+    if mac.decision != "draft":
+        decision = TakeDecision(
+            decision=mac.decision,
+            revision=1,
+            reason=mac.reason if mac.decision == "rejected" else None,
+            decided_at=receipt.accepted_at if mac.decided_at is None else mac.decided_at,
+        )
+    trim = _UNTRIMMED
+    if mac.trimmed:
+        trim = TakeTrim(
+            revision=1,
+            start_frame=mac.frame_range.start_frame,
+            end_frame=mac.frame_range.end_frame,
+        )
+    origin = TakeOrigin(kind="imported", source_take_id=take.manifest.source_take_id)
+    return _state(take, receipt, decision=decision, trim=trim, origin=origin)
+
+
 def record_takes(layout: AssetLayout) -> tuple[tuple[CorpusTakeState, ...], tuple[str, ...]]:
-    """Write the revision-0 record of every take package in ``raw/`` that has none.
+    """Write the first record of every take package in ``raw/`` that has none.
 
     A raw package that a record already names is not read again; any other is read only as
-    far as its manifest's schema, and a take's package is validated in full (with its
-    receipt) before its record is written. Capture packages are left alone.
+    far as its manifest's schema, and a take's or an imported take's package is validated in
+    full (with its receipt) before its record is written (``initial_state``,
+    ``imported_state``). Capture packages are left alone.
     Returns: every take's record, by take id, and the ids recorded now.
     Raises: ``SecurityError`` for a raw take whose directory is not its manifest digest, or a
     take whose record names another raw package; ``ContractError``/``SecurityError`` as
-    ``validate_take_package`` and ``read_take_states``; ``OSError``.
+    ``validate_take_package``, ``validate_take_import_package`` and ``read_take_states``;
+    ``OSError``.
     """
     states = {state.take_id: state for state in read_take_states(layout)}
     published = {state.manifest_sha256 for state in states.values()}
@@ -236,9 +306,16 @@ def record_takes(layout: AssetLayout) -> tuple[tuple[CorpusTakeState, ...], tupl
     raw_root = layout.directory("raw")
     for name in sorted(os.listdir(raw_root)):
         package = raw_root / name
-        if name in published or name.startswith(".") or not is_take_package(package):
+        if name in published or name.startswith("."):
             continue
-        take = validate_take_package(package, allow_intake_receipt=True)
+        schema = package_schema(package)
+        take: ValidatedTake | ValidatedTakeImport
+        if schema == TAKE_SCHEMA:
+            take = validate_take_package(package, allow_intake_receipt=True)
+        elif schema == TAKE_IMPORT_SCHEMA:
+            take = validate_take_import_package(package, allow_intake_receipt=True)
+        else:
+            continue
         if name != take.manifest_sha256:
             raise SecurityError(f"raw take is not content-addressed: {package}")
         existing = states.get(take.manifest.take_id)
@@ -250,7 +327,11 @@ def record_takes(layout: AssetLayout) -> tuple[tuple[CorpusTakeState, ...], tupl
         receipt = read_canonical_model(
             package / RECEIPT_NAME, IntakeReceipt, max_bytes=MAX_CONTROL_FILE_BYTES
         )
-        state = initial_state(take, receipt)
+        state = (
+            initial_state(take, receipt)
+            if isinstance(take, ValidatedTake)
+            else imported_state(take, receipt)
+        )
         write_canonical_json(state_path(layout, state.take_id), state)
         states[state.take_id] = state
         recorded.append(state.take_id)

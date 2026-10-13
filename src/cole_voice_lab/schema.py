@@ -31,8 +31,10 @@ from .blind import (
     ScoreSheet,
 )
 from .capture import CaptureContinuityEvidence, ReadyMarker, RejectedTakeLog
+from .corpus_import import CorpusImportApproval, CorpusImportPlan
 from .corpus_read_model import CorpusLibraryRecord
 from .corpus_requests import CorpusRequest, CorpusRequestOutcome
+from .corpus_take_imports import CorpusTakeImportManifest, MacTakeState
 from .corpus_take_store import CorpusTakeState
 from .corpus_takes import CorpusTakeManifest
 from .datasets import (
@@ -145,10 +147,14 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "capture-ready": ReadyMarker,
     "capture-rejected-takes": RejectedTakeLog,
     "capture-desktop-session": DesktopSessionEvidence,
+    "corpus-import-approval": CorpusImportApproval,
+    "corpus-import-plan": CorpusImportPlan,
     "corpus-library": CorpusLibraryRecord,
     "corpus-request": CorpusRequest,
     "corpus-request-outcome": CorpusRequestOutcome,
     "corpus-take": CorpusTakeManifest,
+    "corpus-take-import": CorpusTakeImportManifest,
+    "corpus-take-import-state": MacTakeState,
     "corpus-take-state": CorpusTakeState,
     "dataset-manifest": DatasetManifest,
     "dataset-selection": DatasetSelectionDocument,
