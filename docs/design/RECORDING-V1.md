@@ -245,3 +245,21 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   unsafe request file is set aside in `incoming/.refused/`. The queue holds at most 10,000
   requests (503). A restore sends the decision the take had before (`kept` or `draft`): the
   PC keeps no restore target.
+- 2026-10-12: step 5, the app's corpus client (`apps/desktop/src/voice_lab_desktop/corpus/`,
+  apps/desktop/docs/CORPUS-CLIENT.md). The PC's `CatalogView` is cached in
+  `<data dir>/corpus/catalog/` by snapshot digest, checked against its reference (the
+  snapshot it describes hashes to `snapshot_sha256`), refreshed with `If-None-Match`, and
+  pinned per session: a new active version on the PC is recorded for the next session, and
+  each take is bound to a prompt of the pinned version when it starts. With no cached
+  catalog and no PC nothing is recorded; with one, recording works offline. A take is saved
+  in `<data dir>/corpus/takes/<take_id>/` (the worker's WAV and evidence, its package built
+  once and kept, `take.json`, and `state.json` with the decision, trim, confirmed revisions
+  and the take's ordered outbox). Changes get a request id made once and a chained expected
+  revision. The sync engine runs off the GUI thread and sends each take's operations one at
+  a time: the upload (`upload_session`, class `capture`, the D-021 approval and ledger; a
+  deferred take keeps its changes queued), then each change, polled until applied. Any
+  refusal adopts the PC's state for the take, drops what is queued behind it and leaves a
+  notice. A `take_not_found` re-checks the upload once. Network failures leave the outbox
+  as it is. Nothing is sent until `corpus_sync = true` (off until S-1 passes, D-042's
+  reason), and takes of the simulated device stay local-only. The tests run an offline
+  session that syncs after a restart against the real API and publisher.
