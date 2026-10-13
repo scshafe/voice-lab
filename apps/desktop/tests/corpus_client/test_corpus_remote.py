@@ -10,21 +10,18 @@ from __future__ import annotations
 
 import os
 import shutil
-from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from corpus_rig import PC, Scripted, bind_library, client, raising, record
 from voice_lab_desktop.api import ApiRefused
-from voice_lab_desktop.corpus.client import CorpusClient, remote_origin
-from voice_lab_desktop.corpus.records import DecisionOp, RemoteOrigin, TrimOp
+from voice_lab_desktop.corpus.client import CorpusClient
+from voice_lab_desktop.corpus.records import DecisionOp, TrimOp
 from voice_lab_desktop.corpus.spool import REMOTE_FILE, CorpusSpool, SpoolError
 
-from cole_voice_lab.canonical import write_canonical_json
 from cole_voice_lab.corpus_read_model import LibraryTake
-from cole_voice_lab.corpus_take_store import TakeDecision, TakeTrim, read_take_state, state_path
+from cole_voice_lab.corpus_take_store import read_take_state
 
 
 def prompt_of(pc: PC, index: int = 0) -> str:
@@ -93,34 +90,52 @@ def test_a_take_another_client_uploaded_is_decided_and_trimmed_here(
     assert corpus.status().takes == 0 and not (remote.path / "original.wav").exists()
 
 
-def imported_style(pc: PC, take_id: str) -> None:
-    """The record step 9's importer writes for a Swift take (D-053): the Mac's decision and
-    trim at revision 1, no request ever made for them; the read model rebuilt."""
-    state = read_take_state(pc.layout, take_id)
-    assert state is not None
-    moment = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
-    imported = state.model_copy(
-        update={
-            "decision": TakeDecision(decision="kept", revision=1, reason=None, decided_at=moment),
-            "trim": TakeTrim(revision=1, start_frame=2_400, end_frame=9_600),
-        }
+def imported_from_the_mac(
+    pc: PC,
+    tmp_path: Path,
+    *,
+    index: int = 0,
+    frames: tuple[int, int] | None = None,
+    action: str | None = None,
+) -> str:
+    """A Swift take of the Mac, imported by step 9 (D-053): recorded by the Mac's own take
+    store over a tone (a synthetic Mac library, ``corpus_import_fixtures``), kept (trimmed to
+    ``frames``) and then ``action``ed (``reject``, with a reason, or ``remove``) when given,
+    packaged by ``build_take_import_package`` and published by the PC's intake publisher. The
+    PC records it with the Mac's decision and trim and ``origin: imported``. Its PC take id."""
+    from corpus_import_fixtures import MacLibrary
+    from corpus_take_fixtures import NOW, seed_catalog
+
+    from cole_voice_lab.corpus_import import build_take_import_package
+    from cole_voice_lab.paths import AssetLayout
+
+    mac_layout = AssetLayout.initialize(tmp_path / f"mac-{index}-{action}" / "voice-lab" / "lab")
+    assert seed_catalog(mac_layout) == pc.catalog  # the same version, every field
+    mac = MacLibrary(mac_layout)
+    take = mac.save(mac.sealed(mac.v2_group(pc.catalog), prompt_of(pc, index)), frames=frames)
+    if action is not None:
+        take = mac.decide(take, action, "Mouth click at the start")
+    package = tmp_path / f"import-{take.reservation.take_id}"
+    imported = build_take_import_package(
+        package, layout=mac_layout, take=take, catalog=pc.catalog[0], clock=lambda: NOW
     )
-    path = state_path(pc.layout, take_id)
-    mode = os.stat(path).st_mode & 0o777
-    os.chmod(path, 0o600)
-    write_canonical_json(path, imported, mode=0o600)
-    os.chmod(path, mode)
+    take_id = imported.manifest.take_id
+    shutil.copytree(package, pc.layout.directory("incoming") / take_id)
     pc.publish()
+    assert read_take_state(pc.layout, take_id) is not None  # published
+    return take_id
 
 
 def test_an_imported_take_record_is_decided_and_trimmed_on_its_revisions(
     pc: PC, data_dir: Path, tmp_path: Path, library: Any
 ) -> None:
-    take_id = recorded_elsewhere(pc, tmp_path, seed=62, index=1)
-    imported_style(pc, take_id)
+    take_id = imported_from_the_mac(pc, tmp_path, index=1, frames=(2_400, 9_600))
     corpus = client(data_dir, pc)
     corpus.run_pass()
-    remote = corpus.remote_take(pc_take(corpus, pc, take_id, 1), prompt_of(pc, 1))
+    there = pc_take(corpus, pc, take_id, 1)
+    assert there.origin is not None and there.origin.kind == "imported"
+    remote = corpus.remote_take(there, prompt_of(pc, 1))
+    assert remote.record.origin == there.origin  # type: ignore[union-attr]
     sync = remote.sync
     assert (sync.decision.decision, sync.decision.revision) == ("kept", 1)
     assert (sync.trim.start_frame, sync.trim.end_frame, sync.trim.revision) == (2_400, 9_600, 1)
@@ -141,18 +156,20 @@ def test_an_imported_take_record_is_decided_and_trimmed_on_its_revisions(
 def test_the_pcs_origin_is_kept_with_the_take(
     pc: PC, data_dir: Path, tmp_path: Path, library: Any
 ) -> None:
-    # The PC's contracts carry ``origin`` from step 9 (D-053); read when present.
-    imported = SimpleNamespace(origin=SimpleNamespace(kind="imported", source_take_id="T-42"))
-    assert remote_origin(imported) == RemoteOrigin(kind="imported", source_take_id="T-42")  # type: ignore[arg-type]
-    assert remote_origin(SimpleNamespace(origin=None)) is None  # type: ignore[arg-type]
-    assert remote_origin(SimpleNamespace()) is None  # type: ignore[arg-type]
-    take_id = recorded_elsewhere(pc, tmp_path, seed=63)
+    """The PC's ``origin`` (D-053), as its contracts carry it: an imported take's names the
+    Mac's own take; another client's upload has none."""
+    imported = imported_from_the_mac(pc, tmp_path)
+    uploaded = recorded_elsewhere(pc, tmp_path, seed=63, index=1)
     corpus = client(data_dir, pc)
     corpus.run_pass()
-    origin = RemoteOrigin(kind="imported", source_take_id="T-42")
-    remote = corpus.spool.learn_remote(pc_take(corpus, pc, take_id), prompt_of(pc), origin=origin)
-    again = CorpusSpool(data_dir / "corpus").take(take_id)
-    assert again.record == remote.record and again.record.origin == origin  # type: ignore[union-attr]
+    there = pc_take(corpus, pc, imported)
+    assert there.origin is not None and there.origin.kind == "imported"
+    assert there.origin.source_take_id != imported  # the Swift take's own id
+    remote = corpus.remote_take(there, prompt_of(pc))
+    again = CorpusSpool(data_dir / "corpus").take(imported)
+    assert again.record == remote.record and again.record.origin == there.origin  # type: ignore[union-attr]
+    other = corpus.remote_take(pc_take(corpus, pc, uploaded, 1), prompt_of(pc, 1))
+    assert other.record.origin is None  # type: ignore[union-attr]
 
 
 def test_a_conflict_adopts_the_pcs_state(
@@ -286,24 +303,22 @@ def test_restore_asks_when_what_came_before_is_not_known(
     assert corpus.restore_target(take_id) == "kept"
 
 
-def test_an_imports_restore_decision_is_used(
+def test_restore_asks_for_an_import_rejected_on_the_mac(
     pc: PC, data_dir: Path, tmp_path: Path, library: Any
 ) -> None:
-    take_id = recorded_elsewhere(pc, tmp_path, seed=69)
-    body = {"request_id": "req-" + "f" * 32, "decision": "removed"}
-    assert (
-        pc.send(
-            "POST", f"/api/v1/corpus/takes/{take_id}/decision", {**body, "expected_revision": 0}
-        )[0]
-        == 202
-    )
-    pc.publish()
+    """A take the Mac rejected before it was imported: the PC's records say rejected, not
+    what it was before (the Mac's answer stays in the raw package), so Restore asks."""
+    take_id = imported_from_the_mac(pc, tmp_path, action="reject")
     corpus = client(data_dir, pc)
     corpus.run_pass()
-    origin = RemoteOrigin(kind="imported", source_take_id="T-9", restore_decision="kept")
-    corpus.spool.learn_remote(pc_take(corpus, pc, take_id), prompt_of(pc), origin=origin)
-    assert corpus.restore_target(take_id) == "kept"
-    corpus.restore(take_id)
+    there = pc_take(corpus, pc, take_id)
+    assert (there.decision, there.origin is not None) == ("rejected", True)
+    corpus.remote_take(there, prompt_of(pc))
+    assert corpus.restore_target(take_id) is None
+    with pytest.raises(SpoolError, match="not known here"):
+        corpus.restore(take_id)
+    corpus.restore(take_id, "kept")
+    assert ops(corpus, take_id) == [("decision", there.decision_revision)]
     assert corpus.run_pass().applied == 1
     assert pc_take(corpus, pc, take_id).decision == "kept"
 

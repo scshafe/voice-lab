@@ -85,10 +85,10 @@ Click the chip to look again after plugging the UMIK-1 in.
   Restore goes back to the decision before the rejection or removal. When this machine does
   not know it (a take recorded elsewhere, first seen here already rejected or removed, or a
   state adopted from the PC), it asks **Restore as kept**, **Restore as draft** or
-  **Cancel**; it never guesses. An imported take whose PC record carries the Mac's decision
-  before (`restore_decision`) uses that. The library's status and the coverage follow at
-  once. **Save** on a selected draft keeps
-  it. A take recorded elsewhere (another client's, or a Swift take imported from the Mac,
+  **Cancel**; it never guesses. This includes a Swift take the Mac rejected or removed
+  before it was imported: the PC's records do not carry what it was before (the Mac's
+  answer stays in the raw package's `mac-state.json`). The library's status and the
+  coverage follow at once. **Save** on a selected draft keeps it. A take recorded elsewhere (another client's, or a Swift take imported from the Mac,
   step 9, D-053) is noted in the client's spool when it is first changed
   ([CORPUS-CLIENT.md](CORPUS-CLIENT.md), "Takes recorded elsewhere"); its changes chain on the
   PC's revisions and wait offline like any. Its audio stays on the PC. A take whose state the

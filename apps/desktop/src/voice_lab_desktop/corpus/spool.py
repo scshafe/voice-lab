@@ -93,7 +93,6 @@ from .records import (
     Operation,
     PendingRecording,
     PendingRefresh,
-    RemoteOrigin,
     RemoteTake,
     SyncRecord,
     TakeSync,
@@ -685,9 +684,7 @@ class CorpusSpool:
 
     # -- takes recorded elsewhere ----------------------------------------------------------------
 
-    def learn_remote(
-        self, pc: LibraryTake, prompt_id: str, *, origin: RemoteOrigin | None = None
-    ) -> SpooledTake:
+    def learn_remote(self, pc: LibraryTake, prompt_id: str) -> SpooledTake:
         """A take of the PC's history that this machine did not record, so that it can be
         decided and trimmed here: its decision and trim are the PC's, at the PC's revisions,
         and later changes chain on them. A take already here is only ``observe``d.
@@ -708,17 +705,13 @@ class CorpusSpool:
                 frames=round(pc.duration_seconds * SAMPLE_RATE),
                 capture_host=pc.capture_host,
                 device=pc.device,
-                origin=origin,
+                origin=pc.origin,
                 learned_at=now,
             )
-            # What it was before a rejection or removal is known only when the PC's record
-            # of an import says so; else Restore asks (``restore_target`` is ``None``).
-            history: tuple[DecisionEvent, ...] = (
-                DecisionEvent(decision=pc.decision, at=now, source="learned"),
-            )
-            before = origin.restore_decision if origin is not None else None
-            if pc.decision in _RESTORABLE and before is not None:
-                history = (DecisionEvent(decision=before, at=now, source="learned"), *history)
+            # What it was before a rejection or removal is not in the PC's history (an
+            # import's too: the Mac's stays in its raw package), so Restore asks for it
+            # (``restore_target`` is ``None``).
+            history = (DecisionEvent(decision=pc.decision, at=now, source="learned"),)
             sync = TakeSync(
                 take_id=pc.take_id,
                 decision=LocalDecision(decision=pc.decision, revision=pc.decision_revision),

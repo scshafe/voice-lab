@@ -42,7 +42,7 @@ from ..measurement import home_host
 from ..tasks import Tasks
 from .catalog import CatalogCache, PinnedCatalog
 from .library import LibraryCache
-from .records import Notice, RemoteOrigin
+from .records import Notice
 from .spool import (
     CorpusSpool,
     SpooledTake,
@@ -78,22 +78,6 @@ class PendingTake:
     directory: Path
     prompt: Prompt
     catalog: CatalogReference
-
-
-def remote_origin(pc: LibraryTake) -> RemoteOrigin | None:
-    """The PC's ``origin`` of a take (D-053: ``imported`` for a Swift take of the Mac), read
-    when the PC's contracts carry it."""
-    origin = getattr(pc, "origin", None)
-    kind = getattr(origin, "kind", None)
-    if not isinstance(kind, str) or not kind:
-        return None
-    source = getattr(origin, "source_take_id", None)
-    before = getattr(origin, "restore_decision", None)
-    return RemoteOrigin(
-        kind=kind[:64],
-        source_take_id=str(source)[:500] if source else None,
-        restore_decision=before if before in ("kept", "draft") else None,
-    )
 
 
 def next_delay(result: PassResult, failures: int, waits: int) -> float | None:
@@ -424,7 +408,7 @@ class CorpusClient:
         PC's.
 
         Raises: ``SpoolError``."""
-        take = self.spool.learn_remote(pc, prompt_id, origin=remote_origin(pc))
+        take = self.spool.learn_remote(pc, prompt_id)
         self._notify()
         return take
 

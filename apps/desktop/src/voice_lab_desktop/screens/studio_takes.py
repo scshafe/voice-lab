@@ -41,7 +41,7 @@ from ..api import ApiError
 from ..auth import AuthError
 from ..capture.types import SAMPLE_RATE, CapturedTake
 from ..config import ConfigError
-from ..corpus.client import CorpusClient, remote_origin
+from ..corpus.client import CorpusClient
 from ..corpus.records import Notice
 from ..corpus.spool import SpooledTake, SpoolError
 from ..playback import PlaybackError
@@ -605,8 +605,8 @@ class TakeReviewModel(ViewModel):
     @Slot()
     def restore(self) -> None:
         """A rejected or removed take back to its decision before; when that is not known
-        here (a take recorded elsewhere, seen only rejected or removed), the operator is
-        asked: Restore as kept, or as draft. No guess."""
+        here (a take recorded elsewhere, an import included, seen only rejected or removed),
+        the operator is asked: Restore as kept, or as draft. No guess."""
         entry = self._selected
         if not self._v["canRestore"] or entry is None:
             return
@@ -616,10 +616,11 @@ class TakeReviewModel(ViewModel):
         self._decide(self.client.restore, "Take restored")
 
     def _restore_target(self, entry: TakeEntry) -> str | None:
-        if entry.local is not None:
-            return self.client.restore_target(entry.take_id)
-        origin = remote_origin(entry.pc) if entry.pc is not None else None
-        return origin.restore_decision if origin is not None else None
+        """What Restore sets ``entry`` back to: a take only the PC knows has no history here
+        (the PC's history says nothing of the decision before)."""
+        if entry.local is None:
+            return None
+        return self.client.restore_target(entry.take_id)
 
     @Slot(str)
     def restoreAs(self, decision: str) -> None:  # noqa: N802

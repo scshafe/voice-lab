@@ -32,7 +32,7 @@ from cole_voice_lab.api.corpus_contracts import (
     TakeTrimRequest,
 )
 from cole_voice_lab.corpus_requests import RequestId, check_decision, check_trim
-from cole_voice_lab.corpus_take_store import TakeDecisionName
+from cole_voice_lab.corpus_take_store import TakeDecisionName, TakeOrigin
 from cole_voice_lab.corpus_takes import MAX_TAKE_FRAMES, TakeId
 from cole_voice_lab.models import ContractModel, Prompt, Sha256
 from cole_voice_lab.recording_contracts import CatalogReference
@@ -123,16 +123,6 @@ class LocalTake(ContractModel):
         return self
 
 
-class RemoteOrigin(ContractModel):
-    """Where the PC says a take it did not receive from a recording client came from
-    (``imported``: a Swift-app take of the Mac, D-053, with the Mac's own take id)."""
-
-    kind: Annotated[str, StringConstraints(min_length=1, max_length=64)]
-    source_take_id: _Text | None = None
-    #: What a rejected or removed import was before, when its record says (Restore uses it).
-    restore_decision: Literal["kept", "draft"] | None = None
-
-
 class RemoteTake(ContractModel):
     """``takes/<take_id>/remote.json``: a take on the PC that this machine did not record,
     learned from the PC's history (``GET /api/v1/corpus/prompts/{id}/takes``) so that the
@@ -149,7 +139,9 @@ class RemoteTake(ContractModel):
     frames: int = Field(gt=0, le=MAX_TAKE_FRAMES)
     capture_host: _Text
     device: _Text
-    origin: RemoteOrigin | None = None
+    #: The PC's ``origin`` of the take (D-053: ``imported``, a Swift take of the Mac, with
+    #: the Mac's own take id); absent for another client's upload.
+    origin: TakeOrigin | None = None
     learned_at: datetime
 
     @field_validator("requested_at", "learned_at")

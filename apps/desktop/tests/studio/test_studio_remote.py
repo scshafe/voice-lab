@@ -1,8 +1,9 @@
-"""Takes recorded elsewhere, reviewed in the studio: a take another client uploaded and a take
-whose record the PC's importer wrote (step 9, D-053) are listed with the PC's state, played
-from the PC, and rejected, trimmed, restored and kept from here through the corpus client;
-the PC's history follows each change; offline, the changes wait and go later. A take the PC
-says was imported from the Mac says so in the picker and its list."""
+"""Takes recorded elsewhere, reviewed in the studio: a take another client uploaded and a Swift
+take of the Mac imported by step 9 (D-053; a real import package of a synthetic Mac library,
+published by the PC's publisher) are listed with the PC's state, played from the PC, and
+rejected, trimmed, restored and kept from here through the corpus client; the PC's history
+follows each change; offline, the changes wait and go later. A take the PC says was imported
+from the Mac says so in the picker and its list."""
 
 from __future__ import annotations
 
@@ -13,11 +14,15 @@ from conftest import Window
 from corpus_rig import PC, bind_library, client, record
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (root objects come back as QQuickWindow)
 from studio_fakes import StudioRecorder
-from test_corpus_remote import imported_style, pc_take, prompt_of, recorded_elsewhere
-from voice_lab_desktop.corpus.records import RemoteOrigin
+from test_corpus_remote import imported_from_the_mac, pc_take, prompt_of, recorded_elsewhere
 
 from .conftest import open_studio, ready, studio_app
 from .test_studio_screen import click, prompt_ids
+
+
+def entry(takes: Any, key: str) -> dict[str, Any]:
+    """The history's row of the take ``key``."""
+    return next(row for row in takes.history if row["key"] == key)
 
 
 def pc_state(window: Window, pc: PC, take_id: str) -> tuple[str, int, tuple[Any, Any, int]]:
@@ -34,8 +39,7 @@ def test_takes_recorded_elsewhere_are_decided_and_trimmed_here(
     qtbot: Any, data_dir: Path, tmp_path: Path, pc: PC, library: Any
 ) -> None:
     other = recorded_elsewhere(pc, tmp_path, seed=81)
-    imported = recorded_elsewhere(pc, tmp_path, seed=82)
-    imported_style(pc, imported)  # kept, trimmed [2400, 9600), at revision 1
+    imported = imported_from_the_mac(pc, tmp_path, frames=(2_400, 9_600))  # kept, revision 1
     ids = prompt_ids(pc)
     model = studio_app(data_dir, tmp_path, pc, StudioRecorder(), enabled=True)
     try:
@@ -64,7 +68,7 @@ def test_takes_recorded_elsewhere_are_decided_and_trimmed_here(
                 lambda: pc_state(window, pc, imported)[:2] == ("rejected", 2), timeout=30000
             )
             qtbot.waitUntil(
-                lambda: takes.history[0]["status"].startswith("Rejected (the wrong word)"),
+                lambda: entry(takes, imported)["status"].startswith("Rejected (the wrong word)"),
                 timeout=10000,
             )
             # Trimmed again (wider, with the handles; then In from the playhead), and saved:
@@ -107,8 +111,7 @@ def test_takes_recorded_elsewhere_are_decided_and_trimmed_here(
 def test_a_take_imported_from_the_mac_says_so(
     qtbot: Any, data_dir: Path, tmp_path: Path, pc: PC, library: Any
 ) -> None:
-    imported = recorded_elsewhere(pc, tmp_path, seed=83)
-    imported_style(pc, imported)
+    imported = imported_from_the_mac(pc, tmp_path)
     ids = prompt_ids(pc)
     model = studio_app(data_dir, tmp_path, pc, StudioRecorder())
     try:
@@ -117,18 +120,21 @@ def test_a_take_imported_from_the_mac_says_so(
             studio, takes = model.studio, model.studio.takes
             studio.selectPrompt(ids[0])
             qtbot.waitUntil(lambda: takes.selectedKey == imported, timeout=10000)
-            # The PC's origin (D-053) as the client keeps it for the take.
-            origin = RemoteOrigin(kind="imported", source_take_id="swift-take-0001")
-            studio.client.spool.learn_remote(
-                pc_take(studio.client, pc, imported), ids[0], origin=origin
-            )
-            studio._client_changed()
-            qtbot.waitUntil(
-                lambda: takes.history[0]["origin"] == "imported from the Mac", timeout=5000
-            )
+            # The PC's origin (D-053), from its history: nothing noted here for it.
+            assert pc_take(studio.client, pc, imported).origin is not None
+            assert takes.history[0]["origin"] == "imported from the Mac"
             assert takes.takeOptions[0]["label"].endswith("· Kept · Mac import")
             assert "imported from the Mac" in takes.history[0]["status"]
             assert window.find("studioTakeSelectText").property("text").endswith("Mac import")
+            assert not any(take.remote for take in studio.client.takes())
+            # Noted here once changed: the origin stays with it.
+            click(window, "studioRemoveTake")
+            noted = studio.client.spool.take(imported)
+            assert noted.remote and noted.record.origin is not None  # type: ignore[union-attr]
+            qtbot.waitUntil(
+                lambda: entry(takes, imported)["origin"] == "imported from the Mac", timeout=5000
+            )
+            assert entry(takes, imported)["decision"] == "removed"
     finally:
         model.shutdown()
 

@@ -25,7 +25,7 @@ from typing import Final, Literal
 from cole_voice_lab.corpus_read_model import LibraryTake
 
 from ..capture.types import SAMPLE_RATE
-from ..corpus.records import Notice
+from ..corpus.records import Notice, RemoteTake
 from ..corpus.spool import SpooledTake
 
 type Where = Literal["here", "pc", "both", "unsaved"]
@@ -144,19 +144,17 @@ class TakeEntry:
 
 
 def origin_of(pc: LibraryTake | None) -> str:
-    """The PC's origin kind of a take (when the PC's contracts carry it, D-053)."""
-    kind = getattr(getattr(pc, "origin", None), "kind", None)
-    return kind if isinstance(kind, str) else ""
+    """The PC's origin kind of a take (D-053: ``imported``); ``""`` for an upload."""
+    return pc.origin.kind if pc is not None and pc.origin is not None else ""
 
 
 def _local_entry(take: SpooledTake, pc: LibraryTake | None, notices: frozenset[str]) -> TakeEntry:
     sync = take.sync
     adopted = any(event.source == "pc" for event in sync.history)
     record = take.record
-    if take.remote:
+    if isinstance(record, RemoteTake):
         where: Where = "pc"
-        stored = getattr(record, "origin", None)
-        origin = stored.kind if stored is not None else origin_of(pc)
+        origin = record.origin.kind if record.origin is not None else origin_of(pc)
     else:
         where = "both" if (sync.upload == "accepted" or pc is not None) else "here"
         origin = ""

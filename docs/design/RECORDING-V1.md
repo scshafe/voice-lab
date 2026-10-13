@@ -443,8 +443,9 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
     from the PC's history (`RemoteTake`, `upload = "remote"`, no audio). Its changes chain
     on the PC's revisions, fold, are refused and adopted, and wait offline, by step 5's
     rules. A newer state in the PC's history is installed for a take with nothing queued,
-    never an older one. The picker shows the PC's `origin` (*imported from the Mac*) once
-    the PC's contracts carry it (#61).
+    never an older one. The picker shows the PC's `origin` (*imported from the Mac*), as
+    the PC's contracts carry it since #61; the tests import real packages of a synthetic
+    Mac library through the PC's publisher.
   - **Keys:**
     - R records and stops. Space stops a recording, or else plays and pauses; it never
       starts one, which is the Swift app's rule.
