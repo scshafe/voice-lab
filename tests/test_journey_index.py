@@ -192,7 +192,9 @@ def test_the_index_merges_measurement_sessions_and_writes_node_bytes(
     assert rows[0]["indexingStatus"] == "indexed_metadata_filename_unparsed"
     assert rows[0]["file"]["extension"] == ".m4a"
     assert "phoneState" not in rows[0]
-    assert "source" not in rows[0]
+    # D-051: every row says its source; Node wrote one on measurement rows only.
+    assert rows[0]["source"] == rows[1]["source"] == {"type": "voice-memos"}
+    assert list(rows[0]) == list(rows[2])
     assert rows[2]["source"]["segmentKey"] == "vowel-a"
     assert rows[2]["file"]["extension"] == ".wav"
     assert list(rows[2]) == [
