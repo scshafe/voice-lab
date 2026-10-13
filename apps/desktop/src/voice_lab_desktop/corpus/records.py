@@ -57,8 +57,9 @@ type OperationKind = Literal["upload", "decision", "trim"]
 #: ``local-only``: never sent (simulated audio, or a take that could not be packaged);
 #: ``queued``: its upload waits in the outbox; ``accepted``: the PC published it (the
 #: receipt); ``refused``: the PC refused it, so nothing more of it is sent; ``remote``: the
-#: PC's take, recorded elsewhere (a ``RemoteTake``): nothing to upload, its changes are sent.
-type UploadState = Literal["local-only", "queued", "accepted", "refused", "remote"]
+#: PC's take, recorded elsewhere (a ``RemoteTake``): nothing to upload, its changes are sent;
+#: ``gone``: such a take the PC no longer has (``take_not_found``): never sent, never counted.
+type UploadState = Literal["local-only", "queued", "accepted", "refused", "remote", "gone"]
 type NoticeKind = Literal[
     "changed-elsewhere", "take-refused", "change-refused", "change-blocked", "local-only"
 ]
@@ -128,6 +129,8 @@ class RemoteOrigin(ContractModel):
 
     kind: Annotated[str, StringConstraints(min_length=1, max_length=64)]
     source_take_id: _Text | None = None
+    #: What a rejected or removed import was before, when its record says (Restore uses it).
+    restore_decision: Literal["kept", "draft"] | None = None
 
 
 class RemoteTake(ContractModel):
@@ -373,9 +376,9 @@ class TakeSync(ContractModel):
         uploads = [index for index, op in enumerate(self.outbox) if op.kind == "upload"]
         if (self.upload == "accepted") != (self.receipt is not None):
             raise ValueError("an accepted upload, and only one, has its receipt")
-        if self.upload in ("local-only", "refused") and self.outbox:
+        if self.upload in ("local-only", "refused", "gone") and self.outbox:
             raise ValueError("nothing is queued for a take that is never sent")
-        if self.upload == "remote" and (uploads or self.receipt is not None):
+        if self.upload in ("remote", "gone") and (uploads or self.receipt is not None):
             raise ValueError("a take recorded elsewhere is never uploaded from here")
         if self.upload == "queued" and uploads != [0]:
             raise ValueError("a queued upload is the first operation of its take")

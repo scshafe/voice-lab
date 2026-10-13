@@ -66,6 +66,16 @@ class LibraryCache:
             self._latest = None
 
     @property
+    def loaded(self) -> bool:
+        """The cache was read (``latest`` no longer parses the file)."""
+        return self._loaded
+
+    def peek(self) -> CachedLibrary | None:
+        """``latest`` when the cache was read, else ``None`` without reading it (the GUI
+        thread; ``CorpusClient.prepare`` reads it on a worker)."""
+        return self._latest if self._loaded else None
+
+    @property
     def latest(self) -> CachedLibrary | None:
         """The PC's library as last read (``None`` until it was read once)."""
         with self._lock:

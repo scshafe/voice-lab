@@ -332,31 +332,34 @@ class SyncEngine:
             if not self.enabled():
                 result.gated = True
                 return False
-            op = take.sync.outbox[0]
-            if not force and op.not_before is not None and self.clock() < op.not_before:
-                return False
-            request_id = None if isinstance(op, UploadOp) else op.request_id
-            try:
-                with self.spool.sending(request_id):
+            # The operation is read and marked in flight in one step: nothing folds into it
+            # from here, so what is sent is what is kept.
+            with self.spool.sending_head(take_id) as head:
+                if head is None:
+                    return True
+                take, op = head
+                if not force and op.not_before is not None and self.clock() < op.not_before:
+                    return False
+                request_id = None if isinstance(op, UploadOp) else op.request_id
+                try:
                     if isinstance(op, UploadOp):
                         proceed = uploads is not None and self._upload(take, op, uploads, result)
                     elif take.sync.upload not in ("accepted", "remote"):
                         proceed = False  # the take's upload comes first
                     else:
                         proceed = self._change(take, op, api, result)
-            except (_Stop, SignInRequired):
-                raise
-            except ApiUnavailable as exc:
-                self.spool.tried(take_id, request_id, error=str(exc), retry_at=None)
-                raise _Stop(str(exc), offline=exc.status is None) from exc
-            except TRANSIENT as exc:
-                message = _message(exc)
-                self.spool.tried(
-                    take_id, request_id, error=message, retry_at=self._retry_at(op.attempts + 1)
-                )
-                result.error = f"{take_id}: {message}"
-                result.offline = result.offline or _network(exc)
-                return False
+                except (_Stop, SignInRequired):
+                    raise
+                except ApiUnavailable as exc:
+                    self.spool.tried(take_id, request_id, error=str(exc), retry_at=None)
+                    raise _Stop(str(exc), offline=exc.status is None) from exc
+                except TRANSIENT as exc:
+                    message = _message(exc)
+                    retry_at = self._retry_at(op.attempts + 1)
+                    self.spool.tried(take_id, request_id, error=message, retry_at=retry_at)
+                    result.error = f"{take_id}: {message}"
+                    result.offline = result.offline or _network(exc)
+                    return False
             if not proceed:
                 return False
 

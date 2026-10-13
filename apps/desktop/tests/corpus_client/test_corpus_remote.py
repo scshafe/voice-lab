@@ -16,7 +16,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from corpus_rig import PC, bind_library, client, record
+from corpus_rig import PC, Scripted, bind_library, client, raising, record
+from voice_lab_desktop.api import ApiRefused
 from voice_lab_desktop.corpus.client import CorpusClient, remote_origin
 from voice_lab_desktop.corpus.records import DecisionOp, RemoteOrigin, TrimOp
 from voice_lab_desktop.corpus.spool import REMOTE_FILE, CorpusSpool, SpoolError
@@ -177,8 +178,9 @@ def test_a_conflict_adopts_the_pcs_state(
     assert sync.history[-1].source == "pc"
     (notice,) = corpus.notices()
     assert (notice.kind, notice.take_id) == ("changed-elsewhere", take_id)
-    # A change after the adoption chains on the PC's revision.
-    corpus.restore(take_id)
+    # A change after the adoption chains on the PC's revision (as draft: what it was
+    # before the removal is not known here, so the operator says).
+    corpus.restore(take_id, "draft")
     assert ops(corpus, take_id) == [("decision", 1)]
     assert corpus.run_pass().applied == 1
     assert pc_take(corpus, pc, take_id).decision == "draft"
@@ -253,3 +255,167 @@ def test_a_remote_take_interrupted_while_noted_is_finished(
     again = CorpusSpool(data_dir / "corpus")
     assert [take.take_id for take in again.takes()] == [take_id]
     assert again.unsaved == [] and not staged.exists()
+
+
+def test_restore_asks_when_what_came_before_is_not_known(
+    pc: PC, data_dir: Path, tmp_path: Path, library: Any
+) -> None:
+    take_id = recorded_elsewhere(pc, tmp_path, seed=68)
+    # Another client rejected it before this machine ever saw it.
+    body = {"request_id": "req-" + "d" * 32, "decision": "rejected", "reason": "a cough"}
+    assert (
+        pc.send(
+            "POST", f"/api/v1/corpus/takes/{take_id}/decision", {**body, "expected_revision": 0}
+        )[0]
+        == 202
+    )
+    pc.publish()
+    corpus = client(data_dir, pc)
+    corpus.run_pass()
+    corpus.remote_take(pc_take(corpus, pc, take_id), prompt_of(pc))
+    assert corpus.restore_target(take_id) is None
+    with pytest.raises(SpoolError, match="restore it as kept or as draft"):
+        corpus.restore(take_id)  # no guess: the operator says
+    with pytest.raises(SpoolError, match="kept or draft"):
+        corpus.restore(take_id, "removed")  # type: ignore[arg-type]
+    corpus.restore(take_id, "kept")
+    assert corpus.run_pass().applied == 1
+    assert pc_take(corpus, pc, take_id).decision == "kept"
+    # Once known (here, or from an import's record), Restore uses it without asking.
+    corpus.decide(take_id, "removed")
+    assert corpus.restore_target(take_id) == "kept"
+
+
+def test_an_imports_restore_decision_is_used(
+    pc: PC, data_dir: Path, tmp_path: Path, library: Any
+) -> None:
+    take_id = recorded_elsewhere(pc, tmp_path, seed=69)
+    body = {"request_id": "req-" + "f" * 32, "decision": "removed"}
+    assert (
+        pc.send(
+            "POST", f"/api/v1/corpus/takes/{take_id}/decision", {**body, "expected_revision": 0}
+        )[0]
+        == 202
+    )
+    pc.publish()
+    corpus = client(data_dir, pc)
+    corpus.run_pass()
+    origin = RemoteOrigin(kind="imported", source_take_id="T-9", restore_decision="kept")
+    corpus.spool.learn_remote(pc_take(corpus, pc, take_id), prompt_of(pc), origin=origin)
+    assert corpus.restore_target(take_id) == "kept"
+    corpus.restore(take_id)
+    assert corpus.run_pass().applied == 1
+    assert pc_take(corpus, pc, take_id).decision == "kept"
+
+
+def test_a_change_is_never_folded_into_one_being_sent(
+    pc: PC, data_dir: Path, tmp_path: Path, library: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's interleaving, made deterministic: the engine reads the take, and before
+    it sends, the operator restores. The removal must go as it was queued, and the restore
+    after it, so the PC and this machine end the same."""
+    take_id = recorded_elsewhere(pc, tmp_path, seed=70)
+    corpus = client(data_dir, pc)
+    corpus.run_pass()
+    corpus.remote_take(pc_take(corpus, pc, take_id), prompt_of(pc))
+    corpus.decide(take_id, "removed")
+    spool = corpus.spool
+    real_take = CorpusSpool.take
+    armed = {"on": False}
+
+    def take(self: CorpusSpool, wanted: str) -> Any:
+        found = real_take(self, wanted)
+        if armed["on"] and wanted == take_id:
+            armed["on"] = False
+            corpus.restore(take_id)  # the operator, between the engine's read and its send
+        return found
+
+    monkeypatch.setattr(CorpusSpool, "take", take)
+    armed["on"] = True
+    corpus.run_pass()
+    corpus.run_pass()
+    monkeypatch.setattr(CorpusSpool, "take", real_take)
+    here = spool.take(take_id).sync
+    there = pc_take(corpus, pc, take_id)
+    assert here.outbox == ()
+    assert (here.decision.decision, here.decision.revision) == (
+        there.decision,
+        there.decision_revision,
+    )
+    assert there.decision == "draft"  # removed, then restored: both reached the PC, in order
+
+
+def test_a_half_written_note_is_removed_not_counted(data_dir: Path) -> None:
+    recording = data_dir / "corpus" / "recording"
+    recording.mkdir(parents=True)
+    (recording / "rem-0000000000000000").mkdir()
+    partial = recording / "rem-1111111111111111"
+    partial.mkdir()
+    (partial / REMOTE_FILE).write_text("{}")
+    spool = CorpusSpool(data_dir / "corpus")
+    assert spool.takes() == [] and spool.unsaved == []
+    assert sorted(os.listdir(recording)) == []
+
+
+def test_a_remote_take_the_pc_no_longer_has_is_gone(
+    pc: PC, data_dir: Path, tmp_path: Path, library: Any
+) -> None:
+    take_id = recorded_elsewhere(pc, tmp_path, seed=71)
+    corpus = client(data_dir, pc)
+    corpus.run_pass()
+    corpus.remote_take(pc_take(corpus, pc, take_id), prompt_of(pc))
+    # The PC answers that it has no such take (404 take_not_found).
+    real = corpus.engine.api
+    lost = ApiRefused("the PC has no such take (take_not_found)", status=404, code="take_not_found")
+    corpus.engine.api = lambda: Scripted(real(), submit_decision=raising(lost))
+    corpus.decide(take_id, "kept")
+    assert corpus.run_pass().refused == 1
+    corpus.engine.api = real
+    sync = corpus.spool.take(take_id).sync
+    assert (sync.upload, sync.outbox) == ("gone", ())
+    corpus.decide(take_id, "rejected", "late")  # still recorded here, never sent again
+    assert corpus.spool.take(take_id).sync.outbox == ()
+    again = CorpusSpool(data_dir / "corpus").take(take_id)
+    assert again.remote and again.sync.upload == "gone"
+
+
+def test_recovery_at_start_never_holds_the_spool(
+    pc: PC, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    import time
+
+    from corpus_rig import capture
+
+    corpus = client(data_dir, pc)
+    corpus.run_pass()
+    pending = corpus.begin_take(prompt_of(pc))
+    capture(pending.directory, seed=72)  # finished by the worker, never saved: a crash
+    started, release = threading.Event(), threading.Event()
+    real = CorpusSpool._save_left_over
+
+    def slow(self: CorpusSpool, path: Path) -> bool:
+        started.set()
+        release.wait(10)
+        return real(self, path)
+
+    monkeypatch.setattr(CorpusSpool, "_save_left_over", slow)
+    later = client(data_dir, pc)
+    worker = threading.Thread(target=later.prepare)
+    worker.start()
+    try:
+        assert started.wait(10)
+        # Meanwhile the GUI thread reads without waiting on the recovery (it copies and
+        # hashes a WAV): the status says it is not ready, the takes listed so far are none.
+        begun = time.monotonic()
+        status = later.status(wait=False)
+        notices = later.notices()
+        assert time.monotonic() - begun < 1.0
+        assert not status.ready and not later.ready and later.spool.peek() == []
+        assert notices == ()
+    finally:
+        release.set()
+        worker.join(10)
+    assert later.ready and later.status(wait=False).ready
+    (saved,) = later.spool.peek()
+    assert saved.prompt_id == prompt_of(pc) and later.library.loaded

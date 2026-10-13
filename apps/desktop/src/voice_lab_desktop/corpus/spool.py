@@ -128,6 +128,11 @@ MAX_RESUBMITS: Final = 3
 PENDING_SUFFIX: Final = ".json"
 _TAKE_ID: Final = re.compile(TAKE_ID_PATTERN.replace("$", r"\Z"))
 _RESTORABLE: Final = ("rejected", "removed")
+RESTORE_UNKNOWN: Final = (
+    "what this take was before is not known here: restore it as kept or as draft"
+)
+#: Where a take recorded elsewhere is written before it is moved into ``takes/``.
+REMOTE_STAGING: Final = "rem-"
 
 
 class SpoolError(Exception):
@@ -228,13 +233,15 @@ def capture_device(device: str) -> CaptureDevice:
     )
 
 
-def restore_target(sync: TakeSync) -> TakeDecisionName:
+def restore_target(sync: TakeSync) -> TakeDecisionName | None:
     """What Restore sets a rejected or removed take back to: its last ``kept`` or ``draft``
-    decision before that (``draft`` when it never had one), as the PC expects (D-052)."""
+    decision before that, as the PC expects (D-052). ``None`` when it is not known here: a
+    take recorded elsewhere, noted while it was already rejected or removed (the PC keeps no
+    restore target), whose operator is asked instead."""
     for event in reversed(sync.history):
         if event.decision in ("kept", "draft"):
             return event.decision
-    return "draft"
+    return None
 
 
 def _next_expected(sync: TakeSync, kind: Literal["decision", "trim"]) -> int:
@@ -306,7 +313,9 @@ class CorpusSpool:
         self.capture_host = capture_host or default_capture_host()
         self._lock = threading.RLock()
         self._takes: dict[str, SpooledTake] = {}
+        self._snapshot: tuple[SpooledTake, ...] = ()
         self._listed = False
+        self._recovery_lock = threading.Lock()
         #: Recording directories made by this process (never recovered while it runs).
         self._active: set[str] = set()
         #: Request ids being sent right now (never folded into).
@@ -345,7 +354,7 @@ class CorpusSpool:
             raise SpoolError(f"{path.name} cannot be read: {exc}") from exc
         if record.take_id != path.name or sync.take_id != path.name:
             raise SpoolError(f"{path.name} holds another take's records")
-        if isinstance(record, RemoteTake) != (sync.upload == "remote"):
+        if isinstance(record, RemoteTake) != (sync.upload in ("remote", "gone")):
             raise SpoolError(f"{path.name}: a take recorded elsewhere, and only one, is remote")
         return SpooledTake(path, record, sync)
 
@@ -356,41 +365,56 @@ class CorpusSpool:
         """What an earlier run left in ``recording/``: a save interrupted after its records
         were written is finished (the directory moves into ``takes/``); a take the worker
         finished, whose save never ran, is saved from its ``rec-….json``; anything else is
-        counted in ``unsaved``. Directories this process made are left to it."""
-        self.unsaved = []
+        counted in ``unsaved``. A take recorded elsewhere, staged beside (``rem-…``), is
+        finished when its records are whole and removed otherwise: it holds no audio, so it
+        is never counted. Directories this process made are left to it."""
+        unsaved: list[str] = []
         if not self.recording_root.is_dir():
+            self.unsaved = unsaved
             return
         for path in sorted(self.recording_root.iterdir()):
-            if not path.is_dir() or path.name in self._active:
+            with self._lock:
+                mine = path.name in self._active
+            if not path.is_dir() or mine:
                 continue
-            if (path / REMOTE_FILE).is_file() and (path / STATE_FILE).is_file():
-                # A take recorded elsewhere that a crash kept from its move into takes/.
-                try:
-                    learned = read_canonical_model(
-                        path / REMOTE_FILE, RemoteTake, max_bytes=MAX_TAKE_BYTES
-                    )
-                    target = private_dir(self.takes_root) / learned.take_id
-                    if os.path.lexists(target):
-                        shutil.rmtree(path)
-                    else:
-                        rename_no_replace(path, target)
-                        fsync_directory(self.takes_root)
-                except (OSError, ContractError, SecurityError):
-                    self.unsaved.append(path.name)
+            if path.name.startswith(REMOTE_STAGING):
+                self._finish_remote(path)
                 continue
             if (path / TAKE_FILE).is_file() and (path / STATE_FILE).is_file():
                 try:
                     record = read_canonical_model(
                         path / TAKE_FILE, LocalTake, max_bytes=MAX_TAKE_BYTES
                     )
-                    rename_no_replace(path, private_dir(self.takes_root) / record.take_id)
-                    fsync_directory(self.takes_root)
+                    with self._lock:
+                        rename_no_replace(path, private_dir(self.takes_root) / record.take_id)
+                        fsync_directory(self.takes_root)
                     self._pending_path(path).unlink(missing_ok=True)
                 except (OSError, ContractError, SecurityError):
-                    self.unsaved.append(path.name)
+                    unsaved.append(path.name)
                 continue
             if not self._save_left_over(path):
-                self.unsaved.append(path.name)
+                unsaved.append(path.name)
+        self.unsaved = unsaved
+
+    def _finish_remote(self, path: Path) -> None:
+        """A staged take recorded elsewhere: moved into ``takes/`` when both records read
+        back whole, else removed (it is only notes about a take on the PC)."""
+        try:
+            learned = read_canonical_model(path / REMOTE_FILE, RemoteTake, max_bytes=MAX_TAKE_BYTES)
+            sync = read_canonical_model(path / STATE_FILE, TakeSync, max_bytes=MAX_STATE_BYTES)
+            whole = sync.take_id == learned.take_id and sync.upload == "remote"
+        except (OSError, ContractError, SecurityError):
+            whole = False
+        with self._lock:
+            target = self.takes_root / learned.take_id if whole else None
+            if target is None or os.path.lexists(target):
+                shutil.rmtree(path, ignore_errors=True)
+                return
+            try:
+                rename_no_replace(path, private_dir(self.takes_root) / learned.take_id)
+                fsync_directory(self.takes_root)
+            except OSError:
+                shutil.rmtree(path, ignore_errors=True)
 
     def _save_left_over(self, path: Path) -> bool:
         """Save a take the worker finished in ``path`` (its ``rec-….json`` says of what)."""
@@ -420,22 +444,46 @@ class CorpusSpool:
             return False
         return True
 
+    @property
+    def listed(self) -> bool:
+        """The takes were listed (and what an earlier run left was recovered)."""
+        return self._listed
+
     def takes(self) -> list[SpooledTake]:
-        """Every saved take, in the order they were saved."""
+        """Every saved take, in the order they were saved. The first call lists them, after
+        recovering what an earlier run left (``_recover``: it may copy and hash a WAV, so
+        the app makes that call off the GUI thread); the spool's lock is held only for the
+        moments it writes, never through a recovery."""
+        if not self._listed:
+            with self._recovery_lock:
+                if not self._listed:
+                    self._recover()
+                    with self._lock:
+                        damaged: list[str] = []
+                        if self.takes_root.is_dir():
+                            for path in sorted(self.takes_root.iterdir()):
+                                if not _TAKE_ID.match(path.name) or not path.is_dir():
+                                    continue
+                                try:
+                                    self._takes[path.name] = self._read(path)
+                                except SpoolError:
+                                    damaged.append(path.name)
+                        self.damaged = damaged
+                        self._listed = True
+                        self._publish()
         with self._lock:
-            if not self._listed:
-                self._recover()
-                self.damaged = []
-                if self.takes_root.is_dir():
-                    for path in sorted(self.takes_root.iterdir()):
-                        if not _TAKE_ID.match(path.name) or not path.is_dir():
-                            continue
-                        try:
-                            self._takes[path.name] = self._read(path)
-                        except SpoolError:
-                            self.damaged.append(path.name)
-                self._listed = True
-            return sorted(self._takes.values(), key=lambda take: (take.saved_at, take.take_id))
+            return list(self._snapshot)
+
+    def peek(self) -> list[SpooledTake]:
+        """The takes as listed so far, without listing (nothing before the first listing):
+        what the GUI thread reads while a listing runs elsewhere."""
+        return list(self._snapshot)
+
+    def _publish(self) -> None:
+        """The snapshot ``peek`` reads, after a change of the takes (under the lock)."""
+        self._snapshot = tuple(
+            sorted(self._takes.values(), key=lambda take: (take.saved_at, take.take_id))
+        )
 
     def takes_for_prompt(self, prompt_id: str) -> list[SpooledTake]:
         """The takes of one prompt, newest first."""
@@ -452,12 +500,14 @@ class CorpusSpool:
                 raise SpoolError(f"no take {take_id} here")
             take = self._read(path)
             self._takes[take_id] = take
+            self._publish()
             return take
 
     def _store(self, take: SpooledTake, sync: TakeSync) -> SpooledTake:
         write_canonical_json(take.path / STATE_FILE, sync)
         stored = SpooledTake(take.path, take.record, sync)
         self._takes[take.take_id] = stored
+        self._publish()
         return stored
 
     # -- saving a take -------------------------------------------------------------------------
@@ -576,6 +626,7 @@ class CorpusSpool:
             self._pending_path(recording_dir).unlink(missing_ok=True)
             take = SpooledTake(target, record, sync)
             self._takes[take_id] = take
+            self._publish()
             if local_only is not None and not evidence.simulated:
                 self._notice(take, "local-only", f"Kept on this machine only: {local_only}")
             return take
@@ -660,6 +711,14 @@ class CorpusSpool:
                 origin=origin,
                 learned_at=now,
             )
+            # What it was before a rejection or removal is known only when the PC's record
+            # of an import says so; else Restore asks (``restore_target`` is ``None``).
+            history: tuple[DecisionEvent, ...] = (
+                DecisionEvent(decision=pc.decision, at=now, source="learned"),
+            )
+            before = origin.restore_decision if origin is not None else None
+            if pc.decision in _RESTORABLE and before is not None:
+                history = (DecisionEvent(decision=before, at=now, source="learned"), *history)
             sync = TakeSync(
                 take_id=pc.take_id,
                 decision=LocalDecision(decision=pc.decision, revision=pc.decision_revision),
@@ -668,11 +727,11 @@ class CorpusSpool:
                     end_frame=pc.trim.end_frame,
                     revision=pc.trim.revision,
                 ),
-                history=(DecisionEvent(decision=pc.decision, at=now, source="learned"),),
+                history=history,
                 upload="remote",
             )
             # Written beside, then moved in whole: a listing never sees half of it.
-            staging = private_dir(self.recording_root) / f"rem-{secrets.token_hex(8)}"
+            staging = private_dir(self.recording_root) / f"{REMOTE_STAGING}{secrets.token_hex(8)}"
             target = private_dir(self.takes_root) / pc.take_id
             try:
                 staging.mkdir(mode=0o700)
@@ -685,6 +744,7 @@ class CorpusSpool:
                 raise SpoolError(f"the take could not be noted here: {exc}") from exc
             take = SpooledTake(target, record, sync)
             self._takes[pc.take_id] = take
+            self._publish()
             return take
 
     def observe(self, take_id: str, pc: LibraryTake) -> bool:
@@ -769,13 +829,22 @@ class CorpusSpool:
                 changes["outbox"] = self._queue(sync, "decision", target, now)
             return self._store(take, _replace(sync, **changes))
 
-    def restore(self, take_id: str) -> SpooledTake:
-        """A rejected or removed take back to its decision before (``kept`` or ``draft``)."""
+    def restore(self, take_id: str, to: TakeDecisionName | None = None) -> SpooledTake:
+        """A rejected or removed take back to its decision before (``kept`` or ``draft``), or
+        to ``to`` (the operator's answer when it is not known here).
+
+        Raises: ``SpoolError`` when the decision before is not known and ``to`` is not given
+        (``RESTORE_UNKNOWN``), or ``to`` is neither ``kept`` nor ``draft``."""
+        if to is not None and to not in ("kept", "draft"):
+            raise SpoolError(f"a take is restored as kept or draft, not {to}")
         with self._lock:
             take = self.take(take_id)
             if take.sync.decision.decision not in _RESTORABLE:
                 return take
-            return self.decide(take_id, restore_target(take.sync))
+            target = to or restore_target(take.sync)
+            if target is None:
+                raise SpoolError(RESTORE_UNKNOWN)
+            return self.decide(take_id, target)
 
     def set_trim(self, take_id: str, start_frame: int | None, end_frame: int | None) -> SpooledTake:
         """Keep the frames ``[start_frame, end_frame)`` (both ``None``, or the whole take: no
@@ -821,6 +890,29 @@ class CorpusSpool:
         if (None if isinstance(op, UploadOp) else op.request_id) != request_id:
             raise SpoolError(f"{take_id}'s first queued operation changed")
         return take, op
+
+    @contextmanager
+    def sending_head(self, take_id: str) -> Iterator[tuple[SpooledTake, Operation] | None]:
+        """The take and the operation at the front of its outbox (``None``: nothing
+        queued), read and marked in flight in one step under the lock: from the moment the
+        engine picks it, no change of the operator's folds into it, so what is sent is
+        exactly what is kept here."""
+        request_id: str | None = None
+        with self._lock:
+            take = self.take(take_id)
+            head: tuple[SpooledTake, Operation] | None = None
+            if take.sync.outbox:
+                op = take.sync.outbox[0]
+                head = (take, op)
+                if not isinstance(op, UploadOp):
+                    request_id = op.request_id
+                    self._in_flight.add(request_id)
+        try:
+            yield head
+        finally:
+            if request_id is not None:
+                with self._lock:
+                    self._in_flight.discard(request_id)
 
     @contextmanager
     def sending(self, request_id: str | None) -> Iterator[None]:
@@ -1104,7 +1196,10 @@ class CorpusSpool:
         with self._lock:
             take, _op = self._head(take_id, request_id)
             dropped = len(take.sync.outbox) - 1
-            stored = self._store(take, _replace(take.sync, **self._drop_all(take.sync, code=code)))
+            changes = self._drop_all(take.sync, code=code)
+            if take.remote:
+                changes["upload"] = "gone"  # the PC no longer has the take it lent us
+            stored = self._store(take, _replace(take.sync, **changes))
             text = f"The PC refused a change of this take ({code}): {detail}"
             if dropped:
                 text += f"; {dropped} queued change(s) were dropped"

@@ -44,7 +44,9 @@ are canonical JSON, written atomically.
 
 A save writes `take.json` and `state.json` inside the recording directory, then renames the
 directory into `takes/`, under the spool's lock (a listing never sees half a save). At the
-next start:
+next start (the first listing, which the app runs off the GUI thread, `prepare`; the spool's
+lock is taken only for each move, and `peek` and `status(wait=False)` read what is listed so
+far without waiting):
 
 - a save a crash interrupted after its records were written is finished;
 - a take the worker finished but that was never saved is saved from its `rec-….json`;
@@ -59,7 +61,9 @@ Each take's `state.json` holds its outbox: the operations still to send, in orde
 
 - `upload`: the take package. While it is queued, it is always first.
 - `decision`: `kept`, `rejected` (with a reason), `removed`, or a restore (`kept` or `draft`,
-  the last one before the rejection or removal).
+  the last one before the rejection or removal). When that is not known here (a take
+  recorded elsewhere, noted while already rejected or removed, or a state adopted from the
+  PC), `restore` refuses without the operator's answer (`restore(take_id, to)`): no guess.
 - `trim`: `[start_frame, end_frame)`, or both `null` for the whole take.
 
 Each change has its own `request_id` (`req-` and 32 hex digits). The id is made once and kept
@@ -68,7 +72,9 @@ revision the PC last confirmed for its kind (decision or trim). When an earlier 
 same kind is still queued, it expects that change's revision plus 1.
 
 A new change is folded into the same kind's last queued change while the PC can know nothing
-of that one: it was never tried and is not being sent. The folded change keeps its id and
+of that one: it was never tried and is not being sent. The engine reads the operation it
+sends and marks it in flight in one step under the spool's lock (`sending_head`), so nothing
+folds into an operation from the moment it is picked. The folded change keeps its id and
 expected revision, and takes the new target. So the outbox holds at most a few changes,
 however long the PC is away. A change that was tried, or is being sent, is never altered: the
 PC may already know its id. Every operation counts
@@ -87,7 +93,10 @@ it (`remote_take`, from `GET /api/v1/corpus/prompts/{id}/takes`):
   expects the revision the PC last confirmed, unsent changes fold, a refusal adopts the PC's
   state by the same verdict and refresh rules, and offline changes wait for the PC;
 - it has no upload: the engine sends its changes at once, and `take_not_found` gives up
-  without re-checking an upload (there is no package here);
+  without re-checking an upload (there is no package here): the take is then `gone`, never
+  sent again and never counted;
+- a note interrupted while it was written beside (`recording/rem-…`) is finished when both
+  records read back whole, and removed otherwise; it never counts as an unsaved recording;
 - it never claims audio: `audio` and `package` refuse, and the studio plays it from the PC
   (`take_audio`, in memory);
 - `observe_history` installs a newer state the PC's history shows for any take with nothing

@@ -64,3 +64,6 @@ class SyncStatus:
     #: Why nothing can be recorded ("" when a catalog is pinned).
     record_blocked: str
     notices: tuple[Notice, ...]
+    #: This machine's takes are listed (``False`` while the first listing and its recovery
+    #: run: the counts above are then partial).
+    ready: bool = True

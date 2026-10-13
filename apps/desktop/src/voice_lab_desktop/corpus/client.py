@@ -50,6 +50,7 @@ from .spool import (
     default_capture_host,
     default_client,
     doubling,
+    restore_target,
 )
 from .status import HELD_FOR_S1, NO_CATALOG, SyncStatus
 from .sync import PassResult, SyncEngine, TakeUploader
@@ -87,7 +88,12 @@ def remote_origin(pc: LibraryTake) -> RemoteOrigin | None:
     if not isinstance(kind, str) or not kind:
         return None
     source = getattr(origin, "source_take_id", None)
-    return RemoteOrigin(kind=kind[:64], source_take_id=str(source)[:500] if source else None)
+    before = getattr(origin, "restore_decision", None)
+    return RemoteOrigin(
+        kind=kind[:64],
+        source_take_id=str(source)[:500] if source else None,
+        restore_decision=before if before in ("kept", "draft") else None,
+    )
 
 
 def next_delay(result: PassResult, failures: int, waits: int) -> float | None:
@@ -375,10 +381,27 @@ class CorpusClient:
         self._poke()
         return take
 
-    def restore(self, take_id: str) -> SpooledTake:
-        take = self.spool.restore(take_id)
+    def restore(self, take_id: str, to: TakeDecisionName | None = None) -> SpooledTake:
+        """Back to the decision before; ``to`` when that is not known here (``SpoolError``
+        ``RESTORE_UNKNOWN`` without it: the UI asks)."""
+        take = self.spool.restore(take_id, to)
         self._poke()
         return take
+
+    def restore_target(self, take_id: str) -> TakeDecisionName | None:
+        """What Restore would set the take back to (``None``: not known here)."""
+        return restore_target(self.spool.take(take_id).sync)
+
+    @property
+    def ready(self) -> bool:
+        """This machine's takes were listed (what an earlier run left was recovered)."""
+        return self.spool.listed
+
+    def prepare(self) -> None:
+        """The first listing (with the recovery of what an earlier run left) and the PC's
+        library as last read, parsed: slow work for a worker thread at start."""
+        self.spool.takes()
+        _ = self.library.latest
 
     def set_trim(self, take_id: str, start_frame: int | None, end_frame: int | None) -> SpooledTake:
         take = self.spool.set_trim(take_id, start_frame, end_frame)
@@ -433,8 +456,10 @@ class CorpusClient:
         self.spool.dismiss(notice_id)
         self._notify()
 
-    def status(self) -> SyncStatus:
-        takes = self.spool.takes()
+    def status(self, *, wait: bool = True) -> SyncStatus:
+        """The client now. ``wait=False`` never waits for the first listing (the GUI thread
+        while it runs elsewhere): the takes are then the ones listed so far."""
+        takes = self.spool.takes() if (wait or self.spool.listed) else self.spool.peek()
         record = self.spool.sync_record()
         last = self._last
         state = self.catalog.state
@@ -477,4 +502,5 @@ class CorpusClient:
             can_record=pinned is not None,
             record_blocked="" if pinned is not None else NO_CATALOG,
             notices=self.spool.notices(),
+            ready=self.spool.listed,
         )
