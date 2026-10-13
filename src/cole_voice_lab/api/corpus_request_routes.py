@@ -171,12 +171,20 @@ class CorpusRequestRoutes:
                 (e for e in queued_requests(self.layout) if e.request_id == request_id), None
             )
             queued = None
+            unreadable: Exception | None = None
             if entry is not None:
                 try:
                     queued = read_request_file(self.layout.directory("incoming") / entry.name)
                 except FileNotFoundError:
                     queued = None  # decided meanwhile: its outcome is there now
-            return queued, read_outcome(self.layout, request_id)
+                except (ContractError, SecurityError) as error:
+                    # Not a file this API wrote; the publisher refuses it before moving it
+                    # aside, so its outcome, once written, is the answer.
+                    unreadable = error
+            outcome = read_outcome(self.layout, request_id)
+            if unreadable is not None and outcome is None:
+                raise unreadable
+            return queued, outcome
         except (ContractError, SecurityError, OSError) as error:
             raise RouteRefusal(500, "internal_error", "the request cannot be read") from error
 

@@ -4,6 +4,7 @@ and the read model follows. Synthetic takes only (``corpus_take_fixtures``)."""
 
 from __future__ import annotations
 
+import errno
 import http.client
 import json
 import os
@@ -1100,3 +1101,103 @@ def test_requests_that_arrive_during_a_pass_are_applied_in_it(
     assert found is not None
     [listed] = [entry for prompt in found[0].histories for entry in prompt.takes]
     assert (listed.decision, listed.decision_revision) == ("kept", 3)
+
+
+# -- review fixes ------------------------------------------------------------------------------
+
+
+def test_a_request_for_a_take_a_pass_has_claimed_is_queued(
+    layout: AssetLayout, catalog: Catalog, work: Path, tmp_path: Path
+) -> None:
+    # A pass under way has moved the finalized package to tmp/ (intake's claim) and records
+    # the take when its packages are done: the take is on its way, not unknown.
+    take = make_take(work / "take", catalog=catalog)
+    session = layout.directory("incoming") / UPLOADS_NAME / take.session_id
+    session.mkdir(parents=True)
+    (session / FINALIZED_NAME).write_bytes(b"finalized\n")
+    claimed = layout.directory("tmp") / f".intake-{take.session_id}-4242"
+    os.rename(work / "take", claimed)
+    with serving(layout, tmp_path) as (port, _routes):
+        assert accepted(decide(port, take.session_id, rid(1), "kept", 0)).status == "queued"
+        os.rename(claimed, layout.directory("incoming") / take.session_id)
+        summary = a_pass(layout)
+        assert [receipt.session_id for receipt in summary.accepted] == [take.session_id]
+        assert summary.requests_applied == [rid(1)]
+        assert request_status(port, rid(1)).status == "applied"
+
+
+def test_one_publisher_pass_at_a_time(
+    layout: AssetLayout, catalog: Catalog, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    take = published(layout, catalog, work)
+    queued(layout, rid(1), take.session_id, NOW)
+    with intake_publisher.one_pass_at_a_time(layout):
+        with pytest.raises(intake_publisher.PublisherBusy):
+            publish_pending(layout, min_free_bytes=0, lock_wait_seconds=0.3)
+        assert read_outcome(layout, rid(1)) is None and len(waiting_files(layout)) == 1
+    # The interleaving the lock prevents (the unit's pass and one run by hand): a pass that
+    # starts while another is between a request's outcome and its take record does nothing.
+    real = corpus_requests._write_outcome
+    raced: list[str] = []
+
+    def write_then_race(at: AssetLayout, outcome: CorpusRequestOutcome) -> None:
+        real(at, outcome)
+        try:
+            publish_pending(at, min_free_bytes=0, lock_wait_seconds=0)
+        except intake_publisher.PublisherBusy:
+            raced.append(outcome.request_id)
+
+    monkeypatch.setattr(corpus_requests, "_write_outcome", write_then_race)
+    assert a_pass(layout).requests_applied == [rid(1)]
+    assert raced == [rid(1)]
+    assert state_of(layout, take).decision.revision == 1
+    assert intake_publisher.LOCK_NAME == ".publisher.lock"
+    assert classify("provenance/intake/.publisher.lock").rule.disposition == "mac-only"
+
+
+def test_a_request_file_that_cannot_be_opened_for_now_waits(
+    layout: AssetLayout, catalog: Catalog, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    take = published(layout, catalog, work)
+    path = queued(layout, rid(1), take.session_id, NOW)
+
+    def too_many_open_files(opened: Path, **_options: object) -> object:
+        try:
+            raise OSError(errno.EMFILE, "Too many open files")
+        except OSError as error:
+            raise SecurityError(f"cannot safely open regular file {opened}: {error}") from error
+
+    with monkeypatch.context() as patched:
+        patched.setattr(corpus_requests, "open_regular_no_follow", too_many_open_files)
+        summary = a_pass(layout)
+    assert [entry["request"] for entry in summary.requests_waiting] == [rid(1)]
+    assert summary.requests_refused == [] and path.exists()
+    assert read_outcome(layout, rid(1)) is None
+    assert a_pass(layout).requests_applied == [rid(1)]
+
+
+def test_a_request_set_aside_has_its_outcome_before_it_moves(
+    layout: AssetLayout,
+    catalog: Catalog,
+    work: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    take = published(layout, catalog, work)
+    path = queued(layout, rid(1), take.session_id, NOW)
+    path.write_bytes(b"{not json\n")
+
+    def the_disk_says_no(*_args: object, **_options: object) -> None:
+        raise OSError("the disk says no")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(corpus_requests, "rename_no_replace", the_disk_says_no)
+        summary = a_pass(layout)
+    assert [entry["request"] for entry in summary.requests_waiting] == [rid(1)]
+    outcome = read_outcome(layout, rid(1))
+    assert outcome is not None and outcome.code == "invalid_request" and path.exists()
+    with serving(layout, tmp_path) as (port, _routes):
+        assert request_status(port, rid(1)).status == "refused"
+    a_pass(layout)
+    assert not path.exists()
+    assert len(os.listdir(layout.directory("incoming") / ".refused")) == 1

@@ -35,9 +35,13 @@ changes; the API container cannot write ``raw/`` at all.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import shutil
-from collections.abc import Callable
+import stat
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,12 +55,16 @@ from .corpus_read_model import refresh_active_catalog, refresh_library
 from .corpus_requests import RequestPass, apply_requests, queued_requests
 from .corpus_take_store import CorpusTakeState, record_takes
 from .corpus_takes import TakeDeferral
-from .errors import ContractError, SecurityError
+from .errors import ContractError, SecurityError, VoiceLabError
 from .intake import MIN_FREE_BYTES, IntakeReceipt, accept_capture_session
 from .models import ContractModel, Sha256, StableId, utc_now
 from .paths import AssetLayout
 
 REFUSED_NAME: Final = ".refused"
+#: ``provenance/intake/.publisher.lock``: one pass at a time (classified with intake's records).
+LOCK_NAME: Final = ".publisher.lock"
+#: How long a pass waits for one already running (the unit's and a hand-run one) to end.
+LOCK_WAIT_SECONDS: Final = 3600.0
 MAX_RECORD_BYTES: Final = 1024 * 1024
 #: How many times a pass applies the queued requests and rebuilds the library while requests
 #: keep arriving during it.
@@ -161,16 +169,66 @@ def _quarantine(
     return record
 
 
+class PublisherBusy(VoiceLabError):
+    """Another publisher pass held the lock for longer than this one would wait."""
+
+
+@contextmanager
+def one_pass_at_a_time(
+    layout: AssetLayout, wait_seconds: float = LOCK_WAIT_SECONDS
+) -> Iterator[None]:
+    """Hold the publisher's lock (``provenance/intake/.publisher.lock``, ``flock``) for a pass.
+
+    Two passes at once (the systemd unit and ``voice-lab intake publish`` run by hand) would
+    interleave a request's outcome and its take record and lose a change, so a second pass
+    waits for the first, polling, for at most ``wait_seconds``. The kernel releases the lock
+    when the holder exits, however it ends.
+    Raises: ``PublisherBusy`` after the wait; ``SecurityError`` when the lock is not a
+    regular file."""
+    directory = layout.directory("provenance") / "intake"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(
+        directory / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise SecurityError(f"the publisher's lock is not a regular file: {LOCK_NAME}")
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise PublisherBusy(
+                        f"another intake pass has held {LOCK_NAME} for over {wait_seconds:g} s"
+                    ) from None
+                time.sleep(0.2)
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def publish_pending(
     layout: AssetLayout,
     *,
     min_free_bytes: int = MIN_FREE_BYTES,
     clock: Callable[[], datetime] = utc_now,
+    lock_wait_seconds: float = LOCK_WAIT_SECONDS,
 ) -> PublishSummary:
-    """Validate and publish every finalized package in ``incoming/``, once.
+    """Validate and publish every finalized package in ``incoming/``, once, one pass at a time
+    (``one_pass_at_a_time``).
 
-    Raises: ``SecurityError`` when the disk is below the intake floor (nothing is touched).
+    Raises: ``SecurityError`` when the disk is below the intake floor (nothing is touched);
+    ``PublisherBusy`` when another pass keeps the lock past ``lock_wait_seconds``.
     """
+    with one_pass_at_a_time(layout, lock_wait_seconds):
+        return _publish_pending(layout, min_free_bytes=min_free_bytes, clock=clock)
+
+
+def _publish_pending(
+    layout: AssetLayout, *, min_free_bytes: int, clock: Callable[[], datetime]
+) -> PublishSummary:
     free = shutil.disk_usage(layout.root).free
     if free < min_free_bytes:
         raise SecurityError(f"intake disk floor not met: {free} bytes free")

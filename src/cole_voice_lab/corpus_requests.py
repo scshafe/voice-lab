@@ -37,6 +37,7 @@ outcomes and take records, and removes request files it has decided.
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import secrets
@@ -299,7 +300,16 @@ def read_request_file(path: Path) -> CorpusRequest:
         raise SecurityError(f"a corpus request is not a plain regular file: {path.name}")
     if metadata.st_size > MAX_REQUEST_BYTES:
         raise ContractError(f"a corpus request is larger than {MAX_REQUEST_BYTES} bytes")
-    with open_regular_no_follow(path, nonblocking=True) as stream:
+    try:
+        opened_stream = open_regular_no_follow(path, nonblocking=True)
+    except SecurityError as error:
+        # lstat saw a plain file: an open that failed for another reason than a link put in
+        # its place (ELOOP) is the system's (EACCES, EMFILE, ...), so the request waits.
+        cause = error.__cause__
+        if isinstance(cause, OSError) and cause.errno != errno.ELOOP:
+            raise cause from error
+        raise
+    with opened_stream as stream:
         opened = os.fstat(stream.fileno())
         if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
             raise SecurityError(f"a corpus request changed while it was opened: {path.name}")
@@ -346,14 +356,24 @@ def queue_request(layout: AssetLayout, request: CorpusRequest, stamp_ns: int) ->
 
 
 def take_on_its_way(layout: AssetLayout, take_id: str) -> bool:
-    """Whether the take's package waits for the publisher (``incoming/<take_id>``: finalized,
-    or deferred) or is still uploading (``incoming/.uploads/<take_id>``, not finalized: a
-    finalized session's directory stays after its package moved on, or was refused)."""
+    """Whether the take may still be recorded: its package waits for the publisher
+    (``incoming/<take_id>``: finalized, or deferred), is still uploading
+    (``incoming/.uploads/<take_id>`` without ``FINALIZED``), or was finalized and intake has
+    not refused it (``provenance/intake/refusals/<take_id>.json``, intake_publisher): a pass
+    has claimed the package (it is in ``tmp/`` until accepted) or accepted it, and records
+    it when its packages are done. A finalized session's directory stays after its package
+    moved on, so only the refusal record ends the wait. Call it when the take has no record.
+    """
     incoming = layout.directory("incoming")
     session = incoming / UPLOADS_NAME / take_id
-    return os.path.lexists(incoming / take_id) or (
-        os.path.lexists(session) and not os.path.lexists(session / FINALIZED_NAME)
-    )
+    if os.path.lexists(incoming / take_id):
+        return True
+    if not os.path.lexists(session):
+        return False
+    if not os.path.lexists(session / FINALIZED_NAME):
+        return True
+    refusal = layout.directory("provenance") / "intake" / "refusals" / f"{take_id}.json"
+    return not os.path.lexists(refusal)
 
 
 # -- outcomes (provenance/corpus-requests/) -----------------------------------------------------
@@ -550,10 +570,8 @@ def _set_aside(
     incoming = layout.directory("incoming")
     refused = refused_root()
     target = f"{entry.name.removeprefix('.')}.{now.strftime('%Y%m%dT%H%M%S%fZ')}"
-    rename_no_replace(incoming / entry.name, refused / target)
-    fsync_directory(refused)
-    fsync_directory(incoming)
     detail = f"the request file was set aside as incoming/{refused.name}/{target}: {error}"
+    # The outcome before the move, so the request is always found in one of them.
     if read_outcome(layout, entry.request_id) is None:
         _write_outcome(
             layout,
@@ -569,6 +587,9 @@ def _set_aside(
                 decided_at=now,
             ),
         )
+    rename_no_replace(incoming / entry.name, refused / target)
+    fsync_directory(refused)
+    fsync_directory(incoming)
     result.refused.append({"request": entry.request_id, "take": take_id, "code": "invalid_request"})
 
 

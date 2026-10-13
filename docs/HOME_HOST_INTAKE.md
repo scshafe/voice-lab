@@ -133,7 +133,9 @@ a change travels as a **corpus request** (`corpus_requests`), which the publishe
    library follows in the same pass. The path unit does not start a pass for what changes
    while one runs, so the pass lists `incoming/` again after its requests and after the
    library, and applies what arrived meanwhile (up to three rounds; the timer catches the
-   rest).
+   rest). One pass runs at a time: `publish_pending` holds `provenance/intake/.publisher.lock`
+   (`flock`), and a second pass (the unit's while one runs by hand) waits for it, up to an
+   hour, rather than interleave an outcome and its record.
 
 A retry with the same `request_id` and body answers as before (202, with the outcome once
 there is one); the same id with another take or change is `request_conflict` (409). The
@@ -143,13 +145,16 @@ current one when refused for a conflict, so the client can rebase.
 | Outcome code | When |
 | --- | --- |
 | `revision_conflict` | `expected_revision` is not the take's current decision (or trim) revision |
-| `take_not_found` | the PC has no record of the take, and its package is neither uploading nor waiting in `incoming/` (the publisher refused it, say) |
+| `take_not_found` | the PC has no record of the take, and it is not on its way (below): intake refused it, say |
 | `trim_out_of_bounds` | the trim ends after the take's last frame (the API checks this when it can) |
-| `invalid_request` | the request file could not be read safely (a link, a FIFO, a hard link, too large, not canonical, not named for its request): it is set aside in `incoming/.refused/`, and the outcome names no take |
+| `invalid_request` | the request file could not be read safely (a link, a FIFO, a hard link, too large, not canonical, not named for its request): its outcome is written, then it is set aside in `incoming/.refused/`, and the outcome names no take. A file that could not be opened for now (EACCES, EMFILE) waits instead |
 
-A request whose take has no record yet **waits** in `incoming/` while the take's package is
-uploading (`incoming/.uploads/<take_id>`) or waits there itself (finalized, or deferred), and
-so does every later request of that take; the pass lists them under `requests_waiting`. So
+A request whose take has no record yet **waits** in `incoming/` while the take is on its way:
+its package is uploading (`incoming/.uploads/<take_id>` without `FINALIZED`), waits in
+`incoming/` itself (finalized, or deferred), or was finalized and intake has not refused it
+(`provenance/intake/refusals/<take_id>.json`): a pass has claimed it in `tmp/` or accepted it
+and records it at the end of its packages. The API queues such a request rather than answering
+404. Every later request of that take waits with it; the pass lists them under `requests_waiting`. So
 does a request the pass could not finish (an `OSError`, a damaged record). Nothing waits
 forever unnoticed: each pass lists it again.
 
