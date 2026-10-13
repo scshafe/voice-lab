@@ -31,6 +31,9 @@ from .blind import (
     ScoreSheet,
 )
 from .capture import CaptureContinuityEvidence, ReadyMarker, RejectedTakeLog
+from .corpus_read_model import CorpusLibraryRecord
+from .corpus_take_store import CorpusTakeState
+from .corpus_takes import CorpusTakeManifest
 from .datasets import (
     DatasetManifest,
     DatasetSelectionDocument,
@@ -57,6 +60,7 @@ from .models import (
     WorkerModelEvidence,
 )
 from .native_recording_application import NATIVE_RECORDING_APPLICATION_SCHEMA_MODELS
+from .portaudio_evidence import PortAudioContinuityEvidence
 from .recording_analysis import RECORDING_ANALYSIS_SCHEMA_MODELS
 from .recording_contracts import CORPUS_SCHEMA_MODELS, RECORDING_SCHEMA_MODELS
 from .recording_discovery import RecordingDiscoveryCheckpoint
@@ -140,6 +144,9 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "capture-ready": ReadyMarker,
     "capture-rejected-takes": RejectedTakeLog,
     "capture-desktop-session": DesktopSessionEvidence,
+    "corpus-library": CorpusLibraryRecord,
+    "corpus-take": CorpusTakeManifest,
+    "corpus-take-state": CorpusTakeState,
     "dataset-manifest": DatasetManifest,
     "dataset-selection": DatasetSelectionDocument,
     "diagnostic-root": DiagnosticRootMarker,
@@ -157,6 +164,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "model-lock-entry": ModelLockEntry,
     "model-sources-lock": ModelSourcesLock,
     "pilot-gate": PilotGateApproval,
+    "portaudio-continuity": PortAudioContinuityEvidence,
     "prompt-suite": PromptSuite,
     "qc-report": QcReport,
     "reference-manifest": ReferenceManifest,

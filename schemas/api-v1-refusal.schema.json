@@ -62,6 +62,11 @@
         "already_finished",
         "catalog_unavailable",
         "catalog_invalid",
+        "library_unavailable",
+        "library_invalid",
+        "prompt_not_found",
+        "take_not_found",
+        "take_invalid",
         "internal_error"
       ],
       "type": "string"

@@ -605,7 +605,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     verifier = TokenVerifier(config.auth)
     view = ViewRoutes(journey.store, verifier)
-    corpus = CorpusRoutes(AssetLayout.validate(Path(config.asset_root)))
+    # Take audio needs the same recorded playback approval as journey playback (§4.2).
+    corpus = CorpusRoutes(
+        AssetLayout.validate(Path(config.asset_root)),
+        playback_approval=options.playback_approval,
+    )
     routes: tuple[Route, ...] = (corpus, journey, view)
     self_authenticating: tuple[str, ...] = ()
     if options.speech_config is not None:

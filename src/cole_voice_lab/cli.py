@@ -50,7 +50,7 @@ from .capture import (
     require_legacy_capture_suite,
     select_umik1_device,
 )
-from .corpus_read_model import active_catalog_path, refresh_active_catalog
+from .corpus_read_model import active_catalog_path, refresh_corpus_read_model
 from .datasets import (
     DEFAULT_MINIMUM_HOLDOUT_SECONDS,
     DatasetSelectionDocument,
@@ -71,7 +71,7 @@ from .diagnostic_roots import (
 )
 from .doctor import run_doctor
 from .errors import VoiceLabError
-from .intake import accept_capture_session, validate_capture_package
+from .intake import accept_capture_session, validate_capture_package, validate_package
 from .models import (
     COLE_SUBJECT,
     F5_FAMILY,
@@ -2035,8 +2035,9 @@ def _catalog_import_json(options: argparse.Namespace) -> int:
 
 
 def _refreshed_read_model(layout: AssetLayout, subject_id: str = COLE_SUBJECT) -> str | None:
-    """The corpus read model the API serves (D-052), refreshed after a catalog change."""
-    record = refresh_active_catalog(layout, subject_id)
+    """The corpus read model the API serves (D-052), refreshed after a catalog change: the
+    active catalog record (whose path is returned) and its library."""
+    record = refresh_corpus_read_model(layout, subject_id)
     return str(active_catalog_path(layout, subject_id)) if record is not None else None
 
 
@@ -2291,10 +2292,10 @@ def _recording_service(options: argparse.Namespace) -> int:
 
 
 def _intake_validate(options: argparse.Namespace) -> int:
-    package = validate_capture_package(Path(options.session).expanduser())
+    package = validate_package(Path(options.session).expanduser())  # a capture or a take
     _json_print(
         {
-            "session_id": package.manifest.session_id,
+            "session_id": package.session_id,
             "manifest_sha256": package.manifest_sha256,
             "qc_report_sha256": package.qc_report_sha256,
             "qc_status": package.qc_report.status,

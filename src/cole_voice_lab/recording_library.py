@@ -38,6 +38,7 @@ from .capture import (
     validate_rejected_takes,
 )
 from .capture_native import list_coreaudio_input_devices
+from .corpus_takes import is_take_package
 from .datasets import load_pilot_gate
 from .errors import ContractError, ExternalToolError, SecurityError
 from .intake import ValidatedPackage, validate_capture_package
@@ -733,6 +734,9 @@ class RecordingLibrary:
                 directory = confined_path(root, child.name, must_exist=True)
                 if not directory.is_dir():
                     raise SecurityError(f"capture package must be a real directory: {directory}")
+                if name == "raw" and is_take_package(directory):
+                    # A take of the prompt studio (D-052): the PC's corpus API serves it.
+                    continue
                 ready = confined_path(directory, "READY")
                 if ready.exists() or name == "raw":
                     package = validate_capture_package(

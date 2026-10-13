@@ -9,8 +9,9 @@ mismatched fails closed and keeps both files for inspection. This is not D-015's
 ``capture-continuity/v1`` (Audio Queue sample times, exact to 1e-6 frames), which the
 PortAudio worker never writes: its continuity rule is ``timing.py``'s.
 
-The evidence stays on the capturing machine, like D-015's: a capture package carries
-audio and its manifest, never evidence.
+A measurement package carries audio and its manifest, never evidence. A prompted take's
+package (``cole_voice_lab.corpus_takes``, D-052) carries its evidence to the PC, which checks
+it again.
 """
 
 from __future__ import annotations
@@ -19,115 +20,41 @@ import os
 import stat
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Final, Literal, Self
+from typing import Final
 
-from pydantic import AwareDatetime, Field, StringConstraints, ValidationError, model_validator
+from pydantic import ValidationError
 
 from cole_voice_lab.audio import inspect_canonical_wav
 from cole_voice_lab.errors import ContractError, SecurityError
-from cole_voice_lab.models import ContractModel, Sha256
+
+# The contract is the backend's since a take package carries it to the PC (D-052); it is
+# re-exported here for the app's callers.
+from cole_voice_lab.portaudio_evidence import (
+    MAX_EVIDENCE_BYTES,
+    SCHEMA_VERSION,
+    WAV_HEADER_BYTES,
+    PortAudioContinuityEvidence,
+)
 
 from .types import (
     EVIDENCE_NAME,
-    FRAME_BYTES,
     ORIGINAL_NAME,
     PARTIAL_NAME,
-    SAMPLE_RATE,
     CapturedTake,
     CaptureFailed,
 )
 
-SCHEMA_VERSION: Final = "voice-lab-desktop.portaudio-continuity/v1"
-MAX_EVIDENCE_BYTES: Final = 16 * 1024
-WAV_HEADER_BYTES: Final = 44
-
-type Text = Annotated[str, StringConstraints(min_length=1, max_length=500)]
-type FileName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")]
-type Seconds = Annotated[float, Field(allow_inf_nan=False)]
-
-
-class PortAudioContinuityEvidence(ContractModel):
-    """What the worker knows about one take, successful or not."""
-
-    schema_version: Literal["voice-lab-desktop.portaudio-continuity/v1"] = SCHEMA_VERSION
-    backend: Literal["portaudio"] = "portaudio"
-    #: PortAudio's host API ("Core Audio", "ALSA", "JACK Audio Connection Kit"), or
-    #: "Core Audio"/"ALSA" as the simulated device reports it.
-    host_api: Text
-    #: True when the simulated device produced the take: never hardware evidence.
-    simulated: bool
-    device_name: Text
-    device_usb_id: Text | None
-    output_name: FileName
-    wav_sha256: Sha256 | None
-    wav_size_bytes: int | None = Field(ge=0)
-    #: Frames written to the WAV.
-    frames: int = Field(ge=0)
-    #: Frames accepted from PortAudio (a refused block is never written).
-    received_frames: int = Field(ge=0)
-    callback_count: int = Field(ge=0)
-    block_frames: int = Field(gt=0, le=65536)
-    sample_rate: Literal[48000] = SAMPLE_RATE
-    first_adc_time: Seconds | None
-    last_adc_end: Seconds | None
-    adc_time_valid: bool
-    tolerance_frames: float = Field(gt=0, allow_inf_nan=False)
-    max_abs_deviation_frames: float | None = Field(ge=0, allow_inf_nan=False)
-    input_overflows: int = Field(ge=0)
-    input_underflows: int = Field(ge=0)
-    queue_capacity: int = Field(gt=0)
-    queue_high_water: int = Field(ge=0)
-    success: bool
-    #: Every accepted block's ADC time was checked against the block before it.
-    continuity_checked: bool
-    stop_reason: Literal["requested", "maximum-duration"] | None
-    error: Annotated[str, StringConstraints(min_length=1, max_length=2000)] | None
-    #: When the stream started (UTC, the worker's clock).
-    started_at: AwareDatetime | None
-
-    @model_validator(mode="after")
-    def _success_is_complete(self) -> Self:
-        if self.queue_high_water > self.queue_capacity:
-            raise ValueError("the queue cannot hold more blocks than its capacity")
-        if not self.success:
-            return self
-        problems = [
-            problem
-            for problem, broken in (
-                ("an error", self.error is not None),
-                ("no continuity check", not self.continuity_checked),
-                ("an invalid ADC time", not self.adc_time_valid),
-                ("no frames", self.frames <= 0),
-                ("unwritten frames", self.frames != self.received_frames),
-                ("an overflow", self.input_overflows > 0),
-                ("an underflow", self.input_underflows > 0),
-                ("no stop reason", self.stop_reason is None),
-                ("no start time", self.started_at is None),
-                ("no WAV digest", self.wav_sha256 is None),
-                (
-                    "a WAV size that is not 44 + 3 x frames",
-                    self.wav_size_bytes != WAV_HEADER_BYTES + self.frames * FRAME_BYTES,
-                ),
-                ("no ADC span", self.first_adc_time is None or self.last_adc_end is None),
-                (
-                    "a deviation beyond the tolerance",
-                    self.max_abs_deviation_frames is not None
-                    and self.max_abs_deviation_frames > self.tolerance_frames,
-                ),
-                (
-                    "no deviation measured over several blocks",
-                    self.callback_count > 1 and self.max_abs_deviation_frames is None,
-                ),
-            )
-            if broken
-        ]
-        if problems:
-            raise ValueError("successful evidence with " + ", ".join(problems))
-        return self
-
-    @property
-    def device(self) -> str:
-        return f"{self.device_name} [{self.host_api}]"
+__all__ = [
+    "MAX_EVIDENCE_BYTES",
+    "MAX_WAV_BYTES",
+    "SCHEMA_VERSION",
+    "WAV_HEADER_BYTES",
+    "PortAudioContinuityEvidence",
+    "check_binding",
+    "read_evidence",
+    "validate_take",
+    "write_evidence",
+]
 
 
 def write_evidence(path: Path, evidence: PortAudioContinuityEvidence) -> None:

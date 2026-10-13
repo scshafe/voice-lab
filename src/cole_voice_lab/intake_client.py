@@ -1,8 +1,9 @@
-"""Uploading a finalized capture package to the home host's intake API (D-021, D-024).
+"""Uploading a finalized package to the home host's intake API (D-021, D-024).
 
-@canonical intake_client -- ``upload_session`` validates the package locally with the same
-strict validator the publisher runs (so a symlink, an undeclared file or a tampered
-recording is refused before a byte is sent), loads the standing home-host approval, checks
+@canonical intake_client -- ``upload_session`` validates the package (a capture package, or a
+take package: ``corpus_takes``, D-052) locally with the same strict validator the publisher
+runs (so a symlink, an undeclared file or a tampered recording is refused before a byte is
+sent), loads the standing home-host approval, checks
 that the node answering for the approved endpoint is the approved node, writes the ledger
 entry naming the manifest digest, and then sends the package with the resumable protocol of
 ``api.staging``: every file from the byte the server already holds, in ``CHUNK_BYTES``
@@ -39,6 +40,7 @@ from .api.contracts import (
     IntakeSessionStatus,
 )
 from .canonical import canonical_json_bytes, open_regular_no_follow
+from .corpus_takes import ValidatedTake
 from .errors import SecurityError, VoiceLabError
 from .home_host import (
     HomeHostApproval,
@@ -47,7 +49,7 @@ from .home_host import (
     load_approval,
     record_sha256,
 )
-from .intake import ValidatedPackage, validate_capture_package
+from .intake import ValidatedPackage, validate_package
 from .models import utc_now
 from .paths import AssetLayout
 from .tailnet import ResolvedPeer, TailnetResolver, identity_problem
@@ -207,14 +209,14 @@ def _fail(answer: Answer) -> VoiceLabError:
     return UploadRefused(code, detail)
 
 
-def session_request(package: ValidatedPackage) -> IntakeSessionRequest:
+def session_request(package: ValidatedPackage | ValidatedTake) -> IntakeSessionRequest:
     """The declaration of every file of a validated package."""
     files = tuple(
         FileDeclaration(path=path, sha256=item.sha256, size_bytes=item.size_bytes)
         for path, item in sorted(package._snapshot.files.items())
     )
     return IntakeSessionRequest(
-        session_id=package.manifest.session_id,
+        session_id=package.session_id,
         manifest_sha256=package.manifest_sha256,
         files=files,
     )
@@ -291,18 +293,18 @@ def upload_session(
     package_class: HomeHostClass = "capture",
     progress: Progress | None = None,
 ) -> IntakeSessionStatus:
-    """Upload one finalized capture package and wait for its intake receipt.
+    """Upload one finalized package and wait for its intake receipt.
 
-    ``package_class`` is what the package is (a prompted ``capture``, or a UMIK-1
-    ``measurement`` session, journey/measurement_package.py): the standing approval must
-    cover it. ``progress`` hears every chunk the server took.
+    ``package_class`` is what the package is (a prompted ``capture``, which a take package
+    is too, or a UMIK-1 ``measurement`` session, journey/measurement_package.py): the
+    standing approval must cover it. ``progress`` hears every chunk the server took.
 
     Returns: the ``accepted`` status, whose receipt names this package's manifest digest.
     Raises: ``SecurityError``/``ContractError`` when the local package or the approval
     fails its checks (nothing is sent); ``UploadRefused`` when the server or the publisher
     refuses it; ``UploadError`` when it did not finish (run it again: it resumes).
     """
-    package = validate_capture_package(session)
+    package = validate_package(session)
     approval, approval_sha256 = load_approval(layout, now=clock())
     if package_class not in approval.classes:
         raise SecurityError(f"the home-host approval does not cover {package_class} packages")
@@ -340,7 +342,7 @@ def upload_session(
 def _transfer(
     client: HomeHostClient,
     session: Path,
-    package: ValidatedPackage,
+    package: ValidatedPackage | ValidatedTake,
     request: IntakeSessionRequest,
     progress: Progress | None = None,
 ) -> IntakeSessionStatus:
@@ -371,7 +373,7 @@ def _transfer(
                 file.received_bytes,
                 progress,
             )
-        again = validate_capture_package(session)
+        again = validate_package(session)
         if again._snapshot != package._snapshot:
             raise SecurityError("the package changed while it was being uploaded")
         answer = client.request(

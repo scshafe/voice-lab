@@ -1,0 +1,331 @@
+{
+  "$defs": {
+    "CatalogReference": {
+      "additionalProperties": false,
+      "description": "A published catalog version by id, version, exact suite digest and snapshot digest.\n\n``catalog_sha256`` is the canonical digest of the suite alone (the digest every take\nand coverage projection keys on); ``snapshot_sha256`` is the sha256 of the exact\nsnapshot file bytes, so the alias half of the file is pinned too. ``suite_id`` and\n``purpose`` repeat what the snapshot's suite declares so contract-level checks (purpose\nagainst the capture gate) need no file read; the store verifies all of them against the\nsnapshot whenever a reference is materialized.",
+      "properties": {
+        "catalog_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "catalog_version": {
+          "$ref": "#/$defs/PositiveRevision"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation",
+            "physical-test"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "snapshot_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "snapshot_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "catalog_id",
+        "catalog_version",
+        "catalog_sha256",
+        "snapshot_sha256",
+        "suite_id",
+        "purpose",
+        "snapshot_path"
+      ],
+      "title": "CatalogReference",
+      "type": "object"
+    },
+    "LibraryRow": {
+      "additionalProperties": false,
+      "description": "One prompt of the active catalog version, in catalog order, and where it stands.\n\n``latest_*`` describe the take that stands for the prompt: its newest kept take, else\nits newest undecided one; ``take_count`` counts its whole history.",
+      "properties": {
+        "category": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Category",
+          "type": "string"
+        },
+        "holdout": {
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "labels": {
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "title": "Labels",
+          "type": "array"
+        },
+        "latest_duration_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Latest Duration Seconds"
+        },
+        "latest_requested_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Latest Requested At"
+        },
+        "latest_take_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TakeId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "prompt_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "status": {
+          "$ref": "#/$defs/PromptStatus"
+        },
+        "take_count": {
+          "minimum": 0,
+          "title": "Take Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "prompt_sha256",
+        "category",
+        "labels",
+        "holdout",
+        "status",
+        "take_count",
+        "latest_take_id",
+        "latest_requested_at",
+        "latest_duration_seconds"
+      ],
+      "title": "LibraryRow",
+      "type": "object"
+    },
+    "LibraryTake": {
+      "additionalProperties": false,
+      "description": "One take in a prompt's history.",
+      "properties": {
+        "capture_host": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Capture Host",
+          "type": "string"
+        },
+        "catalog_version": {
+          "minimum": 1,
+          "title": "Catalog Version",
+          "type": "integer"
+        },
+        "decision": {
+          "$ref": "#/$defs/TakeDecisionName"
+        },
+        "decision_revision": {
+          "minimum": 0,
+          "title": "Decision Revision",
+          "type": "integer"
+        },
+        "device": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Device",
+          "type": "string"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "qc_status": {
+          "enum": [
+            "pass",
+            "review",
+            "fail"
+          ],
+          "title": "Qc Status",
+          "type": "string"
+        },
+        "recorded_prompt_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "requested_at": {
+          "format": "date-time",
+          "title": "Requested At",
+          "type": "string"
+        },
+        "take_id": {
+          "$ref": "#/$defs/TakeId"
+        },
+        "trim": {
+          "$ref": "#/$defs/TakeTrim"
+        }
+      },
+      "required": [
+        "take_id",
+        "requested_at",
+        "duration_seconds",
+        "capture_host",
+        "device",
+        "decision",
+        "decision_revision",
+        "trim",
+        "qc_status",
+        "recorded_prompt_sha256",
+        "catalog_version"
+      ],
+      "title": "LibraryTake",
+      "type": "object"
+    },
+    "PositiveRevision": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "PromptStatus": {
+      "enum": [
+        "missing",
+        "draft",
+        "kept",
+        "needs-attention"
+      ],
+      "type": "string"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "TakeDecisionName": {
+      "enum": [
+        "draft",
+        "kept",
+        "rejected",
+        "removed"
+      ],
+      "type": "string"
+    },
+    "TakeId": {
+      "pattern": "^take-[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "TakeTrim": {
+      "additionalProperties": false,
+      "description": "The frames a take keeps, ``[start_frame, end_frame)``, or all of them (both ``None``),\nat which revision (0: never trimmed).",
+      "properties": {
+        "end_frame": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "End Frame"
+        },
+        "revision": {
+          "minimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "start_frame": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Start Frame"
+        }
+      },
+      "required": [
+        "revision",
+        "start_frame",
+        "end_frame"
+      ],
+      "title": "TakeTrim",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/v1/corpus/prompts/{prompt_id}/takes``: one prompt's row and every take that\ncounts for it under the active version, newest first (an alias's takes included).",
+  "properties": {
+    "catalog": {
+      "$ref": "#/$defs/CatalogReference"
+    },
+    "row": {
+      "$ref": "#/$defs/LibraryRow"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.take-history/v1",
+      "default": "cole-voice-lab.api.take-history/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "takes": {
+      "items": {
+        "$ref": "#/$defs/LibraryTake"
+      },
+      "title": "Takes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "subject_id",
+    "catalog",
+    "row",
+    "takes"
+  ],
+  "title": "TakeHistory",
+  "type": "object"
+}

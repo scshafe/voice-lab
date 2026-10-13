@@ -1,0 +1,246 @@
+{
+  "$defs": {
+    "FileName": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$",
+      "type": "string"
+    },
+    "Seconds": {
+      "type": "number"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Text": {
+      "maxLength": 500,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "What the worker knows about one take, successful or not.",
+  "properties": {
+    "adc_time_valid": {
+      "title": "Adc Time Valid",
+      "type": "boolean"
+    },
+    "backend": {
+      "const": "portaudio",
+      "default": "portaudio",
+      "title": "Backend",
+      "type": "string"
+    },
+    "block_frames": {
+      "exclusiveMinimum": 0,
+      "maximum": 65536,
+      "title": "Block Frames",
+      "type": "integer"
+    },
+    "callback_count": {
+      "minimum": 0,
+      "title": "Callback Count",
+      "type": "integer"
+    },
+    "continuity_checked": {
+      "title": "Continuity Checked",
+      "type": "boolean"
+    },
+    "device_name": {
+      "$ref": "#/$defs/Text"
+    },
+    "device_usb_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Text"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error"
+    },
+    "first_adc_time": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Seconds"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "frames": {
+      "minimum": 0,
+      "title": "Frames",
+      "type": "integer"
+    },
+    "host_api": {
+      "$ref": "#/$defs/Text"
+    },
+    "input_overflows": {
+      "minimum": 0,
+      "title": "Input Overflows",
+      "type": "integer"
+    },
+    "input_underflows": {
+      "minimum": 0,
+      "title": "Input Underflows",
+      "type": "integer"
+    },
+    "last_adc_end": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Seconds"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "max_abs_deviation_frames": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Max Abs Deviation Frames"
+    },
+    "output_name": {
+      "$ref": "#/$defs/FileName"
+    },
+    "queue_capacity": {
+      "exclusiveMinimum": 0,
+      "title": "Queue Capacity",
+      "type": "integer"
+    },
+    "queue_high_water": {
+      "minimum": 0,
+      "title": "Queue High Water",
+      "type": "integer"
+    },
+    "received_frames": {
+      "minimum": 0,
+      "title": "Received Frames",
+      "type": "integer"
+    },
+    "sample_rate": {
+      "const": 48000,
+      "default": 48000,
+      "title": "Sample Rate",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "voice-lab-desktop.portaudio-continuity/v1",
+      "default": "voice-lab-desktop.portaudio-continuity/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Started At"
+    },
+    "stop_reason": {
+      "anyOf": [
+        {
+          "enum": [
+            "requested",
+            "maximum-duration"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Stop Reason"
+    },
+    "success": {
+      "title": "Success",
+      "type": "boolean"
+    },
+    "tolerance_frames": {
+      "exclusiveMinimum": 0,
+      "title": "Tolerance Frames",
+      "type": "number"
+    },
+    "wav_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "wav_size_bytes": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Wav Size Bytes"
+    }
+  },
+  "required": [
+    "host_api",
+    "simulated",
+    "device_name",
+    "device_usb_id",
+    "output_name",
+    "wav_sha256",
+    "wav_size_bytes",
+    "frames",
+    "received_frames",
+    "callback_count",
+    "block_frames",
+    "first_adc_time",
+    "last_adc_end",
+    "adc_time_valid",
+    "tolerance_frames",
+    "max_abs_deviation_frames",
+    "input_overflows",
+    "input_underflows",
+    "queue_capacity",
+    "queue_high_water",
+    "success",
+    "continuity_checked",
+    "stop_reason",
+    "error",
+    "started_at"
+  ],
+  "title": "PortAudioContinuityEvidence",
+  "type": "object"
+}

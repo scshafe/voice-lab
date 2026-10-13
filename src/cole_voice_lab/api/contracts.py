@@ -94,6 +94,11 @@ type ApiErrorCode = Literal[
     # the corpus routes (api/corpus_routes.py, docs/design/RECORDING-V1.md)
     "catalog_unavailable",
     "catalog_invalid",
+    "library_unavailable",
+    "library_invalid",
+    "prompt_not_found",
+    "take_not_found",
+    "take_invalid",
     "internal_error",
 ]
 REFUSAL_CODES: Final[frozenset[str]] = frozenset(get_args(ApiErrorCode.__value__))

@@ -659,6 +659,15 @@ _RULES: Final = (
         example=f"provenance/recording-groups/group-{_EXAMPLE_HEX32}.json",
     ),
     _rule(
+        "corpus-take-states",
+        "provenance/corpus-takes/take-{sha256}.json",
+        "records",
+        owner="corpus_take_store (written by the intake publisher)",
+        reason="each take on the PC (D-052): what it is and its decision and trim, which only "
+        "these records hold once a take is decided or trimmed",
+        example=f"provenance/corpus-takes/take-{_EXAMPLE_SHA}.json",
+    ),
+    _rule(
         "desktop-edits",
         "provenance/recording-edits/{sha256}.json",
         "records",
