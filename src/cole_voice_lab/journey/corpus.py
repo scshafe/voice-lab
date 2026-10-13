@@ -4,7 +4,8 @@ Ports the functions of ``host-access.mjs`` that the server pipeline uses: the li
 the phone drop (``listCorpusEntries``, with the drop's mirror manifest) and of accepted
 measurement sessions (``listMeasurementEntries``), with what they need
 (``recordingId``, ``capturedAtFromFilename``, ``readMirrorManifest``, ``publicEntry``).
-The indexer (``journey/index.py``) and, later, the watcher use them. The macOS read seam
+The source port's adapters (``journey/sources.py``) wrap them for the indexer
+(``journey/index.py``) and the watcher (``jobs/watch.py``). The macOS read seam
 (the ``voice-journey-corpus`` command line, read handles, the metadata database) is not
 here: it moves with the mirror to ``apps/mirror/``.
 

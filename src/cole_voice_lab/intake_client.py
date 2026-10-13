@@ -1,10 +1,11 @@
 """Uploading a finalized package to the home host's intake API (D-021, D-024).
 
-@canonical intake_client -- ``upload_session`` validates the package (a capture package, or a
-take package: ``corpus_takes``, D-052) locally with the same strict validator the publisher
-runs (so a symlink, an undeclared file or a tampered recording is refused before a byte is
-sent), loads the standing home-host approval, checks
-that the node answering for the approved endpoint is the approved node, writes the ledger
+@canonical intake_client -- ``upload_session`` validates the package (a capture package, a
+take package: ``corpus_takes``, D-052, or an imported Swift take: ``corpus_take_imports``,
+D-053) locally with the same strict validator the publisher runs (so a symlink, an undeclared
+file or a tampered recording is refused before a byte is sent), loads the standing home-host
+approval, checks that the node answering for the approved endpoint is the approved node,
+writes the ledger
 entry naming the manifest digest, and then sends the package with the resumable protocol of
 ``api.staging``: every file from the byte the server already holds, in ``CHUNK_BYTES``
 pieces with ``Content-Range``. It re-validates the local package before finalizing and
@@ -28,7 +29,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from pydantic import BaseModel, ValidationError
 
@@ -40,6 +41,7 @@ from .api.contracts import (
     IntakeSessionStatus,
 )
 from .canonical import canonical_json_bytes, open_regular_no_follow
+from .corpus_take_imports import ValidatedTakeImport
 from .corpus_takes import ValidatedTake
 from .errors import SecurityError, VoiceLabError
 from .home_host import (
@@ -69,6 +71,43 @@ type Progress = Callable[[str, int, int], None]
 
 class UploadError(VoiceLabError):
     """The upload did not finish; it can be run again and resumes where it stopped."""
+
+
+class TransferNotApproved(SecurityError):
+    """The package's own transfer approval does not cover this upload (AGENTS.md: a separate,
+    explicit approval naming the destination and the payload digest); nothing was sent."""
+
+
+class PayloadApproval(Protocol):
+    """A per-payload transfer approval, checked by ``upload_session`` for each upload.
+
+    ``require`` sees exactly what is about to be declared to the server (``request``: the
+    session id, the manifest digest and every file's digest and size) and the standing
+    home-host approval this very upload goes under, after the node's identity check and
+    immediately before the ledger entry. It raises ``TransferNotApproved`` unless the payload
+    approval names this payload and this destination."""
+
+    def require(
+        self,
+        request: IntakeSessionRequest,
+        standing: HomeHostApproval,
+        standing_sha256: str,
+    ) -> None: ...
+
+
+class UploadPending(UploadError):
+    """Every byte is on the server, which has not published the package yet.
+
+    It waits in the server's ``incoming/``: the publisher has not run, or it deferred the
+    package (a take whose catalog version is not on the server yet). Running the upload again
+    later collects the receipt; nothing is sent again."""
+
+    def __init__(self, state: str) -> None:
+        super().__init__(
+            f"the package is {state} but not yet published; run the upload again later to "
+            "collect the receipt"
+        )
+        self.state = state
 
 
 class UploadRefused(VoiceLabError):
@@ -209,7 +248,10 @@ def _fail(answer: Answer) -> VoiceLabError:
     return UploadRefused(code, detail)
 
 
-def session_request(package: ValidatedPackage | ValidatedTake) -> IntakeSessionRequest:
+type AnyPackage = ValidatedPackage | ValidatedTake | ValidatedTakeImport
+
+
+def session_request(package: AnyPackage) -> IntakeSessionRequest:
     """The declaration of every file of a validated package."""
     files = tuple(
         FileDeclaration(path=path, sha256=item.sha256, size_bytes=item.size_bytes)
@@ -292,24 +334,40 @@ def upload_session(
     monotonic: Callable[[], float] = time.monotonic,
     package_class: HomeHostClass = "capture",
     progress: Progress | None = None,
+    payload_approval: PayloadApproval | None = None,
 ) -> IntakeSessionStatus:
     """Upload one finalized package and wait for its intake receipt.
 
     ``package_class`` is what the package is (a prompted ``capture``, which a take package
-    is too, or a UMIK-1 ``measurement`` session, journey/measurement_package.py): the
-    standing approval must cover it. ``progress`` hears every chunk the server took.
+    and an imported take are too, or a UMIK-1 ``measurement`` session,
+    journey/measurement_package.py): the standing approval must cover it. ``progress`` hears
+    every chunk the server took. ``payload_approval`` is the package's own transfer approval
+    (``corpus_import.PlanApproval``), checked against this upload's declaration and standing
+    approval immediately before the ledger entry. An imported Swift take (D-053) is refused
+    without one: it leaves the Mac only through ``voice-lab corpus-import send``.
 
     Returns: the ``accepted`` status, whose receipt names this package's manifest digest.
-    Raises: ``SecurityError``/``ContractError`` when the local package or the approval
-    fails its checks (nothing is sent); ``UploadRefused`` when the server or the publisher
-    refuses it; ``UploadError`` when it did not finish (run it again: it resumes).
+    Raises: ``TransferNotApproved`` (a ``SecurityError``) for an imported take without its
+    payload approval, or one the approval does not cover; ``SecurityError``/``ContractError``
+    when the local package or the standing approval fails its checks (nothing is sent);
+    ``UploadRefused`` when the server or the publisher refuses it; ``UploadPending`` (an
+    ``UploadError``) when every byte is on the server but it has not published the package
+    within ``wait_seconds``; ``UploadError`` when it did not finish (run it again: it
+    resumes).
     """
     package = validate_package(session)
+    if isinstance(package, ValidatedTakeImport) and payload_approval is None:
+        raise TransferNotApproved(
+            "an imported Swift take leaves the Mac only under its export plan's transfer "
+            "approval: send it with `voice-lab corpus-import send`"
+        )
     approval, approval_sha256 = load_approval(layout, now=clock())
     if package_class not in approval.classes:
         raise SecurityError(f"the home-host approval does not cover {package_class} packages")
     request = session_request(package)
     peer = client.check_identity(approval)
+    if payload_approval is not None:
+        payload_approval.require(request, approval, approval_sha256)
     ledger = HomeHostLedger(layout)
     common = {
         "approval_id": approval.approval_id,
@@ -342,7 +400,7 @@ def upload_session(
 def _transfer(
     client: HomeHostClient,
     session: Path,
-    package: ValidatedPackage | ValidatedTake,
+    package: AnyPackage,
     request: IntakeSessionRequest,
     progress: Progress | None = None,
 ) -> IntakeSessionStatus:
@@ -408,10 +466,7 @@ def _await_publication(
         if status.state == "refused":
             raise UploadRefused("refused_by_intake", status.refusal or "no reason recorded")
         if monotonic() >= deadline:
-            raise UploadError(
-                f"the package is {status.state} but not yet published; run the upload again "
-                "later to collect the receipt"
-            )
+            raise UploadPending(status.state)
         sleep(POLL_SECONDS)
         answer = client.request("GET", _session_path(request.session_id))
         if answer.status != 200:

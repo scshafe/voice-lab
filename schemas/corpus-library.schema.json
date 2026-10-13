@@ -222,6 +222,17 @@
           "title": "Duration Seconds",
           "type": "number"
         },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TakeOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "qc_status": {
           "enum": [
             "pass",
@@ -331,6 +342,26 @@
     "TakeId": {
       "pattern": "^take-[0-9a-f]{64}$",
       "type": "string"
+    },
+    "TakeOrigin": {
+      "additionalProperties": false,
+      "description": "Where a take the PC did not receive from a recording client came from.\n\n``imported``: a take of the Swift app on the Mac (D-053), whose own id was\n``source_take_id``; its raw package keeps its seal, reservation, group and the Mac's\ndecision and trim as they were exported.",
+      "properties": {
+        "kind": {
+          "const": "imported",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source_take_id": {
+          "$ref": "#/$defs/TakeId"
+        }
+      },
+      "required": [
+        "kind",
+        "source_take_id"
+      ],
+      "title": "TakeOrigin",
+      "type": "object"
     },
     "TakeTrim": {
       "additionalProperties": false,

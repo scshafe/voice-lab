@@ -40,7 +40,8 @@ do. Progress is logged at the end, as each step lands.
 4. **Singing recordings, source-neutral.**
    - The journey index gets a source port: Voice Memos (phone) is its first adapter, and the
      UMIK-1 measurement sessions are its second, as they already are in practice.
-   - Every row says its `source`, in the index and in `/api/v1/recordings`, so a later
+   - Every row says its source, in the index (`source`, whose `type` is `voice-memos` or
+     `measurement`) and in `/api/v1/recordings` (`sourceType`, also a filter), so a later
      source (the singing studio) plugs in without reworking the pipeline.
 5. **The Swift app retired:**
    - the Mac library's existing takes exported to the PC first;
@@ -122,9 +123,14 @@ every vault pass.
   the bodies `TakeDecisionRequest` and `TakeTrimRequest`, and `CorpusRequestStatus` (`queued`,
   `applied` or `refused`, with the outcome).
 
-The Swift app's take records (`RecordingTake`, Core Audio seals) are not reused. They are
-bound to Core Audio and the Swift helper. Mac takes reach the PC through an exporter (step 9)
-that maps them onto these contracts.
+The Swift app's take records (`RecordingTake`, Core Audio seals) are not reused for new takes.
+They are bound to Core Audio and the Swift helper. Mac takes reach the PC through an exporter
+(step 9, D-053) as their own package, **`cole-voice-lab.corpus-take-import/v1`**, so the
+PortAudio take contract stays strict: the WAV, the take's seal, reservation and group byte for
+byte, and the Mac's decision and trim (`mac-state.json`). Its manifest names the PC's take id
+(the audio's SHA-256, as for every take), the Swift take's id, the exact prompt, what the
+group recorded against, and the PC's catalog version that counts the prompt. On the PC it
+becomes a take record like any other, with the Mac's state and an `origin`.
 
 ## 5. The prompt studio (the Swift app's interface, in Qt)
 
@@ -168,7 +174,7 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
 | 6 | **The prompt studio UI**, in several PRs: library, transport and waveform, review and history, keys, polish | the parity list (§5) checked off |
 | 7 | **Singing, source-neutral.** The journey index's source port; Voice Memos and measurement adapters; `source` in rows and the API | the index and API carry `source`; nothing else changes |
 | 8 | **S-1 on real hardware** (owner, or the Mac agent with the UMIK-1) | D-040's verdict recorded |
-| 9 | **The Mac's takes to the PC.** An exporter the Mac agent runs, under a transfer approval naming the payload digest; the publisher imports | the Mac library's takes counted on the PC |
+| 9 | **The Mac's takes to the PC.** `voice-lab corpus-import plan\|approve\|send` on the Mac (D-053): imported-take packages under a transfer approval naming the export plan's digest; the publisher admits them with the Mac's state | the Mac library's takes counted on the PC |
 | 10 | **Retire the Swift app.** Freeze it with a tag; the docs | the owner's sign-off |
 
 ## 7. The owner's steps
@@ -195,7 +201,48 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
    `GET /api/v1/catalog` serves (version 2, 1,886 prompts). It says so when the deployed build
    predates that route.
 2. **S-1 on the Mac** (step 8), with the UMIK-1: `scripts/s1-portaudio`, or ask the Mac agent.
-3. **The transfer approval for the Mac's takes** (step 9).
+3. **The Mac's takes to the PC** (step 9, D-053), once step 9 is deployed and the PC's catalog
+   is seeded (step 1). On the Mac, as you, from a checkout of `main` with its `.venv`
+   (`voice-lab` is `.venv/bin/voice-lab`), with the Swift app's library as the asset root.
+   Quit the Swift app first: a plan stops if the app commits a change while it reads (run it
+   again). If it says the recording projection awaits a metadata commit, open the Swift app
+   once and quit it (it finishes its last commit), then plan again.
+
+   ```sh
+   ASSET_ROOT=~/.local/share/cole-voice-lab          # the Swift app's library
+   # The standing approval stands, and this Mac is signed in; else first do
+   # docs/HOME_HOST_INTAKE.md "The capturing host", steps 1 and 2.
+   voice-lab home-host show --asset-root "$ASSET_ROOT"
+   voice-lab corpus-import plan --asset-root "$ASSET_ROOT" --catalog-from-pc
+   ```
+
+   `plan` asks the PC for its active catalog (`GET /api/v1/catalog`), packages every sealed
+   take whose exact prompt that version counts under `tmp/corpus-import/` (the library keeps
+   its takes), and prints the plan: its `plan_sha256`, the packages and their bytes, and each
+   skipped take with its reason (room tones, uncounted prompts, unsealed or damaged takes,
+   legacy capture sessions). Review it; while the takes are unchanged, running it again names
+   the same plan. Then approve exactly that payload, and send it:
+
+   ```sh
+   voice-lab corpus-import approve --asset-root "$ASSET_ROOT" --plan <plan_sha256> \
+     --approved-by Cole --statement "My Swift app's takes, to my own PC." \
+     --i-approve-this-transfer
+   voice-lab corpus-import send --asset-root "$ASSET_ROOT" --plan <plan_sha256>
+   ```
+
+   `send` prints each take: `accepted`, or `deferred` (on the PC, not published yet: run
+   `send` again later), `refused` (with the PC's reason), `invalid`, `unapproved` or `failed`.
+   Running it again resumes and skips what the PC accepted. The plan and its approval stay in
+   `provenance/host-transfers/`. The PC's library then counts the takes, with the Mac's
+   decisions and trims; change them on the PC from then on. Only `send` uploads these
+   packages: `voice-lab intake upload` refuses them.
+
+   If the Mac's decisions change before you send, `plan` again packages the changed takes
+   (`rebuilt`) and prints a new `plan_sha256`: approve and send that one. If the PC's node
+   changes before every take is accepted (a reinstalled PC: approve the home host again,
+   docs/HOME_HOST_INTAKE.md), `send` refuses the plan for the new destination; review it and
+   run the same `approve` command again, which approves it for the new node beside the first
+   approval, then `send` again.
 4. **Sign off parity and retire the Swift app** (step 10).
 
 ## 8. Risks
@@ -232,6 +279,30 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   take's whole catalog reference against the version its store published, and defers (never
   refuses) a take whose version is not on the PC yet or whose snapshot it cannot read; a
   named pipe in `incoming/` no longer blocks a pass; the worker's device must be a UMIK-1.
+- 2026-10-12: step 7, singing held source-neutral. `journey/sources.py` is the index's source
+  port: a `RecordingSource` has a stable `type` and lists metadata-only entries, each tagged
+  with that `source.type`. Its adapters are `VoiceMemosSource` (`voice-memos`: the phone
+  drop's listing, unchanged) and `MeasurementSource` (`measurement`: unchanged), and
+  `configured_sources` is the one list that both the index and the watcher's scan use. Each
+  type appears once, every entry carries its own source's type, and no recording id is listed
+  by two sources. Every index row now says its `source`: phone rows gain
+  `{"type": "voice-memos"}` and nothing more, because Voice Memos syncs memos from the phone
+  and from Macs, so the drop cannot name a chain, and memos have no sessions. Measurement rows
+  are unchanged. The schema stays `voice-journey.recording-index.v1`: `source` was already a
+  v1 row field, and it is only added where it was absent; a version change would also have
+  rippled into every manifest that records the index's version. Browser rows, and so
+  `/api/v1/recordings` and `/api/v1/recordings/{id}`, carry `sourceType` (also under
+  `fields=list`), and `?sourceType=` filters on it. A row from an index written before
+  the port reads as `voice-memos`, so the deployed index needs no rebuild. Filtering, STT,
+  lyrics, features and journeys are unchanged: they branch on `source.type == "measurement"`,
+  and a `voice-memos` row takes the path an untagged phone row took (tested stage by stage).
+  Parity with the pinned Node pipeline stays a check, with the harness's named rules for
+  intended differences. A seventh rule (deliberate, D-051) covers exactly the
+  `{"type": "voice-memos"}` that the port adds to Voice Memos index rows: kind
+  `extraInPython`, that value only. Every other byte of every manifest is still compared. A
+  later source, such as the singing studio, is a third adapter in `configured_sources`, plus a
+  playback location in the browser's seam (`browser.open_recording_audio`) if its audio is
+  served.
 - 2026-10-12: step 4, decisions and trims. `POST /api/v1/corpus/takes/{id}/decision` and
   `PUT /api/v1/corpus/takes/{id}/trim` (`api/corpus_request_routes.py`) check the take, a
   trim's frames and the body read-only, never the revision, and queue a
@@ -241,7 +312,8 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   outcome (`provenance/corpus-requests/`, copied by the vault) is written before the take's
   record so an interrupted pass is finished by the next, and the library follows in the same
   pass. A request id answers a retry as before and refuses another change (409); a request
-  for a take still uploading or deferred waits for it, with the take's later requests; an
+  for a take still on its way (uploading, finalized but not yet recorded, or deferred) waits
+  for it, with the take's later requests; one publisher pass runs at a time (a lock); an
   unsafe request file is set aside in `incoming/.refused/`. The queue holds at most 10,000
   requests (503). A restore sends the decision the take had before (`kept` or `draft`): the
   PC keeps no restore target.
@@ -272,6 +344,29 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   refresh, and the operator's changes are held and never treated as no-ops. Unsent changes
   fold into one per kind. Interrupted saves are finished or reported at start. Pokes and
   listeners run on the GUI thread.
+- 2026-10-12: step 9, the Mac's takes to the PC (D-053). The Swift app's takes travel as their own
+  package, `cole-voice-lab.corpus-take-import/v1` (`corpus_take_imports`): `original.wav`, the
+  take's `seal.json`, `reservation.json` and `group.json` verbatim, `mac-state.json` (the Mac's
+  decision and trim at export), and the manifest (the PC's take id, the Swift take's, the
+  exact prompt, what the group recorded against, the PC's catalog version, the seal's times,
+  host, Core Audio device, client and the records' digests), with `qc.json` and `READY`. The
+  validator binds the WAV to the seal, the seal to the reservation (its digest), the
+  reservation to the group, the group's device to the seal's evidence and to a UMIK-1, and the
+  Mac's trim to the take. The publisher tells it apart by its schema, admits it by the PC's
+  catalog version (refused when contradicted or not counting the prompt, deferred when the
+  version is not there yet; no simulated rule: the Swift app has none), and records it with the
+  Mac's decision and trim (revision 1 unless draft or whole) and `origin: imported`, which the
+  library and the prompt's history carry. `voice-lab corpus-import plan|approve|send`
+  (`corpus_import`) packages the takes once under `tmp/corpus-import/` (Mac-only), writes a
+  timeless export plan and the owner's approval of its digest under
+  `provenance/host-transfers/` (records, 0400), and sends only the approved packages through
+  the standing approval and the ledger; a take already accepted is not sent again. Owner
+  step 3 above. After review: `upload_session` refuses an imported take without its plan's
+  approval (so `intake upload` cannot send one) and checks that approval again before each
+  upload, against the standing destination of that upload and the upload's own declaration;
+  plans pin every file of each package; approvals are per destination, so a moved home host
+  gets a second approval; a never-sent stale package is packaged again, a sent one never is;
+  and the export's directories are never reached through a link.
 - 2026-10-12: step 6a, the prompt studio's fixed workspace and its corpus-first loop
   (apps/desktop/docs/PROMPT-STUDIO.md). Record → Prompts is now the studio
   (`screens/studio.py`, `studio/`, `StudioScreen.qml`) over the step-5 client. Phase 4c's

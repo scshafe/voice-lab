@@ -749,6 +749,13 @@ the app:
 This section's parity row is now the native `finetune` suite (`finetune_from_recordings`
 in `scripts/recording_acceptance_matrix.py`).
 
+**Amended 2026-10-12 — the takes reach the PC (D-053):** native takes still never become v1
+packages. `voice-lab corpus-import`, run by Cole on the Mac, packages them one by one as
+imported takes of the PC's corpus (`cole-voice-lab.corpus-take-import/v1`: the audio, the
+take's seal, reservation and group verbatim, and its decision and trim), under a transfer
+approval naming the export plan's digest. It is the separate command this section
+anticipated; the Mac keeps every take.
+
 ## 10. Recovery and resource behavior
 
 | Condition | Required behavior |
@@ -1279,6 +1286,10 @@ that Speak reads no consent record and leaves that scope open for Cole to confir
 
 **Amended 2026-10-12 (D-050):** consent records are retired. Cole's standing decision
 permits his own voice for Speak and fine-tuning; nothing in the app needs a consent record.
+
+**Amended 2026-10-12 (D-053):** the library's takes go to Cole's own PC once, through
+`voice-lab corpus-import` and its transfer approval (§9's amendment). Nothing else leaves the
+Mac.
 
 ## 16. Fine-tuning from the app
 

@@ -1,0 +1,134 @@
+{
+  "$defs": {
+    "DecisionState": {
+      "enum": [
+        "draft",
+        "kept",
+        "rejected",
+        "removed"
+      ],
+      "type": "string"
+    },
+    "FrameCount": {
+      "maximum": 28800000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "RecordingFrameRange": {
+      "additionalProperties": false,
+      "description": "Source-frame recipe, independent from eventual derivative rendering.",
+      "properties": {
+        "end_frame": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "End Frame",
+          "type": "integer"
+        },
+        "source_frames": {
+          "maximum": 28800000,
+          "minimum": 1,
+          "title": "Source Frames",
+          "type": "integer"
+        },
+        "start_frame": {
+          "$ref": "#/$defs/FrameCount"
+        }
+      },
+      "required": [
+        "source_frames",
+        "start_frame",
+        "end_frame"
+      ],
+      "title": "RecordingFrameRange",
+      "type": "object"
+    },
+    "Revision": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "SourceTakeId": {
+      "pattern": "^take-[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "_Reason": {
+      "maxLength": 160,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``mac-state.json``: what the Mac's library said about the take when it was exported.\n\nThe Swift take's decision (``draft``, ``kept``, ``rejected`` or ``removed``) and its\nrevision; a rejection's or removal's reason and the decision it would restore; the time\nthe decision was made when the take's records say (an explicit reject, remove or restore;\na Save records none on the take); and the take's frame recipe and edit revision.",
+  "properties": {
+    "decided_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Decided At"
+    },
+    "decision": {
+      "$ref": "#/$defs/DecisionState"
+    },
+    "decision_revision": {
+      "$ref": "#/$defs/Revision"
+    },
+    "edit_revision": {
+      "$ref": "#/$defs/Revision"
+    },
+    "frame_range": {
+      "$ref": "#/$defs/RecordingFrameRange"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/_Reason"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "restore_decision": {
+      "anyOf": [
+        {
+          "enum": [
+            "draft",
+            "kept"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Restore Decision"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.corpus-take-import-state/v1",
+      "default": "cole-voice-lab.corpus-take-import-state/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_take_id": {
+      "$ref": "#/$defs/SourceTakeId"
+    }
+  },
+  "required": [
+    "source_take_id",
+    "decision",
+    "decision_revision",
+    "reason",
+    "decided_at",
+    "restore_decision",
+    "frame_range",
+    "edit_revision"
+  ],
+  "title": "MacTakeState",
+  "type": "object"
+}

@@ -124,14 +124,17 @@ def _sign_in(options: argparse.Namespace) -> int:
     return 0
 
 
-def _upload(options: argparse.Namespace) -> int:
-    layout = _layout(options)
-    approval, _ = load_approval(layout, now=utc_now())
-    if options.bearer_file is not None:
-        bearer_file = Path(options.bearer_file)
+def home_host_client(
+    layout: AssetLayout, approval: HomeHostApproval, bearer_file: str | None
+) -> HomeHostClient:
+    """The client of the approved home host: the signed-in token from the OS keychain, or
+    (acceptance tests only) a private bearer file. Raises: ``ContractError`` when this host
+    never signed in."""
+    if bearer_file is not None:
+        path = Path(bearer_file)
 
         def token() -> str:
-            return read_bearer_file(bearer_file)
+            return read_bearer_file(path)
 
     else:
         settings = load_sign_in(layout)
@@ -143,11 +146,17 @@ def _upload(options: argparse.Namespace) -> int:
                 store=platform_token_store(settings.keychain_account()),
             )
 
-    client = HomeHostClient(
+    return HomeHostClient(
         endpoint=approval.endpoint,
         resolver=TailscaleCliResolver(tailnet_suffix=approval.tailnet_suffix),
         bearer=token,
     )
+
+
+def _upload(options: argparse.Namespace) -> int:
+    layout = _layout(options)
+    approval, _ = load_approval(layout, now=utc_now())
+    client = home_host_client(layout, approval, options.bearer_file)
     status = upload_session(
         Path(options.session).expanduser(),
         layout=layout,

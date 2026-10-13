@@ -23,6 +23,7 @@ from cole_voice_lab.standard_prompt_sets import STANDARD_SET_SHA256
 REPOSITORY = Path(__file__).resolve().parents[1]
 SCRIPT = REPOSITORY / "scripts" / "seed-pc-catalog"
 VERSION_2 = "1ebd48cbc6f6a2b2ea0fe70d0cff8f1df1e91b3bbf2a5be52959ffba141ff90f"
+VERSION_2_SNAPSHOT = "db5037567f4688c7ebb871b990d9123e06d67b4df067d26105d124cf33cdb452"
 #: ``catalog activate``'s output from the build with ``GET /api/v1/catalog`` on, and before it.
 ACTIVATED = (
     '{\n  "read_model": "/data/voice-lab/lab/derived/corpus/active-catalog-cole-self.json"\n}\n'
@@ -45,13 +46,22 @@ cp "$SEED_DOWNLOAD" "$2"
 """
 
 #: The deployed CLI: answers ``catalog list|show|activate`` from $SEED_STATE, logs the rest.
+#: Version 2 exists once ``digest`` does (``publish`` writes it); ``show`` prints its first line,
+#: ``show --json`` its reference's two digests.
 CLI = """#!/bin/sh
 printf '%s\\n' "$*" >>"$SEED_LOG"
 case "$1 $2" in
   "catalog list") cat "$SEED_STATE/list"; exit "$(cat "$SEED_STATE/list-status")" ;;
-  "catalog show") [ -f "$SEED_STATE/show" ] || exit 1; cat "$SEED_STATE/show" ;;
-  "catalog publish") printf 'cole-corpus version 2 · 0 kept-recording aliases · catalog %s\\n' \
-      "$(cat "$SEED_STATE/publishes")" >"$SEED_STATE/show" ;;
+  "catalog show")
+    [ -f "$SEED_STATE/digest" ] || exit 1
+    case "$*" in
+      *--json*) printf '{\\n  "reference": {\\n    "catalog_sha256": "%s",\\n' \
+          "$(cat "$SEED_STATE/digest")"
+        printf '    "snapshot_sha256": "%s"\\n  }\\n}\\n' "$(cat "$SEED_STATE/snapshot")" ;;
+      *) printf 'cole-corpus version 2 · 0 kept-recording aliases · catalog %s\\nwarm-01\\n' \
+          "$(cat "$SEED_STATE/digest")" ;;
+    esac ;;
+  "catalog publish") cp "$SEED_STATE/publishes" "$SEED_STATE/digest" ;;
   "catalog activate") cat "$SEED_STATE/activate" ;;
 esac
 """
@@ -68,10 +78,9 @@ class Bench:
         (self.state / "list").write_text(listing)
         (self.state / "list-status").write_text(str(status))
 
-    def version_2(self, digest: str) -> None:
-        (self.state / "show").write_text(
-            f"cole-corpus version 2 · 0 kept-recording aliases · catalog {digest}\nwarm-01 …\n"
-        )
+    def version_2(self, digest: str, snapshot: str = VERSION_2_SNAPSHOT) -> None:
+        (self.state / "digest").write_text(digest)
+        (self.state / "snapshot").write_text(snapshot)
 
     def run(self, *argv: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -101,6 +110,7 @@ def bench(tmp_path: Path) -> Bench:
     state.mkdir()
     (state / "activate").write_text(ACTIVATED)
     (state / "publishes").write_text(VERSION_2)
+    (state / "snapshot").write_text(VERSION_2_SNAPSHOT)
     download = tmp_path / "download"
     download.write_bytes(b"<html>not the published list</html>\n")
     log = tmp_path / "calls.log"
@@ -128,6 +138,7 @@ LIST_IMPORTED = (
 )
 LIST = "catalog list --subject-id cole-self"
 SHOW = "catalog show --version 2"
+SHOW_JSON = "catalog show --version 2 --json"
 ACTIVATE = "catalog activate --subject-id cole-self --version 2"
 
 
@@ -153,8 +164,10 @@ def test_its_pins_and_paths_are_the_repositorys() -> None:
     assert pinned("HARVARD_SHA256") == STANDARD_SET_SHA256["harvard"]
     assert pinned("ARCTIC_SHA256") == STANDARD_SET_SHA256["arctic"]
     assert pinned("VERSION_2_SHA256") == VERSION_2
+    assert pinned("VERSION_2_SNAPSHOT_SHA256") == VERSION_2_SNAPSHOT
     corpus_store = (REPOSITORY / "docs" / "CORPUS_STORE.md").read_text()
     assert f"| 1,886 | `{VERSION_2}` |" in corpus_store
+    assert f"`snapshot_sha256`\n`{VERSION_2_SNAPSHOT}`" in corpus_store
     assert pinned("FETCHED_AT") == "2026-09-16T04:17:51Z"
     # The lab and the CLI the intake publisher runs on the PC.
     unit = (REPOSITORY / "deploy" / "host" / "voice-lab-intake.service").read_text()
@@ -182,7 +195,7 @@ def test_a_store_with_every_prompt_publishes_checks_and_activates_version_2(benc
     bench.store(LIST_IMPORTED)
     result = bench.run()
     assert result.returncode == 0, result.stderr
-    assert bench.calls() == [LIST, SHOW, "catalog publish", SHOW, ACTIVATE]
+    assert bench.calls() == [LIST, SHOW, "catalog publish", SHOW, SHOW_JSON, ACTIVATE]
     assert "the API serves it: GET /api/v1/catalog" in result.stdout
     assert result.stdout.rstrip().endswith("(1,886 prompts)")
 
@@ -198,6 +211,16 @@ def test_a_version_2_that_is_not_the_macs_is_never_activated(bench: Bench) -> No
     assert bench.run().returncode == 1 and ACTIVATE not in bench.calls()
 
 
+def test_a_version_2_whose_snapshot_is_not_the_macs_is_never_activated(bench: Bench) -> None:
+    # The same suite under another snapshot (other aliases, say): a Mac take names the whole
+    # reference, and the PC admits it only when every field is the published one.
+    bench.store(LIST_IMPORTED)
+    (bench.state / "snapshot").write_text("2" * 64)
+    result = bench.run()
+    assert result.returncode == 1 and "snapshot_sha256 is not" in result.stderr
+    assert ACTIVATE not in bench.calls()
+
+
 @pytest.mark.parametrize(
     ("activated", "said"),
     ((ACTIVATED, "the API serves it"), (ACTIVATED_BEFORE_THE_API, "run this again after it has")),
@@ -210,7 +233,8 @@ def test_once_seeded_a_run_rechecks_version_2_and_activates_it_again(
     (bench.state / "activate").write_text(activated)
     result = bench.run()
     assert result.returncode == 0, result.stderr
-    assert bench.calls() == [LIST, SHOW, ACTIVATE]  # nothing downloaded, imported or published
+    # Nothing downloaded, imported or published.
+    assert bench.calls() == [LIST, SHOW, SHOW_JSON, ACTIVATE]
     assert "already seeded" in result.stdout and said in result.stdout
 
 

@@ -89,6 +89,10 @@ from .portaudio_evidence import MAX_EVIDENCE_BYTES, WAV_HEADER_BYTES, PortAudioC
 from .recording_contracts import CatalogReference
 
 TAKE_SCHEMA: Final = "cole-voice-lab.corpus-take/v1"
+#: The Swift app's takes as the PC imports them (``corpus_take_imports``, D-053).
+TAKE_IMPORT_SCHEMA: Final = "cole-voice-lab.corpus-take-import/v1"
+#: Every package schema of the PC's corpus: its own takes, and the takes it imported.
+CORPUS_TAKE_SCHEMAS: Final = frozenset({TAKE_SCHEMA, TAKE_IMPORT_SCHEMA})
 AUDIO_NAME: Final = "original.wav"
 CONTINUITY_NAME: Final = "continuity.json"
 TAKE_FILES: Final = frozenset(
@@ -264,29 +268,73 @@ class ValidatedTake:
         return self.manifest.take_id
 
 
-def is_take_package(package: Path) -> bool:
-    """Whether ``package/manifest.json`` declares a take (its ``schema_version``).
+def package_schema(package: Path) -> str | None:
+    """The ``schema_version`` that ``package/manifest.json`` declares, or ``None``.
 
-    Reads at most the control-file bound through the no-follow boundary and decides nothing
-    else: an unreadable or malformed manifest is not a take's, and the capture validator then
-    refuses it. Raises: nothing."""
+    Reads at most the control-file bound through the no-follow boundary (never blocking on a
+    FIFO) and decides nothing else: an unreadable or malformed manifest declares nothing, and
+    the capture validator then refuses it. Raises: nothing."""
     try:
         with open_regular_no_follow(package / MANIFEST_NAME, nonblocking=True) as stream:
             payload = stream.read(MAX_CONTROL_FILE_BYTES + 1)
     except (SecurityError, OSError):
-        return False
-    return declares_take(payload)
+        return None
+    return manifest_schema(payload)
+
+
+def manifest_schema(manifest: bytes) -> str | None:
+    """The ``schema_version`` string of a manifest's bytes when they are a JSON object.
+
+    Raises: nothing."""
+    try:
+        document = json.loads(manifest)
+    except ValueError:
+        return None
+    if not isinstance(document, dict):
+        return None
+    schema = document.get("schema_version")
+    return schema if isinstance(schema, str) else None
+
+
+def is_take_package(package: Path) -> bool:
+    """Whether ``package/manifest.json`` declares a take (its ``schema_version``).
+
+    Raises: nothing (``package_schema``)."""
+    return package_schema(package) == TAKE_SCHEMA
+
+
+def is_corpus_take_package(package: Path) -> bool:
+    """Whether ``package`` declares a take of the PC's corpus: a take, or an imported one.
+
+    Raises: nothing (``package_schema``)."""
+    return package_schema(package) in CORPUS_TAKE_SCHEMAS
 
 
 def declares_take(manifest: bytes) -> bool:
     """Whether a manifest's bytes are a JSON object whose ``schema_version`` is a take's.
 
     Raises: nothing."""
-    try:
-        document = json.loads(manifest)
-    except ValueError:
-        return False
-    return isinstance(document, dict) and document.get("schema_version") == TAKE_SCHEMA
+    return manifest_schema(manifest) == TAKE_SCHEMA
+
+
+def take_qc_report(
+    take_id: str,
+    prompt: Prompt,
+    manifest_sha256: str,
+    inspection: WavInspection,
+    generated_at: datetime,
+) -> QcReport:
+    """A take's QC report: capture's per-recording rule, quiet allowed for a silent prompt.
+
+    The same for a take and an imported take (``corpus_take_imports``). Raises: nothing."""
+    metric = inspection.qc_metrics(AUDIO_NAME, allow_quiet=not prompt.spoken)
+    return QcReport(
+        session_id=take_id,
+        manifest_sha256=manifest_sha256,
+        generated_at=generated_at,
+        status="pass" if metric.passed else "review",
+        metrics=(metric,),
+    )
 
 
 def _qc_report(
@@ -295,15 +343,53 @@ def _qc_report(
     inspection: WavInspection,
     generated_at: datetime,
 ) -> QcReport:
-    """The take's QC report: capture's per-recording rule, quiet allowed for a silent prompt."""
-    metric = inspection.qc_metrics(AUDIO_NAME, allow_quiet=not manifest.prompt.spoken)
-    return QcReport(
-        session_id=manifest.take_id,
-        manifest_sha256=manifest_sha256,
-        generated_at=generated_at,
-        status="pass" if metric.passed else "review",
-        metrics=(metric,),
+    return take_qc_report(
+        manifest.take_id, manifest.prompt, manifest_sha256, inspection, generated_at
     )
+
+
+def take_intake_qc(
+    package: Path,
+    *,
+    take_id: str,
+    prompt: Prompt,
+    manifest_sha256: str,
+    source_report_sha256: str,
+    inspection: WavInspection,
+    ready: ReadyMarker,
+    published: bool,
+) -> tuple[QcReport, str]:
+    """Intake's QC report of a take package and its digest.
+
+    For a package being accepted (``published`` false) it is computed from the WAV, as of the
+    READY marker's time. For a published package in ``raw/`` the persisted ``intake-qc.json``
+    must equal the report recomputed from the WAV, and the intake receipt must bind the take,
+    its manifest and both reports.
+    Raises: ``SecurityError`` when the persisted report or the receipt disagrees;
+    ``ContractError`` for a persisted file that is not canonical."""
+    if not published:
+        report = take_qc_report(take_id, prompt, manifest_sha256, inspection, ready.finalized_at)
+        return report, hashlib.sha256(canonical_json_bytes(report) + b"\n").hexdigest()
+    persisted = read_canonical_model(
+        package / INTAKE_QC_REPORT_NAME, QcReport, max_bytes=MAX_CONTROL_FILE_BYTES
+    )
+    report = take_qc_report(take_id, prompt, manifest_sha256, inspection, persisted.generated_at)
+    if persisted != report:
+        raise SecurityError(
+            "persisted intake QC does not match independently recomputed WAV metrics"
+        )
+    report_sha256, _ = sha256_file(package / INTAKE_QC_REPORT_NAME)
+    receipt = read_canonical_model(
+        package / RECEIPT_NAME, IntakeReceipt, max_bytes=MAX_CONTROL_FILE_BYTES
+    )
+    if (
+        receipt.session_id != take_id
+        or receipt.manifest_sha256 != manifest_sha256
+        or receipt.source_qc_report_sha256 != source_report_sha256
+        or receipt.intake_qc_report_sha256 != report_sha256
+    ):
+        raise SecurityError("published intake receipt disagrees with the raw take's evidence")
+    return report, report_sha256
 
 
 def _require_bound_evidence(
@@ -405,29 +491,16 @@ def validate_take_package(package: Path, *, allow_intake_receipt: bool = False) 
             f"the take was recorded from {evidence.device_name!r}, not the required UMIK-1"
         )
 
-    if allow_intake_receipt:
-        persisted = read_canonical_model(
-            package / INTAKE_QC_REPORT_NAME, QcReport, max_bytes=MAX_CONTROL_FILE_BYTES
-        )
-        report = _qc_report(manifest, manifest_sha256, inspection, persisted.generated_at)
-        if persisted != report:
-            raise SecurityError(
-                "persisted intake QC does not match independently recomputed WAV metrics"
-            )
-        report_sha256, _ = sha256_file(package / INTAKE_QC_REPORT_NAME)
-        receipt = read_canonical_model(
-            package / RECEIPT_NAME, IntakeReceipt, max_bytes=MAX_CONTROL_FILE_BYTES
-        )
-        if (
-            receipt.session_id != manifest.take_id
-            or receipt.manifest_sha256 != manifest_sha256
-            or receipt.source_qc_report_sha256 != source_report_sha256
-            or receipt.intake_qc_report_sha256 != report_sha256
-        ):
-            raise SecurityError("published intake receipt disagrees with the raw take's evidence")
-    else:
-        report = _qc_report(manifest, manifest_sha256, inspection, marker.finalized_at)
-        report_sha256 = hashlib.sha256(canonical_json_bytes(report) + b"\n").hexdigest()
+    report, report_sha256 = take_intake_qc(
+        package,
+        take_id=manifest.take_id,
+        prompt=manifest.prompt,
+        manifest_sha256=manifest_sha256,
+        source_report_sha256=source_report_sha256,
+        inspection=inspection,
+        ready=marker,
+        published=allow_intake_receipt,
+    )
 
     snapshot_after = _snapshot_package(package)
     if snapshot_after != snapshot_before:
@@ -458,19 +531,40 @@ def admit_take(layout: AssetLayout, take: ValidatedTake) -> Prompt:
     Raises: ``TakeRefusal`` naming the rule; ``TakeDeferral`` when the store does not hold
     that version yet or cannot be read; ``OSError`` as the store's own.
     """
-    from .storage_binding import open_catalog_reader  # the writer side only (D-052)
-
     manifest = take.manifest
     if take.evidence.simulated:
         raise TakeRefusal(
             "take_simulated", "the simulated capture device's audio never enters the corpus"
         )
+    require_corpus_root(layout)
+    return admit_catalog(layout, manifest.catalog, manifest.prompt, manifest.prompt_sha256)
+
+
+def require_corpus_root(layout: AssetLayout) -> None:
+    """Refuse a take on an asset root marked for physical tests.
+
+    Raises: ``TakeRefusal`` ``take_diagnostic_root``; as ``read_diagnostic_root_marker``."""
     if read_diagnostic_root_marker(layout) is not None:
         raise TakeRefusal(
             "take_diagnostic_root",
             "this asset root is marked for physical tests; it takes no takes",
         )
-    named = manifest.catalog
+
+
+def admit_catalog(
+    layout: AssetLayout, named: CatalogReference, prompt: Prompt, prompt_sha256: str
+) -> Prompt:
+    """The catalog rule of a take or an imported take: ``named`` is the version this server's
+    store published under that id and number (every field of the reference), and that
+    version's digest-checked snapshot counts ``prompt`` (``CatalogSnapshot.current_prompt_for``).
+
+    Returns: the prompt of that catalog version the take counts for.
+    Raises: ``TakeRefusal`` (``take_catalog_invalid``, ``take_prompt_not_in_catalog``);
+    ``TakeDeferral`` when the store does not hold that version yet or cannot be read;
+    ``OSError`` as the store's own.
+    """
+    from .storage_binding import open_catalog_reader  # the writer side only (D-052)
+
     version = f"catalog {named.catalog_id} version {named.catalog_version}"
     try:
         with open_catalog_reader(layout) as store:
@@ -490,17 +584,17 @@ def admit_take(layout: AssetLayout, take: ValidatedTake) -> Prompt:
                 "take_catalog_missing", f"{version} is not on this server yet: {error}"
             ) from error
         raise TakeDeferral("take_catalog_unreadable", f"{version}: {error}") from error
-    prompt = snapshot.current_prompt_for(manifest.prompt)
-    if prompt is None:
+    counted = snapshot.current_prompt_for(prompt)
+    if counted is None:
         raise TakeRefusal(
             "take_prompt_not_in_catalog",
-            f"catalog version {manifest.catalog.catalog_version} does not count prompt "
-            f"{manifest.prompt.prompt_id} ({manifest.prompt_sha256})",
+            f"catalog version {named.catalog_version} does not count prompt "
+            f"{prompt.prompt_id} ({prompt_sha256})",
         )
-    return prompt
+    return counted
 
 
-def _copy_private(source: Path, destination: Path) -> None:
+def copy_private(source: Path, destination: Path) -> None:
     """Copy one regular file into a new private file, synced."""
     with open_regular_no_follow(source) as reader:
         descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -539,7 +633,7 @@ def build_take_package(
     work = directory.parent / f".{directory.name}.building-{secrets.token_hex(8)}"
     work.mkdir(mode=0o700)
     try:
-        _copy_private(wav, work / AUDIO_NAME)
+        copy_private(wav, work / AUDIO_NAME)
         inspection = inspect_canonical_wav(work / AUDIO_NAME)
         continuity_sha256 = write_canonical_json(work / CONTINUITY_NAME, evidence)
         if evidence.started_at is None or evidence.stop_reason is None:

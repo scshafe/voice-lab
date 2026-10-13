@@ -706,6 +706,11 @@ complete.
   `capturedAt`, `source`, `phoneState`, chain and session for measurements) become
   the corpus index's schema, with a third source kind, `lab-take`, for voice-lab's
   prompted takes. Every row points at bytes by path *and* SHA-256.
+  As built (Recording v1 step 7, D-051): the index lists recordings through a source port
+  (`journey/sources.py`) whose adapters are `voice-memos` (the phone drop) and
+  `measurement`; every row carries `source` with its `type`, and `/api/v1/recordings`
+  serves it as `sourceType`. Another kind of recording (the singing studio) is a further
+  adapter.
 - **Measurement sessions become raw sessions.** Today they land in
   `corpus/measurement/<sessionId>/` with a `session.json` intake record. After the
   merge they go through voice-lab's intake and live in `raw/` like any capture, with

@@ -1,0 +1,556 @@
+{
+  "$defs": {
+    "AudioSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "encoding": {
+          "enum": [
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "maximum": 384000,
+          "minimum": 8000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sample_width_bytes": {
+          "enum": [
+            2,
+            3,
+            4
+          ],
+          "title": "Sample Width Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_rate_hz",
+        "channels",
+        "sample_width_bytes",
+        "encoding",
+        "frames",
+        "duration_seconds"
+      ],
+      "title": "AudioSpec",
+      "type": "object"
+    },
+    "CaptureDevice": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "default": "avfoundation",
+          "enum": [
+            "avfoundation",
+            "coreaudio",
+            "portaudio"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "calibration_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "device_id": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Device Id",
+          "type": "string"
+        },
+        "display_name": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "microphone_serial": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Microphone Serial"
+        }
+      },
+      "required": [
+        "device_id",
+        "display_name"
+      ],
+      "title": "CaptureDevice",
+      "type": "object"
+    },
+    "CatalogReference": {
+      "additionalProperties": false,
+      "description": "A published catalog version by id, version, exact suite digest and snapshot digest.\n\n``catalog_sha256`` is the canonical digest of the suite alone (the digest every take\nand coverage projection keys on); ``snapshot_sha256`` is the sha256 of the exact\nsnapshot file bytes, so the alias half of the file is pinned too. ``suite_id`` and\n``purpose`` repeat what the snapshot's suite declares so contract-level checks (purpose\nagainst the capture gate) need no file read; the store verifies all of them against the\nsnapshot whenever a reference is materialized.",
+      "properties": {
+        "catalog_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "catalog_version": {
+          "$ref": "#/$defs/PositiveRevision"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation",
+            "physical-test"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "snapshot_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "snapshot_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "catalog_id",
+        "catalog_version",
+        "catalog_sha256",
+        "snapshot_sha256",
+        "suite_id",
+        "purpose",
+        "snapshot_path"
+      ],
+      "title": "CatalogReference",
+      "type": "object"
+    },
+    "EmbeddedSuite": {
+      "additionalProperties": false,
+      "description": "A recording-group/v1's catalog: the suite it embeds, by id and digest.",
+      "properties": {
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "kind": {
+          "const": "embedded-suite",
+          "default": "embedded-suite",
+          "title": "Kind",
+          "type": "string"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "suite_id",
+        "catalog_sha256"
+      ],
+      "title": "EmbeddedSuite",
+      "type": "object"
+    },
+    "ImportedRecord": {
+      "additionalProperties": false,
+      "description": "One record file of the package: its SHA-256 and byte count.",
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 1048576,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "ImportedRecord",
+      "type": "object"
+    },
+    "ImportedRecords": {
+      "additionalProperties": false,
+      "description": "The digests of the package's four records (``seal.json``, ``reservation.json``,\n``group.json``, ``mac-state.json``).",
+      "properties": {
+        "group": {
+          "$ref": "#/$defs/ImportedRecord"
+        },
+        "mac_state": {
+          "$ref": "#/$defs/ImportedRecord"
+        },
+        "reservation": {
+          "$ref": "#/$defs/ImportedRecord"
+        },
+        "seal": {
+          "$ref": "#/$defs/ImportedRecord"
+        }
+      },
+      "required": [
+        "seal",
+        "reservation",
+        "group",
+        "mac_state"
+      ],
+      "title": "ImportedRecords",
+      "type": "object"
+    },
+    "PositiveRevision": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference",
+            "procedure"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "PublishedVersion": {
+      "additionalProperties": false,
+      "description": "A recording-group/v2's catalog: the published corpus-store version it references.",
+      "properties": {
+        "kind": {
+          "const": "catalog-reference",
+          "default": "catalog-reference",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reference": {
+          "$ref": "#/$defs/CatalogReference"
+        }
+      },
+      "required": [
+        "reference"
+      ],
+      "title": "PublishedVersion",
+      "type": "object"
+    },
+    "RecordedAgainst": {
+      "discriminator": {
+        "mapping": {
+          "catalog-reference": "#/$defs/PublishedVersion",
+          "embedded-suite": "#/$defs/EmbeddedSuite"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/EmbeddedSuite"
+        },
+        {
+          "$ref": "#/$defs/PublishedVersion"
+        }
+      ]
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "SourceTakeId": {
+      "pattern": "^take-[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "TakeAudio": {
+      "additionalProperties": false,
+      "description": "The take's one recording.",
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioSpec"
+        },
+        "path": {
+          "const": "original.wav",
+          "default": "original.wav",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 44,
+          "maximum": 95040044,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size_bytes",
+        "audio"
+      ],
+      "title": "TakeAudio",
+      "type": "object"
+    },
+    "TakeClient": {
+      "additionalProperties": false,
+      "description": "The program that recorded the take: its name, version and platform, as it reports them.",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/_Text"
+        },
+        "platform": {
+          "$ref": "#/$defs/_Text"
+        },
+        "version": {
+          "$ref": "#/$defs/_Text"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "platform"
+      ],
+      "title": "TakeClient",
+      "type": "object"
+    },
+    "TakeExporter": {
+      "additionalProperties": false,
+      "description": "The program that packaged the take, its version, and when (UTC, the Mac's clock).",
+      "properties": {
+        "exported_at": {
+          "format": "date-time",
+          "title": "Exported At",
+          "type": "string"
+        },
+        "name": {
+          "const": "voice-lab corpus-import",
+          "default": "voice-lab corpus-import",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "$ref": "#/$defs/_Text"
+        }
+      },
+      "required": [
+        "version",
+        "exported_at"
+      ],
+      "title": "TakeExporter",
+      "type": "object"
+    },
+    "TakeId": {
+      "pattern": "^take-[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "_Text": {
+      "maxLength": 500,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``manifest.json`` of an imported take: one Swift take of one prompt, immutable.",
+  "properties": {
+    "audio": {
+      "$ref": "#/$defs/TakeAudio"
+    },
+    "capture_device": {
+      "$ref": "#/$defs/CaptureDevice"
+    },
+    "capture_host": {
+      "$ref": "#/$defs/_Text"
+    },
+    "catalog": {
+      "$ref": "#/$defs/CatalogReference"
+    },
+    "client": {
+      "$ref": "#/$defs/TakeClient"
+    },
+    "exporter": {
+      "$ref": "#/$defs/TakeExporter"
+    },
+    "first_sample_at": {
+      "format": "date-time",
+      "title": "First Sample At",
+      "type": "string"
+    },
+    "prompt": {
+      "$ref": "#/$defs/Prompt"
+    },
+    "prompt_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "recorded_against": {
+      "$ref": "#/$defs/RecordedAgainst"
+    },
+    "records": {
+      "$ref": "#/$defs/ImportedRecords"
+    },
+    "requested_at": {
+      "format": "date-time",
+      "title": "Requested At",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.corpus-take-import/v1",
+      "default": "cole-voice-lab.corpus-take-import/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_take_id": {
+      "$ref": "#/$defs/SourceTakeId"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "take_id": {
+      "$ref": "#/$defs/TakeId"
+    }
+  },
+  "required": [
+    "take_id",
+    "source_take_id",
+    "subject_id",
+    "prompt",
+    "prompt_sha256",
+    "recorded_against",
+    "catalog",
+    "requested_at",
+    "first_sample_at",
+    "capture_host",
+    "capture_device",
+    "client",
+    "audio",
+    "records",
+    "exporter"
+  ],
+  "title": "CorpusTakeImportManifest",
+  "type": "object"
+}

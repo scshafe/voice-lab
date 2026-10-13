@@ -419,6 +419,11 @@ replaced by the `scshafe-qt` desktop app after phase 4's acceptance criteria.
 
 Amended 2026-10-12 (D-050): no consent record is required for fine-tuning or Speak, on any host.
 
+Amended 2026-10-12 (D-053): the known gap above is closed another way. Native takes do not
+become lab packages; `voice-lab corpus-import` takes them one by one, with their decisions and
+trims, into the PC's corpus (D-052), under a transfer approval naming the export plan's
+digest. The Mac keeps its takes and still fine-tunes on them (D-051).
+
 ## D-019 — In-app speech is a local listening tool
 
 Cole asked on 2026-09-15 for a separate view in the recording app to type text and perform
@@ -1059,6 +1064,12 @@ value; native recording groups still require `"coreaudio"`). Until S-1 passes on
 (D-040), the Swift app stays the macOS prompted-capture path and nothing about D-015 is
 relaxed (D-025).
 
+Amended 2026-10-12 (D-052, D-053): "The evidence never leaves the capturing machine" no longer
+holds. Since Recording v1's step 3 (D-052), a take package carries the evidence to the PC as
+`continuity.json`, bound to its WAV and validated again there (`corpus_takes`). D-015's
+Audio Queue evidence travels too, inside the `seal.json` of a Swift take's imported-take
+package (D-053).
+
 ## D-040 — The S-1 harness, and what "S-1 passes" means
 
 Recorded 2026-10-11 (phase 4c). `scripts/s1-portaudio` runs the worker of D-039 on this
@@ -1619,3 +1630,95 @@ supersedes docs/LIBRARY_VAULT.md's "serving prompts from a remote store is out o
 for HTTP clients, the recording service's relaunch pin.
 
 **The vault.** Every new path is classified for the vault in the PR that first writes it.
+
+## D-053 — The Mac's takes reach the PC as imported takes
+
+Recorded 2026-10-12, for Recording v1's step 9 ([docs/design/RECORDING-V1.md](docs/design/RECORDING-V1.md)
+§4 and §6): the Mac library's existing takes go to the PC first (D-051), before the Swift app
+is retired.
+
+**A separate contract.** A take of the Swift app (Cole Voice Recorder, D-015) cannot fill the
+PC's take package honestly: that contract requires the PortAudio worker's evidence and backend
+`portaudio` (D-039, D-052), and stays as strict as it is. A Swift take travels as its own
+package, `cole-voice-lab.corpus-take-import/v1` (`corpus_take_imports`), of exactly eight
+files: `manifest.json`, `qc.json`, `READY`, `original.wav`, the take's `seal.json`,
+`reservation.json` and `group.json` byte for byte from the Mac's library (the seal holds its
+`capture-continuity/v1` evidence), and `mac-state.json`, the Mac's decision and trim at export.
+The manifest names the PC's take id (`take-<SHA-256 of original.wav>`, the scheme of the PC's
+own takes, so a recording is imported once and a recording the PC already holds is a
+collision), the Swift take's id, `cole-self`, the exact prompt and its digest, what the
+take's group was recorded against (a recording-group/v2's `CatalogReference`, or a v1 group's
+embedded suite id and digest), the PC's catalog version that counts the prompt, the seal's
+request and first-sample times, the host, the Core Audio device, the client (Cole Voice
+Recorder, the seal's recorder build, macOS), the audio, the four records' digests, and the
+exporter's version and time.
+
+**Validation.** `validate_take_import_package` is as strict as the other validators: the exact
+file set; no link, hard link or directory; canonical JSON (the verbatim records too, as the
+Mac's store requires them); every digest and byte count; each record parsed by its own strict
+model; the WAV canonical and equal to the seal's digest, size and format; the seal bound to
+the reservation by its digest (the Mac's own rule) and with a checked successful continuity;
+the reservation's group equal to `group.json`, whose device is the seal's and is a UMIK-1 (the
+capture packages' rule); the manifest's prompt, host, device, times and client equal to the
+records'; the Mac's decision between the seal and the export, and its trim within the take.
+`intake.validate_package` tells a capture package, a take and an imported take apart by the
+manifest's `schema_version`, and so do the publisher's collision check, the take store and the
+vault's raw source.
+
+**Admission.** Not on a diagnostic root, and the manifest's catalog reference is the version
+the PC's store published under that id and number (every field) and it counts the exact prompt
+(`take_catalog_invalid`, `take_prompt_not_in_catalog`); a version the PC does not hold yet is
+deferred, as for a take. There is no "simulated" rule: the Swift app has no simulated capture
+device, and its seal's evidence attests a checked Audio Queue capture from the group's device.
+
+**State on the PC.** An admitted package is published into `raw/<manifest_sha256>/` like any
+package, and its first record carries the Mac's state instead of an undecided draft: the
+decision at revision 1 (a draft stays at revision 0, whatever its Mac revision); a rejection's
+reason (a removal's stays in the raw package's `mac-state.json`, since the PC's record has a
+reason only for a rejection); decided when the Mac's records say (an explicit reject, remove or
+restore), else when the PC accepted the take (a Save records no time on a Swift take); and the
+trim at revision 1 unless it keeps the whole take. The record and the library's takes gain an
+optional `origin` (`{"kind": "imported", "source_take_id": …}`), absent for a take a client
+uploaded, so every earlier record keeps its bytes and the schema ids stay `v1`. Step 4's
+decisions and trims then apply to an imported take like any other. The PC is canonical once it
+holds a take: a change made on the Mac afterwards does not follow it (`plan` reports such
+takes); it is made on the PC.
+
+**The exporter and its approval.** `voice-lab corpus-import plan|approve|send` runs on the Mac,
+against the Mac's library (`corpus_import`). `plan` reads the native takes through the take
+store's read-only readers, packages every sealed take of `cole-self` whose exact prompt the
+PC's version counts (its `GET /api/v1/catalog` answer, saved or fetched) under
+`tmp/corpus-import/<take_id>/`, and writes the export plan: the version and every package's
+take ids, manifest digest and every file's digest and size, without a time, so planning the
+same takes again names the same payload. A package already there is reused. One never sent
+(the home-host ledger names no upload of it) is packaged again when the PC's version or the
+Mac's decision or trim has changed; one sent is never packaged again, and a later change on
+the Mac is reported (`mac_state_changed_since_sent`). `plan` reports every other take with its
+reason: room tones (in no cole-corpus version), prompts the version does not count, unsealed
+or damaged takes, another subject's, audio another take already holds, and the legacy capture
+sessions (Qt desktop, capture CLI, prepared packages) this step does not export.
+
+`approve` is AGENTS.md's separate transfer approval, the owner's alone: it names the plan's
+digest and the destination, the endpoint and node of the standing home-host approval
+(D-021). A plan is approved per destination: after the home host's node changes (a
+reinstalled PC), the same command approves it again for the new one, beside the first
+approval. `send` uploads only an approved plan's packages, through the standing approval, the
+node check and the ledger like every upload (class `capture`). The approval cannot be
+bypassed and holds at each upload: `upload_session` refuses an imported take unless it is
+given the plan's approval, so `voice-lab intake upload`, the desktop uploader and every other
+generic path refuse one and point to `corpus-import send`; and immediately before each
+upload's ledger entry it reads the plan and its approval again, for the destination of the
+standing approval that very upload uses, and requires the upload's declaration (its manifest
+and every file's digest and size) to be one the plan lists. `send` resumes, and a take the
+ledger records as accepted is not sent again. The plan and its approvals are kept 0400 in
+`provenance/host-transfers/` (`corpus-import-<plan_sha256>.plan.json`,
+`.approval-<SHA-256 of endpoint and node>.json`), the records class of the phase-3 move's
+approval; the packages never leave the Mac's library (Mac-only: copies of what the vault
+already carries), and every directory of the export is reached through `confined_path`, never
+through a link. The PC's raw packages and records keep their rules. The Mac keeps every take:
+nothing is deleted.
+
+**Amends** D-018 (its known gap) and D-039 (its evidence now travels), each with a dated note;
+docs/NATIVE_RECORDING_UX.md §9 and §15 ("nothing leaves the Mac"); and RECORDING-V1.md §4's
+last paragraph, which said the exporter maps Swift takes onto the PC's take contracts: it maps
+them onto their own.

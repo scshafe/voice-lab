@@ -104,7 +104,28 @@ class Vault:
         return self.data_root / NAMESPACES_DIRECTORY / name
 
     def records(self) -> list[VaultAccessRecord]:
+        """The access log once no request is in flight.
+
+        A handler writes its line in a ``finally`` after it has answered, so a client can hold
+        its answer before the line exists. Every worker frees its slot only after that, so
+        holding all the slots (briefly, then giving them back) waits for the lines.
+        """
+        settle(self.server)
         return read_access_log(self.access_log)
+
+
+def settle(server: VaultServer, timeout: float = 5.0) -> None:
+    """Wait (at most ``timeout`` seconds) until none of ``server``'s workers is busy."""
+    deadline = time.monotonic() + timeout
+    held = 0
+    try:
+        for _ in range(server.config.max_workers):
+            if not server._slots.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                break
+            held += 1
+    finally:
+        for _ in range(held):
+            server._slots.release()
 
 
 def namespace_configuration(

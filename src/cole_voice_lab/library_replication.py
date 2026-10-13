@@ -1151,10 +1151,17 @@ def _package_items(
 
     For an accepted raw session the intake receipt and the intake QC report it names are
     bound too, and the directory must be named by the manifest digest. A raw take package
-    (``corpus_takes``, D-052) binds its two files, the WAV and the continuity evidence.
+    (``corpus_takes``, D-052) binds its two files, the WAV and the continuity evidence; a raw
+    imported take (``corpus_take_imports``, D-053) binds the WAV and its four records.
     """
     from .capture import ReadyMarker
-    from .corpus_takes import CorpusTakeManifest, declares_take
+    from .corpus_take_imports import CorpusTakeImportManifest
+    from .corpus_takes import (
+        TAKE_IMPORT_SCHEMA,
+        TAKE_SCHEMA,
+        CorpusTakeManifest,
+        manifest_schema,
+    )
 
     root = layout.root
     ready_path = f"{directory}/{_READY}"
@@ -1170,7 +1177,8 @@ def _package_items(
     if name != (ready.manifest_sha256 if raw else f"capture-{ready.session_id}"):
         raise SourceChangedError(directory, "invalid", "is not named for the package it holds")
     expected: dict[str, tuple[str | None, int | None]]
-    if raw and declares_take(manifest_bytes):
+    schema = manifest_schema(manifest_bytes) if raw else None
+    if schema == TAKE_SCHEMA:
         take = _parse(CorpusTakeManifest, manifest_bytes, manifest_path)
         expected = {
             f"{directory}/{take.audio.path}": (take.audio.sha256, take.audio.size_bytes),
@@ -1178,6 +1186,18 @@ def _package_items(
                 take.continuity.sha256,
                 take.continuity.size_bytes,
             ),
+        }
+    elif schema == TAKE_IMPORT_SCHEMA:
+        imported = _parse(CorpusTakeImportManifest, manifest_bytes, manifest_path)
+        expected = {
+            f"{directory}/{imported.audio.path}": (
+                imported.audio.sha256,
+                imported.audio.size_bytes,
+            ),
+            **{
+                f"{directory}/{name}": (record.sha256, record.size_bytes)
+                for name, record in imported.records.by_name().items()
+            },
         }
     else:
         manifest = _parse(CaptureManifest, manifest_bytes, manifest_path)

@@ -1,12 +1,13 @@
 """The intake publisher: the only process that publishes raw audio on the home host (D-021).
 
 @canonical intake_publisher -- one bounded pass over ``incoming/``. Each direct child that
-is not a dot entry is a finalized capture package or take package (``corpus_takes``, D-052;
-``intake.validate_package`` tells them apart by the manifest's schema);
-``accept_capture_session`` (intake.py) validates every byte and publishes it into ``raw/``.
-A take is published only once ``corpus_takes.admit_take`` admits it (real audio, and a prompt
-its catalog version, a snapshot on this server, counts). The outcome is recorded where
-the API can read it:
+is not a dot entry is a finalized capture package, take package (``corpus_takes``, D-052) or
+imported Swift take (``corpus_take_imports``, D-053); ``intake.validate_package`` tells them
+apart by the manifest's schema, and ``accept_capture_session`` (intake.py) validates every byte
+and publishes it into ``raw/``. A take is published only once ``corpus_takes.admit_take``
+admits it (real audio, and a prompt its catalog version, a snapshot on this server, counts),
+and an imported take once ``corpus_take_imports.admit_take_import`` does (the same catalog
+rule). The outcome is recorded where the API can read it:
 
 - accepted: ``provenance/intake/sessions/<session_id>.json``, naming the receipt;
 - refused (a contract or security failure): the package is moved, untouched, to
@@ -20,9 +21,10 @@ would be final, since a take's upload session is its audio's digest.
 
 Every pass then writes the take store's record of each new take
 (``corpus_take_store.record_takes``: ``provenance/corpus-takes/<take_id>.json``, an undecided
-draft), applies the decisions and trims the API queued in ``incoming/``
-(``corpus_requests.apply_requests``: in the order they arrived, each only at the revision its
-client expected, its outcome in ``provenance/corpus-requests/``), and refreshes the corpus's
+draft, or an imported take's with the Mac's decision and trim), applies the decisions and
+trims the API queued in ``incoming/`` (``corpus_requests.apply_requests``: in the order they
+arrived, each only at the revision its client expected, its outcome in
+``provenance/corpus-requests/``), and refreshes the corpus's
 read model (``corpus_read_model``: the active catalog and its library): the PC's one lab
 writer keeps what the read-only API serves current. A failure there is reported in the
 pass's summary and never holds back a package; a request that cannot be applied yet waits

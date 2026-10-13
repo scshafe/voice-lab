@@ -102,6 +102,53 @@ with `intake-qc.json` and the receipt, and recorded in `provenance/intake/sessio
 store's record names it; the vault copies the raw package (`raw-packages`) and the record
 (`corpus-take-states`), and never the read model.
 
+## Imported takes (D-053)
+
+The Swift app's takes (Cole Voice Recorder, on the Mac) reach the PC once, through the same
+upload, as **imported takes** (`corpus_take_imports`, `cole-voice-lab.corpus-take-import/v1`),
+packaged and sent by `voice-lab corpus-import` on the Mac (docs/design/RECORDING-V1.md §7,
+owner step 3). A Swift take has no PortAudio evidence, so it is not a take package: its Core
+Audio provenance travels byte for byte. It leaves the Mac only under its export plan's own
+transfer approval: `intake_client.upload_session` refuses an imported take without it (so
+`voice-lab intake upload` refuses one), and checks it again before each upload's ledger entry.
+An imported take is a directory of exactly eight files:
+
+| File | What it is |
+| --- | --- |
+| `manifest.json` | `CorpusTakeImportManifest`: the PC's take id (`take-<SHA-256 of original.wav>`), the Swift take's id (`source_take_id`), `cole-self`, the exact prompt and its digest, `recorded_against` (the group's published `CatalogReference`, or its embedded suite's id and digest), `catalog` (the PC's version that counts the prompt), the seal's request and first-sample times, the host, the Core Audio device, the client (Cole Voice Recorder, the seal's recorder build, macOS), the audio, the digests of the four records below, and the exporter's version and time |
+| `qc.json`, `READY` | as a take's |
+| `original.wav` | the take, mono 48 kHz s24le: the bytes the seal names |
+| `seal.json`, `reservation.json`, `group.json` | the Swift take's `CaptureSealReceipt` (with its `capture-continuity/v1` evidence), `CaptureReservation` and `RecordingGroup`, verbatim |
+| `mac-state.json` | `MacTakeState`: the take's decision, revision, reason and restore target, the decision's time when the Mac's records give one, and its frame recipe and edit revision, at export |
+
+The publisher tells it apart by its manifest's `schema_version` and validates it
+(`validate_take_import_package`): the exact file set, no links, hard links or directories,
+canonical JSON, every digest and byte count, each record parsed by its own strict model, the
+WAV canonical and equal to the seal's digest, size and format, the seal bound to the
+reservation (its digest) with a checked, successful continuity, `group.json` equal to the
+reservation's group and its device equal to the seal's and named as a UMIK-1, the manifest's
+prompt, host, device, times and client equal to the records', the Mac's decision between the
+seal and the export, and its trim within the take. It admits it (`admit_take_import`) by the
+take's rules above except the simulated one (the Swift app has no simulated device):
+`take_diagnostic_root`, `take_catalog_invalid`, `take_prompt_not_in_catalog`, and deferred
+with `take_catalog_missing` or `take_catalog_unreadable`. The same audio as a take the PC
+already holds has its take id, so it is refused as a session id collision.
+
+An admitted imported take is published into `raw/<manifest_sha256>/` like any package, and its
+record in `provenance/corpus-takes/` carries the Mac's state rather than an undecided draft:
+
+- the decision at revision 1 (`kept`, `rejected`, `removed`), or the undecided `draft` at 0;
+- a rejection's reason; a removal's stays in the raw package's `mac-state.json`;
+- decided at the Mac's time for an explicit reject, remove or restore, else at the PC's
+  acceptance (a Save records no time on a Swift take);
+- the trim at revision 1 when the Mac kept less than the whole take, else untrimmed at 0;
+- `origin: {"kind": "imported", "source_take_id": …}`, which the library's takes and
+  `GET /api/v1/corpus/prompts/{prompt_id}/takes` carry too (absent for an uploaded take).
+
+From then on the PC holds the take: decisions and trims (below) apply to it as to any other,
+and a later change on the Mac does not follow it. The vault binds its raw files to the
+manifest (`raw-packages`) and copies its record (`corpus-take-states`).
+
 ## Decisions and trims (D-052)
 
 A take's decision (`draft`, `kept`, `rejected` with a reason, `removed`) and its trim (the

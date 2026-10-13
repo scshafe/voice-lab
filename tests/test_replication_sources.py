@@ -523,6 +523,7 @@ def add_lab_records(layout: AssetLayout) -> None:
         "provenance/headphone-reviews/review-1.json",
         ".DS_Store",
         "tmp/capture-legacy-pilot/.DS_Store",
+        f"tmp/corpus-import/take-{SHA}/original.wav",
     ):
         write_file(root, relative)
     history = CONSENT_HISTORY_BYTES
@@ -794,6 +795,8 @@ PLAN_DISPOSITIONS: Mapping[str, tuple[str, int | None, str | None]] = {
     "experiments/run-1/result.json": ("mac-only", None, None),
     "evaluations/review-1/answers.json": ("mac-only", None, None),
     "raw/.DS_Store": ("mac-only", None, None),
+    f"tmp/corpus-import/{TAKE}/original.wav": ("mac-only", None, None),
+    f"tmp/corpus-import/.{TAKE}.building-{HEX16}/seal.json": ("mac-only", None, None),
     # Copied records.
     f"provenance/recording-takes/{TAKE}/head.json": ("records", 0o600, "file"),
     "provenance/recording-takes/.store-head.json": ("records", 0o600, "file"),
@@ -809,6 +812,8 @@ PLAN_DISPOSITIONS: Mapping[str, tuple[str, int | None, str | None]] = {
     "derived/transfer-plans/plan-1/manifest.json": ("records", 0o400, "file"),
     "provenance/pilot-gates/gate-1.json": ("records", 0o400, "file"),
     "provenance/host-transfers/move-1.txt": ("records", 0o400, "file"),
+    f"provenance/host-transfers/corpus-import-{SHA}.plan.json": ("records", 0o400, "file"),
+    f"provenance/host-transfers/corpus-import-{SHA}.approval.json": ("records", 0o400, "file"),
     "provenance/diagnostic-root.json": ("records", 0o400, "file"),
     "provenance/voice-releases/0001.json": ("records", 0o400, "file"),
     "provenance/speech-renders/sp-0123456789abcdef01234567.json": ("records", 0o400, "file"),
@@ -828,6 +833,10 @@ PLAN_DISPOSITIONS: Mapping[str, tuple[str, int | None, str | None]] = {
     f"raw/{SHA}/audio/001-neutral-01.wav": ("recordings", 0o400, "file"),
     f"raw/{SHA}/original.wav": ("recordings", 0o400, "file"),
     f"raw/{SHA}/continuity.json": ("recordings", 0o400, "file"),
+    f"raw/{SHA}/seal.json": ("recordings", 0o400, "file"),
+    f"raw/{SHA}/reservation.json": ("recordings", 0o400, "file"),
+    f"raw/{SHA}/group.json": ("recordings", 0o400, "file"),
+    f"raw/{SHA}/mac-state.json": ("recordings", 0o400, "file"),
     "references/cole-neutral-v1/reference.wav": ("recordings", 0o400, "file"),
     # Derived edits and the opt-in training material.
     f"derived/recording-edits/native/{SHA}/{SHA}.wav": ("derived-edits", 0o600, "file"),
