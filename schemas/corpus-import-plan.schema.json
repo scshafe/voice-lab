@@ -45,10 +45,44 @@
       "title": "CatalogReference",
       "type": "object"
     },
+    "PlannedFile": {
+      "additionalProperties": false,
+      "description": "One file of a planned package, as its upload declares it.",
+      "properties": {
+        "path": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "PlannedFile",
+      "type": "object"
+    },
     "PlannedPackage": {
       "additionalProperties": false,
-      "description": "One package of an export plan: the PC's take id, the Swift take's, the prompt, the\npackage's manifest digest and its bytes.",
+      "description": "One package of an export plan: the PC's take id, the Swift take's, the prompt, the\npackage's manifest digest, every file's digest and size (by path), and its bytes.",
       "properties": {
+        "files": {
+          "items": {
+            "$ref": "#/$defs/PlannedFile"
+          },
+          "title": "Files",
+          "type": "array"
+        },
         "manifest_sha256": {
           "$ref": "#/$defs/Sha256"
         },
@@ -72,6 +106,7 @@
         "source_take_id",
         "prompt_id",
         "manifest_sha256",
+        "files",
         "size_bytes"
       ],
       "title": "PlannedPackage",

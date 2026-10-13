@@ -36,12 +36,12 @@ from corpus_import_fixtures import (
     writable,
 )
 from corpus_take_fixtures import NOW, make_take, seed_catalog
+from home_host_fixtures import NODE, bind_approval, jwks, make_approval, mint, policy
 from home_host_fixtures import NOW as APPROVAL_NOW
-from home_host_fixtures import bind_approval, jwks, make_approval, mint, policy
 from recording_fixtures import synthetic_catalog
 from test_pilot_v2_coverage import released_pilot_v2
 
-from cole_voice_lab import cli, cli_corpus_import
+from cole_voice_lab import cli, cli_corpus_import, cli_home_host
 from cole_voice_lab.api.auth import TokenVerifier
 from cole_voice_lab.api.contracts import ApiMeta
 from cole_voice_lab.api.corpus_contracts import CatalogView, CorpusRequestStatus, TakeHistory
@@ -54,10 +54,12 @@ from cole_voice_lab.corpus_import import (
     EXPORT_ROOT,
     CorpusImportApproval,
     CorpusImportPlan,
+    PlanApproval,
     approval_path,
     approve_plan,
     build_take_import_package,
     catalog_from_view,
+    destination_of,
     fetch_catalog_view,
     package_path,
     plan_export,
@@ -89,7 +91,13 @@ from cole_voice_lab.diagnostic_roots import DIAGNOSTIC_SUBJECT_PREFIX, initializ
 from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.home_host import HomeHostApproval, HomeHostLedger, load_approval
 from cole_voice_lab.intake import validate_package
-from cole_voice_lab.intake_client import HomeHostClient, UploadError
+from cole_voice_lab.intake_client import (
+    HomeHostClient,
+    TransferNotApproved,
+    UploadError,
+    session_request,
+    upload_session,
+)
 from cole_voice_lab.intake_publisher import publish_pending, read_refusal
 from cole_voice_lab.library_classification import classify
 from cole_voice_lab.library_replication import RawPackageSource, ReplicationItem
@@ -239,6 +247,12 @@ def standing_approval(layout: AssetLayout) -> HomeHostApproval:
     return load_approval(layout, now=APPROVAL_NOW)[0]
 
 
+def approval_file(layout: AssetLayout, plan_sha256: str) -> Path:
+    """The plan's approval for the destination of the standing approval."""
+    standing, digest = load_approval(layout, now=APPROVAL_NOW)
+    return approval_path(layout, plan_sha256, destination_of(standing, digest).key)
+
+
 def manifest_digest(package: Path) -> str:
     return hashlib.sha256((package / "manifest.json").read_bytes()).hexdigest()
 
@@ -284,10 +298,11 @@ def test_the_macs_takes_reach_the_pc_with_their_state(libraries: Libraries, tmp_
         # Planning again builds nothing and names the same payload.
         again = plan_export(mac, view, clock=lambda: NOW + timedelta(days=1))
         assert again.plan_sha256 == planning.plan_sha256 and again.built == ()
-        assert sorted(again.reused) == expected_ids and again.state_changed == ()
+        assert sorted(again.reused) == expected_ids and again.state_changed_since_sent == ()
+        assert again.rebuilt == ()
 
         # Not sent before it is approved.
-        with pytest.raises(ContractError, match="is not approved"):
+        with pytest.raises(ContractError, match="is not approved for voice-lab.example.ts.net"):
             send(libraries, port, planning.plan_sha256)
         assert HomeHostLedger(mac).entries() == []
         approval, written = approve_plan(
@@ -299,7 +314,7 @@ def test_the_macs_takes_reach_the_pc_with_their_state(libraries: Libraries, tmp_
         )
         assert written and approval.packages == 6
         assert approval.destination.endpoint == "voice-lab.example.ts.net"
-        assert stat.S_IMODE(approval_path(mac, planning.plan_sha256).stat().st_mode) == 0o400
+        assert stat.S_IMODE(approval_file(mac, planning.plan_sha256).stat().st_mode) == 0o400
 
         results = send(libraries, port, planning.plan_sha256)
         assert [(result.take_id, result.status) for result in results] == [
@@ -824,15 +839,58 @@ def test_the_vault_binds_an_imported_raw_take(libraries: Libraries, package: Pat
 # -- The exporter --------------------------------------------------------------------------------
 
 
-def test_a_changed_mac_state_keeps_its_package_and_is_reported(libraries: Libraries) -> None:
+def test_a_never_sent_package_is_packaged_again_when_it_is_stale(libraries: Libraries) -> None:
     mac = libraries.mac
-    draft = mac.sealed(mac.v2_group(libraries.catalog), spoken_ids(libraries.catalog)[0])
+    group = mac.v2_group(libraries.catalog)
+    ids = spoken_ids(libraries.catalog)
+    draft = mac.sealed(group, ids[0])
     first = plan_export(mac.layout, libraries.view, clock=lambda: NOW)
+    # The Mac's decision changed before the package was ever sent: it is packaged again.
     mac.decide(draft, "reject", "Changed my mind")
-    second = plan_export(mac.layout, libraries.view, clock=lambda: NOW)
-    assert second.plan_sha256 == first.plan_sha256
-    assert second.state_changed == (pc_take_id(draft),)
-    assert second.report(mac.layout)["mac_state_changed_since_packaged"] == [pc_take_id(draft)]
+    second = plan_export(mac.layout, libraries.view, clock=lambda: NOW + timedelta(hours=1))
+    assert (second.rebuilt, second.reused) == ((pc_take_id(draft),), ())
+    assert second.plan_sha256 != first.plan_sha256
+    package = package_path(mac.layout, pc_take_id(draft))
+    assert validate_take_import_package(package).mac_state.decision == "rejected"
+    # A package built for another catalog version, never sent, is packaged for the PC's.
+    other = mac.save(mac.sealed(group, ids[1]))
+    later = libraries.catalog[0].model_copy(update={"catalog_version": 7})
+    build_take_import_package(
+        package_path(mac.layout, pc_take_id(other)),
+        layout=mac.layout,
+        take=other,
+        catalog=later,
+        clock=lambda: NOW,
+    )
+    third = plan_export(mac.layout, libraries.view, clock=lambda: NOW + timedelta(hours=2))
+    assert third.rebuilt == (pc_take_id(other),)
+    assert manifest_of(package_path(mac.layout, pc_take_id(other))).catalog == libraries.catalog[0]
+    assert sorted(path.name for path in (mac.layout.root / EXPORT_ROOT).iterdir()) == sorted(
+        [pc_take_id(draft), pc_take_id(other)]
+    )  # nothing set aside is left behind
+
+
+def test_a_sent_package_is_never_packaged_again_and_a_later_change_is_reported(
+    libraries: Libraries, tmp_path: Path
+) -> None:
+    mac = libraries.mac
+    take = mac.save(mac.sealed(mac.v2_group(libraries.catalog), spoken_ids(libraries.catalog)[0]))
+    planning = plan_export(mac.layout, libraries.view, clock=lambda: NOW)
+    assert planning.plan_sha256 is not None
+    approve_plan(
+        mac.layout, planning.plan_sha256, approved_by="Cole", statement="Yes.", now=APPROVAL_NOW
+    )
+    with serving(libraries.pc, tmp_path) as port:
+        assert [result.status for result in send(libraries, port, planning.plan_sha256)] == [
+            "accepted"
+        ]
+    mac.decide(take, "remove", "Not needed after all")
+    again = plan_export(mac.layout, libraries.view, clock=lambda: NOW + timedelta(hours=1))
+    assert again.plan_sha256 == planning.plan_sha256 and again.rebuilt == ()
+    assert again.state_changed_since_sent == (pc_take_id(take),)
+    assert again.report(mac.layout)["mac_state_changed_since_sent"] == [pc_take_id(take)]
+    package = package_path(mac.layout, pc_take_id(take))
+    assert validate_take_import_package(package).mac_state.decision == "kept"
 
 
 def test_damaged_duplicate_foreign_and_legacy_takes_are_skipped(libraries: Libraries) -> None:
@@ -908,7 +966,7 @@ def test_approval_names_a_plan_on_this_mac_once(libraries: Libraries) -> None:
         mac, digest, approved_by="Someone", statement="Other.", now=APPROVAL_NOW
     )
     assert written and not rewritten and again == first
-    assert classify(str(approval_path(mac, digest).relative_to(mac.root))).rule.name == (
+    assert classify(str(approval_file(mac, digest).relative_to(mac.root))).rule.name == (
         "host-transfers"
     )
 
@@ -957,18 +1015,28 @@ def test_a_take_the_pc_defers_is_collected_by_the_next_send(
     assert events.count("upload-completed") == 2
 
 
-def test_send_refuses_an_approval_for_another_destination(
+def test_a_new_node_needs_the_plan_approved_again_beside_the_first_approval(
     libraries: Libraries, tmp_path: Path
 ) -> None:
     mac = libraries.mac.layout
     digest = planned(libraries)
-    approve_plan(mac, digest, approved_by="Cole", statement="Yes.", now=APPROVAL_NOW)
-    bind_approval(
-        mac, make_approval(approval_id="pc-home-host-2", node_stable_id="nOTHERNODE1CNTRL")
-    )
-    with serving(libraries.pc, tmp_path) as port, pytest.raises(SecurityError, match="another"):
-        send(libraries, port, digest)
-    assert HomeHostLedger(mac).entries() == []
+    first, _ = approve_plan(mac, digest, approved_by="Cole", statement="Yes.", now=APPROVAL_NOW)
+    first_file = approval_file(mac, digest)
+    # The PC is reinstalled: the standing approval now names another node.
+    node = "nOTHERNODE1CNTRL"
+    bind_approval(mac, make_approval(approval_id="pc-home-host-2", node_stable_id=node))
+    with serving(libraries.pc, tmp_path) as port:
+        with pytest.raises(ContractError, match="approved for 1 other destination"):
+            send(libraries, port, digest)
+        assert HomeHostLedger(mac).entries() == []
+        second, written = approve_plan(
+            mac, digest, approved_by="Cole", statement="Again, to the new PC.", now=APPROVAL_NOW
+        )
+        assert written and second.destination.node_stable_id == node
+        assert approval_file(mac, digest) != first_file and first_file.is_file()
+        assert first.destination.node_stable_id != node
+        assert {result.status for result in send(libraries, port, digest)} == {"accepted"}
+    assert {entry.node_stable_id for entry, _ in HomeHostLedger(mac).entries()} == {node}
 
 
 # -- The CLI ---------------------------------------------------------------------------------------
@@ -1005,7 +1073,7 @@ def test_the_owners_commands(
         approve = ("corpus-import", "approve", "--asset-root", root, "--plan", digest,
                    "--approved-by", "Cole", "--statement", "My takes, to my PC.")  # fmt: skip
         assert run(*approve)[0] == 2
-        assert not approval_path(mac.layout, digest).exists()
+        assert not approval_file(mac.layout, digest).exists()
         code, approved = run(*approve, "--i-approve-this-transfer")
         assert code == 0 and approved["approved_now"] is True
         send_args = ("corpus-import", "send", "--asset-root", root, "--plan", digest)
@@ -1071,6 +1139,9 @@ def test_the_plan_and_approval_contracts_hold_their_rules(libraries: Libraries) 
         CorpusImportPlan.model_validate(plan.model_dump() | {"total_bytes": 1})
     with pytest.raises(ValueError, match="cole-self"):
         CorpusImportPlan.model_validate(plan.model_dump() | {"subject_id": "synthetic"})
+    entry = plan.packages[0]
+    with pytest.raises(ValueError, match="pins each file"):
+        type(entry).model_validate(entry.model_dump() | {"files": entry.files[1:]})
     approval, _ = approve_plan(
         libraries.mac.layout, digest, approved_by="Cole", statement="Yes.", now=APPROVAL_NOW
     )
@@ -1247,9 +1318,10 @@ def test_plans_and_approvals_are_read_as_their_digests_pin_them(libraries: Libra
     assert other.plan_sha256 not in {None, digest} and other.built == (pc_take_id(other_take),)
     assert other.plan_sha256 is not None
     approve_plan(mac, digest, approved_by="Cole", statement="Yes.", now=APPROVAL_NOW)
-    shutil.copyfile(approval_path(mac, digest), approval_path(mac, other.plan_sha256))
+    shutil.copyfile(approval_file(mac, digest), approval_file(mac, other.plan_sha256))
+    standing, standing_sha256 = load_approval(mac, now=APPROVAL_NOW)
     with pytest.raises(SecurityError, match="names another plan"):
-        read_approval(mac, other.plan_sha256)
+        read_approval(mac, other.plan_sha256, destination_of(standing, standing_sha256))
     # Another record where the plan's name is: the plan is never written over it.
     taken = plan_path(mac, other.plan_sha256)
     os.chmod(taken, 0o600)
@@ -1368,3 +1440,123 @@ def test_a_broken_package_on_the_mac_is_reported_until_it_is_removed(
     shutil.rmtree(package)
     rebuilt = plan_export(mac.layout, libraries.view, clock=lambda: NOW)
     assert rebuilt.built == (pc_take_id(take),) and rebuilt.plan_sha256 == first.plan_sha256
+
+
+# -- The per-payload approval, at each upload (review fixes) ---------------------------------------
+
+
+def test_no_generic_upload_sends_an_imported_take(
+    libraries: Libraries,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    mac = libraries.mac.layout
+    digest = planned(libraries)  # planned, never approved
+    take_id = read_plan(mac, digest).packages[0].take_id
+    package = package_path(mac, take_id)
+    with serving(libraries.pc, tmp_path) as port:
+        client = HomeHostClient.loopback_for_tests(port, mint)
+        common: dict[str, Any] = {
+            "layout": mac,
+            "client": client,
+            "clock": lambda: APPROVAL_NOW,
+            "wait_seconds": 0.0,
+        }
+        with pytest.raises(TransferNotApproved, match="voice-lab corpus-import send"):
+            upload_session(package, **common)
+        with pytest.raises(TransferNotApproved, match="is not approved for"):
+            upload_session(package, payload_approval=PlanApproval(mac, digest), **common)
+        monkeypatch.setattr(cli_home_host, "utc_now", lambda: APPROVAL_NOW)
+        monkeypatch.setattr(cli_home_host, "home_host_client", lambda *_arguments: client)
+        upload = ["intake", "upload", str(package), "--asset-root", str(mac.root), "--wait", "0"]
+        assert cli.main(upload) == 2
+        assert "voice-lab corpus-import send" in capsys.readouterr().err
+    assert HomeHostLedger(mac).entries() == []
+    assert not (libraries.pc.directory("incoming") / ".uploads" / take_id).exists()
+    assert read_take_state(libraries.pc, take_id) is None
+
+
+@pytest.mark.parametrize("change", ["approval removed", "standing approval moved"])
+def test_the_approval_is_checked_again_before_each_upload(
+    libraries: Libraries, tmp_path: Path, change: str
+) -> None:
+    mac = libraries.mac.layout
+    digest = planned(libraries)
+    approve_plan(mac, digest, approved_by="Cole", statement="Yes.", now=APPROVAL_NOW)
+    approval = approval_file(mac, digest)
+    changed: list[str] = []
+
+    def during_the_first_wait(_seconds: float) -> None:
+        publish_pending(libraries.pc, min_free_bytes=0)
+        if changed:
+            return
+        changed.append(change)
+        if change == "approval removed":
+            approval.unlink()
+        else:
+            bind_approval(
+                mac,
+                make_approval(approval_id="pc-home-host-2", node_stable_id="nOTHERNODE1CNTRL"),
+            )
+
+    with serving(libraries.pc, tmp_path) as port:
+        results = send_plan(
+            mac,
+            digest,
+            client=HomeHostClient.loopback_for_tests(port, mint),
+            clock=lambda: APPROVAL_NOW,
+            sleep=during_the_first_wait,
+        )
+    assert [result.status for result in results] == ["accepted", "unapproved"]
+    entries = [entry for entry, _ in HomeHostLedger(mac).entries()]
+    assert {entry.session_id for entry in entries} == {results[0].take_id}
+    assert {entry.node_stable_id for entry in entries} == {NODE}
+    assert read_take_state(libraries.pc, results[1].take_id) is None
+
+
+@pytest.mark.parametrize("linked", [EXPORT_ROOT, "provenance/host-transfers"])
+def test_a_linked_export_directory_is_refused(
+    libraries: Libraries, tmp_path: Path, linked: str
+) -> None:
+    mac = libraries.mac
+    mac.save(mac.sealed(mac.v2_group(libraries.catalog), spoken_ids(libraries.catalog)[0]))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (mac.layout.root / linked).symlink_to(outside)
+    with pytest.raises(SecurityError, match="symlink"):
+        plan_export(mac.layout, libraries.view, clock=lambda: NOW)
+    assert list(outside.iterdir()) == []
+
+
+def test_a_package_changed_beside_its_manifest_after_approval_is_not_sent(
+    libraries: Libraries, tmp_path: Path
+) -> None:
+    mac = libraries.mac.layout
+    digest = planned(libraries)
+    approve_plan(mac, digest, approved_by="Cole", statement="Yes.", now=APPROVAL_NOW)
+    first, second = read_plan(mac, digest).packages
+    package = package_path(mac, first.take_id)
+    # qc.json and READY rewritten, still bound to each other and to the same manifest.
+    writable(package)
+    report = record_json(package, "qc.json") | {"generated_at": "2026-10-01T00:00:00Z"}
+    report_bytes = json_record(report)
+    (package / "qc.json").write_bytes(report_bytes)
+    marker = ReadyMarker.model_validate_json((package / "READY").read_bytes())
+    (package / "READY").unlink()
+    write_canonical_json(
+        package / "READY",
+        marker.model_copy(update={"qc_report_sha256": hashlib.sha256(report_bytes).hexdigest()}),
+    )
+    changed = validate_take_import_package(package)
+    assert changed.manifest_sha256 == first.manifest_sha256
+    standing, standing_sha256 = load_approval(mac, now=APPROVAL_NOW)
+    with pytest.raises(TransferNotApproved, match="as it lists it"):
+        PlanApproval(mac, digest).require(session_request(changed), standing, standing_sha256)
+    with serving(libraries.pc, tmp_path) as port:
+        results = send(libraries, port, digest)
+    assert [(result.take_id, result.status) for result in results] == [
+        (first.take_id, "invalid"),
+        (second.take_id, "accepted"),
+    ]
+    assert {entry.session_id for entry, _ in HomeHostLedger(mac).entries()} == {second.take_id}

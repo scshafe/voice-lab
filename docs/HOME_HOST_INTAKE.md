@@ -108,7 +108,10 @@ The Swift app's takes (Cole Voice Recorder, on the Mac) reach the PC once, throu
 upload, as **imported takes** (`corpus_take_imports`, `cole-voice-lab.corpus-take-import/v1`),
 packaged and sent by `voice-lab corpus-import` on the Mac (docs/design/RECORDING-V1.md §7,
 owner step 3). A Swift take has no PortAudio evidence, so it is not a take package: its Core
-Audio provenance travels byte for byte. An imported take is a directory of exactly eight files:
+Audio provenance travels byte for byte. It leaves the Mac only under its export plan's own
+transfer approval: `intake_client.upload_session` refuses an imported take without it (so
+`voice-lab intake upload` refuses one), and checks it again before each upload's ledger entry.
+An imported take is a directory of exactly eight files:
 
 | File | What it is |
 | --- | --- |

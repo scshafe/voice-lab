@@ -29,7 +29,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from pydantic import BaseModel, ValidationError
 
@@ -71,6 +71,28 @@ type Progress = Callable[[str, int, int], None]
 
 class UploadError(VoiceLabError):
     """The upload did not finish; it can be run again and resumes where it stopped."""
+
+
+class TransferNotApproved(SecurityError):
+    """The package's own transfer approval does not cover this upload (AGENTS.md: a separate,
+    explicit approval naming the destination and the payload digest); nothing was sent."""
+
+
+class PayloadApproval(Protocol):
+    """A per-payload transfer approval, checked by ``upload_session`` for each upload.
+
+    ``require`` sees exactly what is about to be declared to the server (``request``: the
+    session id, the manifest digest and every file's digest and size) and the standing
+    home-host approval this very upload goes under, after the node's identity check and
+    immediately before the ledger entry. It raises ``TransferNotApproved`` unless the payload
+    approval names this payload and this destination."""
+
+    def require(
+        self,
+        request: IntakeSessionRequest,
+        standing: HomeHostApproval,
+        standing_sha256: str,
+    ) -> None: ...
 
 
 class UploadPending(UploadError):
@@ -312,34 +334,40 @@ def upload_session(
     monotonic: Callable[[], float] = time.monotonic,
     package_class: HomeHostClass = "capture",
     progress: Progress | None = None,
-    expected_manifest_sha256: str | None = None,
+    payload_approval: PayloadApproval | None = None,
 ) -> IntakeSessionStatus:
     """Upload one finalized package and wait for its intake receipt.
 
     ``package_class`` is what the package is (a prompted ``capture``, which a take package
     and an imported take are too, or a UMIK-1 ``measurement`` session,
     journey/measurement_package.py): the standing approval must cover it. ``progress`` hears
-    every chunk the server took. ``expected_manifest_sha256``, when given, is the manifest
-    digest a transfer approval names (``corpus_import``): a package with another manifest is
-    refused before anything is recorded or sent.
+    every chunk the server took. ``payload_approval`` is the package's own transfer approval
+    (``corpus_import.PlanApproval``), checked against this upload's declaration and standing
+    approval immediately before the ledger entry. An imported Swift take (D-053) is refused
+    without one: it leaves the Mac only through ``voice-lab corpus-import send``.
 
     Returns: the ``accepted`` status, whose receipt names this package's manifest digest.
-    Raises: ``SecurityError``/``ContractError`` when the local package or the approval
-    fails its checks (nothing is sent); ``UploadRefused`` when the server or the publisher
-    refuses it; ``UploadPending`` (an ``UploadError``) when every byte is on the server but it
-    has not published the package within ``wait_seconds``; ``UploadError`` when it did not
-    finish (run it again: it resumes).
+    Raises: ``TransferNotApproved`` (a ``SecurityError``) for an imported take without its
+    payload approval, or one the approval does not cover; ``SecurityError``/``ContractError``
+    when the local package or the standing approval fails its checks (nothing is sent);
+    ``UploadRefused`` when the server or the publisher refuses it; ``UploadPending`` (an
+    ``UploadError``) when every byte is on the server but it has not published the package
+    within ``wait_seconds``; ``UploadError`` when it did not finish (run it again: it
+    resumes).
     """
     package = validate_package(session)
-    if expected_manifest_sha256 is not None and package.manifest_sha256 != (
-        expected_manifest_sha256
-    ):
-        raise SecurityError("the package's manifest is not the one its transfer approval names")
+    if isinstance(package, ValidatedTakeImport) and payload_approval is None:
+        raise TransferNotApproved(
+            "an imported Swift take leaves the Mac only under its export plan's transfer "
+            "approval: send it with `voice-lab corpus-import send`"
+        )
     approval, approval_sha256 = load_approval(layout, now=clock())
     if package_class not in approval.classes:
         raise SecurityError(f"the home-host approval does not cover {package_class} packages")
     request = session_request(package)
     peer = client.check_identity(approval)
+    if payload_approval is not None:
+        payload_approval.require(request, approval, approval_sha256)
     ledger = HomeHostLedger(layout)
     common = {
         "approval_id": approval.approval_id,

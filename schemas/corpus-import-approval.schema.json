@@ -7,7 +7,7 @@
     },
     "ImportDestination": {
       "additionalProperties": false,
-      "description": "Where an approved plan may go: the standing home-host approval's endpoint and node.",
+      "description": "Where an approved plan may go: the standing home-host approval's endpoint and node\n(and, for the record, which standing approval named them when the plan was approved).",
       "properties": {
         "endpoint": {
           "$ref": "#/$defs/Endpoint"

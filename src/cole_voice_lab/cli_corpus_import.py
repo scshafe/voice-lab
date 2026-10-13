@@ -78,7 +78,11 @@ def _approve(options: argparse.Namespace) -> int:
             "approved": True,
             "approved_now": written,
             "approval": approval.model_dump(mode="json"),
-            "approval_path": str(approval_path(layout, options.plan).relative_to(layout.root)),
+            "approval_path": str(
+                approval_path(layout, options.plan, approval.destination.key).relative_to(
+                    layout.root
+                )
+            ),
         }
     )
     return 0

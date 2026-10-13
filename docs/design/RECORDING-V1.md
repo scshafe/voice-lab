@@ -231,10 +231,18 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
    ```
 
    `send` prints each take: `accepted`, or `deferred` (on the PC, not published yet: run
-   `send` again later), `refused` (with the PC's reason), `invalid` or `failed`. Running it
-   again resumes and skips what the PC accepted. The plan and its approval stay in
+   `send` again later), `refused` (with the PC's reason), `invalid`, `unapproved` or `failed`.
+   Running it again resumes and skips what the PC accepted. The plan and its approval stay in
    `provenance/host-transfers/`. The PC's library then counts the takes, with the Mac's
-   decisions and trims; change them on the PC from then on.
+   decisions and trims; change them on the PC from then on. Only `send` uploads these
+   packages: `voice-lab intake upload` refuses them.
+
+   If the Mac's decisions change before you send, `plan` again packages the changed takes
+   (`rebuilt`) and prints a new `plan_sha256`: approve and send that one. If the PC's node
+   changes before every take is accepted (a reinstalled PC: approve the home host again,
+   docs/HOME_HOST_INTAKE.md), `send` refuses the plan for the new destination; review it and
+   run the same `approve` command again, which approves it for the new node beside the first
+   approval, then `send` again.
 4. **Sign off parity and retire the Swift app** (step 10).
 
 ## 8. Risks
@@ -326,4 +334,9 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   timeless export plan and the owner's approval of its digest under
   `provenance/host-transfers/` (records, 0400), and sends only the approved packages through
   the standing approval and the ledger; a take already accepted is not sent again. Owner
-  step 3 above.
+  step 3 above. After review: `upload_session` refuses an imported take without its plan's
+  approval (so `intake upload` cannot send one) and checks that approval again before each
+  upload, against the standing destination of that upload and the upload's own declaration;
+  plans pin every file of each package; approvals are per destination, so a moved home host
+  gets a second approval; a never-sent stale package is packaged again, a sent one never is;
+  and the export's directories are never reached through a link.

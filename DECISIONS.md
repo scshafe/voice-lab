@@ -1687,22 +1687,36 @@ takes); it is made on the PC.
 **The exporter and its approval.** `voice-lab corpus-import plan|approve|send` runs on the Mac,
 against the Mac's library (`corpus_import`). `plan` reads the native takes through the take
 store's read-only readers, packages every sealed take of `cole-self` whose exact prompt the
-PC's version counts (its `GET /api/v1/catalog` answer, saved or fetched) once, under
+PC's version counts (its `GET /api/v1/catalog` answer, saved or fetched) under
 `tmp/corpus-import/<take_id>/`, and writes the export plan: the version and every package's
-take ids and manifest digest, without a time, so planning the same takes again names the same
-payload. It reports every other take with its reason: room tones (in no cole-corpus version),
-prompts the version does not count, unsealed or damaged takes, another subject's, audio
-another take already holds, and the legacy capture sessions (Qt desktop, capture CLI,
-prepared packages) this step does not export. `approve` is AGENTS.md's separate transfer
-approval, the owner's alone: it names the plan's digest and the destination (the endpoint and
-node of the standing home-host approval, D-021). `send` uploads only an approved plan's
-packages, each exactly as planned, through the standing approval, the node check and the
-ledger like every upload (class `capture`); it resumes, and a take the ledger records as
-accepted is not sent again. The plan and its approval are kept 0400 in
-`provenance/host-transfers/` (`corpus-import-<plan_sha256>.plan.json`, `.approval.json`), the
-records class of the phase-3 move's approval; the packages never leave the Mac's library
-(Mac-only: copies of what the vault already carries); the PC's raw packages and records keep
-their rules. The Mac keeps every take: nothing is deleted.
+take ids, manifest digest and every file's digest and size, without a time, so planning the
+same takes again names the same payload. A package already there is reused. One never sent
+(the home-host ledger names no upload of it) is packaged again when the PC's version or the
+Mac's decision or trim has changed; one sent is never packaged again, and a later change on
+the Mac is reported (`mac_state_changed_since_sent`). `plan` reports every other take with its
+reason: room tones (in no cole-corpus version), prompts the version does not count, unsealed
+or damaged takes, another subject's, audio another take already holds, and the legacy capture
+sessions (Qt desktop, capture CLI, prepared packages) this step does not export.
+
+`approve` is AGENTS.md's separate transfer approval, the owner's alone: it names the plan's
+digest and the destination, the endpoint and node of the standing home-host approval
+(D-021). A plan is approved per destination: after the home host's node changes (a
+reinstalled PC), the same command approves it again for the new one, beside the first
+approval. `send` uploads only an approved plan's packages, through the standing approval, the
+node check and the ledger like every upload (class `capture`). The approval cannot be
+bypassed and holds at each upload: `upload_session` refuses an imported take unless it is
+given the plan's approval, so `voice-lab intake upload`, the desktop uploader and every other
+generic path refuse one and point to `corpus-import send`; and immediately before each
+upload's ledger entry it reads the plan and its approval again, for the destination of the
+standing approval that very upload uses, and requires the upload's declaration (its manifest
+and every file's digest and size) to be one the plan lists. `send` resumes, and a take the
+ledger records as accepted is not sent again. The plan and its approvals are kept 0400 in
+`provenance/host-transfers/` (`corpus-import-<plan_sha256>.plan.json`,
+`.approval-<SHA-256 of endpoint and node>.json`), the records class of the phase-3 move's
+approval; the packages never leave the Mac's library (Mac-only: copies of what the vault
+already carries), and every directory of the export is reached through `confined_path`, never
+through a link. The PC's raw packages and records keep their rules. The Mac keeps every take:
+nothing is deleted.
 
 **Amends** D-018 (its known gap) and D-039 (its evidence now travels), each with a dated note;
 docs/NATIVE_RECORDING_UX.md §9 and §15 ("nothing leaves the Mac"); and RECORDING-V1.md §4's
