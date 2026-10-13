@@ -71,7 +71,7 @@ from .diagnostic_roots import (
 )
 from .doctor import run_doctor
 from .errors import VoiceLabError
-from .intake import accept_capture_session, validate_capture_package
+from .intake import accept_capture_session, validate_capture_package, validate_package
 from .models import (
     COLE_SUBJECT,
     F5_FAMILY,
@@ -2292,10 +2292,10 @@ def _recording_service(options: argparse.Namespace) -> int:
 
 
 def _intake_validate(options: argparse.Namespace) -> int:
-    package = validate_capture_package(Path(options.session).expanduser())
+    package = validate_package(Path(options.session).expanduser())  # a capture or a take
     _json_print(
         {
-            "session_id": package.manifest.session_id,
+            "session_id": package.session_id,
             "manifest_sha256": package.manifest_sha256,
             "qc_report_sha256": package.qc_report_sha256,
             "qc_status": package.qc_report.status,

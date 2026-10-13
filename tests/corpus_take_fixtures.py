@@ -99,15 +99,20 @@ def write_tone(
 
 
 def evidence_for(
-    wav: Path, *, simulated: bool = False, started_at: datetime = NOW
+    wav: Path,
+    *,
+    simulated: bool = False,
+    started_at: datetime = NOW,
+    device_name: str = "Umik-1  Gain: 18dB",
 ) -> PortAudioContinuityEvidence:
-    """Successful worker evidence bound to ``wav``."""
+    """Successful worker evidence bound to ``wav``, from the device PortAudio calls
+    ``device_name``."""
     inspection = inspect_canonical_wav(wav)
     frames = inspection.audio.frames
     return PortAudioContinuityEvidence(
         host_api="ALSA",
         simulated=simulated,
-        device_name="Umik-1  Gain: 18dB",
+        device_name=device_name,
         device_usb_id=None,
         output_name="original.partial.wav",
         wav_sha256=inspection.sha256,
@@ -143,6 +148,7 @@ def make_take(
     seed: int = 0,
     requested_at: datetime = NOW,
     simulated: bool = False,
+    device_name: str = "Umik-1  Gain: 18dB",
     **changes: Any,
 ) -> ValidatedTake:
     """A take package of the catalog's prompt ``prompt_id`` (its first prompt by default),
@@ -158,7 +164,9 @@ def make_take(
     write_tone(source, seconds=seconds, frequency=frequency, seed=seed)
     arguments: dict[str, Any] = {
         "wav": source,
-        "evidence": evidence_for(source, simulated=simulated, started_at=requested_at),
+        "evidence": evidence_for(
+            source, simulated=simulated, started_at=requested_at, device_name=device_name
+        ),
         "prompt": prompt,
         "catalog": reference,
         "requested_at": requested_at,

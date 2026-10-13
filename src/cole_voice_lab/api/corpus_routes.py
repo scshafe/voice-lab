@@ -84,9 +84,10 @@ def _matches(header: str | None, tag: str) -> bool:
 def byte_range(header: str | None, size: int) -> tuple[int, int] | None:
     """The inclusive ``(start, end)`` of a single ``Range: bytes=…``, or ``None`` for all.
 
-    Several ranges, another unit or a header that is not a byte range are answered with the
-    whole file (RFC 9110 lets a server ignore ``Range``); a single byte range the file cannot
-    satisfy is refused.
+    Several ranges, another unit, a header that is not a byte range or an invalid one (its last
+    byte before its first) are answered with the whole file (RFC 9110 §14.2: a server may
+    ignore ``Range``, and ignores an invalid one); a single byte range the file cannot satisfy
+    is refused.
     Raises: ``RouteRefusal`` 416 ``range_not_satisfiable`` (with ``Content-Range: bytes
     */<size>``).
     """
@@ -107,9 +108,11 @@ def byte_range(header: str | None, size: int) -> tuple[int, int] | None:
             raise unsatisfiable
         return max(0, size - suffix), size - 1
     start = int(match["start"])
-    end = int(match["end"]) if match["end"] else size - 1
-    if start >= size or end < start:
+    if match["end"] and int(match["end"]) < start:
+        return None  # an invalid range, ignored
+    if start >= size:
         raise unsatisfiable
+    end = int(match["end"]) if match["end"] else size - 1
     return start, min(end, size - 1)
 
 

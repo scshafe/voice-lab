@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 from collections.abc import Callable
@@ -63,7 +64,7 @@ from .canonical import (
 from .capture import MANIFEST_NAME, QC_REPORT_NAME, READY_NAME, ReadyMarker
 from .catalog_ports import CorpusStoreError
 from .diagnostic_roots import read_diagnostic_root_marker
-from .errors import ContractError, SecurityError
+from .errors import ContractError, SecurityError, VoiceLabError
 from .intake import (
     INTAKE_QC_REPORT_NAME,
     MAX_CONTROL_FILE_BYTES,
@@ -96,6 +97,9 @@ TAKE_FILES: Final = frozenset(
 #: Eleven minutes of the canonical format and its header (the capture worker stops at ten).
 MAX_TAKE_AUDIO_BYTES: Final = WAV_HEADER_BYTES + CANONICAL_SAMPLE_RATE_HZ * 3 * 660
 TAKE_ID_PATTERN: Final = r"^take-[0-9a-f]{64}$"
+#: A UMIK-1 by the name its driver gives PortAudio: voice-lab-desktop's rule
+#: (``measurement.chain.is_umik1``), so the PC admits what the app records with.
+_UMIK1_NAME: Final = re.compile(r"umik[\s_-]?1(?!\d)", re.IGNORECASE)
 
 type TakeId = Annotated[str, StringConstraints(pattern=TAKE_ID_PATTERN)]
 type _Text = Annotated[str, StringConstraints(min_length=1, max_length=500)]
@@ -104,10 +108,15 @@ type _Text = Annotated[str, StringConstraints(min_length=1, max_length=500)]
 type TakeRefusalCode = Literal[
     "take_simulated",
     "take_diagnostic_root",
-    "take_catalog_missing",
     "take_catalog_invalid",
     "take_prompt_not_in_catalog",
 ]
+#: Why the PC cannot judge a take yet (``TakeDeferral.code``): the server's state, not the take.
+type TakeDeferralCode = Literal["take_catalog_missing", "take_catalog_unreadable"]
+#: The store's answers that mean the take's catalog version is not on this server yet.
+_NOT_HERE_YET: Final = frozenset(
+    {"CORPUS.STORE_MISSING", "CORPUS.CATALOG_UNKNOWN", "CORPUS.VERSION_UNKNOWN"}
+)
 
 
 class TakeRefusal(ContractError):
@@ -116,6 +125,20 @@ class TakeRefusal(ContractError):
     def __init__(self, code: TakeRefusalCode, detail: str) -> None:
         super().__init__(f"{code}: {detail}")
         self.code: TakeRefusalCode = code
+
+
+class TakeDeferral(VoiceLabError):
+    """A take the PC cannot judge yet, because of its own state, with a stable ``code``.
+
+    The catalog version the take names is not on this server yet, or this server's copy of
+    it cannot be read. Neither is the take's fault, and a refusal would be final (the upload
+    session is the take's audio digest), so intake leaves the package in ``incoming/``. The
+    next pass (the path unit, or the intake timer within 15 minutes) judges it again.
+    """
+
+    def __init__(self, code: TakeDeferralCode, detail: str) -> None:
+        super().__init__(f"{code}: {detail}")
+        self.code: TakeDeferralCode = code
 
 
 def take_id_for(audio_sha256: str) -> str:
@@ -246,7 +269,7 @@ def is_take_package(package: Path) -> bool:
     else: an unreadable or malformed manifest is not a take's, and the capture validator then
     refuses it. Raises: nothing."""
     try:
-        with open_regular_no_follow(package / MANIFEST_NAME) as stream:
+        with open_regular_no_follow(package / MANIFEST_NAME, nonblocking=True) as stream:
             payload = stream.read(MAX_CONTROL_FILE_BYTES + 1)
     except (SecurityError, OSError):
         return False
@@ -373,6 +396,12 @@ def validate_take_package(package: Path, *, allow_intake_receipt: bool = False) 
             f"continuity evidence hash or byte count was tampered: {CONTINUITY_NAME}"
         )
     _require_bound_evidence(manifest, evidence)
+    # The worker's own device name, not only the manifest's label (a simulated take is
+    # refused by ``admit_take`` under its own code).
+    if not evidence.simulated and _UMIK1_NAME.search(evidence.device_name) is None:
+        raise ContractError(
+            f"the take was recorded from {evidence.device_name!r}, not the required UMIK-1"
+        )
 
     if allow_intake_receipt:
         persisted = read_canonical_model(
@@ -418,14 +447,16 @@ def admit_take(layout: AssetLayout, take: ValidatedTake) -> Prompt:
     """The PC's rules for a valid take, checked before intake publishes it.
 
     The take's audio is real (not the simulated device's), the asset root is not a
-    diagnostic root, and the catalog version the take names is on this server (its snapshot
-    read and digest-checked without opening the store, ``corpus_store.read_catalog_snapshot``)
-    and counts the take's exact prompt (``CatalogSnapshot.current_prompt_for``: the
-    prompt itself, or an earlier revision its alias accepts).
+    diagnostic root, the catalog version the take names is the one this server's store
+    published under that id and number (every field of the reference), and that version's
+    digest-checked snapshot counts the take's exact prompt
+    (``CatalogSnapshot.current_prompt_for``: the prompt itself, or an earlier revision its
+    alias accepts). The publisher is the store's writer (D-052), so it may open the store.
     Returns: the prompt of that catalog version the take counts for.
-    Raises: ``TakeRefusal`` naming the rule.
+    Raises: ``TakeRefusal`` naming the rule; ``TakeDeferral`` when the store does not hold
+    that version yet or cannot be read; ``OSError`` as the store's own.
     """
-    from .corpus_store import read_catalog_snapshot  # the file-only reader (D-052)
+    from .storage_binding import open_catalog_reader  # the writer side only (D-052)
 
     manifest = take.manifest
     if take.evidence.simulated:
@@ -437,19 +468,26 @@ def admit_take(layout: AssetLayout, take: ValidatedTake) -> Prompt:
             "take_diagnostic_root",
             "this asset root is marked for physical tests; it takes no takes",
         )
+    named = manifest.catalog
+    version = f"catalog {named.catalog_id} version {named.catalog_version}"
     try:
-        snapshot = read_catalog_snapshot(layout, manifest.catalog)
+        with open_catalog_reader(layout) as store:
+            published = store.resolve_reference(named.catalog_id, named.catalog_version)
+            if published != named:
+                # A published version never changes, so this take can never count here.
+                raise TakeRefusal(
+                    "take_catalog_invalid",
+                    f"{version} on this server is {published.catalog_sha256} (snapshot "
+                    f"{published.snapshot_sha256}); the take names {named.catalog_sha256} "
+                    f"(snapshot {named.snapshot_sha256})",
+                )
+            snapshot = store.materialize(published)
     except CorpusStoreError as error:
-        code: TakeRefusalCode = (
-            "take_catalog_missing"
-            if error.code == "CORPUS.SNAPSHOT_MISSING"
-            else "take_catalog_invalid"
-        )
-        raise TakeRefusal(
-            code,
-            f"catalog {manifest.catalog.catalog_id} version {manifest.catalog.catalog_version} "
-            f"({manifest.catalog.catalog_sha256}): {error}",
-        ) from error
+        if error.code in _NOT_HERE_YET:
+            raise TakeDeferral(
+                "take_catalog_missing", f"{version} is not on this server yet: {error}"
+            ) from error
+        raise TakeDeferral("take_catalog_unreadable", f"{version}: {error}") from error
     prompt = snapshot.current_prompt_for(manifest.prompt)
     if prompt is None:
         raise TakeRefusal(

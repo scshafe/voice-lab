@@ -14,7 +14,9 @@ the API can read it:
   ``provenance/intake/refusals/<session_id>.json`` says why. Nothing is deleted.
 
 An operating failure (an ``OSError``, the disk floor) leaves the package where it is for the
-next pass.
+next pass, and so does a take the PC cannot judge yet (``corpus_takes.TakeDeferral``: its
+catalog version is not on this server, or the server's copy cannot be read). Refusing either
+would be final, since a take's upload session is its audio's digest.
 
 Every pass then writes the take store's record of each new take
 (``corpus_take_store.record_takes``: ``provenance/corpus-takes/<take_id>.json``, an undecided
@@ -43,6 +45,7 @@ from .canonical import open_regular_no_follow, write_canonical_json
 from .capture import READY_NAME, ReadyMarker
 from .corpus_read_model import refresh_active_catalog, refresh_library
 from .corpus_take_store import record_takes
+from .corpus_takes import TakeDeferral
 from .errors import ContractError, SecurityError
 from .intake import MIN_FREE_BYTES, IntakeReceipt, accept_capture_session
 from .models import ContractModel, Sha256, StableId, utc_now
@@ -106,7 +109,7 @@ def read_refusal(layout: AssetLayout, session_id: str) -> IntakeRefusalRecord | 
 def _manifest_digest(package: Path) -> str | None:
     """The manifest digest a package's READY marker names, when it can be read at all."""
     try:
-        with open_regular_no_follow(package / READY_NAME) as stream:
+        with open_regular_no_follow(package / READY_NAME, nonblocking=True) as stream:
             return ReadyMarker.model_validate_json(stream.read(MAX_RECORD_BYTES)).manifest_sha256
     except (SecurityError, ValidationError, OSError, ValueError):
         return None
@@ -159,6 +162,8 @@ def publish_pending(
             receipt = accept_capture_session(
                 layout, candidate, min_free_bytes=min_free_bytes, clock=clock
             )
+        except TakeDeferral as error:
+            summary.deferred.append({"session": candidate.name, "error": str(error)})
         except (ContractError, SecurityError, ValidationError, ValueError) as error:
             if not os.path.lexists(candidate):
                 summary.deferred.append({"session": candidate.name, "error": str(error)})

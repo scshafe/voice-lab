@@ -226,4 +226,7 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   vault). The read model gains the library (`derived/corpus/library-<subject>.json`), rebuilt
   by every pass and every `catalog` command; `GET /api/v1/corpus/library`,
   `GET /api/v1/corpus/prompts/{id}/takes` and, behind the playback approval,
-  `GET /api/v1/corpus/takes/{id}/audio` serve it.
+  `GET /api/v1/corpus/takes/{id}/audio` serve it. After review: the publisher checks the
+  take's whole catalog reference against the version its store published, and defers (never
+  refuses) a take whose version is not on the PC yet or whose snapshot it cannot read; a
+  named pipe in `incoming/` no longer blocks a pass; the worker's device must be a UMIK-1.

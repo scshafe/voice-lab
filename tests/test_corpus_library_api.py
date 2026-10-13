@@ -271,10 +271,11 @@ def test_byte_ranges() -> None:
     assert byte_range(None, 10) is None
     assert byte_range("items=0-1", 10) is None
     assert byte_range("bytes=-", 10) is None
+    assert byte_range("bytes=5-4", 10) is None  # invalid, so ignored (RFC 9110 §14.2)
     assert byte_range("bytes=2-4", 10) == (2, 4)
     assert byte_range("bytes=8-20", 10) == (8, 9)
     assert byte_range("bytes=-20", 10) == (0, 9)
-    for header in ("bytes=10-", "bytes=5-4", "bytes=-0"):
+    for header in ("bytes=10-", "bytes=-0"):
         with pytest.raises(RouteRefusal) as refused:
             byte_range(header, 10)
         assert refused.value.status == 416

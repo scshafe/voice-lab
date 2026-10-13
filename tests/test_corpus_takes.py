@@ -3,10 +3,13 @@ validator, the publisher's dispatch, the take store and the classification of ne
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
 import stat
+import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +29,7 @@ from corpus_take_fixtures import (
     write_tone,
 )
 
+from cole_voice_lab import cli
 from cole_voice_lab.capture import READY_NAME
 from cole_voice_lab.corpus_read_model import read_library
 from cole_voice_lab.corpus_take_store import (
@@ -348,25 +352,66 @@ def test_a_take_of_a_prompt_its_catalog_does_not_hold_is_quarantined(
     assert read_take_states(layout) == ()
 
 
-def test_simulated_audio_and_unknown_catalogs_are_quarantined(
+def test_simulated_audio_and_a_contradicted_catalog_version_are_quarantined(
     layout: AssetLayout, catalog: Catalog, work: Path
 ) -> None:
     simulated = make_take(work / "simulated", catalog=catalog, simulated=True)
     incoming(layout, simulated, work / "simulated")
+    # Version 1 of this catalog under another digest: a published version never changes,
+    # so the take can never count here.
     reference = catalog[0]
     other_sha = "e" * 64
-    unknown_reference = reference.model_copy(
+    contradicting = reference.model_copy(
         update={
             "catalog_sha256": other_sha,
             "snapshot_path": reference.snapshot_path.replace(reference.catalog_sha256, other_sha),
         }
     )
-    unknown = make_take(
-        work / "unknown", catalog=(unknown_reference, catalog[1]), seed=1, frequency=330.0
+    contradicted = make_take(
+        work / "contradicted", catalog=(contradicting, catalog[1]), seed=1, frequency=330.0
     )
-    incoming(layout, unknown, work / "unknown")
-    errors = sorted(record.error for record in publish_pending(layout, min_free_bytes=0).refused)
-    assert [error.split(":")[0] for error in errors] == ["take_catalog_missing", "take_simulated"]
+    incoming(layout, contradicted, work / "contradicted")
+    summary = publish_pending(layout, min_free_bytes=0)
+    errors = sorted(record.error for record in summary.refused)
+    assert [error.split(":")[0] for error in errors] == ["take_catalog_invalid", "take_simulated"]
+    assert f"on this server is {reference.catalog_sha256}" in errors[0]
+    assert summary.deferred == [] and list(layout.directory("raw").iterdir()) == []
+
+
+def test_a_take_waits_in_incoming_until_its_catalog_version_is_on_the_server(
+    layout: AssetLayout, catalog: Catalog, work: Path
+) -> None:
+    # A version this server has not published yet, and a catalog it does not hold at all
+    # (a catalog id and number are never trusted on their own): deferred, never refused,
+    # since a refusal would be final for this audio's upload session.
+    reference = catalog[0]
+    takes = [
+        make_take(
+            work / name,
+            catalog=(reference.model_copy(update=update), catalog[1]),
+            seed=seed,
+            frequency=200.0 + 50 * seed,
+        )
+        for name, update, seed in (
+            ("later", {"catalog_version": 7}, 1),
+            ("elsewhere", {"catalog_id": "not-a-catalog", "catalog_version": 99}, 2),
+        )
+    ]
+    for name, take in zip(("later", "elsewhere"), takes, strict=True):
+        incoming(layout, take, work / name)
+    summary = publish_pending(layout, min_free_bytes=0)
+    assert summary.accepted == [] and summary.refused == []
+    assert sorted(entry["session"] for entry in summary.deferred) == sorted(
+        take.session_id for take in takes
+    )
+    assert {entry["error"].split(":")[0] for entry in summary.deferred} == {"take_catalog_missing"}
+    waiting = sorted(
+        path.name for path in layout.directory("incoming").iterdir() if path.name[0] != "."
+    )
+    assert waiting == sorted(take.session_id for take in takes)
+    assert list(layout.directory("raw").iterdir()) == []
+    assert not any(path.name.startswith(".intake-") for path in layout.directory("tmp").iterdir())
+    assert all(read_refusal(layout, take.session_id) is None for take in takes)
 
 
 def test_a_take_id_with_another_manifest_is_a_collision(
@@ -597,7 +642,7 @@ def test_a_published_take_must_keep_intakes_evidence(
         validate_take_package(copy, allow_intake_receipt=True)
 
 
-def test_a_diagnostic_root_or_a_damaged_snapshot_admits_no_take(
+def test_a_diagnostic_root_refuses_a_take_and_a_damaged_snapshot_defers_it(
     layout: AssetLayout, catalog: Catalog, work: Path, tmp_path: Path
 ) -> None:
     marked, _marker = initialize_diagnostic_root(
@@ -607,9 +652,63 @@ def test_a_diagnostic_root_or_a_damaged_snapshot_admits_no_take(
     incoming(marked, take, work / "take")
     [refusal] = publish_pending(marked, min_free_bytes=0).refused
     assert refusal.error.startswith("take_diagnostic_root: ")
+    # This server's copy of the version is damaged: the take waits until it is repaired.
     snapshot = layout.root / catalog[0].snapshot_path
+    original, mode = snapshot.read_bytes(), stat.S_IMODE(snapshot.stat().st_mode)
     os.chmod(snapshot, 0o600)
-    snapshot.write_bytes(snapshot.read_bytes().replace(b"quiet", b"QUIET", 1))
-    incoming(layout, take, work / "take")
-    [refusal] = publish_pending(layout, min_free_bytes=0).refused
-    assert refusal.error.startswith("take_catalog_invalid: ")
+    snapshot.write_bytes(original.replace(b"quiet", b"QUIET", 1))
+    waiting = incoming(layout, take, work / "take")
+    summary = publish_pending(layout, min_free_bytes=0)
+    assert summary.accepted == [] and summary.refused == []
+    [deferred] = summary.deferred
+    assert deferred["error"].startswith("take_catalog_unreadable: ")
+    assert waiting.is_dir() and read_refusal(layout, take.session_id) is None
+    snapshot.write_bytes(original)
+    os.chmod(snapshot, mode)
+    summary = publish_pending(layout, min_free_bytes=0)
+    assert [receipt.session_id for receipt in summary.accepted] == [take.session_id]
+    assert not waiting.exists()
+
+
+def test_a_named_pipe_in_a_package_is_refused_without_blocking_the_pass(
+    layout: AssetLayout,
+) -> None:
+    for name, member in (("pipe-manifest", "manifest.json"), ("pipe-ready", READY_NAME)):
+        package = layout.directory("incoming") / name
+        package.mkdir()
+        os.mkfifo(package / member)
+    outcome: list[Any] = []
+    worker = threading.Thread(
+        target=lambda: outcome.append(publish_pending(layout, min_free_bytes=0)), daemon=True
+    )
+    worker.start()
+    worker.join(timeout=30)
+    assert not worker.is_alive(), "a named pipe blocked the intake pass"
+    [summary] = outcome
+    assert sorted(record.session_id for record in summary.refused) == [
+        "pipe-manifest",
+        "pipe-ready",
+    ]
+    assert all(record.manifest_sha256 is None for record in summary.refused)
+
+
+def test_a_take_from_another_microphone_is_refused_whatever_its_label(
+    catalog: Catalog, work: Path
+) -> None:
+    with pytest.raises(ContractError, match="not the required UMIK-1"):
+        make_take(work / "laptop", catalog=catalog, device_name="MacBook Pro Microphone")
+    assert not (work / "laptop").exists()
+    linux = make_take(
+        work / "linux", catalog=catalog, device_name="UMIK-1: USB Audio (hw:2,0)", seed=3
+    )
+    assert linux.evidence.device_name.startswith("UMIK-1")
+
+
+def test_intake_validate_reads_a_take_package(catalog: Catalog, work: Path) -> None:
+    take = make_take(work / "take", catalog=catalog)
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        assert cli.main(["intake", "validate", str(work / "take")]) == 0
+    shown = json.loads(printed.getvalue())
+    assert shown["session_id"] == take.session_id
+    assert shown["manifest_sha256"] == take.manifest_sha256

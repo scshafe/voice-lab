@@ -77,9 +77,21 @@ refusal the client sees:
 | --- | --- |
 | `take_simulated` | the evidence says the simulated capture device made it: no generated audio enters the corpus |
 | `take_diagnostic_root` | the asset root is a physical-test diagnostic root |
-| `take_catalog_missing` | the catalog version the take names has no snapshot on this server (seed it first, RECORDING-V1.md §7) |
-| `take_catalog_invalid` | that snapshot fails its digest checks |
+| `take_catalog_invalid` | the store published that catalog id and version with another digest or snapshot (a published version never changes) |
 | `take_prompt_not_in_catalog` | that version does not count the take's exact prompt (not the prompt, nor an earlier revision its alias accepts) |
+
+The validator itself refuses a take whose evidence names no UMIK-1 (voice-lab-desktop's rule,
+`umik[ _-]?1`, on the worker's own device name), as well as the manifest's label.
+
+A take the PC cannot judge yet is **deferred**, not refused: the package stays in `incoming/`,
+the pass lists it under `deferred`, and the next pass (the path unit, or the intake timer within
+15 minutes) judges it again. A refusal would be final, since the upload session is the take's
+audio digest, and these are the server's state, not the take's:
+
+| Reason | When |
+| --- | --- |
+| `take_catalog_missing` | the store holds no such catalog or version yet (seed it first, RECORDING-V1.md §7) |
+| `take_catalog_unreadable` | the store, or that version's snapshot, cannot be read or fails its checks |
 
 An admitted take is published like any package, into `raw/<manifest_sha256>/`, read-only,
 with `intake-qc.json` and the receipt, and recorded in `provenance/intake/sessions/`. The take
