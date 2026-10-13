@@ -11,12 +11,15 @@ QML reads it as ``app.studioModel.takes``.
   Selecting a prompt selects its latest kept take; the take under review comes first while
   it waits for Save.
 - **Decisions:** Remove, Reject (a reason is required) and Restore go through the corpus
-  client (``decide``, ``restore``), which holds this machine's takes; a take recorded
-  elsewhere is shown, played and left to where it lives.
+  client (``decide``, ``restore``) for every saved take; one recorded elsewhere (another
+  client's, or a Swift take imported from the Mac) is noted in the spool first
+  (``remote_take``) and played from the PC.
 - **The waveform** of the selected take on the dB display scale, with Zoom and Fit; while a
   take is recorded, the live waveform the worker's partial WAV gives and its peak level.
 - **Trims:** In and Out are set from the playhead (or by dragging the waveform's handles);
   Save trim (``set_trim``) and Reset. The take under review keeps its edits until Save.
+  Leaving a saved take with an edit not saved (another take or prompt, Continue Missing,
+  Record, another screen) asks first: Save trim, Discard edit or Cancel (``guard``).
 - **Playback** through the app's one player: the preview plays exactly the trimmed frames
   (D-012), with ±0.1 s steps; never while a take is recorded.
 
@@ -65,6 +68,7 @@ class TakeReviewModel(ViewModel):
     waveChanged = Signal()
     trimChanged = Signal()
     playChanged = Signal()
+    confirmChanged = Signal()
 
     # -- the picker and the history
     takeOptions = qproperty("QVariantList", "takeOptions", takesChanged)
@@ -102,6 +106,8 @@ class TakeReviewModel(ViewModel):
     timeText = qproperty(str, "timeText", playChanged)
     playing = qproperty(bool, "playing", playChanged)
     canPlay = qproperty(bool, "canPlay", playChanged)
+    # -- the question before an unsaved trim edit is left
+    confirmOpen = qproperty(bool, "confirmOpen", confirmChanged)
 
     def __init__(
         self,
@@ -145,6 +151,7 @@ class TakeReviewModel(ViewModel):
                 "timeText": "",
                 "playing": False,
                 "canPlay": False,
+                "confirmOpen": False,
             },
         )
         self.client = client
@@ -165,7 +172,9 @@ class TakeReviewModel(ViewModel):
         self._samples: audio.Samples | None = None
         self._samples_key = ""
         self._load_generation = 0
-        self._edit: tuple[int, int] | None = None
+        #: Trim edits not saved yet, by take key (the take under review keeps its own).
+        self._edits: dict[str, tuple[int, int]] = {}
+        self._leaving: Callable[[], None] | None = None
         self._live: audio.LiveWaveform | None = None
         self._pending_seek: int | None = None
         self._closed = False
@@ -175,6 +184,20 @@ class TakeReviewModel(ViewModel):
 
     def shutdown(self) -> None:
         self._closed = True
+
+    @property
+    def _edit(self) -> tuple[int, int] | None:
+        """The selected take's trim edit, not saved yet."""
+        return self._edits.get(self._selected.key) if self._selected is not None else None
+
+    @_edit.setter
+    def _edit(self, value: tuple[int, int] | None) -> None:
+        if self._selected is None:
+            return
+        if value is None:
+            self._edits.pop(self._selected.key, None)
+        else:
+            self._edits[self._selected.key] = value
 
     # -- what the studio tells it ------------------------------------------------------------
 
@@ -236,7 +259,7 @@ class TakeReviewModel(ViewModel):
                 bins=live.bins(),
                 waveNote="Live · dB display scale",
                 levelPeak=max(0.0, (peak - audio.FLOOR_DB) / -audio.FLOOR_DB),
-                levelText=f"{peak:.1f} dBFS peak",
+                levelText=f"{peak:.1f} dBFS",
             )
         elif live.error:
             self._set(
@@ -267,7 +290,7 @@ class TakeReviewModel(ViewModel):
             where="unsaved",
         )
         self._review_path = captured.path
-        self._edit = None
+        self._edits.pop(REVIEW, None)
         self._rebuild()
         self._select(self._review)
 
@@ -278,7 +301,7 @@ class TakeReviewModel(ViewModel):
             self.stop_playback()
         self._review = None
         self._review_path = None
-        self._edit = None if self._selected is None or self._selected.key == REVIEW else self._edit
+        self._edits.pop(REVIEW, None)
         self._rebuild()
         target = next((e for e in self._entries if e.key == select), None) if select else None
         if target is not None or self._selected is None or self._selected.key == REVIEW:
@@ -286,16 +309,32 @@ class TakeReviewModel(ViewModel):
 
     def pending_trim(self) -> tuple[int | None, int | None] | None:
         """The trim edited on the take under review (``None``: not edited)."""
-        if self._edit is None or self._selected is None or self._selected.key != REVIEW:
+        edit, review = self._edits.get(REVIEW), self._review
+        if edit is None or review is None:
             return None
-        return self._range_or_whole(self._edit, self._selected.frames)
+        return self._range_or_whole(edit, review.frames)
 
     def selected_draft(self) -> str:
-        """The selected take of this machine when it is an undecided draft (Save keeps it)."""
+        """The selected saved take when it is an undecided draft (Save keeps it)."""
         entry = self._selected
         if entry is not None and entry.decidable and entry.decision == "draft":
             return entry.take_id
         return ""
+
+    def take_id_for_change(self, entry: TakeEntry) -> str:
+        """The spool's take for a change of ``entry``: a take recorded elsewhere is noted
+        first. Raises: ``SpoolError``."""
+        if entry.local is not None:
+            return entry.take_id
+        if entry.pc is None or self._prompt is None:
+            raise SpoolError("this take is not saved")
+        return self.client.remote_take(entry.pc, self._prompt).take_id
+
+    def selected_take_for_change(self) -> str:
+        """``take_id_for_change`` of the selected take. Raises: ``SpoolError``."""
+        if self._selected is None:
+            raise SpoolError("no take is selected")
+        return self.take_id_for_change(self._selected)
 
     def selected_edit(self) -> tuple[int | None, int | None] | None:
         """An unsaved trim edit of the selected saved take (Save keeps it with the take)."""
@@ -325,7 +364,7 @@ class TakeReviewModel(ViewModel):
                 trim_moved = again.trim != self._selected.trim
                 self._selected = again
                 if trim_moved:
-                    self._edit = None
+                    self._edit = None  # the take's trim changed under the edit
         self._set(
             self.takesChanged,
             takeOptions=[{"value": e.key, "label": e.label} for e in entries],
@@ -340,10 +379,12 @@ class TakeReviewModel(ViewModel):
         selected = self._selected is not None and self._selected.key == entry.key
         return {
             "key": entry.key,
+            "label": entry.label,
             "when": entry.when,
             "length": f"{entry.seconds:.1f} s",
             "status": entry.status,
-            "where": takes.WHERE_TITLES[entry.where],
+            "where": entry.where_title,
+            "origin": takes.ORIGIN_TITLES.get(entry.origin, entry.origin),
             "decision": entry.decision,
             "changedElsewhere": entry.changed_elsewhere,
             "selected": selected,
@@ -391,7 +432,12 @@ class TakeReviewModel(ViewModel):
             if select_latest and self._selected is None:
                 self._select(takes.latest_kept(self._entries))
 
-        self.context.tasks.submit(lambda: client.prompt_history(prompt), done)
+        def work() -> TakeHistory:
+            history = client.prompt_history(prompt)
+            client.observe_history(history)  # a newer state of a take here is taken
+            return history
+
+        self.context.tasks.submit(work, done)
 
     @Slot(str)
     def selectTake(self, key: str) -> None:  # noqa: N802 (QML name)
@@ -400,14 +446,13 @@ class TakeReviewModel(ViewModel):
             return
         entry = next((e for e in self._entries if e.key == key), None)
         if entry is not None and (self._selected is None or entry.key != self._selected.key):
-            self._select(entry)
+            self.guard(lambda: self._select(entry))
 
     def _select(self, entry: TakeEntry | None, *, load: bool = True) -> None:
         if self._selected is None or entry is None or entry.key != self._selected.key:
             self.stop_playback()
-            if self._v["trimDirty"] and self._selected is not None and entry is not None:
-                self.toast.emit("The trim edit was not saved", "warn")
-            self._edit = None
+            if self._selected is not None and self._selected.key != REVIEW:
+                self._edit = None  # asked first (``guard``): saved or discarded
         self._selected = entry
         self._set(
             self.takesChanged,
@@ -433,11 +478,11 @@ class TakeReviewModel(ViewModel):
         generation = self._load_generation
         self._clear_wave("Loading the take")
         client = self.client
-        path = (
-            self._review_path
-            if entry.key == REVIEW
-            else (entry.local.audio if entry.local is not None else None)
-        )
+        path: Path | None = None
+        if entry.key == REVIEW:
+            path = self._review_path
+        elif entry.audio_here and entry.local is not None:
+            path = entry.local.audio
 
         def work() -> audio.Samples:
             if path is not None:
@@ -490,12 +535,8 @@ class TakeReviewModel(ViewModel):
         decidable = entry is not None and entry.decidable and not busy
         decision = entry.decision if entry is not None else ""
         note = ""
-        if entry is not None and not entry.decidable:
-            note = (
-                "Not saved yet: Save keeps it, Discard drops it"
-                if entry.key == REVIEW
-                else takes.ELSEWHERE
-            )
+        if entry is not None and entry.key == REVIEW:
+            note = "Not saved yet: Save keeps it, Discard drops it"
         self._set(
             self.takesChanged,
             canRemove=decidable and decision in ("draft", "kept"),
@@ -509,7 +550,7 @@ class TakeReviewModel(ViewModel):
         if entry is None or not entry.decidable or self.busy():
             return False
         try:
-            change(entry.take_id)
+            change(self.take_id_for_change(entry))
         except SpoolError as exc:
             self.toast.emit(str(exc), "danger")
             return False
@@ -625,11 +666,12 @@ class TakeReviewModel(ViewModel):
             return
         start, end = self._range_or_whole(self._edit, entry.frames)
         try:
-            self.client.set_trim(entry.take_id, start, end)
+            self.client.set_trim(self.take_id_for_change(entry), start, end)
         except SpoolError as exc:
             self.toast.emit(str(exc), "danger")
             return
         self._edit = None
+        self._update_trim()
         self.toast.emit("Trim saved", "ok")
 
     @Slot()
@@ -642,7 +684,7 @@ class TakeReviewModel(ViewModel):
         self._edit = None
         if entry.decidable and entry.trimmed:
             try:
-                self.client.set_trim(entry.take_id, None, None)
+                self.client.set_trim(self.take_id_for_change(entry), None, None)
             except SpoolError as exc:
                 self.toast.emit(str(exc), "danger")
                 return
@@ -650,6 +692,52 @@ class TakeReviewModel(ViewModel):
         self._set(self.playChanged, playhead=0)
         self._update_trim()
         self._update_play()
+
+    # -- leaving an edit not saved -------------------------------------------------------------
+
+    def trim_at_risk(self) -> bool:
+        """A saved take is selected with a trim edit not saved (leaving it would lose it)."""
+        entry = self._selected
+        return entry is not None and entry.key != REVIEW and bool(self._v["trimDirty"])
+
+    def guard(self, action: Callable[[], None]) -> None:
+        """Do ``action``, which leaves the selected take, once its unsaved trim edit is saved
+        or discarded: with one, the operator is asked first (Save trim, Discard edit,
+        Cancel)."""
+        if not self.trim_at_risk():
+            action()
+            return
+        self._leaving = action
+        self._set(self.confirmChanged, confirmOpen=True)
+
+    def _answered(self) -> Callable[[], None] | None:
+        action, self._leaving = self._leaving, None
+        self._set(self.confirmChanged, confirmOpen=False)
+        return action
+
+    @Slot()
+    def confirmSaveTrim(self) -> None:  # noqa: N802
+        """Save the trim, then go on."""
+        action = self._answered()
+        self.saveTrim()
+        if action is not None and not self.trim_at_risk():
+            action()
+
+    @Slot()
+    def confirmDiscardEdit(self) -> None:  # noqa: N802
+        """Drop the edit, then go on."""
+        action = self._answered()
+        self.stop_playback()
+        self._edit = None
+        self._update_trim()
+        self._update_play()
+        if action is not None:
+            action()
+
+    @Slot()
+    def confirmCancel(self) -> None:  # noqa: N802
+        """Stay on the take, the edit kept."""
+        self._answered()
 
     # -- zoom ---------------------------------------------------------------------------------
 

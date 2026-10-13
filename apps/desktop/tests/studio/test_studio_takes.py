@@ -19,7 +19,6 @@ from PySide6.QtCore import QPointF
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (root objects come back as QQuickWindow)
 from studio_fakes import StudioRecorder
 from voice_lab_desktop.prompted.audio import read_frames
-from voice_lab_desktop.studio import takes as takes_module
 
 from .conftest import open_studio, ready, studio_app, wait_phase
 from .test_studio_screen import click, kept_elsewhere, prompt_ids, resize
@@ -82,9 +81,10 @@ def test_the_picker_lists_this_machines_and_the_pcs_takes(
             qtbot.waitUntil(lambda: takes.frameCount > 0, timeout=10000)
             (pc_take,) = takes.takeOptions
             assert takes.selectedKey == pc_take["value"]
-            assert pc_take["label"].endswith("· Kept · the PC")
-            assert not takes.canRemove and not takes.canReject and not takes.canRestore
-            assert takes.actionNote == takes_module.ELSEWHERE
+            assert pc_take["label"].endswith("· Kept · PC")
+            # Recorded elsewhere, decided here all the same (noted in the spool when changed).
+            assert takes.canRemove and takes.canReject and not takes.canRestore
+            assert takes.actionNote == ""
             assert takes.canPlay and takes.waveNote == "dB display scale"
             # A take recorded here joins it; while under review it comes first, not saved.
             recorded(qtbot, window, recorder)
@@ -96,16 +96,17 @@ def test_the_picker_lists_this_machines_and_the_pcs_takes(
             local = studio.client.takes()[0].take_id
             assert takes.selectedKey == local
             labels = {o["value"]: o["label"] for o in takes.takeOptions}
-            assert labels[local].endswith("· Kept · this machine")
+            assert labels[local].endswith("· Kept · here")
             assert [row["where"] for row in takes.history] == ["the PC", "this machine"]
             assert all(row["when"] and row["length"].endswith(" s") for row in takes.history)
             assert takes.canRemove and takes.canReject and takes.actionNote == ""
-            # The History list: every take, and a click selects it.
-            click(window, "studioHistory")
+            # The picker's list is the history: every take, and a click selects it.
+            click(window, "studioTakeSelect")
             popup = window.find("studioHistoryPopup")
             qtbot.waitUntil(lambda: popup.property("visible"), timeout=5000)
-            row = window.items(f"studioHistoryRow-{pc_take['value']}")[0]
-            row.clicked.emit()
+            name = f"studioHistoryRow-{pc_take['value']}"
+            qtbot.waitUntil(lambda: bool(window.items(name)), timeout=5000)
+            window.items(name)[0].clicked.emit()
             assert takes.selectedKey == pc_take["value"]
             qtbot.waitUntil(lambda: not popup.property("visible"), timeout=5000)
             qtbot.waitUntil(lambda: takes.frameCount > 0, timeout=10000)
@@ -328,7 +329,7 @@ def test_the_live_waveform_while_recording(
         recorder.last.advance(4_800, amplitude=0.25)
     qtbot.waitUntil(lambda: len(takes.bins) == 2 * 50, timeout=5000)
     assert takes.waveNote == "Live · dB display scale"
-    assert takes.levelText == "-12.0 dBFS peak" and 0.79 < takes.levelPeak < 0.81
+    assert takes.levelText == "-12.0 dBFS" and 0.79 < takes.levelPeak < 0.81
     # The dB display scale: −12 dBFS draws at 80% of the half-height.
     assert max(takes.bins) == pytest.approx(0.8, abs=0.005)
     assert min(takes.bins) == pytest.approx(-0.8, abs=0.005)
@@ -345,7 +346,6 @@ SIX_B = (
     "studioRemoveTake",
     "studioRejectTake",
     "studioRestoreTake",
-    "studioHistory",
     "studioWave",
     "studioSetIn",
     "studioSetOut",
@@ -441,7 +441,8 @@ def test_a_take_changed_elsewhere_shows_so(
             assert client.spool.take(take_id).sync.decision.decision == "removed"
             qtbot.waitUntil(lambda: studio.syncText.endswith(": changed elsewhere"), timeout=5000)
             assert studio.promptStatus == "Missing"
-            click(window, "studioHistory")
+            click(window, "studioTakeSelect")
+            qtbot.waitUntil(lambda: bool(window.items("studioHistoryStatus")), timeout=5000)
             status_line = window.items("studioHistoryStatus")[0]
             assert "changed elsewhere" in status_line.property("text")
     finally:

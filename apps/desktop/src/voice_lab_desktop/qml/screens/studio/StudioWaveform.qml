@@ -3,8 +3,10 @@
 // frames (Zoom and Fit), with the kept frames' edges, the trim handles and the playhead.
 // While a take is recorded it draws the live bins in red, filling `slots` from the left (a
 // rolling five-second viewport), without handles. Frames are the original's; nothing here
-// edits audio. A click moves the playhead, a double-click plays, dragging a handle sets
-// the trim on release (a controlled component: the owner's values come back as bindings).
+// edits audio. A click moves the playhead (and takes the keyboard focus), a double-click
+// plays, dragging a handle sets the trim on release (a controlled component: the owner's
+// values come back as bindings). With the focus here, ← and → step a tenth of a second and
+// Home and End go to the kept frames' edges; a held key's repeats are ignored.
 import QtQuick
 import Scshafe.Ui
 
@@ -26,6 +28,8 @@ Item {
     signal seekRequested(int frame)
     signal trimRequested(int start, int end)
     signal playRequested()
+    signal stepRequested(int frames)
+    signal edgeRequested(bool end)
 
     property int _dragStart: -1
     property int _dragEnd: -1
@@ -34,8 +38,22 @@ Item {
     readonly property bool hasTake: !live && frameCount > 0 && viewEnd > viewStart
     readonly property int pairs: Math.floor((bins ? bins.length : 0) / 2)
 
-    Accessible.role: Accessible.Graphic
+    activeFocusOnTab: hasTake
+    Accessible.role: Accessible.Slider
     Accessible.name: live ? "Live waveform" : "Waveform"
+    Keys.onPressed: (event) => {
+        if (!wave.hasTake || event.isAutoRepeat || event.modifiers !== Qt.NoModifier)
+            return
+        if (event.key === Qt.Key_Left) {
+            wave.stepRequested(-4800); event.accepted = true
+        } else if (event.key === Qt.Key_Right) {
+            wave.stepRequested(4800); event.accepted = true
+        } else if (event.key === Qt.Key_Home) {
+            wave.edgeRequested(false); event.accepted = true
+        } else if (event.key === Qt.Key_End) {
+            wave.edgeRequested(true); event.accepted = true
+        }
+    }
     Accessible.description: hasTake
         ? "kept " + (shownStart / 48000).toFixed(2) + " to " + (shownEnd / 48000).toFixed(2)
           + " of " + (frameCount / 48000).toFixed(2) + " seconds" : note
@@ -62,6 +80,16 @@ Item {
         height: 1
         color: wave.live ? SuiTheme.toneRed : SuiTheme.borderStrong
         opacity: 0.6
+    }
+    Rectangle {
+        objectName: "studioWaveFocus"
+        anchors.fill: parent
+        visible: wave.activeFocus
+        color: "transparent"
+        radius: SuiTheme.radiusSm
+        border.width: SuiTheme.focusRingWidth
+        border.color: SuiTheme.focusRing
+        z: 2
     }
 
     Canvas {
@@ -125,7 +153,10 @@ Item {
         objectName: "studioWaveArea"
         anchors.fill: parent
         enabled: wave.hasTake
-        onClicked: (mouse) => wave.seekRequested(wave.frameAt(mouse.x))
+        onClicked: (mouse) => {
+            wave.forceActiveFocus(Qt.MouseFocusReason)
+            wave.seekRequested(wave.frameAt(mouse.x))
+        }
         onDoubleClicked: wave.playRequested()
     }
 
@@ -168,19 +199,8 @@ Item {
     Handle { objectName: "studioTrimStartHandle"; atStart: true }
     Handle { objectName: "studioTrimEndHandle"; atStart: false }
 
-    // What the area shows (or why it shows nothing): a corner note over a waveform, or the
-    // whole note in the middle of an empty one.
-    Text {
-        objectName: "studioWaveNote"
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.margins: SuiTheme.spaceXs
-        visible: wave.pairs > 0 && wave.note !== ""
-        textFormat: Text.PlainText
-        text: wave.note
-        color: SuiTheme.muted
-        font.pixelSize: SuiTheme.fontSizeXs
-    }
+    // Why the area shows nothing (loading, no take, waiting for frames), in its middle; over
+    // a waveform the owner shows the scale's name beside the timer, clear of the handles.
     Text {
         objectName: "studioWaveEmpty"
         anchors.centerIn: parent

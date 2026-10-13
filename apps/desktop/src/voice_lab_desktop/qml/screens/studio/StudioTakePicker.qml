@@ -1,8 +1,9 @@
 // The take picker (NATIVE_RECORDING_UX.md §4: "a compact take-picker row above the waveform;
-// a popover ... holds extended history"): the prompt's takes, newest first, from this
-// machine and the PC; the selected take's actions (Remove, Reject with a reason, Restore);
-// and History, every take with its date, length, status and where it lives. The model is
-// the studio's `takes` (screens/studio_takes.py).
+// a popover ... holds extended history"): the selected take in a short line that fits the
+// smallest window, and, open, every take of the prompt from this machine and the PC, newest
+// first, with its date, length, status (changed elsewhere, imported from the Mac) and where
+// it lives; then the selected take's actions: Remove, Reject (with a reason) and Restore.
+// The model is the studio's `takes` (screens/studio_takes.py).
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Templates as T
@@ -15,12 +16,12 @@ Item {
 
     required property var takes
     property bool busy: false
-    readonly property bool menuOpen: combo.popup.visible || historyPopup.visible || rejectDialog.visible
+    readonly property bool menuOpen: combo.popup.visible || rejectDialog.visible
 
     function indexOf(key) {
-        const options = takes.takeOptions
-        for (let i = 0; i < options.length; ++i)
-            if (options[i].value === key) return i
+        const rows = takes.history
+        for (let i = 0; i < rows.length; ++i)
+            if (rows[i].key === key) return i
         return -1
     }
 
@@ -44,11 +45,11 @@ Item {
             rightPadding: SuiTheme.spaceLg + SuiTheme.spaceXs
             focusPolicy: Qt.StrongFocus
             font.pixelSize: SuiTheme.fontSizeSm
-            model: picker.takes.takeOptions
+            model: picker.takes.history
             textRole: "label"
-            valueRole: "value"
+            valueRole: "key"
             currentIndex: picker.indexOf(picker.takes.selectedKey)
-            enabled: !picker.busy && count > 0
+            enabled: !picker.busy && (count > 0 || picker.takes.historyNote !== "")
             opacity: enabled ? 1 : SuiTheme.disabledOpacity
             displayText: count === 0 ? "No takes of this prompt yet"
                 : currentIndex < 0 ? count + (count === 1 ? " take" : " takes") + " · none selected"
@@ -59,10 +60,11 @@ Item {
 
             onActivated: (index) => {
                 currentIndex = Qt.binding(() => picker.indexOf(picker.takes.selectedKey))
-                picker.takes.selectTake(picker.takes.takeOptions[index].value)
+                picker.takes.selectTake(picker.takes.history[index].key)
             }
 
             contentItem: Text {
+                objectName: "studioTakeSelectText"
                 textFormat: Text.PlainText
                 text: combo.displayText
                 font: combo.font
@@ -85,28 +87,49 @@ Item {
                 border.width: 1
                 border.color: combo.activeFocus ? SuiTheme.accent : SuiTheme.fieldBorder
             }
+            // The history: every take, two lines each.
             delegate: T.ItemDelegate {
-                id: option
+                id: entry
                 required property int index
                 required property var modelData
+                objectName: "studioHistoryRow-" + modelData.key
                 width: ListView.view ? ListView.view.width : implicitWidth
-                implicitHeight: SuiTheme.rowHeight
+                implicitHeight: entryColumn.implicitHeight + 2 * SuiTheme.spaceXs
+                padding: SuiTheme.spaceXs
                 leftPadding: SuiTheme.spaceSm
                 highlighted: combo.highlightedIndex === index
-                contentItem: Text {
-                    textFormat: Text.PlainText
-                    text: option.modelData.label
-                    color: SuiTheme.text
-                    font.pixelSize: SuiTheme.fontSizeSm
-                    verticalAlignment: Text.AlignVCenter
-                    elide: Text.ElideRight
+                Accessible.role: Accessible.ListItem
+                Accessible.name: modelData.when + ", " + modelData.status + ", " + modelData.where
+                contentItem: ColumnLayout {
+                    id: entryColumn
+                    spacing: 0
+                    SuiText {
+                        Layout.fillWidth: true
+                        text: entry.modelData.when + " · " + entry.modelData.length
+                        font.weight: entry.modelData.selected ? SuiTheme.fontWeightStrong
+                                                              : SuiTheme.fontWeightNormal
+                        wrapMode: Text.Wrap
+                    }
+                    SuiText {
+                        objectName: "studioHistoryStatus"
+                        Layout.fillWidth: true
+                        text: entry.modelData.status + " · " + entry.modelData.where
+                        variant: "caption"
+                        tone: entry.modelData.changedElsewhere ? "warn" : "muted"
+                        wrapMode: Text.Wrap
+                    }
                 }
-                background: Rectangle { color: option.highlighted ? SuiTheme.bgHover : "transparent" }
+                background: Rectangle {
+                    radius: SuiTheme.radiusSm
+                    color: entry.modelData.selected ? SuiTheme.accentSubtle
+                           : entry.highlighted ? SuiTheme.bgHover : "transparent"
+                }
             }
             popup: T.Popup {
+                objectName: "studioHistoryPopup"
                 y: combo.height + 2
-                width: Math.max(combo.width, 420)
-                implicitHeight: Math.min(contentItem.implicitHeight + 2 * padding, 300)
+                width: Math.max(combo.width, Math.min(picker.width, 520))
+                implicitHeight: Math.min(contentItem.implicitHeight + 2 * padding, 360)
                 padding: 2
                 contentItem: ListView {
                     clip: true
@@ -114,6 +137,17 @@ Item {
                     model: combo.popup.visible ? combo.delegateModel : null
                     currentIndex: combo.highlightedIndex
                     boundsBehavior: Flickable.StopAtBounds
+                    header: SuiText {
+                        objectName: "studioHistoryNote"
+                        width: ListView.view ? ListView.view.width : 0
+                        visible: text !== ""
+                        height: visible ? implicitHeight + SuiTheme.spaceXs : 0
+                        leftPadding: SuiTheme.spaceSm
+                        text: picker.takes.historyNote
+                        variant: "caption"
+                        tone: "warn"
+                        wrapMode: Text.Wrap
+                    }
                 }
                 background: Rectangle {
                     radius: SuiTheme.radiusSm
@@ -146,92 +180,6 @@ Item {
             enabled: picker.takes.canRestore
             Accessible.description: picker.takes.actionNote
             onClicked: picker.takes.restore()
-        }
-        RowButton {
-            id: historyButton
-            objectName: "studioHistory"
-            text: "History"
-            enabled: picker.takes.takeCount > 0 || picker.takes.historyNote !== ""
-            onClicked: historyPopup.visible ? historyPopup.close() : historyPopup.open()
-        }
-    }
-
-    // Every take of the prompt: when, how long, status (changed elsewhere included), where.
-    T.Popup {
-        id: historyPopup
-        objectName: "studioHistoryPopup"
-        y: picker.height + 2
-        x: 0
-        width: picker.width
-        padding: SuiTheme.spaceSm
-        implicitHeight: Math.min(historyColumn.implicitHeight + 2 * padding, 360)
-        closePolicy: T.Popup.CloseOnEscape | T.Popup.CloseOnPressOutside
-        background: Rectangle {
-            radius: SuiTheme.radiusMd
-            color: SuiTheme.popover
-            border.width: 1
-            border.color: SuiTheme.borderStrong
-        }
-        contentItem: Flickable {
-            clip: true
-            contentHeight: historyColumn.implicitHeight
-            boundsBehavior: Flickable.StopAtBounds
-            ColumnLayout {
-                id: historyColumn
-                width: parent.width
-                spacing: 2
-                SuiText {
-                    objectName: "studioHistoryNote"
-                    Layout.fillWidth: true
-                    visible: text !== ""
-                    text: picker.takes.historyNote
-                    variant: "caption"
-                    tone: "warn"
-                    wrapMode: Text.Wrap
-                }
-                Repeater {
-                    model: picker.takes.history
-                    delegate: T.ItemDelegate {
-                        id: entry
-                        required property var modelData
-                        objectName: "studioHistoryRow-" + modelData.key
-                        Layout.fillWidth: true
-                        implicitHeight: entryColumn.implicitHeight + 2 * SuiTheme.spaceXs
-                        padding: SuiTheme.spaceXs
-                        enabled: !picker.busy
-                        Accessible.role: Accessible.ListItem
-                        Accessible.name: modelData.when + ", " + modelData.status + ", " + modelData.where
-                        onClicked: {
-                            // Closed first: selecting rebuilds this list, this row included.
-                            const key = modelData.key
-                            historyPopup.close()
-                            picker.takes.selectTake(key)
-                        }
-                        background: Rectangle {
-                            radius: SuiTheme.radiusSm
-                            color: entry.modelData.selected ? SuiTheme.accentSubtle
-                                   : entry.hovered ? SuiTheme.bgHover : "transparent"
-                        }
-                        contentItem: ColumnLayout {
-                            id: entryColumn
-                            spacing: 0
-                            SuiText {
-                                Layout.fillWidth: true
-                                text: entry.modelData.when + " · " + entry.modelData.length
-                                wrapMode: Text.Wrap
-                            }
-                            SuiText {
-                                objectName: "studioHistoryStatus"
-                                Layout.fillWidth: true
-                                text: entry.modelData.status + " · " + entry.modelData.where
-                                variant: "caption"
-                                tone: entry.modelData.changedElsewhere ? "warn" : "muted"
-                                wrapMode: Text.Wrap
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 

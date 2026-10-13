@@ -6,8 +6,8 @@
 // Instructions keep their natural height up to 40% of the card and scroll beyond it; without
 // one they fill the card. Plain text only.
 //
-// The prompt is always shown whole: it is set at the reading size (24 points) when it fits,
-// else at the largest smaller size that does, down to 16 points. A card too small even for
+// The prompt is always shown whole: it is set at the reading size the header chose (24, 28
+// or 32 points) when it fits, else at the largest smaller size that does, down to 16 points. A card too small even for
 // that (no window the app allows, for any catalog prompt) scrolls. Only the card's size and
 // the prompt decide the size, never the transport. A small card tightens its margins and its
 // guidance row. The scroll position resets only for a new prompt.
@@ -34,8 +34,10 @@ Rectangle {
     readonly property real instructionsHeight: !hasPrompt ? 0
         : spoken ? Math.min(instructionsNatural, (height - 2 * pad) * 0.4)
         : Math.max(0, height - pad - (bodyTop + headingHeight + spacing))
-    // The reading sizes, largest first; the prompt takes the first one it fits at.
-    readonly property var readingSizes: [24, 22, 20, 18, 17, 16]
+    // The reading sizes, largest first (from the header's choice); the prompt takes the
+    // first one it fits at.
+    readonly property var readingSizes: [32, 28, 24, 22, 20, 18, 17, 16].filter(
+        (size) => size <= (rec.readingSize || 24))
     readonly property real textRoom: scriptFlick.height
     readonly property int readingSize: {
         const room = textRoom

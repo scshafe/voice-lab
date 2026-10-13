@@ -247,6 +247,14 @@ class AppModel(ViewModel):
         if key not in SCREEN_KEYS:
             return
         previous = self._v["screen"]
+        if previous == "prompts" and key != previous and self.studio is not None:
+            # A trim edit not saved in the studio is asked about before the screen changes.
+            self.studio.take_review.guard(lambda: self._navigate(key))
+            return
+        self._navigate(key)
+
+    def _navigate(self, key: str) -> None:
+        previous = self._v["screen"]
         self._set(self.navigationChanged, screen=key, screenIndex=SCREEN_KEYS.index(key))
         if previous != key:
             deactivate = getattr(self.models[previous], "deactivate", None)

@@ -9,9 +9,10 @@ The take picker and the history list one prompt's takes, newest first, merged by
 - **the PC's** (``GET /api/v1/corpus/prompts/{id}/takes``): every take that counts for the
   prompt there, wherever it was recorded, with its decision, trim and QC.
 
-A take is *here*, *on the PC*, or both (this machine's, accepted there). The operator's
-decisions and trims go through the corpus client, which holds this machine's takes only:
-a take recorded elsewhere is shown and played, and decided where it lives.
+A take is *here*, *on the PC*, or both (this machine's, accepted there). Every saved take is
+decided and trimmed through the corpus client: a take recorded elsewhere (another client's,
+or a Swift take imported from the Mac, D-053) is noted in the spool when it is first changed
+(``CorpusClient.remote_take``), and played from the PC.
 """
 
 from __future__ import annotations
@@ -44,7 +45,14 @@ WHERE_TITLES: Final[dict[str, str]] = {
     "both": "this machine and the PC",
     "unsaved": "this machine",
 }
-ELSEWHERE: Final = "Recorded on another machine: it is decided where it lives"
+#: The picker's short words for where a take lives.
+WHERE_SHORT: Final[dict[str, str]] = {
+    "here": "here",
+    "pc": "PC",
+    "both": "here + PC",
+    "unsaved": "here",
+}
+ORIGIN_TITLES: Final[dict[str, str]] = {"imported": "imported from the Mac"}
 
 
 @dataclass(frozen=True)
@@ -63,6 +71,8 @@ class TakeEntry:
     changed_elsewhere: bool = False
     local: SpooledTake | None = None
     pc: LibraryTake | None = None
+    #: Where the PC says it came from (``imported``: a Swift take of the Mac).
+    origin: str = ""
 
     @property
     def take_id(self) -> str:
@@ -74,8 +84,14 @@ class TakeEntry:
 
     @property
     def decidable(self) -> bool:
-        """Its decisions and trim go through the client (a saved take of this machine)."""
-        return self.local is not None
+        """Its decisions and trim go through the client: any saved take (one recorded
+        elsewhere is noted in the spool first)."""
+        return self.local is not None or self.pc is not None
+
+    @property
+    def audio_here(self) -> bool:
+        """Its audio is on this machine (else it is played from the PC)."""
+        return self.key == REVIEW or (self.local is not None and not self.local.remote)
 
     @property
     def trimmed(self) -> bool:
@@ -98,6 +114,8 @@ class TakeEntry:
             parts.append("waiting to sync")
         if self.changed_elsewhere:
             parts.append("changed elsewhere")
+        if self.origin:
+            parts.append(ORIGIN_TITLES.get(self.origin, f"{self.origin} take"))
         return " · ".join(parts)
 
     @property
@@ -107,28 +125,55 @@ class TakeEntry:
         return self.requested_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
     @property
+    def where_title(self) -> str:
+        return WHERE_TITLES[self.where]
+
+    @property
     def label(self) -> str:
-        """The picker's line: when, how long, its status, where it lives."""
-        length = f"{self.seconds:.1f} s"
-        return f"{self.when} · {length} · {self.status} · {WHERE_TITLES[self.where]}"
+        """The picker's short line (it fits the smallest window): when, how long, the
+        decision, where (``Mac`` for a take imported from it). History has the rest."""
+        when = "now" if self.requested_at is None else self._short_when()
+        where = "Mac import" if self.origin == "imported" else WHERE_SHORT[self.where]
+        decision = DECISION_TITLES.get(self.decision, self.decision)
+        return f"{when} · {self.seconds:.1f} s · {decision} · {where}"
+
+    def _short_when(self) -> str:
+        assert self.requested_at is not None
+        local = self.requested_at.astimezone()
+        return f"{local.day} {local.strftime('%b %H:%M')}"
+
+
+def origin_of(pc: LibraryTake | None) -> str:
+    """The PC's origin kind of a take (when the PC's contracts carry it, D-053)."""
+    kind = getattr(getattr(pc, "origin", None), "kind", None)
+    return kind if isinstance(kind, str) else ""
 
 
 def _local_entry(take: SpooledTake, pc: LibraryTake | None, notices: frozenset[str]) -> TakeEntry:
     sync = take.sync
     adopted = any(event.source == "pc" for event in sync.history)
+    record = take.record
+    if take.remote:
+        where: Where = "pc"
+        stored = getattr(record, "origin", None)
+        origin = stored.kind if stored is not None else origin_of(pc)
+    else:
+        where = "both" if (sync.upload == "accepted" or pc is not None) else "here"
+        origin = ""
     return TakeEntry(
         key=take.take_id,
-        requested_at=take.record.requested_at,
-        frames=take.record.frames,
+        requested_at=take.requested_at,
+        frames=take.frames,
         decision=sync.decision.decision,
         reason=sync.decision.reason,
         trim=(sync.trim.start_frame, sync.trim.end_frame),
-        where="both" if (sync.upload == "accepted" or pc is not None) else "here",
+        where=where,
         qc=pc.qc_status if pc is not None else None,
         queued=len(sync.outbox),
         changed_elsewhere=adopted or take.take_id in notices,
         local=take,
         pc=pc,
+        origin=origin,
     )
 
 
@@ -143,6 +188,7 @@ def _pc_entry(take: LibraryTake) -> TakeEntry:
         where="pc",
         qc=take.qc_status,
         pc=take,
+        origin=origin_of(take),
     )
 
 

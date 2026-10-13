@@ -508,7 +508,7 @@ def assert_prompt_whole(window: Window, text: str) -> int:
     fx, fy, fw, fh = scene_rect(flick)
     assert cx <= fx and fx + fw <= cx + cw and cy <= fy and fy + fh <= cy + ch
     size = int(card.property("readingSize"))
-    assert 16 <= size <= 24
+    assert 16 <= size <= 32
     return size
 
 

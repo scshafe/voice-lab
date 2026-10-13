@@ -24,7 +24,82 @@ Item {
     readonly property var rec: app.studioModel
     readonly property var takes: rec.takes
     readonly property bool shown: app.screen === "prompts"
-    readonly property bool menuOpen: libraryPane.menuOpen || detailsPopup.visible || takePicker.menuOpen
+    readonly property bool menuOpen: libraryPane.menuOpen || detailsPopup.visible
+                                     || takePicker.menuOpen || trimConfirm.visible
+                                     || sizeSelect.popup.visible
+    // Typing in a field (the search, a dialog's) keeps the keys for the field.
+    readonly property bool typing: {
+        const item = studio.Window.activeFocusItem
+        return item !== null && item.cursorPosition !== undefined
+    }
+    // The page's keys (§5): on this screen only, never while typing, with a menu or dialog
+    // open, or on a held key's repeats.
+    readonly property bool keysEnabled: shown && visible && !menuOpen && !typing
+
+    Shortcut {
+        objectName: "studioKeyRecord"
+        sequence: "R"
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.toggleRecord()
+    }
+    Shortcut {
+        objectName: "studioKeySpace"
+        sequence: "Space"
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.spaceKey()
+    }
+    Shortcut {
+        objectName: "studioKeySaveNext"
+        sequences: ["Return", "Enter"]
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.saveNext()
+    }
+    Shortcut {
+        objectName: "studioKeySave"
+        sequences: [StandardKey.Save]
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.save()
+    }
+
+    // Leaving a saved take with a trim edit not saved: asked first.
+    Connections {
+        target: studio.takes
+        function onConfirmChanged() {
+            if (studio.takes.confirmOpen && !trimConfirm.visible)
+                trimConfirm.open()
+            else if (!studio.takes.confirmOpen && trimConfirm.visible)
+                trimConfirm.close()
+        }
+    }
+    SuiDialog {
+        id: trimConfirm
+        objectName: "studioTrimConfirm"
+        title: "Save the trim?"
+        description: "This take's In and Out were changed and not saved."
+        onRejected: if (studio.takes.confirmOpen) studio.takes.confirmCancel()
+        actions: [
+            SuiButton {
+                objectName: "studioConfirmCancel"
+                text: "Cancel"
+                onClicked: studio.takes.confirmCancel()
+            },
+            SuiButton {
+                objectName: "studioConfirmDiscard"
+                text: "Discard edit"
+                onClicked: studio.takes.confirmDiscardEdit()
+            },
+            SuiButton {
+                objectName: "studioConfirmSave"
+                text: "Save trim"
+                variant: "primary"
+                onClicked: studio.takes.confirmSaveTrim()
+            }
+        ]
+    }
 
     // Layout tokens: an 8-point scale, 16-point insets, a 280-point library (240 below a
     // 1,000-point screen), a 56-point Record/Stop target.
@@ -111,7 +186,7 @@ Item {
             SuiText {
                 objectName: "studioPromptTitle"
                 anchors.left: parent.left
-                anchors.right: deviceChip.left
+                anchors.right: sizeSelect.left
                 anchors.rightMargin: SuiTheme.spaceMd
                 y: 2
                 text: studio.rec.promptTitle
@@ -120,7 +195,7 @@ Item {
             }
             StudioLabelChips {
                 anchors.left: parent.left
-                anchors.right: deviceChip.left
+                anchors.right: sizeSelect.left
                 anchors.rightMargin: SuiTheme.spaceMd
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 2
@@ -128,12 +203,92 @@ Item {
                 pinned: studio.rec.pinnedChips
                 spokenLabel: studio.rec.labelsSpoken
             }
+            // The reading size (§5's text-size choice), kept per viewer.
+            T.ComboBox {
+                id: sizeSelect
+                objectName: "studioReadingSize"
+                anchors.right: deviceChip.left
+                anchors.rightMargin: SuiTheme.spaceSm
+                anchors.verticalCenter: parent.verticalCenter
+                width: 76
+                height: 24
+                leftPadding: SuiTheme.spaceSm
+                font.pixelSize: SuiTheme.fontSizeSm
+                model: studio.rec.readingSizes
+                currentIndex: studio.rec.readingSizes.indexOf(studio.rec.readingSize)
+                displayText: "Aa " + studio.rec.readingSize
+                Accessible.role: Accessible.ComboBox
+                Accessible.name: "Reading text size"
+                Accessible.description: studio.rec.readingSize + " points"
+                onActivated: (index) => {
+                    currentIndex = Qt.binding(() => studio.rec.readingSizes.indexOf(studio.rec.readingSize))
+                    studio.rec.setReadingSize(studio.rec.readingSizes[index])
+                }
+                contentItem: Text {
+                    textFormat: Text.PlainText
+                    text: sizeSelect.displayText
+                    font: sizeSelect.font
+                    color: SuiTheme.text
+                    verticalAlignment: Text.AlignVCenter
+                }
+                indicator: Text {
+                    textFormat: Text.PlainText
+                    x: sizeSelect.width - width - SuiTheme.spaceSm
+                    y: (sizeSelect.height - height) / 2
+                    text: "▾"
+                    color: SuiTheme.muted
+                    font.pixelSize: SuiTheme.fontSizeSm
+                    Accessible.ignored: true
+                }
+                background: Rectangle {
+                    radius: SuiTheme.radiusSm
+                    color: SuiTheme.field
+                    border.width: 1
+                    border.color: sizeSelect.activeFocus ? SuiTheme.accent : SuiTheme.fieldBorder
+                }
+                delegate: T.ItemDelegate {
+                    id: sizeOption
+                    required property int index
+                    required property var modelData
+                    objectName: "studioReadingSize-" + modelData
+                    width: 150
+                    implicitHeight: SuiTheme.rowHeight
+                    leftPadding: SuiTheme.spaceSm
+                    highlighted: sizeSelect.highlightedIndex === index
+                    contentItem: Text {
+                        textFormat: Text.PlainText
+                        text: ["Standard", "Large", "Extra large"][sizeOption.index] + " · " + sizeOption.modelData + " pt"
+                        color: SuiTheme.text
+                        font.pixelSize: SuiTheme.fontSizeSm
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    background: Rectangle { color: sizeOption.highlighted ? SuiTheme.bgHover : "transparent" }
+                }
+                popup: T.Popup {
+                    y: sizeSelect.height + 2
+                    x: sizeSelect.width - width
+                    width: 150
+                    implicitHeight: contentItem.implicitHeight + 2 * padding
+                    padding: 2
+                    contentItem: ListView {
+                        implicitHeight: contentHeight
+                        model: sizeSelect.popup.visible ? sizeSelect.delegateModel : null
+                        currentIndex: sizeSelect.highlightedIndex
+                    }
+                    background: Rectangle {
+                        radius: SuiTheme.radiusSm
+                        color: SuiTheme.popover
+                        border.width: 1
+                        border.color: SuiTheme.borderStrong
+                    }
+                }
+            }
             SuiChip {
                 id: deviceChip
                 objectName: "studioDevice"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                width: 150
+                width: 120
                 text: studio.rec.deviceOk ? "UMIK-1" : "No microphone"
                 tone: studio.rec.deviceOk ? "ok" : "warn"
                 dot: true
@@ -196,6 +351,8 @@ Item {
                 onSeekRequested: (frame) => studio.takes.seekTo(frame)
                 onTrimRequested: (start, end) => studio.takes.setTrimRange(start, end)
                 onPlayRequested: studio.takes.togglePlay()
+                onStepRequested: (frames) => studio.takes.seekBy(frames)
+                onEdgeRequested: (end) => end ? studio.takes.seekToEnd() : studio.takes.seekToStart()
             }
             // What went wrong with the take, whole, in the take's place.
             Flickable {
@@ -299,17 +456,25 @@ Item {
                 font.features: { "tnum": 1 }
                 Accessible.name: (studio.recordingTime ? "Elapsed " : "Position ") + text
             }
+            SuiText {
+                objectName: "studioWaveNote"
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                visible: studio.takes.bins.length > 0
+                text: studio.takes.waveNote
+                variant: "caption"
+            }
             SuiLevelMeter {
                 objectName: "studioLevel"
                 anchors.right: levelText.left
                 anchors.rightMargin: SuiTheme.spaceXs
                 anchors.verticalCenter: parent.verticalCenter
-                width: 96
+                width: 64
                 visible: studio.takes.live && studio.takes.levelText !== ""
                 peak: studio.takes.levelPeak
                 rms: studio.takes.levelPeak
                 label: "Recording level"
-                text: studio.takes.levelText
+                text: studio.takes.levelText + " peak"
             }
             SuiText {
                 id: levelText

@@ -26,8 +26,11 @@ Every connection made here goes to a declared ``@Slot`` (#41): QML reads this ob
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Final, Literal
 
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
@@ -37,6 +40,7 @@ from cole_voice_lab.canonical import canonical_sha256
 from ..capture.types import PARTIAL_NAME, SAMPLE_RATE, CapturedTake, RunningTake, TakeRecorder
 from ..corpus.catalog import PinnedCatalog
 from ..corpus.client import CorpusClient, PendingTake
+from ..corpus.files import private_dir
 from ..corpus.spool import SpooledTake, SpoolError
 from ..corpus.status import SyncStatus
 from ..studio import library, presentation, status
@@ -64,6 +68,9 @@ STATE_TEXT: Final[dict[str, str]] = {
     "review": "Take recorded · Save keeps it, Retake records again",
     "saving": "Saving",
 }
+#: The reading sizes the header offers (the Swift app's Standard, Large, Extra large).
+READING_SIZES: Final = (24, 28, 32)
+VIEW_FILE: Final = "view.json"
 CONTINUE_HELP: Final = (
     "Selects the next missing prompt in catalog order; ignores search and filters."
 )
@@ -84,6 +91,7 @@ def _when(moment: datetime) -> str:
 
 
 class StudioModel(ViewModel):
+    viewChanged = Signal()
     libraryChanged = Signal()
     rowsChanged = Signal()
     promptChanged = Signal()
@@ -143,6 +151,9 @@ class StudioModel(ViewModel):
     syncDetail = qproperty(str, "syncDetail", statusChanged)
     problemText = qproperty(str, "problemText", statusChanged)
     noticeId = qproperty(str, "noticeId", statusChanged)
+    # -- the reading size (kept per viewer)
+    readingSize = qproperty(int, "readingSize", viewChanged)
+    readingSizes = qproperty("QVariantList", "readingSizes", viewChanged)
     # -- the microphone
     deviceOk = qproperty(bool, "deviceOk", deviceChanged)
     deviceLabel = qproperty(str, "deviceLabel", deviceChanged)
@@ -219,10 +230,13 @@ class StudioModel(ViewModel):
                 "noticeId": "",
                 "deviceOk": False,
                 "deviceLabel": "",
+                "readingSize": READING_SIZES[0],
+                "readingSizes": list(READING_SIZES),
             },
         )
         self.client = client
         self.recorder_factory = recorder_factory
+        self._v["readingSize"] = self._load_view()
         self._rows = RoleRows(ROW_ROLES, self)
         self._recorder: TakeRecorder | None = None
         self._pinned: PinnedCatalog | None = None
@@ -521,8 +535,13 @@ class StudioModel(ViewModel):
         the selected prompt changes nothing)."""
         if not self._navigable() or prompt_id not in self._by_id or prompt_id == self._current:
             return
-        self._leave_take()
-        self._select(prompt_id, latest=True)
+
+        def go() -> None:
+            if self._navigable() and prompt_id != self._current:
+                self._leave_take()
+                self._select(prompt_id, latest=True)
+
+        self.take_review.guard(go)
 
     @Slot()
     def continueMissing(self) -> None:  # noqa: N802
@@ -537,8 +556,13 @@ class StudioModel(ViewModel):
             return
         if target == self._current:
             return  # the only prompt still missing is the one selected
-        self._leave_take()
-        self._select(target)
+
+        def go() -> None:
+            if self._navigable():
+                self._leave_take()
+                self._select(target)
+
+        self.take_review.guard(go)
 
     def _select(self, prompt_id: str, *, latest: bool = False) -> None:
         """Select ``prompt_id`` (``latest``: with its latest kept take, as an explicit
@@ -658,7 +682,13 @@ class StudioModel(ViewModel):
 
     @Slot()
     def record(self) -> None:
-        """A new take of the selected prompt, against the pinned catalog version."""
+        """A new take of the selected prompt, against the pinned catalog version (a trim
+        edit not saved is asked about first)."""
+        if not self._v["canRecord"] or self._current is None:
+            return
+        self.take_review.guard(self._record_now)
+
+    def _record_now(self) -> None:
         if not self._v["canRecord"] or self._current is None:
             return
         recorder = self._recorder_or_none()
@@ -868,12 +898,13 @@ class StudioModel(ViewModel):
         self.context.tasks.submit(work, done)
 
     def _keep_selected(self, *, advance: bool) -> None:
-        """Save on a selected draft of this machine: kept (with its edited trim)."""
-        take_id = self.take_review.selected_draft()
-        if not take_id:
+        """Save on a selected draft: kept (with its edited trim). A draft recorded
+        elsewhere is noted in the spool first."""
+        if not self.take_review.selected_draft():
             return
         trim = self.take_review.selected_edit()
         try:
+            take_id = self.take_review.selected_take_for_change()
             if trim is not None:
                 self.client.set_trim(take_id, *trim)
             self.client.decide(take_id, "kept")
@@ -906,9 +937,56 @@ class StudioModel(ViewModel):
         """Start the next session now: the PC's active version is pinned (between takes)."""
         if not self.client.status().switch_pending or self._v["phase"] not in ("ready",):
             return
-        self.client.start_new_session()
-        self._outcome = status.Line("Switched to the PC's active catalog version", "info")
-        self._refresh()
+
+        def go() -> None:
+            if self._v["phase"] == "ready":
+                self.client.start_new_session()
+                self._outcome = status.Line("Switched to the PC's active catalog version", "info")
+                self._refresh()
+
+        self.take_review.guard(go)
+
+    # -- keys (§5; the screen's shortcuts call these) -----------------------------------------
+
+    @Slot()
+    def spaceKey(self) -> None:  # noqa: N802
+        """Space: stops a take being recorded; otherwise plays or pauses the selected take.
+        It never starts a recording (the Swift app's rule: Space never opens the microphone;
+        R does)."""
+        if self._v["phase"] in ("starting", "recording"):
+            self.stop()
+        elif self._v["phase"] in ("ready", "review"):
+            self.take_review.togglePlay()
+
+    # -- the reading size (§5: the header's text-size choice, kept per viewer) ---------------
+
+    def _view_file(self) -> Path:
+        return Path(self.context.config.data_dir) / "studio" / VIEW_FILE
+
+    def _load_view(self) -> int:
+        try:
+            data = json.loads(self._view_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return READING_SIZES[0]
+        size = data.get("reading_size") if isinstance(data, dict) else None
+        return size if isinstance(size, int) and size in READING_SIZES else READING_SIZES[0]
+
+    @Slot(int)
+    def setReadingSize(self, size: int) -> None:  # noqa: N802
+        """The script's reading size (24, 28 or 32 points), kept for the next start."""
+        if size not in READING_SIZES or size == self._v["readingSize"]:
+            return
+        self._set(self.viewChanged, readingSize=size)
+        path = self._view_file()
+        try:
+            private_dir(path.parent)
+            temporary = path.with_name(f".{path.name}.tmp")
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump({"reading_size": size}, stream)
+            os.replace(temporary, path)
+        except OSError as exc:
+            self.toast.emit(f"The reading size is not kept: {exc}", "warn")
 
     # -- the status line ----------------------------------------------------------------------
 
