@@ -5,7 +5,8 @@
 # Harvard sentences and the CMU ARCTIC prompts, refuses either unless its SHA-256 is the pinned
 # one (nothing is written before both match), then builds cole-corpus in the PC's lab exactly as
 # docs/CORPUS_STORE.md "Seeding a library" does and activates version 2 for cole-self only when
-# its digest is the Mac's. Safe to run again: it continues from wherever the store is.
+# its digest is the Mac's. Safe to run again: it continues from wherever the store is, and once
+# seeded it re-checks version 2 and re-activates it, which rewrites what /api/v1/catalog serves.
 #
 #   scripts/seed-pc-catalog           seed (or finish seeding)
 #   scripts/seed-pc-catalog --help
@@ -29,7 +30,7 @@ fail() { printf 'seed-pc-catalog: %s\n' "$1" >&2; exit "${2:-1}"; }
 case "${1:-}" in
   "") ;;
   -h|--help)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
   *) fail "usage: $0 [--help]" 64 ;;
@@ -51,8 +52,32 @@ else
     *) fail "the corpus store cannot be read: $status" ;;
   esac
 fi
+work=$(mktemp -d)
+shared=""
+cleanup() {
+  rm -rf "$work"
+  if [ -n "$shared" ]; then sudo -u voice-lab rm -rf "$shared"; fi
+}
+trap cleanup EXIT INT TERM
+
+# Version 2 is activated only when its digest is the Mac's. Activating it again is harmless, and
+# from the build with GET /api/v1/catalog on, it rewrites the read model that route serves.
+activate_version_2() {
+  vl catalog show --version 2 --json >"$work/version-2.json"
+  grep -q "\"$VERSION_2_SHA256\"" "$work/version-2.json" ||
+    fail "version 2's catalog_sha256 is not $VERSION_2_SHA256: not activated. Find out why first (docs/CORPUS_STORE.md)."
+  say "version 2 is the Mac's catalog ($VERSION_2_SHA256)"
+  vl catalog activate --subject-id "$SUBJECT" --version 2 >"$work/activated.json"
+  if grep -q '"read_model": "' "$work/activated.json"; then
+    say "the API serves it: GET /api/v1/catalog"
+  else
+    say "this deploy has no GET /api/v1/catalog yet: run this again after it has, so the API serves the catalog"
+  fi
+}
+
 if [ "$store" = present ] && printf '%s\n' "$status" | grep -q "records against cole-corpus version 2\$"; then
   say "already seeded: $SUBJECT records against cole-corpus version 2"
+  activate_version_2
   exit 0
 fi
 
@@ -61,14 +86,6 @@ if [ "$store" = present ]; then
   live=$(printf '%s\n' "$status" | sed -n 's/^prompts: \([0-9][0-9]*\) live.*/\1/p')
   [ -n "$live" ] || fail "unexpected 'catalog list' output: $status"
 fi
-
-work=$(mktemp -d)
-shared=""
-cleanup() {
-  rm -rf "$work"
-  if [ -n "$shared" ]; then sudo -u voice-lab rm -rf "$shared"; fi
-}
-trap cleanup EXIT INT TERM
 
 if [ "$live" -lt 1886 ]; then
   say "downloading the two standard lists"
@@ -109,9 +126,5 @@ if ! vl catalog show --version 2 --json >/dev/null 2>&1; then
   say "publishing version 2"
   vl catalog publish >/dev/null
 fi
-vl catalog show --version 2 --json >"$work/version-2.json"
-grep -q "\"$VERSION_2_SHA256\"" "$work/version-2.json" ||
-  fail "version 2's catalog_sha256 is not $VERSION_2_SHA256: not activated. Find out why first (docs/CORPUS_STORE.md)."
-say "version 2 is the Mac's catalog ($VERSION_2_SHA256)"
-vl catalog activate --subject-id "$SUBJECT" --version 2 >/dev/null
+activate_version_2
 say "seeded: $SUBJECT records against cole-corpus version 2 (1,886 prompts)"
