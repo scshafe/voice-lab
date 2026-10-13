@@ -197,7 +197,8 @@ On the PC (D-052, docs/design/RECORDING-V1.md), the same store is the corpus for
 recording client: the owner runs these commands there as the `voice-lab` user with
 `--asset-root /data/voice-lab/lab`, the API serves the active version over `/api/v1`, and a
 client pins the version it records against (the recording service's relaunch pin is the
-Swift app's).
+Swift app's). `scripts/seed-pc-catalog` runs the sequence below there, with the downloads, the
+pin checks and the digest check before activating (RECORDING-V1.md §7 step 1).
 
 Seeding a library, as the rollout's Step 7 does:
 
