@@ -366,6 +366,15 @@ _RULES: Final = (
         example=f"derived/recording-waveforms/{_EXAMPLE_SHA}-v2.cvlwave",
     ),
     _rule(
+        "corpus-read-model",
+        "derived/corpus{/**}",
+        MAC_ONLY,
+        owner="corpus_read_model",
+        reason="the API's read model of the corpus store (D-052), rebuilt by every intake pass "
+        "and every catalog publish or activate",
+        example="derived/corpus/active-catalog-cole-self.json",
+    ),
+    _rule(
         "speech-clips",
         "derived/speech{/**}",
         MAC_ONLY,

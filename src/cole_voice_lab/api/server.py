@@ -56,6 +56,7 @@ from .contracts import (
     IntakeSessionRequest,
     validate_package_path,
 )
+from .corpus_routes import CorpusRoutes
 from .journey_intake import PATH_PREFIX as JOURNEY_INTAKE_PREFIX
 from .journey_intake import JourneyIntake
 from .journey_routes import add_arguments as add_journey_arguments
@@ -604,7 +605,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     verifier = TokenVerifier(config.auth)
     view = ViewRoutes(journey.store, verifier)
-    routes: tuple[Route, ...] = (journey, view)
+    corpus = CorpusRoutes(AssetLayout.validate(Path(config.asset_root)))
+    routes: tuple[Route, ...] = (corpus, journey, view)
     self_authenticating: tuple[str, ...] = ()
     if options.speech_config is not None:
         try:

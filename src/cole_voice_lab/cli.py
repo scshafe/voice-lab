@@ -50,6 +50,7 @@ from .capture import (
     require_legacy_capture_suite,
     select_umik1_device,
 )
+from .corpus_read_model import active_catalog_path, refresh_active_catalog
 from .datasets import (
     DEFAULT_MINIMUM_HOLDOUT_SECONDS,
     DatasetSelectionDocument,
@@ -72,6 +73,7 @@ from .doctor import run_doctor
 from .errors import VoiceLabError
 from .intake import accept_capture_session, validate_capture_package
 from .models import (
+    COLE_SUBJECT,
     F5_FAMILY,
     PHYSICAL_TEST_SUITE_PREFIX,
     PROMPT_SUITE_V1,
@@ -1595,10 +1597,12 @@ def _catalog_init(options: argparse.Namespace) -> int:
             source=BUILTIN_PROMPT_SOURCES.get(options.from_builtin, "import"),
             subject_id=None if seed is None else subject_id,
         )
+    read_model = None if reference is None else _refreshed_read_model(layout, subject_id)
     _json_print(
         {
             "asset_root": str(layout.root),
             "store": catalog_store_location(layout),
+            "read_model": read_model,
             "catalog": _catalog_record_json(record),
             "seeded_from": options.from_builtin,
             "prompt_count": 0 if seed is None else len(seed.prompts),
@@ -2030,13 +2034,21 @@ def _catalog_import_json(options: argparse.Namespace) -> int:
     return 0
 
 
+def _refreshed_read_model(layout: AssetLayout, subject_id: str = COLE_SUBJECT) -> str | None:
+    """The corpus read model the API serves (D-052), refreshed after a catalog change."""
+    record = refresh_active_catalog(layout, subject_id)
+    return str(active_catalog_path(layout, subject_id)) if record is not None else None
+
+
 def _catalog_publish(options: argparse.Namespace) -> int:
     layout = _catalog_layout(options)
     with _open_catalog_editor(layout) as store:
         reference = store.publish_version(options.catalog_id)
         snapshot = store.materialize(reference)
+    read_model = _refreshed_read_model(layout)
     _json_print(
         {
+            "read_model": read_model,
             "reference": reference.model_dump(mode="json"),
             "prompt_count": len(snapshot.suite.prompts),
             "alias_count": len(snapshot.prompt_aliases),
@@ -2054,12 +2066,17 @@ def _catalog_activate(options: argparse.Namespace) -> int:
         reference, snapshot = _published(store, options.catalog_id, options.version)
         require_catalog_root(layout, snapshot.suite, options.subject_id)
         store.activate(options.subject_id, reference)
+    read_model = _refreshed_read_model(layout, options.subject_id)
     _json_print(
         {
             "subject_id": options.subject_id,
             "reference": reference.model_dump(mode="json"),
             "prompt_count": len(snapshot.suite.prompts),
-            "takes_effect": "at the next launch of the recording app",
+            "read_model": read_model,
+            "takes_effect": (
+                "the API serves it now; voice-lab-desktop at its next session, the Swift "
+                "app at its next launch"
+            ),
         }
     )
     return 0
