@@ -116,6 +116,7 @@ def take(prompt: Prompt, decision: str, take_id: str) -> Any:
         prompt_id=prompt.prompt_id,
         record=SimpleNamespace(prompt=prompt),
         sync=SimpleNamespace(decision=SimpleNamespace(decision=decision)),
+        counts_for=lambda snapshot: snapshot.current_prompt_for(prompt),
     )
 
 

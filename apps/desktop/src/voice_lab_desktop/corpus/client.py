@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Final
 from PySide6.QtCore import QTimer
 
 from cole_voice_lab.api.corpus_contracts import TakeHistory
+from cole_voice_lab.corpus_read_model import LibraryTake
 from cole_voice_lab.corpus_take_store import TakeDecisionName
 from cole_voice_lab.corpus_takes import TakeClient
 from cole_voice_lab.models import Prompt, utc_now
@@ -41,7 +42,7 @@ from ..measurement import home_host
 from ..tasks import Tasks
 from .catalog import CatalogCache, PinnedCatalog
 from .library import LibraryCache
-from .records import Notice
+from .records import Notice, RemoteOrigin
 from .spool import (
     CorpusSpool,
     SpooledTake,
@@ -76,6 +77,17 @@ class PendingTake:
     directory: Path
     prompt: Prompt
     catalog: CatalogReference
+
+
+def remote_origin(pc: LibraryTake) -> RemoteOrigin | None:
+    """The PC's ``origin`` of a take (D-053: ``imported`` for a Swift take of the Mac), read
+    when the PC's contracts carry it."""
+    origin = getattr(pc, "origin", None)
+    kind = getattr(origin, "kind", None)
+    if not isinstance(kind, str) or not kind:
+        return None
+    source = getattr(origin, "source_take_id", None)
+    return RemoteOrigin(kind=kind[:64], source_take_id=str(source)[:500] if source else None)
 
 
 def next_delay(result: PassResult, failures: int, waits: int) -> float | None:
@@ -382,6 +394,29 @@ class CorpusClient:
         ``SignInRequired``)."""
         return self.engine.api().prompt_takes(prompt_id)
 
+    def remote_take(self, pc: LibraryTake, prompt_id: str) -> SpooledTake:
+        """A take of the PC's history recorded elsewhere, noted here (``learn_remote``) so
+        that ``decide``, ``restore`` and ``set_trim`` work on it; one already here is
+        refreshed from ``pc`` instead. Its origin (a Swift take imported from the Mac) is the
+        PC's.
+
+        Raises: ``SpoolError``."""
+        take = self.spool.learn_remote(pc, prompt_id, origin=remote_origin(pc))
+        self._notify()
+        return take
+
+    def observe_history(self, history: TakeHistory) -> int:
+        """The PC's history of a prompt, read again: each take here takes a newer state the
+        PC shows (never an older one). Returns: how many changed (the listeners hear it)."""
+        changed = 0
+        known = {take.take_id for take in self.spool.takes()}
+        for pc in history.takes:
+            if pc.take_id in known and self.spool.observe(pc.take_id, pc):
+                changed += 1
+        if changed:
+            self._notify()
+        return changed
+
     def take_audio(self, take_id: str) -> bytes:
         """A take's ``original.wav`` from the PC, in memory (never written here, D-038); the
         PC serves it only under its playback approval.
@@ -416,7 +451,7 @@ class CorpusClient:
             last_attempt_at=record.last_attempt_at,
             last_error=record.last_error or "",
             upload_blocked=last.upload_blocked if last is not None else "",
-            takes=len(takes),
+            takes=sum(1 for take in takes if not take.remote),
             queued=sum(len(take.sync.outbox) for take in takes),
             waiting_takes=sum(
                 1 for take in takes if take.sync.outbox or take.sync.refresh is not None

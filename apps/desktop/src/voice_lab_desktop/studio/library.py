@@ -107,7 +107,7 @@ def prompt_states(
     local: dict[str, list[SpooledTake]] = {}
     by_id: dict[str, SpooledTake] = {}
     for take in takes:
-        current = snapshot.current_prompt_for(take.record.prompt)
+        current = take.counts_for(snapshot)
         if current is None or current.prompt_id not in digests:
             continue
         local.setdefault(current.prompt_id, []).append(take)

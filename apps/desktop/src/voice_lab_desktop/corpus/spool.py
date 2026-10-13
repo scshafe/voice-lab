@@ -15,6 +15,13 @@
   only then renames the directory into ``takes/``: Save is durable on this machine at once.
   A take of the simulated device is never packaged or sent (the PC refuses its audio): it is
   local-only, and so is a take that could not be packaged (with a notice saying why).
+- ``takes/<take_id>/`` of a take recorded elsewhere (``learn_remote``): ``remote.json``
+  (``RemoteTake``: what the PC's history says it is, no audio) and ``state.json`` with the
+  PC's decision and trim at their revisions and ``upload = "remote"``. Its changes queue and
+  send like any take's (chained on the PC's revisions, folded, refused and adopted by the
+  same rules); it is never uploaded, and it never claims audio here (``audio`` refuses).
+  ``observe`` installs a newer state the PC's history shows for a take with nothing queued,
+  never an older one.
 - ``notices.json`` (``Notices``) and ``sync.json`` (``SyncRecord``).
 
 The operator's changes (``decide``, ``restore``, ``set_trim``) change the state here and, for
@@ -64,11 +71,11 @@ from cole_voice_lab.corpus_takes import (
 )
 from cole_voice_lab.errors import ContractError, SecurityError
 from cole_voice_lab.models import CaptureDevice, Prompt, utc_now
-from cole_voice_lab.recording_contracts import CatalogReference
+from cole_voice_lab.recording_contracts import CatalogReference, CatalogSnapshot
 
 from .. import __version__
 from ..capture.evidence import read_evidence
-from ..capture.types import EVIDENCE_NAME, ORIGINAL_NAME, CapturedTake
+from ..capture.types import EVIDENCE_NAME, ORIGINAL_NAME, SAMPLE_RATE, CapturedTake
 from .files import private_dir
 from .records import (
     JOURNAL_LIMIT,
@@ -86,6 +93,8 @@ from .records import (
     Operation,
     PendingRecording,
     PendingRefresh,
+    RemoteOrigin,
+    RemoteTake,
     SyncRecord,
     TakeSync,
     TrimOp,
@@ -99,6 +108,7 @@ TAKES: Final = "takes"
 RECORDING: Final = "recording"
 PACKAGE: Final = "package"
 TAKE_FILE: Final = "take.json"
+REMOTE_FILE: Final = "remote.json"
 STATE_FILE: Final = "state.json"
 NOTICES_FILE: Final = "notices.json"
 SYNC_FILE: Final = "sync.json"
@@ -126,10 +136,11 @@ class SpoolError(Exception):
 
 @dataclass(frozen=True)
 class SpooledTake:
-    """A saved take: what it is, and its state and outbox here."""
+    """A saved take: what it is, and its state and outbox here. ``record`` is a
+    ``LocalTake`` for a take recorded here, a ``RemoteTake`` for one recorded elsewhere."""
 
     path: Path
-    record: LocalTake
+    record: LocalTake | RemoteTake
     sync: TakeSync
 
     @property
@@ -137,17 +148,64 @@ class SpooledTake:
         return self.record.take_id
 
     @property
+    def remote(self) -> bool:
+        """Recorded elsewhere: its audio is on the PC only."""
+        return isinstance(self.record, RemoteTake)
+
+    @property
     def prompt_id(self) -> str:
-        return self.record.prompt.prompt_id
+        record = self.record
+        return record.prompt_id if isinstance(record, RemoteTake) else record.prompt.prompt_id
+
+    @property
+    def frames(self) -> int:
+        return self.record.frames
+
+    @property
+    def requested_at(self) -> datetime:
+        return self.record.requested_at
+
+    @property
+    def saved_at(self) -> datetime:
+        """When it was saved here (recorded here), or noted here (recorded elsewhere)."""
+        record = self.record
+        return record.learned_at if isinstance(record, RemoteTake) else record.saved_at
+
+    @property
+    def local(self) -> LocalTake:
+        """The record of a take recorded here. Raises: ``SpoolError`` for a remote take."""
+        record = self.record
+        if isinstance(record, RemoteTake):
+            raise SpoolError(f"{record.take_id} was recorded elsewhere: it has no audio here")
+        return record
 
     @property
     def audio(self) -> Path:
-        """The take's ``original.wav`` here (played from disk: it is this machine's own)."""
-        return self.path / ORIGINAL_NAME
+        """The take's ``original.wav`` here (played from disk: it is this machine's own).
+
+        Raises: ``SpoolError`` for a take recorded elsewhere (its audio stays on the PC)."""
+        return self.local_path(ORIGINAL_NAME)
 
     @property
     def package(self) -> Path:
-        return self.path / PACKAGE
+        return self.local_path(PACKAGE)
+
+    def local_path(self, name: str) -> Path:
+        """``name`` in a take recorded here. Raises: ``SpoolError`` for a remote take."""
+        if self.remote:
+            raise SpoolError(f"{self.take_id} was recorded elsewhere: it has no audio here")
+        return self.path / name
+
+    def counts_for(self, snapshot: CatalogSnapshot) -> Prompt | None:
+        """The prompt of ``snapshot`` this take counts for (aliases included), if any."""
+        record = self.record
+        if isinstance(record, LocalTake):
+            return snapshot.current_prompt_for(record.prompt)
+        current = snapshot.current_for(record.recorded_prompt_sha256)
+        prompt = snapshot.prompt(record.prompt_id)
+        if current is None or prompt is None or canonical_sha256(prompt) != current:
+            return None
+        return prompt
 
 
 def default_client() -> TakeClient:
@@ -274,13 +332,21 @@ class CorpusSpool:
     # -- reading --------------------------------------------------------------------------------
 
     def _read(self, path: Path) -> SpooledTake:
+        record: LocalTake | RemoteTake
         try:
-            record = read_canonical_model(path / TAKE_FILE, LocalTake, max_bytes=MAX_TAKE_BYTES)
+            if os.path.lexists(path / TAKE_FILE):
+                record = read_canonical_model(path / TAKE_FILE, LocalTake, max_bytes=MAX_TAKE_BYTES)
+            else:
+                record = read_canonical_model(
+                    path / REMOTE_FILE, RemoteTake, max_bytes=MAX_TAKE_BYTES
+                )
             sync = read_canonical_model(path / STATE_FILE, TakeSync, max_bytes=MAX_STATE_BYTES)
         except (OSError, ContractError, SecurityError) as exc:
             raise SpoolError(f"{path.name} cannot be read: {exc}") from exc
         if record.take_id != path.name or sync.take_id != path.name:
             raise SpoolError(f"{path.name} holds another take's records")
+        if isinstance(record, RemoteTake) != (sync.upload == "remote"):
+            raise SpoolError(f"{path.name}: a take recorded elsewhere, and only one, is remote")
         return SpooledTake(path, record, sync)
 
     def _pending_path(self, recording_dir: Path) -> Path:
@@ -296,6 +362,21 @@ class CorpusSpool:
             return
         for path in sorted(self.recording_root.iterdir()):
             if not path.is_dir() or path.name in self._active:
+                continue
+            if (path / REMOTE_FILE).is_file() and (path / STATE_FILE).is_file():
+                # A take recorded elsewhere that a crash kept from its move into takes/.
+                try:
+                    learned = read_canonical_model(
+                        path / REMOTE_FILE, RemoteTake, max_bytes=MAX_TAKE_BYTES
+                    )
+                    target = private_dir(self.takes_root) / learned.take_id
+                    if os.path.lexists(target):
+                        shutil.rmtree(path)
+                    else:
+                        rename_no_replace(path, target)
+                        fsync_directory(self.takes_root)
+                except (OSError, ContractError, SecurityError):
+                    self.unsaved.append(path.name)
                 continue
             if (path / TAKE_FILE).is_file() and (path / STATE_FILE).is_file():
                 try:
@@ -354,9 +435,7 @@ class CorpusSpool:
                         except SpoolError:
                             self.damaged.append(path.name)
                 self._listed = True
-            return sorted(
-                self._takes.values(), key=lambda take: (take.record.saved_at, take.take_id)
-            )
+            return sorted(self._takes.values(), key=lambda take: (take.saved_at, take.take_id))
 
     def takes_for_prompt(self, prompt_id: str) -> list[SpooledTake]:
         """The takes of one prompt, newest first."""
@@ -551,7 +630,85 @@ class CorpusSpool:
 
     @staticmethod
     def _sends(sync: TakeSync) -> bool:
-        return sync.upload in ("queued", "accepted")
+        return sync.upload in ("queued", "accepted", "remote")
+
+    # -- takes recorded elsewhere ----------------------------------------------------------------
+
+    def learn_remote(
+        self, pc: LibraryTake, prompt_id: str, *, origin: RemoteOrigin | None = None
+    ) -> SpooledTake:
+        """A take of the PC's history that this machine did not record, so that it can be
+        decided and trimmed here: its decision and trim are the PC's, at the PC's revisions,
+        and later changes chain on them. A take already here is only ``observe``d.
+
+        Raises: ``SpoolError`` when it cannot be written."""
+        with self._lock:
+            self.takes()
+            if pc.take_id in self._takes or os.path.lexists(self.take_dir(pc.take_id)):
+                self.observe(pc.take_id, pc)
+                return self.take(pc.take_id)
+            now = self.clock()
+            record = RemoteTake(
+                take_id=pc.take_id,
+                prompt_id=prompt_id,
+                recorded_prompt_sha256=pc.recorded_prompt_sha256,
+                catalog_version=pc.catalog_version,
+                requested_at=pc.requested_at,
+                frames=round(pc.duration_seconds * SAMPLE_RATE),
+                capture_host=pc.capture_host,
+                device=pc.device,
+                origin=origin,
+                learned_at=now,
+            )
+            sync = TakeSync(
+                take_id=pc.take_id,
+                decision=LocalDecision(decision=pc.decision, revision=pc.decision_revision),
+                trim=LocalTrim(
+                    start_frame=pc.trim.start_frame,
+                    end_frame=pc.trim.end_frame,
+                    revision=pc.trim.revision,
+                ),
+                history=(DecisionEvent(decision=pc.decision, at=now, source="learned"),),
+                upload="remote",
+            )
+            # Written beside, then moved in whole: a listing never sees half of it.
+            staging = private_dir(self.recording_root) / f"rem-{secrets.token_hex(8)}"
+            target = private_dir(self.takes_root) / pc.take_id
+            try:
+                staging.mkdir(mode=0o700)
+                write_canonical_json(staging / REMOTE_FILE, record)
+                write_canonical_json(staging / STATE_FILE, sync)
+                rename_no_replace(staging, target)
+                fsync_directory(self.takes_root)
+            except OSError as exc:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise SpoolError(f"the take could not be noted here: {exc}") from exc
+            take = SpooledTake(target, record, sync)
+            self._takes[pc.take_id] = take
+            return take
+
+    def observe(self, take_id: str, pc: LibraryTake) -> bool:
+        """The PC's history read again: a take with nothing queued takes the PC's state when
+        it is newer than what was confirmed here (another client changed it), never an older
+        one; a take waiting for a refresh takes it once it is fresh (``refreshed``). A change
+        queued here is left to its outcome. Returns: whether the state here changed."""
+        with self._lock:
+            take = self.take(take_id)
+            sync = take.sync
+            if sync.upload not in ("accepted", "remote"):
+                return False
+            if sync.refresh is not None:
+                before = sync
+                return self.refreshed(take_id, pc) and self.take(take_id).sync != before
+            if sync.outbox:
+                return False
+            decision, trim = sync.decision.revision, sync.trim.revision
+            if pc.decision_revision < decision or pc.trim.revision < trim:
+                return False  # an older read than what the PC confirmed here
+            if (pc.decision_revision, pc.trim.revision) == (decision, trim):
+                return False
+            self._store(take, self._install(sync, pc, self.clock()))
+            return True
 
     def _queue(
         self,
@@ -804,8 +961,8 @@ class CorpusSpool:
         ``MAX_RECHECKS`` times (the caller then treats the change as refused)."""
         with self._lock:
             take, op = self._head(take_id, request_id)
-            if isinstance(op, UploadOp) or op.rechecks >= MAX_RECHECKS:
-                return False
+            if isinstance(op, UploadOp) or op.rechecks >= MAX_RECHECKS or take.remote:
+                return False  # a take recorded elsewhere has nothing here to upload again
             now = self.clock()
             again: ChangeOp = op.model_copy(
                 update={

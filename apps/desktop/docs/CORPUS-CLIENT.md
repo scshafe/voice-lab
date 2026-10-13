@@ -37,6 +37,7 @@ are canonical JSON, written atomically.
 | `takes/<take_id>/package/` | The take package (`cole-voice-lab.corpus-take/v1`). It is built once by `corpus_takes.build_take_package` and sent as built: a rebuilt manifest would be another package under the same take id. A local-only take has none. |
 | `takes/<take_id>/take.json` | `LocalTake`: the exact prompt and catalog version, the times, the device, the audio. It is never rewritten. |
 | `takes/<take_id>/state.json` | `TakeSync`: the decision and the trim here, the revisions the PC last confirmed, the upload state and receipt, and the **outbox**. |
+| `takes/<take_id>/remote.json` | `RemoteTake`, instead of `take.json`, for a take recorded elsewhere (another client's, or a Swift take imported from the Mac, D-053). It holds what the PC's history says the take is: the prompt it counts for, the prompt it was recorded against, its times, length and device, and the PC's `origin`. It names no audio, and none is kept here. Its `state.json` says `upload = "remote"`. |
 | `library/library.json` | `CachedLibrary`: the PC's library (each prompt's status and take count, the coverage) as last read, with its `ETag`. No audio, no prompt text. The prompt studio counts coverage from it and the takes here. |
 | `notices.json` | Notices for the UI that have not been dismissed yet. |
 | `sync.json` | When the client last reached the PC, and its last error. |
@@ -74,6 +75,26 @@ PC may already know its id. Every operation counts
 its tries, its last error, and when it may next be tried. When an operation leaves the
 outbox, the take's `sent`, `refused` or `dropped` count goes up, and its `journal` keeps the
 last 20.
+
+## Takes recorded elsewhere
+
+The studio decides and trims every take of a prompt, not only this machine's. A take of the
+PC's history that this machine did not record is noted here when the operator first changes
+it (`remote_take`, from `GET /api/v1/corpus/prompts/{id}/takes`):
+
+- its decision and trim are the PC's, at the PC's revisions; its history starts there;
+- `decide`, `restore` and `set_trim` queue its changes in its outbox like any take's: each
+  expects the revision the PC last confirmed, unsent changes fold, a refusal adopts the PC's
+  state by the same verdict and refresh rules, and offline changes wait for the PC;
+- it has no upload: the engine sends its changes at once, and `take_not_found` gives up
+  without re-checking an upload (there is no package here);
+- it never claims audio: `audio` and `package` refuse, and the studio plays it from the PC
+  (`take_audio`, in memory);
+- `observe_history` installs a newer state the PC's history shows for any take with nothing
+  queued (another client changed it), never an older one; a take waiting for a refresh
+  takes it once it is fresh.
+
+`status().takes` counts this machine's takes only.
 
 ## Sync
 
@@ -157,6 +178,7 @@ task pool. It offers:
 - `decide`, `restore`, `set_trim`, `takes()`, `takes_for_prompt()`;
 - `prompt_history(prompt_id)` and `take_audio(take_id)`: the PC's takes of a prompt and a
   take's audio (in memory), read straight from the PC, off the GUI thread;
+- `remote_take(pc_take, prompt_id)` and `observe_history(history)`: takes recorded elsewhere;
 - `library`, the PC's library as last read (`LibraryCache.latest`);
 - `notices()` and `dismiss_notice()`;
 - `status()`, a `SyncStatus` value;

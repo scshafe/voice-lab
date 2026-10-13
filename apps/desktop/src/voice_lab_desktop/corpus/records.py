@@ -9,6 +9,8 @@ PC's own contracts are imported, never copied: a take names the backend's ``Prom
 PC's contracts is a type or test failure here.
 
 - ``LocalTake`` (``take.json``): what a take is, written once when it is saved.
+- ``RemoteTake`` (``remote.json``): a take this machine did not record, learned from the PC's
+  history so that it can be decided and trimmed here; it has no audio here.
 - ``TakeSync`` (``state.json``): what was decided about it here, the revisions the PC last
   confirmed, its upload, and its outbox: the operations still to send, in order.
 - ``Notices``, ``SyncRecord``, ``CatalogCacheState``: the client's notices for the UI, its
@@ -42,6 +44,7 @@ SYNC_RECORD_SCHEMA: Final = "voice-lab-desktop.corpus-sync/v1"
 CATALOG_STATE_SCHEMA: Final = "voice-lab-desktop.corpus-catalog-cache/v1"
 LIBRARY_CACHE_SCHEMA: Final = "voice-lab-desktop.corpus-library-cache/v1"
 PENDING_SCHEMA: Final = "voice-lab-desktop.corpus-pending-take/v1"
+REMOTE_SCHEMA: Final = "voice-lab-desktop.corpus-remote-take/v1"
 #: The finished operations a take's record keeps (its counters count all of them).
 JOURNAL_LIMIT: Final = 20
 #: The notices kept for the UI, newest last.
@@ -53,8 +56,9 @@ type NoticeId = Annotated[str, StringConstraints(pattern=r"^notice-[0-9a-f]{16}$
 type OperationKind = Literal["upload", "decision", "trim"]
 #: ``local-only``: never sent (simulated audio, or a take that could not be packaged);
 #: ``queued``: its upload waits in the outbox; ``accepted``: the PC published it (the
-#: receipt); ``refused``: the PC refused it, so nothing more of it is sent.
-type UploadState = Literal["local-only", "queued", "accepted", "refused"]
+#: receipt); ``refused``: the PC refused it, so nothing more of it is sent; ``remote``: the
+#: PC's take, recorded elsewhere (a ``RemoteTake``): nothing to upload, its changes are sent.
+type UploadState = Literal["local-only", "queued", "accepted", "refused", "remote"]
 type NoticeKind = Literal[
     "changed-elsewhere", "take-refused", "change-refused", "change-blocked", "local-only"
 ]
@@ -116,6 +120,41 @@ class LocalTake(ContractModel):
         if self.simulated and self.local_only is None:
             raise ValueError("a simulated take is never sent")
         return self
+
+
+class RemoteOrigin(ContractModel):
+    """Where the PC says a take it did not receive from a recording client came from
+    (``imported``: a Swift-app take of the Mac, D-053, with the Mac's own take id)."""
+
+    kind: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    source_take_id: _Text | None = None
+
+
+class RemoteTake(ContractModel):
+    """``takes/<take_id>/remote.json``: a take on the PC that this machine did not record,
+    learned from the PC's history (``GET /api/v1/corpus/prompts/{id}/takes``) so that the
+    operator can decide and trim it here. It names the prompt it counts for and the prompt
+    it was recorded against, never audio: its audio stays on the PC and is played from there.
+    Its decision and trim are in ``state.json``, as for any take (``upload = "remote"``)."""
+
+    schema_version: Literal["voice-lab-desktop.corpus-remote-take/v1"] = REMOTE_SCHEMA
+    take_id: TakeId
+    prompt_id: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    recorded_prompt_sha256: Sha256
+    catalog_version: int = Field(ge=1)
+    requested_at: datetime
+    frames: int = Field(gt=0, le=MAX_TAKE_FRAMES)
+    capture_host: _Text
+    device: _Text
+    origin: RemoteOrigin | None = None
+    learned_at: datetime
+
+    @field_validator("requested_at", "learned_at")
+    @classmethod
+    def _times(cls, value: datetime) -> datetime:
+        moment = _utc(value)
+        assert moment is not None
+        return moment
 
 
 class _Operation(ContractModel):
@@ -262,12 +301,13 @@ class LocalTrim(ContractModel):
 
 
 class DecisionEvent(ContractModel):
-    """One decision in the take's history here (``source``: made here, or adopted from the
-    PC); Restore goes back to the last ``kept`` or ``draft`` before a rejection or removal."""
+    """One decision in the take's history here (``source``: made here, adopted from the PC
+    after another client changed it, or ``learned`` with a take recorded elsewhere); Restore
+    goes back to the last ``kept`` or ``draft`` before a rejection or removal."""
 
     decision: TakeDecisionName
     at: datetime
-    source: Literal["here", "pc"] = "here"
+    source: Literal["here", "pc", "learned"] = "here"
 
     @field_validator("at")
     @classmethod
@@ -335,6 +375,8 @@ class TakeSync(ContractModel):
             raise ValueError("an accepted upload, and only one, has its receipt")
         if self.upload in ("local-only", "refused") and self.outbox:
             raise ValueError("nothing is queued for a take that is never sent")
+        if self.upload == "remote" and (uploads or self.receipt is not None):
+            raise ValueError("a take recorded elsewhere is never uploaded from here")
         if self.upload == "queued" and uploads != [0]:
             raise ValueError("a queued upload is the first operation of its take")
         if self.upload == "accepted" and uploads:

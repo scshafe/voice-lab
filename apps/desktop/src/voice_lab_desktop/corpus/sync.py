@@ -340,8 +340,8 @@ class SyncEngine:
                 with self.spool.sending(request_id):
                     if isinstance(op, UploadOp):
                         proceed = uploads is not None and self._upload(take, op, uploads, result)
-                    elif take.sync.upload != "accepted":
-                        proceed = False
+                    elif take.sync.upload not in ("accepted", "remote"):
+                        proceed = False  # the take's upload comes first
                     else:
                         proceed = self._change(take, op, api, result)
             except (_Stop, SignInRequired):
