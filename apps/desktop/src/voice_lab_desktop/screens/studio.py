@@ -16,8 +16,10 @@ ends it, and the worker's validated take waits for review. Save keeps it
 once, its upload queued); Save & Next then selects the next missing prompt. Retake records
 again; the take it replaces is not lost: it is saved as an undecided draft, as is a take left
 by selecting another prompt. Discard removes a failed take (or an unsaved one, on request).
-Reject, Remove, Restore, trims, the take picker and the waveform are step 6b's; keys 6c's
-(``toggleRecord``, ``save`` and ``saveNext`` are what R, Space, Return and Ctrl+S call).
+The take picker, Reject, Remove, Restore, the waveform, trims and playback are the takes
+model's (``screens/studio_takes.py``, step 6b; ``takes`` here); Save follows its selection
+(the take under review, or a draft of this machine). Keys are 6c's (``toggleRecord``,
+``saveNext`` and ``save`` are what R, Return and Ctrl+S call).
 
 Every connection made here goes to a declared ``@Slot`` (#41): QML reads this object.
 """
@@ -32,7 +34,7 @@ from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 
 from cole_voice_lab.canonical import canonical_sha256
 
-from ..capture.types import SAMPLE_RATE, CapturedTake, RunningTake, TakeRecorder
+from ..capture.types import PARTIAL_NAME, SAMPLE_RATE, CapturedTake, RunningTake, TakeRecorder
 from ..corpus.catalog import PinnedCatalog
 from ..corpus.client import CorpusClient, PendingTake
 from ..corpus.spool import SpooledTake, SpoolError
@@ -43,6 +45,7 @@ from ..studio.presentation import PromptView
 from ..tablemodel import RoleRows
 from ..viewmodel import AppContext, ViewModel, qproperty
 from .prompts import default_recorder
+from .studio_takes import TakeReviewModel
 
 #: How often a running take's confirmed frames are read.
 POLL_MS: Final = 50
@@ -150,6 +153,12 @@ class StudioModel(ViewModel):
     # The library's rows (a list model: 1,886 prompts are delegated lazily).
     rowsModel = Property(QObject, _get_rows, constant=True)
 
+    def _get_takes(self) -> TakeReviewModel:
+        return self.take_review
+
+    # The selected prompt's takes: the picker, waveform, trim and playback (step 6b).
+    takes = Property(QObject, _get_takes, constant=True)
+
     def __init__(
         self,
         context: AppContext,
@@ -236,6 +245,10 @@ class StudioModel(ViewModel):
         self._poll = QTimer(self)
         self._poll.setInterval(POLL_MS)
         self._poll.timeout.connect(self._on_poll)
+        self.take_review = TakeReviewModel(context, client, busy=lambda: self.recording)
+        self.take_review.setParent(self)
+        self.take_review.takesChanged.connect(self._takes_changed)
+        self.take_review.toast.connect(self.toast)
         client.add_listener(self._client_changed)
         self._refresh()
 
@@ -264,6 +277,8 @@ class StudioModel(ViewModel):
         stays; the client saves or counts it at the next start)."""
         self._closed = True
         self._poll.stop()
+        self.take_review.stop_playback()
+        self.take_review.shutdown()
         self.client.remove_listener(self._client_changed)
         self.client.shutdown()
         running, self._running = self._running, None
@@ -320,6 +335,7 @@ class StudioModel(ViewModel):
             self._adopt_catalog(pinned)
         self._takes = self.client.takes()
         self._recount()
+        self.take_review.refresh(self._takes, self.client.notices())
         self._update_status()
 
     def _adopt_catalog(self, pinned: PinnedCatalog | None) -> None:
@@ -341,6 +357,7 @@ class StudioModel(ViewModel):
         elif pinned is None and self._v["phase"] not in BUSY:
             self._set(self.transportChanged, phase="blocked")
         self._show_prompt()  # the same prompt id may read otherwise in another version
+        self._prompt_takes(latest=False)
 
     def _recount(self) -> None:
         pinned = self._pinned
@@ -357,6 +374,7 @@ class StudioModel(ViewModel):
                 first = library.next_missing(self._order, self._states, None)
                 self._current = first or self._order[0]
             self._show_prompt()
+            self._prompt_takes(latest=False)
         self._update_library()
         self._update_rows()
         self._update_prompt_status()
@@ -504,7 +522,7 @@ class StudioModel(ViewModel):
         if not self._navigable() or prompt_id not in self._by_id or prompt_id == self._current:
             return
         self._leave_take()
-        self._select(prompt_id)
+        self._select(prompt_id, latest=True)
 
     @Slot()
     def continueMissing(self) -> None:  # noqa: N802
@@ -522,13 +540,27 @@ class StudioModel(ViewModel):
         self._leave_take()
         self._select(target)
 
-    def _select(self, prompt_id: str) -> None:
+    def _select(self, prompt_id: str, *, latest: bool = False) -> None:
+        """Select ``prompt_id`` (``latest``: with its latest kept take, as an explicit
+        selection does; Continue Missing and Save & Next select no take)."""
         self._current = prompt_id
         self._outcome = None
         self._show_prompt()
+        self._prompt_takes(latest=latest)
         self._update_rows()
         self._update_transport()
         self._update_status()
+
+    def _prompt_takes(self, *, latest: bool) -> None:
+        current = self._current
+        self.take_review.set_prompt(current, self._digests.get(current or "", ""), latest=latest)
+        self.take_review.refresh(self._takes, self.client.notices())
+
+    @Slot()
+    def _takes_changed(self) -> None:
+        """The selected take changed (Save follows the selection)."""
+        if not self._closed:
+            self._update_transport()
 
     def _show_prompt(self) -> None:
         view = self._by_id.get(self._current or "")
@@ -588,13 +620,17 @@ class StudioModel(ViewModel):
     def _update_transport(self) -> None:
         phase = self._v["phase"]
         ready = self._pinned is not None and self._current is not None and self._v["deviceOk"]
+        selected = self.take_review.selectedKey
+        saveable = (phase == "review" and selected == "review") or (
+            phase == "ready" and self.take_review.selected_draft() != ""
+        )
         self._set(
             self.transportChanged,
             canRecord=ready and phase in ("ready", "review", "failed"),
             canStop=phase in ("starting", "recording"),
             canRetake=ready and phase in ("review", "failed"),
-            canSave=phase == "review",
-            canSaveNext=phase == "review",
+            canSave=saveable,
+            canSaveNext=saveable,
             canDiscard=phase in ("review", "failed"),
             canNavigate=self._navigable(),
         )
@@ -604,6 +640,7 @@ class StudioModel(ViewModel):
         self._set(self.transportChanged, phase=phase, **values)
         self._update_transport()
         self._update_status()
+        self.take_review.transport_changed()
 
     @Slot()
     def toggleRecord(self) -> None:  # noqa: N802
@@ -638,7 +675,7 @@ class StudioModel(ViewModel):
         self._captured = None
         self._stop_asked = False
         self._outcome = None
-        self.context.player.stop()
+        self.take_review.begin_live(pending.directory / PARTIAL_NAME)
         self._phase("starting", elapsedText=elapsed_text(0))
 
         def done(running: RunningTake | None, error: BaseException | None) -> None:
@@ -648,6 +685,7 @@ class StudioModel(ViewModel):
                 return
             if error is not None or running is None:
                 self._discard_pending()
+                self.take_review.end_live()
                 message = str(error) if error is not None else "the worker did not start"
                 self._outcome = status.Line(
                     "The take did not start", "danger", f"The take did not start: {message}"
@@ -680,6 +718,7 @@ class StudioModel(ViewModel):
         if frames > 0 and self._v["phase"] == "starting":
             self._phase("recording")
         self._set(self.transportChanged, elapsedText=elapsed_text(frames))
+        self.take_review.poll_live()
         if running.done:
             self._poll.stop()
             self._finish(running)
@@ -694,9 +733,11 @@ class StudioModel(ViewModel):
                 return
             if error is not None or captured is None:
                 self._failure = str(error) if error is not None else "no take"
+                self.take_review.end_live()
                 self._phase("failed")
                 return
             self._captured = captured
+            self.take_review.review(captured)
             self._phase("review", elapsedText=elapsed_text(captured.frames))
 
         self.context.tasks.submit(lambda: running.wait(STOP_TIMEOUT_S), done)
@@ -707,6 +748,7 @@ class StudioModel(ViewModel):
         if self._v["phase"] not in ("review", "failed"):
             return
         self._discard_pending()
+        self.take_review.clear_review()
         self._outcome = status.Line("Take discarded", "neutral")
         self._phase("ready", elapsedText=elapsed_text(0))
 
@@ -732,12 +774,24 @@ class StudioModel(ViewModel):
         elif phase == "review" and self._pending is not None and self._captured is not None:
             pending, captured = self._pending, self._captured
             self._pending = self._captured = None
-            self._keep_draft(pending, captured)
+            self._keep_draft(pending, captured, self.take_review.pending_trim())
         if phase in ("review", "failed"):
+            self.take_review.clear_review()
             self._phase("ready", elapsedText=elapsed_text(0))
 
-    def _keep_draft(self, pending: PendingTake, captured: CapturedTake) -> None:
+    def _keep_draft(
+        self,
+        pending: PendingTake,
+        captured: CapturedTake,
+        trim: tuple[int | None, int | None] | None,
+    ) -> None:
         client = self.client
+
+        def work() -> SpooledTake:
+            take = client.save_take(pending, captured)
+            if trim is not None:
+                take = client.set_trim(take.take_id, *trim)
+            return take
 
         def done(_take: SpooledTake | None, error: BaseException | None) -> None:
             if self._closed:
@@ -752,7 +806,7 @@ class StudioModel(ViewModel):
                 )
             self._refresh()
 
-        self.context.tasks.submit(lambda: client.save_take(pending, captured), done)
+        self.context.tasks.submit(work, done)
 
     @Slot()
     def save(self) -> None:
@@ -765,14 +819,22 @@ class StudioModel(ViewModel):
         self._save(advance=True)
 
     def _save(self, *, advance: bool) -> None:
-        if self._v["phase"] != "review" or self._pending is None or self._captured is None:
+        if not self._v["canSave"]:
+            return
+        if self._v["phase"] == "ready":
+            self._keep_selected(advance=advance)
+            return
+        if self._pending is None or self._captured is None:
             return
         pending, captured, client = self._pending, self._captured, self.client
+        trim = self.take_review.pending_trim()
         self._phase("saving")
 
         def work() -> tuple[SpooledTake, str]:
             take = client.save_take(pending, captured)
             try:
+                if trim is not None:
+                    take = client.set_trim(take.take_id, *trim)
                 take = client.decide(take.take_id, "kept")
             except SpoolError as exc:
                 return take, str(exc)
@@ -789,8 +851,9 @@ class StudioModel(ViewModel):
                 )
                 self._phase("review")
                 return
-            _take, problem = result
+            saved, problem = result
             self._pending = self._captured = None
+            self.take_review.clear_review(select=saved.take_id)
             if problem:
                 self._outcome = status.Line(
                     "Saved as a draft, not kept", "warn", f"Saved as a draft, not kept: {problem}"
@@ -803,6 +866,27 @@ class StudioModel(ViewModel):
                 self._advance()
 
         self.context.tasks.submit(work, done)
+
+    def _keep_selected(self, *, advance: bool) -> None:
+        """Save on a selected draft of this machine: kept (with its edited trim)."""
+        take_id = self.take_review.selected_draft()
+        if not take_id:
+            return
+        trim = self.take_review.selected_edit()
+        try:
+            if trim is not None:
+                self.client.set_trim(take_id, *trim)
+            self.client.decide(take_id, "kept")
+        except SpoolError as exc:
+            self._outcome = status.Line("Not kept", "danger", f"Not kept: {exc}")
+            self._update_status()
+            return
+        self._outcome = status.Line("Saved · kept on this machine", "ok")
+        self._refresh()
+        if advance:
+            self._advance()
+        else:
+            self._update_status()
 
     def _advance(self) -> None:
         target = library.next_missing(self._order, self._states, self._current)

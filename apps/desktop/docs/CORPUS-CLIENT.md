@@ -155,6 +155,8 @@ task pool. It offers:
 - `pinned` and `start_new_session()`;
 - `begin_take(prompt_id)`, then `save_take(pending, captured)` (or `discard_take`);
 - `decide`, `restore`, `set_trim`, `takes()`, `takes_for_prompt()`;
+- `prompt_history(prompt_id)` and `take_audio(take_id)`: the PC's takes of a prompt and a
+  take's audio (in memory), read straight from the PC, off the GUI thread;
 - `library`, the PC's library as last read (`LibraryCache.latest`);
 - `notices()` and `dismiss_notice()`;
 - `status()`, a `SyncStatus` value;

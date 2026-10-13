@@ -22,8 +22,9 @@ Item {
     objectName: "studioScreen"
 
     readonly property var rec: app.studioModel
+    readonly property var takes: rec.takes
     readonly property bool shown: app.screen === "prompts"
-    readonly property bool menuOpen: libraryPane.menuOpen || detailsPopup.visible
+    readonly property bool menuOpen: libraryPane.menuOpen || detailsPopup.visible || takePicker.menuOpen
 
     // Layout tokens: an 8-point scale, 16-point insets, a 280-point library (240 below a
     // 1,000-point screen), a 56-point Record/Stop target.
@@ -69,6 +70,14 @@ Item {
     readonly property bool busy: rec.phase === "starting" || rec.phase === "recording"
                                  || rec.phase === "stopping" || rec.phase === "saving"
     readonly property bool live: rec.phase === "starting" || rec.phase === "recording"
+    readonly property bool recordingTime: live || rec.phase === "stopping"
+
+    component CompactButton: SuiButton {
+        Layout.preferredHeight: 24
+        topPadding: 0
+        bottomPadding: 0
+        variant: "ghost"
+    }
 
     StudioLibrary {
         id: libraryPane
@@ -145,21 +154,16 @@ Item {
             rec: studio.rec
         }
 
-        // -- held for step 6b: the take picker, the waveform, the trim row ----------------------
-        Item {
+        // -- the take picker, the waveform, the trim row (step 6b) ---------------------------
+        StudioTakePicker {
+            id: takePicker
             objectName: "studioTakePicker"
             x: studio.inset
             y: studio.pickerY
             width: studio.contentWidth
             height: studio.pickerHeight
-            SuiText {
-                objectName: "studioTakes"
-                anchors.verticalCenter: parent.verticalCenter
-                width: parent.width
-                text: studio.rec.takesText
-                variant: "caption"
-                elide: Text.ElideRight
-            }
+            takes: studio.takes
+            busy: studio.busy
         }
         Rectangle {
             objectName: "studioWaveform"
@@ -171,15 +175,27 @@ Item {
             color: SuiTheme.tint
             border.width: 1
             border.color: studio.live ? SuiTheme.alpha(SuiTheme.toneRed, 0.6) : SuiTheme.line
-            Accessible.role: Accessible.Graphic
-            Accessible.name: "Waveform"
-            Rectangle {
-                anchors.verticalCenter: parent.verticalCenter
-                x: SuiTheme.spaceSm
-                width: parent.width - 2 * SuiTheme.spaceSm
-                height: 1
+            clip: true
+            StudioWaveform {
+                id: waveform
+                objectName: "studioWave"
+                anchors.fill: parent
+                anchors.margins: 1
                 visible: studio.rec.problemText === ""
-                color: studio.live ? SuiTheme.toneRed : SuiTheme.borderStrong
+                bins: studio.takes.bins
+                slots: studio.takes.slots
+                viewStart: studio.takes.viewStart
+                viewEnd: studio.takes.viewEnd
+                frameCount: studio.takes.frameCount
+                trimStart: studio.takes.trimStart
+                trimEnd: studio.takes.trimEnd
+                playhead: studio.takes.playhead
+                live: studio.takes.live
+                editable: studio.takes.canEditTrim
+                note: studio.takes.waveNote
+                onSeekRequested: (frame) => studio.takes.seekTo(frame)
+                onTrimRequested: (start, end) => studio.takes.setTrimRange(start, end)
+                onPlayRequested: studio.takes.togglePlay()
             }
             // What went wrong with the take, whole, in the take's place.
             Flickable {
@@ -204,15 +220,67 @@ Item {
                 }
             }
         }
+        // In and Out from the playhead, Save trim, Reset. The take under review keeps its edit
+        // until Save; a take recorded elsewhere shows its trim.
         Item {
             objectName: "studioTrimRow"
             x: studio.inset
             y: studio.trimY
             width: studio.contentWidth
             height: studio.trimHeight
+            RowLayout {
+                anchors.fill: parent
+                spacing: SuiTheme.spaceXs
+                SuiText { text: "In"; variant: "caption" }
+                SuiText {
+                    objectName: "studioTrimIn"
+                    text: studio.takes.inText
+                    variant: "mono"
+                }
+                CompactButton {
+                    objectName: "studioSetIn"
+                    text: "Set In"
+                    enabled: studio.takes.canEditTrim
+                    onClicked: studio.takes.setIn()
+                }
+                Item { Layout.preferredWidth: SuiTheme.spaceSm }
+                SuiText { text: "Out"; variant: "caption" }
+                SuiText {
+                    objectName: "studioTrimOut"
+                    text: studio.takes.outText
+                    variant: "mono"
+                }
+                CompactButton {
+                    objectName: "studioSetOut"
+                    text: "Set Out"
+                    enabled: studio.takes.canEditTrim
+                    onClicked: studio.takes.setOut()
+                }
+                Item { Layout.fillWidth: true }
+                SuiText {
+                    objectName: "studioTrimEdited"
+                    text: "edited"
+                    variant: "caption"
+                    tone: "warn"
+                    visible: studio.takes.trimDirty
+                }
+                CompactButton {
+                    objectName: "studioSaveTrim"
+                    text: "Save trim"
+                    variant: "secondary"
+                    enabled: studio.takes.canSaveTrim
+                    onClicked: studio.takes.saveTrim()
+                }
+                CompactButton {
+                    objectName: "studioResetTrim"
+                    text: "Reset"
+                    enabled: studio.takes.canResetTrim
+                    onClicked: studio.takes.resetTrim()
+                }
+            }
         }
 
-        // -- the timer: the take's confirmed frames, never a clock (D-014) ------------------
+        // -- the timer: the take's confirmed frames while recording (D-014), else the playhead
         Item {
             objectName: "studioTimer"
             x: studio.inset
@@ -223,22 +291,100 @@ Item {
                 objectName: "studioElapsed"
                 anchors.centerIn: parent
                 textFormat: Text.PlainText
-                text: studio.rec.elapsedText
+                text: studio.recordingTime || studio.takes.timeText === ""
+                      ? studio.rec.elapsedText : studio.takes.timeText
                 color: studio.rec.phase === "recording" ? SuiTheme.toneText("danger") : SuiTheme.text
                 font.family: SuiTheme.monoFamily
                 font.pixelSize: SuiTheme.fontSizeLg
                 font.features: { "tnum": 1 }
-                Accessible.name: "Elapsed " + text
+                Accessible.name: (studio.recordingTime ? "Elapsed " : "Position ") + text
+            }
+            SuiLevelMeter {
+                objectName: "studioLevel"
+                anchors.right: levelText.left
+                anchors.rightMargin: SuiTheme.spaceXs
+                anchors.verticalCenter: parent.verticalCenter
+                width: 96
+                visible: studio.takes.live && studio.takes.levelText !== ""
+                peak: studio.takes.levelPeak
+                rms: studio.takes.levelPeak
+                label: "Recording level"
+                text: studio.takes.levelText
+            }
+            SuiText {
+                id: levelText
+                objectName: "studioLevelText"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                visible: studio.takes.live
+                text: studio.takes.levelText
+                variant: "caption"
             }
         }
 
-        // -- held for step 6b: the playback row -----------------------------------------------
+        // -- playback: Zoom and Fit; −0.1 s, Play/Pause, +0.1 s ------------------------------
         Item {
             objectName: "studioPlaybackRow"
             x: studio.inset
             y: studio.playbackY
             width: studio.contentWidth
             height: studio.playbackHeight
+            RowLayout {
+                anchors.fill: parent
+                spacing: SuiTheme.spaceXs
+                SuiButton {
+                    objectName: "studioZoomOut"
+                    Layout.preferredWidth: 36
+                    text: "−"
+                    Accessible.name: "Zoom out"
+                    enabled: studio.takes.canZoomOut
+                    onClicked: studio.takes.zoomOut()
+                }
+                SuiButton {
+                    objectName: "studioZoomIn"
+                    Layout.preferredWidth: 36
+                    text: "+"
+                    Accessible.name: "Zoom in"
+                    enabled: studio.takes.canZoomIn
+                    onClicked: studio.takes.zoomIn()
+                }
+                SuiButton {
+                    objectName: "studioFit"
+                    Layout.preferredWidth: 48
+                    text: "Fit"
+                    enabled: studio.takes.canZoomOut
+                    onClicked: studio.takes.fit()
+                }
+                Item { Layout.fillWidth: true }
+                SuiButton {
+                    objectName: "studioStepBack"
+                    Layout.preferredWidth: 64
+                    text: "−0.1 s"
+                    Accessible.name: "Back 0.1 seconds"
+                    enabled: studio.takes.canPlay
+                    onClicked: studio.takes.stepBack()
+                }
+                SuiButton {
+                    objectName: "studioPlay"
+                    Layout.preferredWidth: 72
+                    text: studio.takes.playing ? "Pause" : "Play"
+                    variant: "secondary"
+                    enabled: studio.takes.canPlay
+                    onClicked: studio.takes.togglePlay()
+                }
+                SuiButton {
+                    objectName: "studioStepForward"
+                    Layout.preferredWidth: 64
+                    text: "+0.1 s"
+                    Accessible.name: "Forward 0.1 seconds"
+                    enabled: studio.takes.canPlay
+                    onClicked: studio.takes.stepForward()
+                }
+                Item { Layout.fillWidth: true }
+                // As wide as the zoom buttons, so the transport sits in the middle when there
+                // is room (it gives way first on a narrow window).
+                Item { Layout.preferredWidth: 128; Layout.minimumWidth: 0 }
+            }
         }
 
         // -- the footer: Record/Stop, Retake, Discard, Save, Save & Next --------------------------

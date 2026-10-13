@@ -11,8 +11,9 @@ import itertools
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 from corpus_rig import DEVICE, capture
-from voice_lab_desktop.capture.types import CapturedTake, CaptureFailed
+from voice_lab_desktop.capture.types import PARTIAL_NAME, CapturedTake, CaptureFailed
 
 _SEEDS = itertools.count(100)
 
@@ -37,8 +38,18 @@ class StudioTake:
     def done(self) -> bool:
         return self._done
 
-    def advance(self, frames: int) -> None:
-        """The worker confirmed ``frames`` more frames."""
+    def advance(self, frames: int, amplitude: float = 0.25) -> None:
+        """The worker wrote and confirmed ``frames`` more frames (a tone at ``amplitude``) in
+        its partial WAV, as the real worker does block by block."""
+        partial = self.take_dir / PARTIAL_NAME
+        if not partial.exists():
+            partial.write_bytes(b"RIFF" + bytes(40))  # the header, rewritten at the end
+        start = self._confirmed
+        phases = (np.arange(start, start + frames) * 2 * np.pi * 220.0 / 48_000).astype(np.float64)
+        values = np.round(np.sin(phases) * amplitude * (2**23 - 1)).astype(np.int32)
+        raw = np.stack([values & 0xFF, (values >> 8) & 0xFF, (values >> 16) & 0xFF], axis=1)
+        with partial.open("ab") as stream:
+            stream.write(raw.astype(np.uint8).tobytes())
         self._confirmed += frames
 
     def stop(self) -> None:
@@ -46,6 +57,7 @@ class StudioTake:
         if self._done:
             return
         if self.fail is None:
+            (self.take_dir / PARTIAL_NAME).unlink(missing_ok=True)  # published as original.wav
             self._captured = capture(
                 self.take_dir, seed=self.seed, seconds=self.seconds, simulated=self.simulated
             )

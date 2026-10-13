@@ -315,3 +315,27 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
     words. The whole message goes to the take's place (a failure, a take that did not
     start, no microphone) or to the status line's Details (a notice with Dismiss, why
     uploads cannot start).
+- 2026-10-12: step 6b, transport and review (apps/desktop/docs/PROMPT-STUDIO.md), in the
+  regions 6a held: `TakeReviewModel` (`screens/studio_takes.py`, `app.studioModel.takes`),
+  `studio/takes.py` and `studio/audio.py`.
+  - **The take picker and History** list every take of the prompt, from this machine and
+    from the PC, with when, length, status and where it lives.
+    `CorpusClient.prompt_history` and `take_audio` read the PC's, the audio in memory and
+    under the PC's playback approval. *Changed elsewhere* marks a take whose state the
+    client adopted from the PC.
+  - **Decisions:** Remove, Reject (a reason is required) and Restore go through
+    `decide`/`restore`, and Save keeps a selected draft. A take recorded elsewhere is shown
+    and played, not decided: the client holds this machine's takes only. Deciding it from
+    here needs a client change, left open.
+  - **The waveform** uses the Swift app's fixed dB display scale, with Zoom (down to 50 ms)
+    and Fit. While recording it is live from the worker's partial WAV, the only level the
+    worker exposes, with the peak level.
+  - **Trims:** In and Out from the playhead or the handles, then Save trim (`set_trim`) or
+    Reset. The take under review keeps its trim until Save, or until Retake leaves it as a
+    draft.
+  - **Playback** goes through the one player. The preview is exactly the kept frames
+    (tests compare them to the original), with ±0.1 s steps inside them.
+  - **§5 ticked by 6b:** the live waveform; Retake, Remove, Reject, Restore; Save and Save &
+    Next; trims with In/Out, Save trim and Reset; Zoom and Fit; playback with ±0.1 s; take
+    history across every session.
+  - **Left to 6c:** the keys, through the slots the model already has.

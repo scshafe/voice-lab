@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Final
 
 from PySide6.QtCore import QTimer
 
+from cole_voice_lab.api.corpus_contracts import TakeHistory
 from cole_voice_lab.corpus_take_store import TakeDecisionName
 from cole_voice_lab.corpus_takes import TakeClient
 from cole_voice_lab.models import Prompt, utc_now
@@ -371,6 +372,22 @@ class CorpusClient:
         take = self.spool.set_trim(take_id, start_frame, end_frame)
         self._poke()
         return take
+
+    # -- the PC's takes (read only; call off the GUI thread) --------------------------------------
+
+    def prompt_history(self, prompt_id: str) -> TakeHistory:
+        """Every take the PC counts for ``prompt_id`` of its active version, newest first.
+
+        Raises: ``ConfigError`` without a server; the API's errors (``ApiError``,
+        ``SignInRequired``)."""
+        return self.engine.api().prompt_takes(prompt_id)
+
+    def take_audio(self, take_id: str) -> bytes:
+        """A take's ``original.wav`` from the PC, in memory (never written here, D-038); the
+        PC serves it only under its playback approval.
+
+        Raises: as ``prompt_history``."""
+        return self.engine.api().take_audio(take_id)
 
     # -- what it says -------------------------------------------------------------------------
 

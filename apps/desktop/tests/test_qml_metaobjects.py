@@ -59,6 +59,8 @@ def test_every_model_qml_reads_keeps_its_class_metaobject(tmp_path: Path) -> Non
         assert metaobject(first) == metaobject(second)
         for name in EXPOSED:
             assert metaobject(getattr(first, name)) == metaobject(getattr(second, name)), name
+        # The studio's takes, which QML reads through the studio (app.studioModel.takes).
+        assert metaobject(first.studio.take_review) == metaobject(second.studio.take_review)
     finally:
         first.shutdown()
         second.shutdown()
