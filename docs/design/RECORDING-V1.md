@@ -123,9 +123,14 @@ every vault pass.
   the bodies `TakeDecisionRequest` and `TakeTrimRequest`, and `CorpusRequestStatus` (`queued`,
   `applied` or `refused`, with the outcome).
 
-The Swift app's take records (`RecordingTake`, Core Audio seals) are not reused. They are
-bound to Core Audio and the Swift helper. Mac takes reach the PC through an exporter (step 9)
-that maps them onto these contracts.
+The Swift app's take records (`RecordingTake`, Core Audio seals) are not reused for new takes.
+They are bound to Core Audio and the Swift helper. Mac takes reach the PC through an exporter
+(step 9, D-053) as their own package, **`cole-voice-lab.corpus-take-import/v1`**, so the
+PortAudio take contract stays strict: the WAV, the take's seal, reservation and group byte for
+byte, and the Mac's decision and trim (`mac-state.json`). Its manifest names the PC's take id
+(the audio's SHA-256, as for every take), the Swift take's id, the exact prompt, what the
+group recorded against, and the PC's catalog version that counts the prompt. On the PC it
+becomes a take record like any other, with the Mac's state and an `origin`.
 
 ## 5. The prompt studio (the Swift app's interface, in Qt)
 
@@ -169,7 +174,7 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
 | 6 | **The prompt studio UI**, in several PRs: library, transport and waveform, review and history, keys, polish | the parity list (§5) checked off |
 | 7 | **Singing, source-neutral.** The journey index's source port; Voice Memos and measurement adapters; `source` in rows and the API | the index and API carry `source`; nothing else changes |
 | 8 | **S-1 on real hardware** (owner, or the Mac agent with the UMIK-1) | D-040's verdict recorded |
-| 9 | **The Mac's takes to the PC.** An exporter the Mac agent runs, under a transfer approval naming the payload digest; the publisher imports | the Mac library's takes counted on the PC |
+| 9 | **The Mac's takes to the PC.** `voice-lab corpus-import plan\|approve\|send` on the Mac (D-053): imported-take packages under a transfer approval naming the export plan's digest; the publisher admits them with the Mac's state | the Mac library's takes counted on the PC |
 | 10 | **Retire the Swift app.** Freeze it with a tag; the docs | the owner's sign-off |
 
 ## 7. The owner's steps
@@ -196,7 +201,40 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
    `GET /api/v1/catalog` serves (version 2, 1,886 prompts). It says so when the deployed build
    predates that route.
 2. **S-1 on the Mac** (step 8), with the UMIK-1: `scripts/s1-portaudio`, or ask the Mac agent.
-3. **The transfer approval for the Mac's takes** (step 9).
+3. **The Mac's takes to the PC** (step 9, D-053), once step 9 is deployed and the PC's catalog
+   is seeded (step 1). On the Mac, as you, from a checkout of `main` with its `.venv`
+   (`voice-lab` is `.venv/bin/voice-lab`), with the Swift app's library as the asset root.
+   Quit the Swift app first: a plan stops if the app commits a change while it reads (run it
+   again). If it says the recording projection awaits a metadata commit, open the Swift app
+   once and quit it (it finishes its last commit), then plan again.
+
+   ```sh
+   ASSET_ROOT=~/.local/share/cole-voice-lab          # the Swift app's library
+   # The standing approval stands, and this Mac is signed in; else first do
+   # docs/HOME_HOST_INTAKE.md "The capturing host", steps 1 and 2.
+   voice-lab home-host show --asset-root "$ASSET_ROOT"
+   voice-lab corpus-import plan --asset-root "$ASSET_ROOT" --catalog-from-pc
+   ```
+
+   `plan` asks the PC for its active catalog (`GET /api/v1/catalog`), packages every sealed
+   take whose exact prompt that version counts under `tmp/corpus-import/` (the library keeps
+   its takes), and prints the plan: its `plan_sha256`, the packages and their bytes, and each
+   skipped take with its reason (room tones, uncounted prompts, unsealed or damaged takes,
+   legacy capture sessions). Review it; while the takes are unchanged, running it again names
+   the same plan. Then approve exactly that payload, and send it:
+
+   ```sh
+   voice-lab corpus-import approve --asset-root "$ASSET_ROOT" --plan <plan_sha256> \
+     --approved-by Cole --statement "My Swift app's takes, to my own PC." \
+     --i-approve-this-transfer
+   voice-lab corpus-import send --asset-root "$ASSET_ROOT" --plan <plan_sha256>
+   ```
+
+   `send` prints each take: `accepted`, or `deferred` (on the PC, not published yet: run
+   `send` again later), `refused` (with the PC's reason), `invalid` or `failed`. Running it
+   again resumes and skips what the PC accepted. The plan and its approval stay in
+   `provenance/host-transfers/`. The PC's library then counts the takes, with the Mac's
+   decisions and trims; change them on the PC from then on.
 4. **Sign off parity and retire the Swift app** (step 10).
 
 ## 8. Risks
@@ -271,3 +309,21 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   unsafe request file is set aside in `incoming/.refused/`. The queue holds at most 10,000
   requests (503). A restore sends the decision the take had before (`kept` or `draft`): the
   PC keeps no restore target.
+- 2026-10-12: step 9, the Mac's takes to the PC (D-053). The Swift app's takes travel as their own
+  package, `cole-voice-lab.corpus-take-import/v1` (`corpus_take_imports`): `original.wav`, the
+  take's `seal.json`, `reservation.json` and `group.json` verbatim, `mac-state.json` (the Mac's
+  decision and trim at export), and the manifest (the PC's take id, the Swift take's, the
+  exact prompt, what the group recorded against, the PC's catalog version, the seal's times,
+  host, Core Audio device, client and the records' digests), with `qc.json` and `READY`. The
+  validator binds the WAV to the seal, the seal to the reservation (its digest), the
+  reservation to the group, the group's device to the seal's evidence and to a UMIK-1, and the
+  Mac's trim to the take. The publisher tells it apart by its schema, admits it by the PC's
+  catalog version (refused when contradicted or not counting the prompt, deferred when the
+  version is not there yet; no simulated rule: the Swift app has none), and records it with the
+  Mac's decision and trim (revision 1 unless draft or whole) and `origin: imported`, which the
+  library and the prompt's history carry. `voice-lab corpus-import plan|approve|send`
+  (`corpus_import`) packages the takes once under `tmp/corpus-import/` (Mac-only), writes a
+  timeless export plan and the owner's approval of its digest under
+  `provenance/host-transfers/` (records, 0400), and sends only the approved packages through
+  the standing approval and the ledger; a take already accepted is not sent again. Owner
+  step 3 above.
