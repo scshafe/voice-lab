@@ -304,6 +304,26 @@
       "pattern": "^take-[0-9a-f]{64}$",
       "type": "string"
     },
+    "TakeOrigin": {
+      "additionalProperties": false,
+      "description": "Where a take the PC did not receive from a recording client came from.\n\n``imported``: a take of the Swift app on the Mac (D-053), whose own id was\n``source_take_id``; its raw package keeps its seal, reservation, group and the Mac's\ndecision and trim as they were exported.",
+      "properties": {
+        "kind": {
+          "const": "imported",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source_take_id": {
+          "$ref": "#/$defs/TakeId"
+        }
+      },
+      "required": [
+        "kind",
+        "source_take_id"
+      ],
+      "title": "TakeOrigin",
+      "type": "object"
+    },
     "TakeTrim": {
       "additionalProperties": false,
       "description": "The frames a take keeps, ``[start_frame, end_frame)``, or all of them (both ``None``),\nat which revision (0: never trimmed).",
@@ -358,7 +378,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "One take on the PC: what it is, and its current decision and trim.",
+  "description": "One take on the PC: what it is, and its current decision and trim.\n\n``origin`` is absent for a take a recording client uploaded (every record written before\nD-053 included, byte for byte), and says ``imported`` for a Swift take.",
   "properties": {
     "accepted_at": {
       "format": "date-time",
@@ -382,6 +402,17 @@
     },
     "manifest_sha256": {
       "$ref": "#/$defs/Sha256"
+    },
+    "origin": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TakeOrigin"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "prompt": {
       "$ref": "#/$defs/Prompt"

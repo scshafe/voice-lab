@@ -1,9 +1,10 @@
 """Fail-closed, content-addressed intake for transferred packages.
 
 A package is a capture package (``validate_capture_package``) or, since the corpus moved to
-the PC (D-052), a take package (``corpus_takes``); ``validate_package`` tells them apart by
-the manifest's ``schema_version``. Both are published the same way, into
-``raw/<manifest_sha256>/`` with intake's own QC report and receipt.
+the PC (D-052), a take package (``corpus_takes``) or an imported Swift take
+(``corpus_take_imports``, D-053); ``validate_package`` tells them apart by the manifest's
+``schema_version``. All are published the same way, into ``raw/<manifest_sha256>/`` with
+intake's own QC report and receipt.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from .models import CaptureManifest, ContractModel, QcReport, Sha256, StableId, 
 from .paths import AssetLayout, confined_path, validate_relative_path
 
 if TYPE_CHECKING:
+    from .corpus_take_imports import ValidatedTakeImport
     from .corpus_takes import ValidatedTake
 
 MIN_FREE_BYTES = 10 * 1024**3
@@ -411,17 +413,30 @@ def validate_capture_package(
 
 def validate_package(
     package: Path, *, allow_intake_receipt: bool = False
-) -> ValidatedPackage | ValidatedTake:
-    """A capture package, or a take package when its manifest declares a take (D-052).
+) -> ValidatedPackage | ValidatedTake | ValidatedTakeImport:
+    """A capture package, a take package (D-052) or an imported Swift take (D-053), as its
+    manifest's ``schema_version`` declares.
 
-    Params and raises: as ``validate_capture_package`` and
-    ``corpus_takes.validate_take_package``, whichever the manifest's ``schema_version``
-    selects; a manifest that cannot be read is the capture validator's to refuse.
+    Params and raises: as ``validate_capture_package``,
+    ``corpus_takes.validate_take_package`` and
+    ``corpus_take_imports.validate_take_import_package``, whichever the manifest's
+    ``schema_version`` selects; a manifest that cannot be read is the capture validator's to
+    refuse.
     """
-    from .corpus_takes import is_take_package, validate_take_package  # it imports this module
+    # Both import this module.
+    from .corpus_take_imports import validate_take_import_package
+    from .corpus_takes import (
+        TAKE_IMPORT_SCHEMA,
+        TAKE_SCHEMA,
+        package_schema,
+        validate_take_package,
+    )
 
-    if is_take_package(package):
+    schema = package_schema(package)
+    if schema == TAKE_SCHEMA:
         return validate_take_package(package, allow_intake_receipt=allow_intake_receipt)
+    if schema == TAKE_IMPORT_SCHEMA:
+        return validate_take_import_package(package, allow_intake_receipt=allow_intake_receipt)
     return validate_capture_package(package, allow_intake_receipt=allow_intake_receipt)
 
 
@@ -446,12 +461,23 @@ def _existing_session_digest(raw_directory: Path, session_id: str) -> str | None
 
 
 def _raw_session_id(raw_package: Path) -> str:
-    """The session id of a published package: a capture session's, or a take's id."""
-    from .corpus_takes import CorpusTakeManifest, is_take_package  # it imports this module
+    """The session id of a published package: a capture session's, or a take's id (of a take
+    or an imported take: one audio digest, one take id, whichever kind published it)."""
+    # Both import this module.
+    from .corpus_take_imports import CorpusTakeImportManifest
+    from .corpus_takes import (
+        TAKE_IMPORT_SCHEMA,
+        TAKE_SCHEMA,
+        CorpusTakeManifest,
+        package_schema,
+    )
 
     manifest_path = raw_package / MANIFEST_NAME
-    if is_take_package(raw_package):
+    schema = package_schema(raw_package)
+    if schema == TAKE_SCHEMA:
         return _read_canonical_model(manifest_path, CorpusTakeManifest).take_id
+    if schema == TAKE_IMPORT_SCHEMA:
+        return _read_canonical_model(manifest_path, CorpusTakeImportManifest).take_id
     return _read_canonical_model(manifest_path, CaptureManifest).session_id
 
 
@@ -579,13 +605,21 @@ def _discard_verified_duplicate(stage: Path, tmp_root: Path) -> None:
     shutil.rmtree(stage)
 
 
-def _admit(layout: AssetLayout, package: ValidatedPackage | ValidatedTake) -> None:
-    """The asset root's own rules: guard #5 for a capture package, ``admit_take`` for a take."""
+def _admit(
+    layout: AssetLayout, package: ValidatedPackage | ValidatedTake | ValidatedTakeImport
+) -> None:
+    """The asset root's own rules: guard #5 for a capture package, ``admit_take`` for a take,
+    ``admit_take_import`` for an imported take."""
     if isinstance(package, ValidatedPackage):
         _require_intake_root(layout, package.manifest)
         return
-    from .corpus_takes import admit_take  # it imports this module
+    # Both import this module.
+    from .corpus_take_imports import ValidatedTakeImport, admit_take_import
+    from .corpus_takes import admit_take
 
+    if isinstance(package, ValidatedTakeImport):
+        admit_take_import(layout, package)
+        return
     admit_take(layout, package)
 
 
@@ -615,7 +649,8 @@ def accept_capture_session(
     available_bytes: int | None = None,
     clock: Callable[[], datetime] = utc_now,
 ) -> IntakeReceipt:
-    """Atomically claim, validate, and publish one complete capture or take package."""
+    """Atomically claim, validate, and publish one complete capture, take or imported-take
+    package."""
 
     if min_free_bytes < 0:
         raise ValueError("minimum free bytes cannot be negative")

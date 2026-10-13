@@ -51,7 +51,13 @@ from .canonical import (
     write_canonical_json,
 )
 from .catalog_ports import CorpusStoreError
-from .corpus_take_store import CorpusTakeState, TakeDecisionName, TakeTrim, read_take_states
+from .corpus_take_store import (
+    CorpusTakeState,
+    TakeDecisionName,
+    TakeOrigin,
+    TakeTrim,
+    read_take_states,
+)
 from .corpus_takes import TakeId
 from .errors import ContractError, SecurityError
 from .models import COLE_SUBJECT, ContractModel, PromptLabel, Sha256, StableId, utc_now
@@ -158,6 +164,8 @@ class LibraryTake(ContractModel):
     #: counts it), and the catalog version it named.
     recorded_prompt_sha256: Sha256
     catalog_version: int = Field(ge=1)
+    #: Absent for a take a recording client uploaded; ``imported`` for a Swift take (D-053).
+    origin: TakeOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class LibraryRow(ContractModel):
@@ -228,6 +236,7 @@ def _library_take(state: CorpusTakeState) -> LibraryTake:
         qc_status=state.qc_status,
         recorded_prompt_sha256=state.prompt_sha256,
         catalog_version=state.catalog.catalog_version,
+        origin=state.origin,
     )
 
 

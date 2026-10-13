@@ -1,10 +1,11 @@
 """Uploading a finalized package to the home host's intake API (D-021, D-024).
 
-@canonical intake_client -- ``upload_session`` validates the package (a capture package, or a
-take package: ``corpus_takes``, D-052) locally with the same strict validator the publisher
-runs (so a symlink, an undeclared file or a tampered recording is refused before a byte is
-sent), loads the standing home-host approval, checks
-that the node answering for the approved endpoint is the approved node, writes the ledger
+@canonical intake_client -- ``upload_session`` validates the package (a capture package, a
+take package: ``corpus_takes``, D-052, or an imported Swift take: ``corpus_take_imports``,
+D-053) locally with the same strict validator the publisher runs (so a symlink, an undeclared
+file or a tampered recording is refused before a byte is sent), loads the standing home-host
+approval, checks that the node answering for the approved endpoint is the approved node,
+writes the ledger
 entry naming the manifest digest, and then sends the package with the resumable protocol of
 ``api.staging``: every file from the byte the server already holds, in ``CHUNK_BYTES``
 pieces with ``Content-Range``. It re-validates the local package before finalizing and
@@ -40,6 +41,7 @@ from .api.contracts import (
     IntakeSessionStatus,
 )
 from .canonical import canonical_json_bytes, open_regular_no_follow
+from .corpus_take_imports import ValidatedTakeImport
 from .corpus_takes import ValidatedTake
 from .errors import SecurityError, VoiceLabError
 from .home_host import (
@@ -69,6 +71,21 @@ type Progress = Callable[[str, int, int], None]
 
 class UploadError(VoiceLabError):
     """The upload did not finish; it can be run again and resumes where it stopped."""
+
+
+class UploadPending(UploadError):
+    """Every byte is on the server, which has not published the package yet.
+
+    It waits in the server's ``incoming/``: the publisher has not run, or it deferred the
+    package (a take whose catalog version is not on the server yet). Running the upload again
+    later collects the receipt; nothing is sent again."""
+
+    def __init__(self, state: str) -> None:
+        super().__init__(
+            f"the package is {state} but not yet published; run the upload again later to "
+            "collect the receipt"
+        )
+        self.state = state
 
 
 class UploadRefused(VoiceLabError):
@@ -209,7 +226,10 @@ def _fail(answer: Answer) -> VoiceLabError:
     return UploadRefused(code, detail)
 
 
-def session_request(package: ValidatedPackage | ValidatedTake) -> IntakeSessionRequest:
+type AnyPackage = ValidatedPackage | ValidatedTake | ValidatedTakeImport
+
+
+def session_request(package: AnyPackage) -> IntakeSessionRequest:
     """The declaration of every file of a validated package."""
     files = tuple(
         FileDeclaration(path=path, sha256=item.sha256, size_bytes=item.size_bytes)
@@ -292,19 +312,29 @@ def upload_session(
     monotonic: Callable[[], float] = time.monotonic,
     package_class: HomeHostClass = "capture",
     progress: Progress | None = None,
+    expected_manifest_sha256: str | None = None,
 ) -> IntakeSessionStatus:
     """Upload one finalized package and wait for its intake receipt.
 
     ``package_class`` is what the package is (a prompted ``capture``, which a take package
-    is too, or a UMIK-1 ``measurement`` session, journey/measurement_package.py): the
-    standing approval must cover it. ``progress`` hears every chunk the server took.
+    and an imported take are too, or a UMIK-1 ``measurement`` session,
+    journey/measurement_package.py): the standing approval must cover it. ``progress`` hears
+    every chunk the server took. ``expected_manifest_sha256``, when given, is the manifest
+    digest a transfer approval names (``corpus_import``): a package with another manifest is
+    refused before anything is recorded or sent.
 
     Returns: the ``accepted`` status, whose receipt names this package's manifest digest.
     Raises: ``SecurityError``/``ContractError`` when the local package or the approval
     fails its checks (nothing is sent); ``UploadRefused`` when the server or the publisher
-    refuses it; ``UploadError`` when it did not finish (run it again: it resumes).
+    refuses it; ``UploadPending`` (an ``UploadError``) when every byte is on the server but it
+    has not published the package within ``wait_seconds``; ``UploadError`` when it did not
+    finish (run it again: it resumes).
     """
     package = validate_package(session)
+    if expected_manifest_sha256 is not None and package.manifest_sha256 != (
+        expected_manifest_sha256
+    ):
+        raise SecurityError("the package's manifest is not the one its transfer approval names")
     approval, approval_sha256 = load_approval(layout, now=clock())
     if package_class not in approval.classes:
         raise SecurityError(f"the home-host approval does not cover {package_class} packages")
@@ -342,7 +372,7 @@ def upload_session(
 def _transfer(
     client: HomeHostClient,
     session: Path,
-    package: ValidatedPackage | ValidatedTake,
+    package: AnyPackage,
     request: IntakeSessionRequest,
     progress: Progress | None = None,
 ) -> IntakeSessionStatus:
@@ -408,10 +438,7 @@ def _await_publication(
         if status.state == "refused":
             raise UploadRefused("refused_by_intake", status.refusal or "no reason recorded")
         if monotonic() >= deadline:
-            raise UploadError(
-                f"the package is {status.state} but not yet published; run the upload again "
-                "later to collect the receipt"
-            )
+            raise UploadPending(status.state)
         sleep(POLL_SECONDS)
         answer = client.request("GET", _session_path(request.session_id))
         if answer.status != 200:

@@ -1,0 +1,108 @@
+{
+  "$defs": {
+    "Endpoint": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "ImportDestination": {
+      "additionalProperties": false,
+      "description": "Where an approved plan may go: the standing home-host approval's endpoint and node.",
+      "properties": {
+        "endpoint": {
+          "$ref": "#/$defs/Endpoint"
+        },
+        "home_host_approval_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "home_host_approval_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "node_stable_id": {
+          "$ref": "#/$defs/NodeStableId"
+        }
+      },
+      "required": [
+        "endpoint",
+        "node_stable_id",
+        "home_host_approval_id",
+        "home_host_approval_sha256"
+      ],
+      "title": "ImportDestination",
+      "type": "object"
+    },
+    "NodeStableId": {
+      "pattern": "^[A-Za-z0-9]{1,64}$",
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "cole_voice_lab__storage_contracts__NonBlank__1": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "cole_voice_lab__storage_contracts__NonBlank__2": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The owner's transfer approval of one export plan (AGENTS.md: a separate, explicit\napproval naming the destination and the payload digest).",
+  "properties": {
+    "approved_at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "approved_by": {
+      "$ref": "#/$defs/cole_voice_lab__storage_contracts__NonBlank__1"
+    },
+    "destination": {
+      "$ref": "#/$defs/ImportDestination"
+    },
+    "packages": {
+      "exclusiveMinimum": 0,
+      "title": "Packages",
+      "type": "integer"
+    },
+    "plan_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.corpus-import-approval/v1",
+      "default": "cole-voice-lab.corpus-import-approval/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "statement": {
+      "$ref": "#/$defs/cole_voice_lab__storage_contracts__NonBlank__2"
+    },
+    "total_bytes": {
+      "exclusiveMinimum": 0,
+      "title": "Total Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "plan_sha256",
+    "packages",
+    "total_bytes",
+    "destination",
+    "approved_at",
+    "approved_by",
+    "statement"
+  ],
+  "title": "CorpusImportApproval",
+  "type": "object"
+}
