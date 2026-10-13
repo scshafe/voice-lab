@@ -1,0 +1,117 @@
+#!/bin/sh
+# Seed the PC's corpus catalog, once: docs/design/RECORDING-V1.md §7 step 1, D-052.
+#
+# Run it on the PC as yourself; it uses `sudo -u voice-lab` for the lab. It downloads the
+# Harvard sentences and the CMU ARCTIC prompts, refuses either unless its SHA-256 is the pinned
+# one (nothing is written before both match), then builds cole-corpus in the PC's lab exactly as
+# docs/CORPUS_STORE.md "Seeding a library" does and activates version 2 for cole-self only when
+# its digest is the Mac's. Safe to run again: it continues from wherever the store is.
+#
+#   scripts/seed-pc-catalog           seed (or finish seeding)
+#   scripts/seed-pc-catalog --help
+#
+# Exit status: 0 seeded (or already), 1 a check or step failed, 64 usage, 69 a tool is missing.
+set -eu
+
+LAB=${VOICE_LAB_SEED_LAB:-/data/voice-lab/lab}
+CLI=${VOICE_LAB_SEED_CLI:-/opt/voice-lab/current/bin/voice-lab}
+SUBJECT=cole-self
+FETCHED_AT=2026-09-16T04:17:51Z
+HARVARD_URL=https://www.cs.columbia.edu/~hgs/audio/harvard.html
+ARCTIC_URL=http://festvox.org/cmu_arctic/cmuarctic.data
+HARVARD_SHA256=f8c981aed97020642fd2423de787b3ccd2a7233f32fe07ebd26d2279c195cb75
+ARCTIC_SHA256=60e3d9a4dc33732c9100baadd747312bdc1a200fc891766507397289753a25c7
+VERSION_2_SHA256=1ebd48cbc6f6a2b2ea0fe70d0cff8f1df1e91b3bbf2a5be52959ffba141ff90f
+
+say() { printf 'seed-pc-catalog: %s\n' "$*"; }
+fail() { printf 'seed-pc-catalog: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+case "${1:-}" in
+  "") ;;
+  -h|--help)
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  *) fail "usage: $0 [--help]" 64 ;;
+esac
+
+for tool in curl sha256sum sudo install mktemp; do
+  command -v "$tool" >/dev/null 2>&1 || fail "$tool is missing" 69
+done
+[ -x "$CLI" ] || fail "$CLI is missing (is voice-lab deployed on this machine?)" 69
+
+vl() { sudo -u voice-lab "$CLI" "$@" --asset-root "$LAB"; }
+
+say "checking the PC's catalog (sudo may ask for your password)"
+if status=$(vl catalog list --subject-id "$SUBJECT" 2>&1); then
+  store=present
+else
+  case "$status" in
+    *CORPUS.STORE_MISSING*) store=missing ;;
+    *) fail "the corpus store cannot be read: $status" ;;
+  esac
+fi
+if [ "$store" = present ] && printf '%s\n' "$status" | grep -q "records against cole-corpus version 2\$"; then
+  say "already seeded: $SUBJECT records against cole-corpus version 2"
+  exit 0
+fi
+
+live=0
+if [ "$store" = present ]; then
+  live=$(printf '%s\n' "$status" | sed -n 's/^prompts: \([0-9][0-9]*\) live.*/\1/p')
+  [ -n "$live" ] || fail "unexpected 'catalog list' output: $status"
+fi
+
+work=$(mktemp -d)
+shared=""
+cleanup() {
+  rm -rf "$work"
+  if [ -n "$shared" ]; then sudo -u voice-lab rm -rf "$shared"; fi
+}
+trap cleanup EXIT INT TERM
+
+if [ "$live" -lt 1886 ]; then
+  say "downloading the two standard lists"
+  curl -fsSLo "$work/harvard.html" "$HARVARD_URL"
+  curl -fsSLo "$work/cmuarctic.data" "$ARCTIC_URL"
+  for pair in "harvard.html $HARVARD_SHA256" "cmuarctic.data $ARCTIC_SHA256"; do
+    name=${pair% *}
+    expected=${pair#* }
+    actual=$(sha256sum "$work/$name" | cut -d ' ' -f 1)
+    [ "$actual" = "$expected" ] ||
+      fail "$name has sha256 $actual, not the pinned $expected; nothing was written. Use the copies the Mac was seeded with."
+  done
+  say "both lists match their pins"
+  shared=$(sudo -u voice-lab mktemp -d)
+  sudo install -o voice-lab -m 0600 "$work/harvard.html" "$work/cmuarctic.data" "$shared"/
+fi
+
+if [ "$store" = missing ]; then
+  say "creating cole-corpus from pilot-v2 (room tones dropped)"
+  vl catalog init --subject-id "$SUBJECT" --from-builtin pilot-v2 --drop-room-tones >/dev/null
+  live=34
+fi
+if [ "$live" -eq 34 ]; then
+  say "importing the Harvard sentences"
+  vl catalog import-harvard --from-file "$shared/harvard.html" --fetched-at "$FETCHED_AT" \
+    --source-url "$HARVARD_URL" >/dev/null
+  live=754
+fi
+if [ "$live" -eq 754 ]; then
+  say "importing the CMU ARCTIC prompts"
+  vl catalog import-arctic --from-file "$shared/cmuarctic.data" --fetched-at "$FETCHED_AT" \
+    --source-url "$ARCTIC_URL" >/dev/null
+  live=1886
+fi
+[ "$live" -eq 1886 ] || fail "the store holds $live live prompts, not 34, 754 or 1886: finish by hand (docs/CORPUS_STORE.md)"
+
+if ! vl catalog show --version 2 --json >/dev/null 2>&1; then
+  say "publishing version 2"
+  vl catalog publish >/dev/null
+fi
+vl catalog show --version 2 --json >"$work/version-2.json"
+grep -q "\"$VERSION_2_SHA256\"" "$work/version-2.json" ||
+  fail "version 2's catalog_sha256 is not $VERSION_2_SHA256: not activated. Find out why first (docs/CORPUS_STORE.md)."
+say "version 2 is the Mac's catalog ($VERSION_2_SHA256)"
+vl catalog activate --subject-id "$SUBJECT" --version 2 >/dev/null
+say "seeded: $SUBJECT records against cole-corpus version 2 (1,886 prompts)"
