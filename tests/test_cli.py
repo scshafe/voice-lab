@@ -994,12 +994,13 @@ def test_intake_validate_accept_and_scan_report_each_outcome(
     root = tmp_path / "private-assets"
     _initialize_assets(root, capsys)
     package = SimpleNamespace(
-        manifest=SimpleNamespace(session_id="session-a"),
+        session_id="session-a",
         manifest_sha256="a" * 64,
         qc_report_sha256="b" * 64,
         qc_report=SimpleNamespace(status="pass"),
     )
-    monkeypatch.setattr(cli_module, "validate_capture_package", lambda _path: package)  # type: ignore[attr-defined]
+    # A capture package or a take (``intake.validate_package`` chooses by the manifest).
+    monkeypatch.setattr(cli_module, "validate_package", lambda _path: package)  # type: ignore[attr-defined]
     assert main(["intake", "validate", str(tmp_path / "package")]) == 0
     assert json.loads(capsys.readouterr().out)["session_id"] == "session-a"  # type: ignore[attr-defined]
 
