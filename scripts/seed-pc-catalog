@@ -63,9 +63,12 @@ trap cleanup EXIT INT TERM
 # Version 2 is activated only when its digest is the Mac's. Activating it again is harmless, and
 # from the build with GET /api/v1/catalog on, it rewrites the read model that route serves.
 activate_version_2() {
-  vl catalog show --version 2 --json >"$work/version-2.json"
-  grep -q "\"$VERSION_2_SHA256\"" "$work/version-2.json" ||
-    fail "version 2's catalog_sha256 is not $VERSION_2_SHA256: not activated. Find out why first (docs/CORPUS_STORE.md)."
+  # The first line names version 2's own digest: "cole-corpus version 2 · … · catalog <sha256>".
+  vl catalog show --version 2 >"$work/version-2.txt"
+  case "$(sed -n 1p "$work/version-2.txt")" in
+    "cole-corpus version 2 "*" catalog $VERSION_2_SHA256") ;;
+    *) fail "version 2's catalog_sha256 is not $VERSION_2_SHA256: not activated. Find out why first (docs/CORPUS_STORE.md)." ;;
+  esac
   say "version 2 is the Mac's catalog ($VERSION_2_SHA256)"
   vl catalog activate --subject-id "$SUBJECT" --version 2 >"$work/activated.json"
   if grep -q '"read_model": "' "$work/activated.json"; then
@@ -122,7 +125,7 @@ if [ "$live" -eq 754 ]; then
 fi
 [ "$live" -eq 1886 ] || fail "the store holds $live live prompts, not 34, 754 or 1886: finish by hand (docs/CORPUS_STORE.md)"
 
-if ! vl catalog show --version 2 --json >/dev/null 2>&1; then
+if ! vl catalog show --version 2 >/dev/null 2>&1; then
   say "publishing version 2"
   vl catalog publish >/dev/null
 fi
