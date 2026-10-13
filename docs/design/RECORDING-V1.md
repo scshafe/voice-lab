@@ -475,3 +475,9 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
     - A remote take the PC no longer has counts for nothing.
     - The layout tests wait for drawn frames. That exposed a trim row overflowing the
       smallest window, now fixed.
+- 2026-10-13: step 8, S-1 on real hardware. **macOS passed** on the Air with the UMIK-1, at
+  `bbc269f`: 43 of 43 takes successful and re-validated, largest ADC deviation 1.736 frames
+  (tolerance ±64), no overflow or underflow. The verdict and its continuity block are in
+  D-040. The slower `stop_to_sealed_review` (p95 340 ms against 300 ms) is a performance
+  follow-up, not part of the verdict. Uploads from voice-lab-desktop on that Mac may now be
+  turned on (`corpus_sync`). The Linux run is still to do.
