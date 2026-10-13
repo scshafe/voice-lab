@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from corpus_rig import PC, bind_library, client, record
+from corpus_rig import PC, Scripted, bind_library, client, record, uploaded_take
 from voice_lab_desktop.api import ApiError, ApiRefused, ApiUnavailable
 from voice_lab_desktop.auth import SignInRequired
 from voice_lab_desktop.config import ConfigError
@@ -28,26 +28,6 @@ from cole_voice_lab.corpus_requests import (
 from cole_voice_lab.errors import SecurityError
 from cole_voice_lab.home_host import HomeHostLedger
 from cole_voice_lab.intake_client import UploadError
-
-
-class Scripted:
-    """The app's API client with some of its methods replaced."""
-
-    def __init__(self, api: Any, **methods: Any) -> None:
-        self._api = api
-        self._methods = methods
-
-    def __getattr__(self, name: str) -> Any:
-        if name in self._methods:
-            return self._methods[name]
-        return getattr(self._api, name)
-
-
-def uploaded_take(corpus: Any, pc: PC, seed: int) -> Any:
-    corpus.run_pass()
-    take = record(corpus, pc.catalog[1].suite.prompts[seed % 5].prompt_id, seed=seed)
-    assert corpus.run_pass().uploaded == 1
-    return take
 
 
 def test_a_pc_without_the_take_gets_its_upload_again_once(tmp_path: Path, data_dir: Path) -> None:

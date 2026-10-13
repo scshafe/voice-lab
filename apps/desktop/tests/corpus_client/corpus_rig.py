@@ -249,3 +249,33 @@ def record(corpus: CorpusClient, prompt_id: str, *, seed: int, **options: Any) -
     """A take of ``prompt_id`` recorded and saved as the prompt studio would."""
     pending = corpus.begin_take(prompt_id)
     return corpus.save_take(pending, capture(pending.directory, seed=seed, **options))
+
+
+class Scripted:
+    """The app's API client with some of its methods replaced (``methods``)."""
+
+    def __init__(self, api: Any, **methods: Any) -> None:
+        self._api = api
+        self._methods = methods
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._methods:
+            return self._methods[name]
+        return getattr(self._api, name)
+
+
+def raising(error: BaseException) -> Callable[..., Any]:
+    """A stand-in for any method: it raises ``error``."""
+
+    def method(*_args: Any, **_kwargs: Any) -> Any:
+        raise error
+
+    return method
+
+
+def uploaded_take(corpus: CorpusClient, pc: PC, seed: int) -> SpooledTake:
+    """A take recorded and accepted by the PC (the catalog fetched first if need be)."""
+    corpus.run_pass()
+    take = record(corpus, pc.catalog[1].suite.prompts[seed % 5].prompt_id, seed=seed)
+    assert corpus.run_pass().uploaded == 1
+    return corpus.spool.take(take.take_id)

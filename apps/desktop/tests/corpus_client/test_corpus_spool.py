@@ -140,34 +140,43 @@ def test_changes_queue_with_their_own_ids_and_chained_revisions(
     corpus.decide(take.take_id, "kept")
     corpus.decide(take.take_id, "kept")  # no change: nothing queued
     corpus.set_trim(take.take_id, 100, frames - 100)
+    first = corpus.spool.take(take.take_id).sync.changes
+    # Unsent changes of a kind fold into one: its id and expected revision, the latest target.
     corpus.set_trim(take.take_id, 0, frames)  # the whole take: a reset
     corpus.decide(take.take_id, "rejected", "plosive")
-    corpus.decide(take.take_id, "removed")
-    corpus.restore(take.take_id)  # back to kept (the last kept or draft before)
+    sync = corpus.spool.take(take.take_id).sync
+    assert [(op.kind, op.request_id, op.expected_revision) for op in sync.changes] == [
+        (op.kind, op.request_id, op.expected_revision) for op in first
+    ]
+    decision, trim = sync.changes
+    assert isinstance(decision, DecisionOp) and isinstance(trim, TrimOp)
+    assert (decision.decision, decision.reason, trim.start_frame, trim.end_frame) == (
+        "rejected",
+        "plosive",
+        None,
+        None,
+    )
+    body = decision.body()
+    assert (body.request_id, body.reason, body.expected_revision) == (
+        decision.request_id,
+        "plosive",
+        0,
+    )
+    assert trim.body().start_frame is None
+    # A change the PC may know (tried, or being sent) is never altered: the next one chains.
+    corpus.spool.tried(take.take_id, None, error="unreachable", retry_at=None)  # the upload
+    upload, *_rest = corpus.spool.take(take.take_id).sync.outbox
+    assert isinstance(upload, UploadOp) and upload.attempts == 1
+    with corpus.spool.sending(decision.request_id):
+        corpus.decide(take.take_id, "removed")
+    corpus.restore(take.take_id)  # back to kept (the last kept or draft before): folded
     corpus.restore(take.take_id)  # not rejected or removed: nothing to restore
     sync = corpus.spool.take(take.take_id).sync
-    changes = [op for op in sync.outbox if not isinstance(op, UploadOp)]
-    assert [(op.kind, getattr(op, "decision", None), op.expected_revision) for op in changes] == [
-        ("decision", "kept", 0),
-        ("trim", None, 0),
-        ("trim", None, 1),
-        ("decision", "rejected", 1),
-        ("decision", "removed", 2),
-        ("decision", "kept", 3),
-    ]
-    trims = [op for op in changes if isinstance(op, TrimOp)]
-    assert [(op.start_frame, op.end_frame) for op in trims] == [(100, frames - 100), (None, None)]
-    assert len({op.request_id for op in changes}) == len(changes)
-    assert all(op.request_id.startswith("req-") and len(op.request_id) == 36 for op in changes)
-    rejected = changes[3]
-    assert isinstance(rejected, DecisionOp) and rejected.reason == "plosive"
-    body = rejected.body()
-    assert (body.request_id, body.reason, body.expected_revision) == (
-        rejected.request_id,
-        "plosive",
-        1,
-    )
-    assert trims[0].body().start_frame == 100
+    assert [
+        (op.kind, getattr(op, "decision", None), op.expected_revision) for op in sync.changes
+    ] == [("decision", "rejected", 0), ("trim", None, 0), ("decision", "kept", 1)]
+    assert len({op.request_id for op in sync.changes}) == 3
+    assert all(op.request_id.startswith("req-") and len(op.request_id) == 36 for op in sync.changes)
     assert (sync.decision.decision, sync.decision.revision, sync.trim.start_frame) == (
         "kept",
         0,

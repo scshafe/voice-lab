@@ -35,6 +35,7 @@ SYNC_SCHEMA: Final = "voice-lab-desktop.corpus-take-sync/v1"
 NOTICES_SCHEMA: Final = "voice-lab-desktop.corpus-notices/v1"
 SYNC_RECORD_SCHEMA: Final = "voice-lab-desktop.corpus-sync/v1"
 CATALOG_STATE_SCHEMA: Final = "voice-lab-desktop.corpus-catalog-cache/v1"
+PENDING_SCHEMA: Final = "voice-lab-desktop.corpus-pending-take/v1"
 #: The finished operations a take's record keeps (its counters count all of them).
 JOURNAL_LIMIT: Final = 20
 #: The notices kept for the UI, newest last.
@@ -48,7 +49,9 @@ type OperationKind = Literal["upload", "decision", "trim"]
 #: ``queued``: its upload waits in the outbox; ``accepted``: the PC published it (the
 #: receipt); ``refused``: the PC refused it, so nothing more of it is sent.
 type UploadState = Literal["local-only", "queued", "accepted", "refused"]
-type NoticeKind = Literal["changed-elsewhere", "take-refused", "change-refused", "local-only"]
+type NoticeKind = Literal[
+    "changed-elsewhere", "take-refused", "change-refused", "change-blocked", "local-only"
+]
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -144,6 +147,8 @@ class _Change(_Operation):
     submitted_at: datetime | None = None
     #: How often the take's upload was checked again because the PC had no record of it.
     rechecks: int = Field(default=0, ge=0)
+    #: How often it was submitted again because the PC had lost a request it had answered.
+    resubmits: int = Field(default=0, ge=0)
 
     @field_validator("submitted_at")
     @classmethod
@@ -266,6 +271,25 @@ class DecisionEvent(ContractModel):
         return moment
 
 
+class PendingRefresh(ContractModel):
+    """The PC refused a change of the take, and its state for the take must be read again
+    before anything more is sent for it: the PC is known to be at least at these revisions
+    (``reason``: the refusal's code). Until then the state here is left as it was, and the
+    operator's changes wait in the outbox."""
+
+    since: datetime
+    decision_at_least: int = Field(ge=0)
+    trim_at_least: int = Field(ge=0)
+    reason: _Text
+
+    @field_validator("since")
+    @classmethod
+    def _since(cls, value: datetime) -> datetime:
+        moment = _utc(value)
+        assert moment is not None
+        return moment
+
+
 class UploadReceipt(ContractModel):
     """The PC's intake receipt for the take package, as the upload checked it."""
 
@@ -290,6 +314,8 @@ class TakeSync(ContractModel):
     history: tuple[DecisionEvent, ...] = ()
     upload: UploadState
     receipt: UploadReceipt | None = None
+    #: The PC's state must be read again before more is sent (``PendingRefresh``).
+    refresh: PendingRefresh | None = None
     outbox: tuple[Operation, ...] = ()
     sent: int = Field(default=0, ge=0)
     refused: int = Field(default=0, ge=0)
@@ -315,6 +341,25 @@ class TakeSync(ContractModel):
     @property
     def changes(self) -> tuple[ChangeOp, ...]:
         return tuple(op for op in self.outbox if not isinstance(op, UploadOp))
+
+
+class PendingRecording(ContractModel):
+    """``recording/rec-….json``, beside a recording directory: what the take being recorded
+    there is of (the prompt and the catalog version it was bound to when it started). It
+    lets a take the worker finished, but that a crash kept from being saved, be saved at the
+    next start."""
+
+    schema_version: Literal["voice-lab-desktop.corpus-pending-take/v1"] = PENDING_SCHEMA
+    prompt: Prompt
+    catalog: CatalogReference
+    begun_at: datetime
+
+    @field_validator("begun_at")
+    @classmethod
+    def _begun(cls, value: datetime) -> datetime:
+        moment = _utc(value)
+        assert moment is not None
+        return moment
 
 
 class Notice(ContractModel):

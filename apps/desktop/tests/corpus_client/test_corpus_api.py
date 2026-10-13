@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 import pytest
-from corpus_rig import PC, client, record, signed_in
+from corpus_rig import PC, capture, client, record, signed_in
 from voice_lab_desktop.api import ApiClient, ApiError, ApiRefused
 from voice_lab_desktop.corpus.client import CorpusClient
 from voice_lab_desktop.corpus.records import DecisionOp
@@ -142,7 +142,7 @@ def test_the_scheduler_syncs_off_the_gui_thread(
         # A pass asked for while one runs follows it.
         assert corpus.scheduler is not None
         corpus.scheduler.busy = True
-        corpus.sync_now()
+        corpus.scheduler.request(0.0)
         assert corpus.scheduler._again
         corpus.scheduler.busy = False
         corpus.remove_listener(listener)
@@ -198,3 +198,37 @@ def test_the_client_runs_without_a_task_pool(pc: PC, data_dir: Path) -> None:
     corpus.shutdown()
     assert corpus.run_pass().gated
     assert corpus.status().busy is False
+
+
+def test_a_take_saved_off_the_gui_thread_still_syncs(
+    qtbot: Any, pc: PC, data_dir: Path, library: Any
+) -> None:
+    """The studio saves a take on a worker (the save hashes the WAV): the scheduler's timer
+    and the listeners stay on the GUI thread (a timer started elsewhere is a Qt warning, and
+    the pass it asked for never comes)."""
+    import threading
+
+    tasks = Tasks()
+    corpus = client(data_dir, pc, tasks=tasks)
+    gui = threading.current_thread()
+    heard: list[bool] = []
+    corpus.add_listener(lambda: heard.append(threading.current_thread() is gui))
+    try:
+        corpus.start()
+        qtbot.waitUntil(lambda: corpus.status().can_record, timeout=10_000)
+        pending = corpus.begin_take(pc.catalog[1].suite.prompts[0].prompt_id)
+        captured = capture(pending.directory, seed=75)
+        worker = threading.Thread(target=lambda: corpus.save_take(pending, captured))
+        worker.start()
+        worker.join(timeout=30)
+        qtbot.waitUntil(lambda: corpus.status().sent == 1, timeout=15_000)
+        take_id = f"take-{captured.sha256}"
+        worker = threading.Thread(target=lambda: corpus.decide(take_id, "kept"))
+        worker.start()
+        worker.join(timeout=30)
+        threading.Thread(target=corpus.sync_now).start()
+        qtbot.waitUntil(lambda: corpus.status().sent == 2, timeout=15_000)
+        assert heard and all(heard)
+    finally:
+        corpus.shutdown()
+        tasks.close()

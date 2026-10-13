@@ -159,7 +159,7 @@ def test_a_change_made_elsewhere_is_adopted_and_the_queued_ones_dropped(
     )
     assert status == 202, answer
     pc.publish()
-    # Meanwhile, here: keep it, trim it, then reject it; chained on the revisions seen here.
+    # Meanwhile, here: keep it, trim it, then reject it (folded into the unsent keep).
     corpus.decide(take.take_id, "kept")
     corpus.set_trim(take.take_id, 480, 9_600)
     corpus.decide(take.take_id, "rejected", "too fast")
@@ -167,7 +167,6 @@ def test_a_change_made_elsewhere_is_adopted_and_the_queued_ones_dropped(
     assert [(op.kind, op.expected_revision) for op in queued if not isinstance(op, UploadOp)] == [
         ("decision", 0),
         ("trim", 0),
-        ("decision", 1),
     ]
     result = corpus.run_pass()
     assert (result.applied, result.refused, result.waiting) == (0, 1, 0)
@@ -180,17 +179,16 @@ def test_a_change_made_elsewhere_is_adopted_and_the_queued_ones_dropped(
         None,
     )
     assert sync.trim == LocalTrim(revision=0)
-    assert (sync.sent, sync.refused, sync.dropped) == (1, 1, 2)
-    assert [(entry.result, entry.code) for entry in sync.journal[-3:]] == [
+    assert (sync.sent, sync.refused, sync.dropped, sync.refresh) == (1, 1, 1, None)
+    assert [(entry.result, entry.code) for entry in sync.journal[-2:]] == [
         ("refused", "revision_conflict"),
-        ("dropped", None),
         ("dropped", None),
     ]
     assert sync.history[-1].source == "pc" and sync.history[-1].decision == "removed"
     (notice,) = corpus.status().notices
     assert (notice.kind, notice.take_id) == ("changed-elsewhere", take.take_id)
     assert notice.text == (
-        "Changed elsewhere: this take now shows the PC's state; 2 queued change(s) were dropped."
+        "Changed elsewhere: this take now shows the PC's state; 1 queued change(s) were dropped."
     )
     corpus.dismiss_notice(notice.notice_id)
     assert corpus.status().notices == ()

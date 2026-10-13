@@ -263,3 +263,12 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   as it is. Nothing is sent until `corpus_sync = true` (off until S-1 passes, D-042's
   reason), and takes of the simulated device stay local-only. The tests run an offline
   session that syncs after a restart against the real API and publisher.
+  After review, only the PC's explicit take-level verdicts end a take's operations
+  (`refused_by_intake` or `session_conflict` for the upload; `revision_conflict`,
+  `trim_out_of_bounds`, `request_conflict` or `take_not_found` after its re-check for a
+  change). Everything else is transient: the queue is kept, the try backs off, and
+  `SyncStatus` says why. Version skew waits with a notice. The PC's state is adopted only
+  once its library is at least at the refusal's revision; until then the take waits for a
+  refresh, and the operator's changes are held and never treated as no-ops. Unsent changes
+  fold into one per kind. Interrupted saves are finished or reported at start. Pokes and
+  listeners run on the GUI thread.

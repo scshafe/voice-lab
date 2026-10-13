@@ -174,7 +174,11 @@ class CorpusClient:
         capture_host: str | None = None,
     ) -> None:
         self.root = Path(root)
-        self.spool = CorpusSpool(self.root, clock=clock)
+        self.take_client = take_client or default_client()
+        self.capture_host = capture_host or default_capture_host()
+        self.spool = CorpusSpool(
+            self.root, clock=clock, client=self.take_client, capture_host=self.capture_host
+        )
         self.catalog = CatalogCache(self.root / "catalog", clock=clock)
         self.catalog.open_session()
         self.enabled = enabled
@@ -188,8 +192,7 @@ class CorpusClient:
             sleep=sleep,
             monotonic=monotonic,
         )
-        self.take_client = take_client or default_client()
-        self.capture_host = capture_host or default_capture_host()
+        self._tasks = tasks
         self._listeners: list[Callable[[], None]] = []
         self._last: PassResult | None = None
         self.scheduler = (
@@ -231,10 +234,17 @@ class CorpusClient:
             self.scheduler.stop()
 
     def sync_now(self) -> None:
-        """A pass now, operations in a backoff included (the UI's "Sync now")."""
-        if self.scheduler is not None:
-            self.scheduler.request(0.0, force=True)
-            self._notify()
+        """A pass now, operations in a backoff included (the UI's "Sync now"). Safe from any
+        thread."""
+        scheduler = self.scheduler
+        if scheduler is None:
+            return
+
+        def now() -> None:
+            scheduler.request(0.0, force=True)
+            self._call_listeners()
+
+        self._on_gui_thread(now)
 
     def run_pass(self, *, force: bool = False) -> PassResult:
         """One pass on this thread (the command line and tests)."""
@@ -242,15 +252,29 @@ class CorpusClient:
         self._last = result
         return result
 
+    def _on_gui_thread(self, work: Callable[[], object]) -> None:
+        """``work`` on the GUI thread: the scheduler's timer and the listeners live there,
+        and a take may be saved from a worker (``save_take`` hashes the WAV)."""
+        if self._tasks is None:
+            work()
+        else:
+            self._tasks.on_gui_thread(work)
+
     def _poke(self) -> None:
-        if self.scheduler is not None:
-            self.scheduler.request(POKE_SECONDS)
-        self._notify()
+        """A local change: a pass soon, and the listeners told (on the GUI thread)."""
+        scheduler = self.scheduler
+
+        def poke() -> None:
+            if scheduler is not None:
+                scheduler.request(POKE_SECONDS)
+            self._call_listeners()
+
+        self._on_gui_thread(poke)
 
     def _pass_done(self, result: PassResult | None, error: BaseException | None) -> None:
         if result is not None:
             self._last = result
-        self._notify()
+        self._call_listeners()  # the task pool's results arrive on the GUI thread
         if error is not None:
             raise error  # a bug: the engine reports what it can describe in its result
 
@@ -263,6 +287,9 @@ class CorpusClient:
             self._listeners.remove(listener)
 
     def _notify(self) -> None:
+        self._on_gui_thread(self._call_listeners)
+
+    def _call_listeners(self) -> None:
         for listener in tuple(self._listeners):
             listener()
 
@@ -294,7 +321,9 @@ class CorpusClient:
             raise SpoolError(
                 f"catalog version {pinned.reference.catalog_version} has no prompt {prompt_id}"
             ) from exc
-        return PendingTake(self.spool.new_recording_dir(), prompt, pinned.reference)
+        return PendingTake(
+            self.spool.begin_recording(prompt, pinned.reference), prompt, pinned.reference
+        )
 
     def save_take(self, pending: PendingTake, captured: CapturedTake) -> SpooledTake:
         """Save the worker's validated take: durable here at once, its upload queued.
@@ -367,7 +396,10 @@ class CorpusClient:
             upload_blocked=last.upload_blocked if last is not None else "",
             takes=len(takes),
             queued=sum(len(take.sync.outbox) for take in takes),
-            waiting_takes=sum(1 for take in takes if take.sync.outbox),
+            waiting_takes=sum(
+                1 for take in takes if take.sync.outbox or take.sync.refresh is not None
+            ),
+            refreshing=sum(1 for take in takes if take.sync.refresh is not None),
             awaiting_receipt=sum(
                 1
                 for take in takes
@@ -379,6 +411,8 @@ class CorpusClient:
             refused=sum(take.sync.refused for take in takes),
             dropped=sum(take.sync.dropped for take in takes),
             local_only=sum(1 for take in takes if take.sync.upload == "local-only"),
+            damaged=tuple(self.spool.damaged),
+            unsaved_recordings=tuple(self.spool.unsaved),
             pinned_catalog=pinned.reference if pinned is not None else None,
             pc_catalog=latest.reference if latest is not None else None,
             pc_catalog_unavailable=state.pc_unavailable,

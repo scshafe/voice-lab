@@ -2,9 +2,11 @@
 
 ``<data dir>/corpus/`` (directories 0700, records 0600, canonical JSON written atomically):
 
-- ``recording/<rec-…>/``: a take being recorded. ``new_recording_dir`` makes it new, empty
-  and private; the capture worker writes ``original.wav`` and ``continuity.json`` into it
-  (D-039).
+- ``recording/<rec-…>/``: a take being recorded. ``begin_recording`` makes it new, empty
+  and private, with ``rec-….json`` beside it naming the prompt and catalog version the take
+  is bound to; the capture worker writes ``original.wav`` and ``continuity.json`` into it
+  (D-039). A take the worker finished but a crash kept from being saved is saved at the next
+  start; a recording that cannot be is counted (``unsaved``), never silently lost.
 - ``takes/<take_id>/``: a saved take, named by its audio's SHA-256 (``take-<sha256>``).
   ``save_take`` checks the worker's evidence against the WAV, builds the take package once
   into ``package/`` (``cole_voice_lab.corpus_takes.build_take_package``: it is kept and sent
@@ -16,12 +18,15 @@
 - ``notices.json`` (``Notices``) and ``sync.json`` (``SyncRecord``).
 
 The operator's changes (``decide``, ``restore``, ``set_trim``) change the state here and, for
-a take that is sent, append an operation to its outbox with a request id made once and the
-revision it expects, chained on the change queued before it. The sync engine (``sync.py``)
-takes each take's operations off the front, one at a time, and records what the PC did
-(``upload_accepted``, ``change_applied``, ``adopt``, ...). A take's ``state.json`` is
-rewritten whole under one lock for every change, so the GUI thread and the sync worker never
-lose each other's writes.
+a take that is sent, queue an operation with a request id made once and the revision it
+expects, chained on the change queued before it. A change is folded into the same kind's
+last queued one while that one was never tried (it keeps its id and expected revision and
+takes the new target), so the outbox stays short however long the PC is away; a change that
+was tried, or is being sent, is never altered (the PC may know its id). The sync engine
+(``sync.py``) takes each take's operations off the front, one at a time, and records what
+the PC did (``upload_accepted``, ``change_applied``, ``adopt``, ``refreshed``, ...). A
+take's ``state.json`` is rewritten whole under one lock for every change, so the GUI thread
+and the sync worker never lose each other's writes.
 """
 
 from __future__ import annotations
@@ -32,7 +37,8 @@ import re
 import secrets
 import shutil
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -78,6 +84,8 @@ from .records import (
     NoticeKind,
     Notices,
     Operation,
+    PendingRecording,
+    PendingRefresh,
     SyncRecord,
     TakeSync,
     TrimOp,
@@ -105,6 +113,9 @@ HISTORY_LIMIT: Final = 50
 #: (the PC refused the take, or never saw it): once, never in a loop. The upload's own
 #: answer then says which (a refusal stops the take).
 MAX_RECHECKS: Final = 1
+#: How often a request the PC lost is submitted again under its id.
+MAX_RESUBMITS: Final = 3
+PENDING_SUFFIX: Final = ".json"
 _TAKE_ID: Final = re.compile(TAKE_ID_PATTERN.replace("$", r"\Z"))
 _RESTORABLE: Final = ("rejected", "removed")
 
@@ -177,6 +188,18 @@ def _next_expected(sync: TakeSync, kind: Literal["decision", "trim"]) -> int:
     return sync.decision.revision if kind == "decision" else sync.trim.revision
 
 
+def _untried(op: ChangeOp) -> bool:
+    """Whether the PC can know nothing of ``op``: it was never tried, submitted, re-checked
+    or resubmitted."""
+    return (
+        op.attempts == 0
+        and op.submitted_at is None
+        and op.rechecks == 0
+        and op.resubmits == 0
+        and op.last_attempt_at is None
+    )
+
+
 def _finished(
     sync: TakeSync,
     op: Operation,
@@ -211,14 +234,29 @@ def _replace(sync: TakeSync, **changes: Any) -> TakeSync:
 class CorpusSpool:
     """The takes under ``root`` (``<data dir>/corpus``)."""
 
-    def __init__(self, root: Path, *, clock: Callable[[], datetime] = utc_now) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        clock: Callable[[], datetime] = utc_now,
+        client: TakeClient | None = None,
+        capture_host: str | None = None,
+    ) -> None:
         self.root = Path(root)
         self.clock = clock
+        self.client = client or default_client()
+        self.capture_host = capture_host or default_capture_host()
         self._lock = threading.RLock()
         self._takes: dict[str, SpooledTake] = {}
         self._listed = False
+        #: Recording directories made by this process (never recovered while it runs).
+        self._active: set[str] = set()
+        #: Request ids being sent right now (never folded into).
+        self._in_flight: set[str] = set()
         #: Take directories that could not be read (shown, never sent).
         self.damaged: list[str] = []
+        #: Recordings an earlier run left that could not become takes (shown, never sent).
+        self.unsaved: list[str] = []
 
     @property
     def takes_root(self) -> Path:
@@ -245,20 +283,61 @@ class CorpusSpool:
             raise SpoolError(f"{path.name} holds another take's records")
         return SpooledTake(path, record, sync)
 
+    def _pending_path(self, recording_dir: Path) -> Path:
+        return recording_dir.with_name(recording_dir.name + PENDING_SUFFIX)
+
     def _recover(self) -> None:
-        """Finish a save a crash interrupted after its records were written: the recording
-        directory moves into ``takes/``. Recordings without both records are left alone."""
+        """What an earlier run left in ``recording/``: a save interrupted after its records
+        were written is finished (the directory moves into ``takes/``); a take the worker
+        finished, whose save never ran, is saved from its ``rec-….json``; anything else is
+        counted in ``unsaved``. Directories this process made are left to it."""
+        self.unsaved = []
         if not self.recording_root.is_dir():
             return
         for path in sorted(self.recording_root.iterdir()):
-            if not (path / TAKE_FILE).is_file() or not (path / STATE_FILE).is_file():
+            if not path.is_dir() or path.name in self._active:
                 continue
-            try:
-                record = read_canonical_model(path / TAKE_FILE, LocalTake, max_bytes=MAX_TAKE_BYTES)
-                rename_no_replace(path, private_dir(self.takes_root) / record.take_id)
-            except (OSError, ContractError, SecurityError):
+            if (path / TAKE_FILE).is_file() and (path / STATE_FILE).is_file():
+                try:
+                    record = read_canonical_model(
+                        path / TAKE_FILE, LocalTake, max_bytes=MAX_TAKE_BYTES
+                    )
+                    rename_no_replace(path, private_dir(self.takes_root) / record.take_id)
+                    fsync_directory(self.takes_root)
+                    self._pending_path(path).unlink(missing_ok=True)
+                except (OSError, ContractError, SecurityError):
+                    self.unsaved.append(path.name)
                 continue
-            fsync_directory(self.takes_root)
+            if not self._save_left_over(path):
+                self.unsaved.append(path.name)
+
+    def _save_left_over(self, path: Path) -> bool:
+        """Save a take the worker finished in ``path`` (its ``rec-….json`` says of what)."""
+        original, evidence_path = path / ORIGINAL_NAME, path / EVIDENCE_NAME
+        if not original.is_file() or not evidence_path.is_file():
+            return False
+        try:
+            pending = read_canonical_model(
+                self._pending_path(path), PendingRecording, max_bytes=MAX_TAKE_BYTES
+            )
+            evidence = read_evidence(evidence_path)
+            inspection = inspect_canonical_wav(original)
+        except (OSError, ContractError, SecurityError):
+            return False
+        captured = CapturedTake(
+            path=original,
+            evidence_path=evidence_path,
+            sha256=inspection.sha256,
+            size_bytes=inspection.size_bytes,
+            frames=inspection.audio.frames,
+            requested_at=pending.begun_at,
+            device=evidence.device_name,
+        )
+        try:
+            self.save_take(path, captured, prompt=pending.prompt, catalog=pending.catalog)
+        except SpoolError:
+            return False
+        return True
 
     def takes(self) -> list[SpooledTake]:
         """Every saved take, in the order they were saved."""
@@ -307,8 +386,18 @@ class CorpusSpool:
     def new_recording_dir(self) -> Path:
         """A new, empty, private directory for the capture worker's next take."""
         stamp = self.clock().astimezone(UTC).strftime("%Y%m%dt%H%M%S")
-        path = private_dir(self.recording_root) / f"rec-{stamp}-{secrets.token_hex(4)}"
-        path.mkdir(mode=0o700)
+        with self._lock:
+            path = private_dir(self.recording_root) / f"rec-{stamp}-{secrets.token_hex(4)}"
+            path.mkdir(mode=0o700)
+            self._active.add(path.name)
+        return path
+
+    def begin_recording(self, prompt: Prompt, catalog: CatalogReference) -> Path:
+        """A new recording directory for a take of ``prompt`` against ``catalog``, with
+        ``rec-….json`` beside it saying so (the worker needs its directory empty)."""
+        path = self.new_recording_dir()
+        pending = PendingRecording(prompt=prompt, catalog=catalog, begun_at=self.clock())
+        write_canonical_json(self._pending_path(path), pending)
         return path
 
     def save_take(
@@ -321,7 +410,8 @@ class CorpusSpool:
         client: TakeClient | None = None,
         capture_host: str | None = None,
     ) -> SpooledTake:
-        """Save the worker's validated take of ``prompt``, recorded against ``catalog``.
+        """Save the worker's validated take of ``prompt``, recorded against ``catalog``
+        (``client`` and ``capture_host``: the spool's unless given).
 
         Raises: ``SpoolError`` when the take is not the worker's checked output in
         ``recording_dir``, is already saved, or cannot be written (the recording stays)."""
@@ -361,8 +451,8 @@ class CorpusSpool:
                     evidence=evidence,
                     prompt=prompt,
                     catalog=catalog,
-                    client=client or default_client(),
-                    capture_host=capture_host or default_capture_host(),
+                    client=client or self.client,
+                    capture_host=capture_host or self.capture_host,
                 )
             except (ContractError, SecurityError) as exc:
                 local_only = f"the take could not be packaged: {exc}"[:2000]
@@ -392,19 +482,19 @@ class CorpusSpool:
             upload="local-only" if local_only else "queued",
             outbox=() if local_only else (UploadOp(queued_at=now),),
         )
-        try:
-            write_canonical_json(recording_dir / TAKE_FILE, record)
-            write_canonical_json(recording_dir / STATE_FILE, sync)
-        except OSError as exc:
-            raise SpoolError(f"the take could not be saved: {exc}") from exc
         with self._lock:
+            # The records and the rename under the lock: a listing never sees half a save.
             try:
+                write_canonical_json(recording_dir / TAKE_FILE, record)
+                write_canonical_json(recording_dir / STATE_FILE, sync)
                 rename_no_replace(recording_dir, private_dir(self.takes_root) / take_id)
                 fsync_directory(self.takes_root)
             except FileExistsError as exc:
                 raise SpoolError(f"this take is already saved ({take_id})") from exc
             except OSError as exc:
                 raise SpoolError(f"the take could not be saved: {exc}") from exc
+            self._active.discard(recording_dir.name)
+            self._pending_path(recording_dir).unlink(missing_ok=True)
             take = SpooledTake(target, record, sync)
             self._takes[take_id] = take
             if local_only is not None and not evidence.simulated:
@@ -450,7 +540,12 @@ class CorpusSpool:
         recording_dir = Path(recording_dir)
         if recording_dir.parent != self.recording_root or not recording_dir.name.startswith("rec-"):
             raise SpoolError("not a recording directory of this spool")
-        shutil.rmtree(recording_dir, ignore_errors=True)
+        with self._lock:
+            shutil.rmtree(recording_dir, ignore_errors=True)
+            self._pending_path(recording_dir).unlink(missing_ok=True)
+            self._active.discard(recording_dir.name)
+            if recording_dir.name in self.unsaved:
+                self.unsaved.remove(recording_dir.name)
 
     # -- the operator's changes ------------------------------------------------------------------
 
@@ -458,11 +553,37 @@ class CorpusSpool:
     def _sends(sync: TakeSync) -> bool:
         return sync.upload in ("queued", "accepted")
 
+    def _queue(
+        self,
+        sync: TakeSync,
+        kind: Literal["decision", "trim"],
+        target: dict[str, Any],
+        now: datetime,
+    ) -> tuple[Operation, ...]:
+        """The outbox with a change of ``kind`` to ``target``: folded into the same kind's last
+        queued change while the PC can know nothing of it (never tried, not being sent), else
+        appended with a new request id and the next expected revision."""
+        outbox = list(sync.outbox)
+        last = max((index for index, op in enumerate(outbox) if op.kind == kind), default=None)
+        if last is not None:
+            queued = outbox[last]
+            assert not isinstance(queued, UploadOp)
+            if _untried(queued) and queued.request_id not in self._in_flight:
+                folded: Operation = type(queued).model_validate({**dict(queued), **target})
+                outbox[last] = folded
+                return tuple(outbox)
+        built = {"queued_at": now, "request_id": new_request_id(), **target}
+        built["expected_revision"] = _next_expected(sync, kind)
+        op: Operation = DecisionOp(**built) if kind == "decision" else TrimOp(**built)
+        return (*outbox, op)
+
     def decide(
         self, take_id: str, decision: TakeDecisionName, reason: str | None = None
     ) -> SpooledTake:
         """Keep, reject (with a reason), remove or set back a take; queued for the PC.
 
+        While the PC's state for the take is being read again (``TakeSync.refresh``), the
+        decision here may be stale, so a change equal to it is queued all the same.
         Raises: ``SpoolError`` (a rejection without a reason, a reason for anything else)."""
         try:
             check_decision(decision, reason)
@@ -471,7 +592,8 @@ class CorpusSpool:
         with self._lock:
             take = self.take(take_id)
             sync = take.sync
-            if (sync.decision.decision, sync.decision.reason) == (decision, reason):
+            same = (sync.decision.decision, sync.decision.reason) == (decision, reason)
+            if same and sync.refresh is None:
                 return take
             now = self.clock()
             changes: dict[str, Any] = {
@@ -486,14 +608,8 @@ class CorpusSpool:
                 ],
             }
             if self._sends(sync):
-                op = DecisionOp(
-                    queued_at=now,
-                    request_id=new_request_id(),
-                    decision=decision,
-                    reason=reason,
-                    expected_revision=_next_expected(sync, "decision"),
-                )
-                changes["outbox"] = (*sync.outbox, op)
+                target = {"decision": decision, "reason": reason}
+                changes["outbox"] = self._queue(sync, "decision", target, now)
             return self._store(take, _replace(sync, **changes))
 
     def restore(self, take_id: str) -> SpooledTake:
@@ -506,7 +622,8 @@ class CorpusSpool:
 
     def set_trim(self, take_id: str, start_frame: int | None, end_frame: int | None) -> SpooledTake:
         """Keep the frames ``[start_frame, end_frame)`` (both ``None``, or the whole take: no
-        trim); the original is never rewritten. Queued for the PC.
+        trim); the original is never rewritten. Queued for the PC (also when equal to the trim
+        here while the PC's state is being read again).
 
         Raises: ``SpoolError`` for a range outside the take or shorter than one frame."""
         with self._lock:
@@ -520,7 +637,8 @@ class CorpusSpool:
                 if not 0 <= start_frame < end_frame <= frames:
                     raise SpoolError(f"a trim must lie within the take's {frames} frames")
             sync = take.sync
-            if (sync.trim.start_frame, sync.trim.end_frame) == (start_frame, end_frame):
+            same = (sync.trim.start_frame, sync.trim.end_frame) == (start_frame, end_frame)
+            if same and sync.refresh is None:
                 return take
             now = self.clock()
             changes: dict[str, Any] = {
@@ -529,14 +647,8 @@ class CorpusSpool:
                 )
             }
             if self._sends(sync):
-                op = TrimOp(
-                    queued_at=now,
-                    request_id=new_request_id(),
-                    start_frame=start_frame,
-                    end_frame=end_frame,
-                    expected_revision=_next_expected(sync, "trim"),
-                )
-                changes["outbox"] = (*sync.outbox, op)
+                target = {"start_frame": start_frame, "end_frame": end_frame}
+                changes["outbox"] = self._queue(sync, "trim", target, now)
             return self._store(take, _replace(sync, **changes))
 
     # -- what the sync engine records -------------------------------------------------------------
@@ -553,21 +665,64 @@ class CorpusSpool:
             raise SpoolError(f"{take_id}'s first queued operation changed")
         return take, op
 
+    @contextmanager
+    def sending(self, request_id: str | None) -> Iterator[None]:
+        """While the engine sends a change, the operator's next change is never folded into
+        it (the PC may store it any moment)."""
+        if request_id is None:
+            yield
+            return
+        with self._lock:
+            self._in_flight.add(request_id)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._in_flight.discard(request_id)
+
     def tried(
-        self, take_id: str, request_id: str | None, *, error: str, retry_at: datetime | None
+        self,
+        take_id: str,
+        request_id: str | None,
+        *,
+        error: str,
+        retry_at: datetime | None,
+        notice: tuple[NoticeKind, str] | None = None,
     ) -> None:
-        """A try of the first operation that did not finish; it stays first."""
+        """A try of the first operation that did not finish; it stays first. ``notice`` is
+        kept for the UI the first time this error is met (not again on every retry)."""
         with self._lock:
             take, op = self._head(take_id, request_id)
+            message = error[:2000] or "interrupted"
             tried = op.model_copy(
                 update={
                     "attempts": op.attempts + 1,
                     "last_attempt_at": self.clock(),
-                    "last_error": error[:2000] or "interrupted",
+                    "last_error": message,
                     "not_before": retry_at,
                 }
             )
-            self._store(take, _replace(take.sync, outbox=(tried, *take.sync.outbox[1:])))
+            stored = self._store(take, _replace(take.sync, outbox=(tried, *take.sync.outbox[1:])))
+            if notice is not None and op.last_error != message:
+                self._notice(stored, *notice)
+
+    def renew(self, take_id: str, request_id: str, *, error: str, retry_at: datetime) -> None:
+        """The PC set the request aside without judging the take (its id is spent): the same
+        change goes again later, under a new id."""
+        with self._lock:
+            take, op = self._head(take_id, request_id)
+            assert not isinstance(op, UploadOp)
+            again = op.model_copy(
+                update={
+                    "request_id": new_request_id(),
+                    "submitted_at": None,
+                    "attempts": op.attempts + 1,
+                    "last_attempt_at": self.clock(),
+                    "last_error": error[:2000] or "set aside by the PC",
+                    "not_before": retry_at,
+                }
+            )
+            self._store(take, _replace(take.sync, outbox=(again, *take.sync.outbox[1:])))
 
     def upload_waiting(self, take_id: str, *, error: str, retry_at: datetime | None) -> None:
         """The PC holds the whole package but has not published it (deferred)."""
@@ -613,20 +768,23 @@ class CorpusSpool:
             submitted = op.model_copy(update={"submitted_at": self.clock()})
             self._store(take, _replace(take.sync, outbox=(submitted, *take.sync.outbox[1:])))
 
-    def resubmit(self, take_id: str, request_id: str, *, error: str) -> None:
+    def resubmit(self, take_id: str, request_id: str, *, error: str) -> bool:
         """The PC has no such request although it answered it once: it is submitted again,
-        under the same id (a try is counted)."""
+        under the same id. ``False`` after ``MAX_RESUBMITS`` (the caller backs off)."""
         with self._lock:
             take, op = self._head(take_id, request_id)
+            if isinstance(op, UploadOp) or op.resubmits >= MAX_RESUBMITS:
+                return False
             again = op.model_copy(
                 update={
-                    "attempts": op.attempts + 1,
+                    "resubmits": op.resubmits + 1,
                     "last_attempt_at": self.clock(),
                     "last_error": error[:2000] or "the PC lost the request",
                     "submitted_at": None,
                 }
             )
             self._store(take, _replace(take.sync, outbox=(again, *take.sync.outbox[1:])))
+            return True
 
     def change_applied(self, take_id: str, request_id: str, revision: int) -> None:
         """The PC applied the change at ``revision``: the revision here follows."""
@@ -669,53 +827,131 @@ class CorpusSpool:
         pc: LibraryTake | None,
         code: str,
         revision: int | None,
-        detail: str = "",
     ) -> None:
-        """The PC refused a change (``revision_conflict``: another client changed the take):
-        the PC is canonical. Its state is adopted (``pc``, from the prompt's history; when it
-        could not be read, only the refused kind's revision), every change still queued for
-        the take is dropped, and a notice says so."""
+        """The PC refused a change for the take's own reason (``revision_conflict``: another
+        client changed it; ``trim_out_of_bounds``, ``request_conflict``): the PC is
+        canonical. The refused change and every change queued behind it (chained on it) are
+        dropped, and a notice says so. The PC's state is installed only when ``pc`` (its
+        library's take) is at least at every revision the PC is known to have reached (the
+        refusal's ``revision`` included): the library is rebuilt after the refusal. Otherwise
+        nothing here changes yet and the take waits for a fresh read (``refresh``); the
+        operator's later changes wait with it."""
         with self._lock:
             take, op = self._head(take_id, request_id)
             sync = take.sync
             now = self.clock()
-            changes = self._drop_all(sync, code=code, revision=revision)
-            if pc is not None:
-                same = pc.decision == sync.decision.decision
-                changes["decision"] = LocalDecision(
-                    decision=pc.decision,
-                    reason=sync.decision.reason if same else None,
-                    changed_at=sync.decision.changed_at if same else now,
-                    revision=pc.decision_revision,
-                )
-                if not same:
-                    # What happened here since the PC last confirmed was never so there:
-                    # the history restarts from the PC's decision (Restore then knows only it).
-                    changes["history"] = (DecisionEvent(decision=pc.decision, at=now, source="pc"),)
-                changes["trim"] = LocalTrim(
-                    start_frame=pc.trim.start_frame,
-                    end_frame=pc.trim.end_frame,
-                    revision=pc.trim.revision,
-                )
-            elif revision is not None and isinstance(op, DecisionOp):
-                changes["decision"] = sync.decision.model_copy(update={"revision": revision})
+            decision_floor, trim_floor = self._floors(sync)
+            if revision is not None and isinstance(op, DecisionOp):
+                decision_floor = max(decision_floor, revision)
             elif revision is not None and isinstance(op, TrimOp):
-                changes["trim"] = sync.trim.model_copy(update={"revision": revision})
-            stored = self._store(take, _replace(sync, **changes))
-            dropped = len(take.sync.outbox) - 1
+                trim_floor = max(trim_floor, revision)
+            changes = self._drop_all(sync, code=code, revision=revision)
+            dropped = len(sync.outbox) - 1
+            pending = PendingRefresh(
+                since=now, decision_at_least=decision_floor, trim_at_least=trim_floor, reason=code
+            )
+            current = _replace(sync, refresh=pending, **changes)
+            fresh = pc is not None and self._fresh(pending, pc)
+            if pc is not None and fresh:
+                current = self._install(current, pc, now)
+            stored = self._store(take, current)
             if code == "revision_conflict":
                 kind: NoticeKind = "changed-elsewhere"
-                text = "Changed elsewhere: this take now shows the PC's state"
+                text = "Changed elsewhere: "
             else:
                 kind = "change-refused"
-                text = f"The PC refused a change of this take ({code})"
-            if pc is None:
-                text += "; the PC's state could not be read"
+                text = f"The PC refused a change of this take ({code}): "
+            text += (
+                "this take now shows the PC's state"
+                if fresh
+                else "the PC's state for it is read again before anything more is sent"
+            )
             if dropped:
                 text += f"; {dropped} queued change(s) were dropped"
-            if detail:
-                text += f" ({detail})"
             self._notice(stored, kind, (text + ".")[:2000])
+
+    @staticmethod
+    def _floors(sync: TakeSync) -> tuple[int, int]:
+        """The revisions the PC is known to have reached for the take (decision, trim)."""
+        decision, trim = sync.decision.revision, sync.trim.revision
+        if sync.refresh is not None:
+            decision = max(decision, sync.refresh.decision_at_least)
+            trim = max(trim, sync.refresh.trim_at_least)
+        return decision, trim
+
+    @staticmethod
+    def _fresh(pending: PendingRefresh, pc: LibraryTake) -> bool:
+        return (
+            pc.decision_revision >= pending.decision_at_least
+            and pc.trim.revision >= pending.trim_at_least
+        )
+
+    def _install(self, sync: TakeSync, pc: LibraryTake, now: datetime) -> TakeSync:
+        """``sync`` with the PC's state, its revisions, and no refresh pending. A kind with
+        changes still queued (the operator's, made while the take waited) keeps its target
+        here; those changes are chained again on the PC's revisions."""
+        changes: dict[str, Any] = {"refresh": None}
+        decisions = [op for op in sync.changes if isinstance(op, DecisionOp)]
+        trims = [op for op in sync.changes if isinstance(op, TrimOp)]
+        if decisions:
+            changes["decision"] = sync.decision.model_copy(
+                update={"revision": pc.decision_revision}
+            )
+        else:
+            same = pc.decision == sync.decision.decision
+            changes["decision"] = LocalDecision(
+                decision=pc.decision,
+                reason=sync.decision.reason if same else None,
+                changed_at=sync.decision.changed_at if same else now,
+                revision=pc.decision_revision,
+            )
+            if not same:
+                # What was decided here since the PC last confirmed never happened there:
+                # the history restarts from the PC's decision (Restore then knows only it).
+                changes["history"] = (DecisionEvent(decision=pc.decision, at=now, source="pc"),)
+        if trims:
+            changes["trim"] = sync.trim.model_copy(update={"revision": pc.trim.revision})
+        else:
+            changes["trim"] = LocalTrim(
+                start_frame=pc.trim.start_frame,
+                end_frame=pc.trim.end_frame,
+                revision=pc.trim.revision,
+            )
+        chained: list[Operation] = []
+        next_revision = {"decision": pc.decision_revision, "trim": pc.trim.revision}
+        for op in sync.outbox:
+            if isinstance(op, UploadOp):
+                chained.append(op)
+                continue
+            chained.append(op.model_copy(update={"expected_revision": next_revision[op.kind]}))
+            next_revision[op.kind] += 1
+        changes["outbox"] = tuple(chained)
+        return _replace(sync, **changes)
+
+    def refreshed(self, take_id: str, pc: LibraryTake) -> bool:
+        """The PC's state read again for a take waiting for it: installed when it is at least
+        at the revisions the PC is known to have reached (``True``); else it waits on."""
+        with self._lock:
+            take = self.take(take_id)
+            pending = take.sync.refresh
+            if pending is None:
+                return True
+            if not self._fresh(pending, pc):
+                return False
+            self._store(take, self._install(take.sync, pc, self.clock()))
+            return True
+
+    def give_up(self, take_id: str, request_id: str, *, code: str, detail: str) -> None:
+        """The PC has no record of the take, even after its upload was checked again: the
+        change and those queued behind it are dropped (noticed); the state here stays."""
+        with self._lock:
+            take, _op = self._head(take_id, request_id)
+            dropped = len(take.sync.outbox) - 1
+            stored = self._store(take, _replace(take.sync, **self._drop_all(take.sync, code=code)))
+            text = f"The PC refused a change of this take ({code}): {detail}"
+            if dropped:
+                text += f"; {dropped} queued change(s) were dropped"
+            self._notice(stored, "change-refused", (text + ".")[:2000])
 
     def _drop_all(
         self, sync: TakeSync, *, code: str, revision: int | None = None

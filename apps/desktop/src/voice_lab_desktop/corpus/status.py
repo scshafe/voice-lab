@@ -24,9 +24,12 @@ class SyncStatus:
     """The corpus client at one moment.
 
     Counts: ``queued`` operations wait in the outboxes (of ``waiting_takes`` takes, of which
-    ``awaiting_receipt`` wait for the PC to publish their upload); ``sent`` uploads were
-    accepted and changes applied; the PC ``refused`` some, and ``dropped`` changes were queued
-    behind a refusal; ``local_only`` takes are never sent (simulated audio). Catalog:
+    ``awaiting_receipt`` wait for the PC to publish their upload and ``refreshing`` for the
+    PC's state to be read again after a refusal); ``sent`` uploads were accepted and changes
+    applied; the PC ``refused`` some, and ``dropped`` changes were queued behind a refusal;
+    ``local_only`` takes are never sent (simulated audio). ``damaged`` names take directories
+    whose records cannot be read, and ``unsaved_recordings`` recordings an earlier run left
+    that could not become takes: both are kept on disk, never sent. Catalog:
     ``pinned_catalog`` is the version this session records against, ``pc_catalog`` the PC's
     active version as last seen; ``switch_pending`` means the next session records against
     the PC's. ``notices`` are the ones not dismissed yet, oldest first."""
@@ -45,11 +48,14 @@ class SyncStatus:
     takes: int
     queued: int
     waiting_takes: int
+    refreshing: int
     awaiting_receipt: int
     sent: int
     refused: int
     dropped: int
     local_only: int
+    damaged: tuple[str, ...]
+    unsaved_recordings: tuple[str, ...]
     pinned_catalog: CatalogReference | None
     pc_catalog: CatalogReference | None
     pc_catalog_unavailable: bool
