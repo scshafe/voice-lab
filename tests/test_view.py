@@ -32,6 +32,7 @@ from journey_browser_fixtures import (
 
 from cole_voice_lab.api.auth import TokenVerifier
 from cole_voice_lab.api.contracts import ApiMeta
+from cole_voice_lab.api.corpus_routes import CorpusRoutes
 from cole_voice_lab.api.journey_routes import JourneyRoutes
 from cole_voice_lab.api.server import ApiServer
 from cole_voice_lab.api.staging import IntakeStaging
@@ -535,7 +536,8 @@ def test_serve_wires_the_view_with_the_api_verifier(
         ]
     )
     assert code == 0
-    journey, view = built["routes"]
+    corpus, journey, view = built["routes"]
+    assert isinstance(corpus, CorpusRoutes)
     assert isinstance(view, ViewRoutes) and view.store is None
     assert view.verifier is built["verifier"]
     assert view.verifier.policy.allowed_subjects == (SUBJECT,)
