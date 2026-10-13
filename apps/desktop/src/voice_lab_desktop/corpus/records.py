@@ -13,6 +13,7 @@ PC's contracts is a type or test failure here.
   confirmed, its upload, and its outbox: the operations still to send, in order.
 - ``Notices``, ``SyncRecord``, ``CatalogCacheState``: the client's notices for the UI, its
   last contact with the PC, and the catalog it last saw there.
+- ``CachedLibrary``: the PC's library (coverage and each prompt's status) as last read.
 """
 
 from __future__ import annotations
@@ -23,7 +24,11 @@ from typing import Annotated, Final, Literal
 
 from pydantic import Field, StringConstraints, field_validator, model_validator
 
-from cole_voice_lab.api.corpus_contracts import TakeDecisionRequest, TakeTrimRequest
+from cole_voice_lab.api.corpus_contracts import (
+    CorpusLibrary,
+    TakeDecisionRequest,
+    TakeTrimRequest,
+)
 from cole_voice_lab.corpus_requests import RequestId, check_decision, check_trim
 from cole_voice_lab.corpus_take_store import TakeDecisionName
 from cole_voice_lab.corpus_takes import MAX_TAKE_FRAMES, TakeId
@@ -35,6 +40,7 @@ SYNC_SCHEMA: Final = "voice-lab-desktop.corpus-take-sync/v1"
 NOTICES_SCHEMA: Final = "voice-lab-desktop.corpus-notices/v1"
 SYNC_RECORD_SCHEMA: Final = "voice-lab-desktop.corpus-sync/v1"
 CATALOG_STATE_SCHEMA: Final = "voice-lab-desktop.corpus-catalog-cache/v1"
+LIBRARY_CACHE_SCHEMA: Final = "voice-lab-desktop.corpus-library-cache/v1"
 PENDING_SCHEMA: Final = "voice-lab-desktop.corpus-pending-take/v1"
 #: The finished operations a take's record keeps (its counters count all of them).
 JOURNAL_LIMIT: Final = 20
@@ -416,3 +422,22 @@ class CatalogCacheState(ContractModel):
     @classmethod
     def _checked(cls, value: datetime | None) -> datetime | None:
         return _utc(value)
+
+
+class CachedLibrary(ContractModel):
+    """``library/library.json``: the PC's ``CorpusLibrary`` of its active catalog version as
+    last read, with its ``ETag`` (``tag``, the PC's read-model digest) and when it was read.
+    It names prompts by id and digest, with their status and take counts: no audio and no
+    prompt text."""
+
+    schema_version: Literal["voice-lab-desktop.corpus-library-cache/v1"] = LIBRARY_CACHE_SCHEMA
+    tag: Sha256
+    fetched_at: datetime
+    library: CorpusLibrary
+
+    @field_validator("fetched_at")
+    @classmethod
+    def _fetched(cls, value: datetime) -> datetime:
+        moment = _utc(value)
+        assert moment is not None
+        return moment

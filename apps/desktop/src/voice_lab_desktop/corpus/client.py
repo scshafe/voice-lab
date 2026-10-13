@@ -9,7 +9,9 @@
   ``restore`` and ``set_trim`` change it here and queue the change for the PC;
 - the sync engine (``sync.py``), run off the GUI thread on the app's task pool
   (``tasks.py``): soon after every local change, and on a timer that backs off while the
-  PC cannot be reached (``SyncScheduler``).
+  PC cannot be reached (``SyncScheduler``);
+- the PC's library as last read (``library.py``), which each pass refreshes: the studio's
+  coverage counts it with the takes here.
 
 ``status()`` is the whole state as a plain value (``SyncStatus``); ``add_listener`` calls
 back on the GUI thread whenever it may have changed. Nothing here is a QObject: the studio's
@@ -37,6 +39,7 @@ from ..capture.types import CapturedTake
 from ..measurement import home_host
 from ..tasks import Tasks
 from .catalog import CatalogCache, PinnedCatalog
+from .library import LibraryCache
 from .records import Notice
 from .spool import (
     CorpusSpool,
@@ -181,6 +184,7 @@ class CorpusClient:
         )
         self.catalog = CatalogCache(self.root / "catalog", clock=clock)
         self.catalog.open_session()
+        self.library = LibraryCache(self.root / "library", clock=clock)
         self.enabled = enabled
         self.engine = SyncEngine(
             self.spool,
@@ -191,6 +195,7 @@ class CorpusClient:
             clock=clock,
             sleep=sleep,
             monotonic=monotonic,
+            library=self.library,
         )
         self._tasks = tasks
         self._listeners: list[Callable[[], None]] = []

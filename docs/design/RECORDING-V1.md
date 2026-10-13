@@ -272,3 +272,37 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   refresh, and the operator's changes are held and never treated as no-ops. Unsent changes
   fold into one per kind. Interrupted saves are finished or reported at start. Pokes and
   listeners run on the GUI thread.
+- 2026-10-12: step 6a, the prompt studio's fixed workspace and its corpus-first loop
+  (apps/desktop/docs/PROMPT-STUDIO.md). Record → Prompts is now the studio
+  (`screens/studio.py`, `studio/`, `StudioScreen.qml`) over the step-5 client. Phase 4c's
+  session flow stays, behind `prompts_mode = "sessions"` in `config.toml`.
+  - **The workspace.** The library shows coverage (`n / N`), Continue Missing, search, Show,
+    Labels, the pinned catalog version and every prompt's status. Then come the header with
+    its label chips, the script card (PROMPT · READ ALOUD, or a banner and INSTRUCTIONS), the
+    timer, the 56-point Record/Stop footer and the status line. The take picker, waveform,
+    trim and playback regions are held at their final size for 6b. Every region's geometry
+    depends on the window alone; a test compares them across idle, recording, review,
+    saving, saved and failed.
+  - **The loop.** Record binds a take to the selected prompt of the pinned version
+    (`begin_take`) and starts the worker; Stop ends it. Save (`save_take`, then `kept`, off
+    the GUI thread) keeps it here at once. Save & Next then selects the next prompt without
+    a kept take, in catalog order, wrapping once; filters never change it. Retake, or
+    leaving a take under review, saves that take as an undecided draft rather than losing
+    it. Discard removes a failed take.
+  - **Coverage.** It counts the PC's library and this machine's takes, the better of the two
+    per prompt. A PC row counts only for the same prompt (id and digest), so a pending
+    version switch still counts the shared prompts. To know what the PC has while offline,
+    the client now keeps the PC's library (`corpus/library.py`, `library/library.json`),
+    read last in every pass that reached the PC, with `If-None-Match`, also while sending
+    is held.
+  - **Catalog and status line.** A new active version on the PC is announced and switches at
+    the next session, or at Switch now between takes. With no cached catalog the studio says
+    so and records nothing. The status line gives the take's state, then the `SyncStatus`:
+    held until S-1 (a plain statement), offline, queued and sent counts, takes waiting for
+    the PC's state, damaged takes, unsaved recordings, and notices until they are dismissed.
+  - **§5 ticked by 6a:** the fixed workspace without the text-size choice, Continue Missing,
+    search, Show, Labels, per-prompt status, label chips, the script card, the Record/Stop
+    footer and the status line; Save and Save & Next; Retake; corpus-first.
+  - **Left to 6b and 6c:** 6b adds the take picker and history, the live waveform, trims,
+    Zoom and Fit, playback, and Reject, Remove and Restore. 6c adds the keys: `toggleRecord`,
+    `saveNext` and `save` are what they call, and no shortcut is installed yet.

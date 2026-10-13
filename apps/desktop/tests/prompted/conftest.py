@@ -1,5 +1,6 @@
 """Record: prompts' fixtures: the fake recorder, a store with recorded takes, and the app
-opened on the Prompts screen (offscreen; no device, no server)."""
+opened on the Prompts screen in its session flow (``prompts_mode = "sessions"``; offscreen;
+no device, no server)."""
 
 from __future__ import annotations
 
@@ -92,6 +93,8 @@ def make_app(
     from voice_lab_desktop.net import new_http
     from voice_lab_desktop.tokens import MemoryStore
 
+    # Record → Prompts' session flow (phase 4c): the studio is the default (D-051).
+    config.setdefault("prompts_mode", "sessions")
     settings = Config(data_dir=data_dir, file=tmp_path / "config.toml", **config).validated()
     return AppModel(
         settings,

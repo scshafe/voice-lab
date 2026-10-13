@@ -3,7 +3,8 @@
 This is the app's composition root. It builds one model per screen over a shared
 :class:`~voice_lab_desktop.viewmodel.AppContext` and hands them to QML as context
 properties (``app``, ``status``, ``uploads``, ``measurement``, ``corpus``, ``journey``,
-``practice``, ``referee``, ``player``; Record: prompts' model is ``app.promptsModel``). It
+``practice``, ``referee``, ``player``; Record: prompts' model is ``app.studioModel``, the prompt
+studio, or with ``prompts_mode = "sessions"`` phase 4c's ``app.promptsModel``). It
 owns the sign-in (Pocket ID, PKCE, a loopback
 redirect; ``auth.py``) and the settings (``config.py``), and it navigates: a screen's model is
 activated when its screen is shown, which loads its data the first time, and deactivated when
@@ -25,6 +26,7 @@ from . import __version__
 from .auth import AuthError, Session, sign_in
 from .capture.types import TakeRecorder
 from .config import Config, ConfigError, save_settings
+from .corpus.client import CorpusClient
 from .measurement.controller import Controller
 from .measurement.devices import AudioBackend
 from .measurement.levels import LevelReader
@@ -37,6 +39,7 @@ from .screens.practice import PracticeModel
 from .screens.prompts import PromptsModel, default_recorder
 from .screens.referee import RefereeModel
 from .screens.status import StatusModel
+from .screens.studio import StudioModel
 from .screens.uploads import UploadsModel
 from .tablemodel import RoleRows
 from .tasks import Tasks
@@ -93,6 +96,18 @@ class AppModel(ViewModel):
     # Record: prompts' model (PromptsScreen.qml reads it through the app).
     promptsModel = Property(QObject, _get_prompts_model, constant=True)
 
+    def _get_studio_model(self) -> StudioModel | None:
+        return self.studio
+
+    # The prompt studio's model (StudioScreen.qml); null with prompts_mode = "sessions".
+    studioModel = Property(QObject, _get_studio_model, constant=True)
+
+    def _get_prompts_mode(self) -> str:
+        return self._prompts_mode
+
+    # What Record → Prompts shows this run: "studio" or "sessions" (config.prompts_mode).
+    promptsMode = Property(str, _get_prompts_mode, constant=True)
+
     def __init__(
         self,
         config: Config,
@@ -108,11 +123,14 @@ class AppModel(ViewModel):
         level_reader: LevelReader | None = None,
         recorder_factory: Callable[[], TakeRecorder] | None = None,
         start_screen: str | None = None,
+        corpus_factory: Callable[[AppContext], CorpusClient] | None = None,
     ) -> None:
         """``measurement_backend`` and ``level_reader`` stand in for PortAudio and the
         platform's level readers (tests, ``--smoke``); by default they are made the first time
         the measurement screen is shown. ``recorder_factory`` makes Record: prompts' recorder
-        (default: the capture worker). ``start_screen`` opens on that screen."""
+        (default: the capture worker). ``start_screen`` opens on that screen.
+        ``corpus_factory`` makes the prompt studio's corpus client (default: the app's, over
+        ``<data dir>/corpus`` and the configured server)."""
         tasks = tasks or Tasks()
         session = Session(config, tokens, http)
         context = AppContext(config, session, http, tasks, open_url=open_url or open_browser)
@@ -133,6 +151,17 @@ class AppModel(ViewModel):
         # that way is JavaScript-owned, and QML's garbage collector would delete it under the
         # running screen. The app owns it.
         QQmlEngine.setObjectOwnership(self.prompts, QQmlEngine.ObjectOwnership.CppOwnership)
+        # Record → Prompts: the prompt studio over the corpus client, unless this machine's
+        # settings keep phase 4c's session flow (prompts_mode = "sessions").
+        self._prompts_mode = config.prompts_mode
+        self.studio: StudioModel | None = None
+        if config.prompts_mode == "studio":
+            client = (corpus_factory or CorpusClient.from_context)(context)
+            self.studio = StudioModel(
+                context, client, recorder_factory=recorder_factory or default_recorder
+            )
+            QQmlEngine.setObjectOwnership(self.studio, QQmlEngine.ObjectOwnership.CppOwnership)
+        record: ViewModel = self.studio if self.studio is not None else self.prompts
         self.measurement = Controller(
             context,
             self.spool,
@@ -147,7 +176,7 @@ class AppModel(ViewModel):
         self.models: dict[str, ViewModel] = {
             "status": self.status,
             "uploads": self.uploads,
-            "prompts": self.prompts,
+            "prompts": record,
             "measurement": self.measurement,
             "corpus": self.corpus,
             "journey": self.journey,
@@ -161,6 +190,8 @@ class AppModel(ViewModel):
         self.measurement.sessionChanged.connect(self._refresh_sidebar)
         self.prompts.transportChanged.connect(self._refresh_sidebar)
         self.prompts.packaged.connect(self._prompted_packaged)
+        if self.studio is not None:
+            self.studio.transportChanged.connect(self._refresh_sidebar)
         context.signInRequired.connect(self._signed_out_elsewhere)
         start = start_screen or ("corpus" if config.configured and session.signed_in else "status")
         if start not in SCREEN_KEYS:
@@ -190,6 +221,8 @@ class AppModel(ViewModel):
 
     def start(self) -> None:
         self.status.refresh_spool()
+        if self.studio is not None:
+            self.studio.start()
         self._activate(self._v["screen"])
 
     def shutdown(self) -> None:
@@ -197,6 +230,8 @@ class AppModel(ViewModel):
         self.player.shutdown()
         self.referee.shutdown()
         self.prompts.shutdown()
+        if self.studio is not None:
+            self.studio.shutdown()
         self.measurement.shutdown()
         self.context.tasks.close()
 
@@ -251,7 +286,7 @@ class AppModel(ViewModel):
         failed = self.uploads.failed_count
         # A session in progress keeps running on another screen: its entry shows it.
         recording = bool(self.measurement.inSession)
-        taking = self.prompts.recording
+        taking = self.studio.recording if self.studio is not None else self.prompts.recording
         rows = []
         for key, section, text, icon in SCREENS:
             entry: dict[str, Any] = {"key": key, "section": section, "text": text, "iconName": icon}

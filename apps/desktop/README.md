@@ -15,14 +15,14 @@ First time? See [docs/FIRST-RUN.md](docs/FIRST-RUN.md).
 | --- | --- |
 | **Status** | Sign-in, the settings, the server (build, API versions, the minimum client version), its gates (playback, transcript text, feature detail), the job runner, the local spool, the evidence report (opens the web view's in the browser) |
 | **Uploads** | Each local session: waiting, uploading (with progress), accepted (when, where, the receipt's digests), refused (why, with Retry); an interrupted upload resumes where the server stopped. Sessions go through `/api/v1/intake` under this machine's standing home-host approval, each in its ledger (D-021) |
+| **Prompts** | The prompt studio ([docs/PROMPT-STUDIO.md](docs/PROMPT-STUDIO.md)): the PC's catalog with each prompt's status and the coverage, Continue Missing, search and filters, the script, Record/Stop and Save (or Save & Next) into this machine's corpus spool, synced to the PC in the background. `prompts_mode = "sessions"` brings back phase 4c's session flow |
 | **Measurement** | The UMIK-1 ritual (voice-journey-capture's, unchanged): the device, the pinned input level, the cal file, the segments, the live meter; Space records and stops, R redoes, Escape asks to abort. A session keeps running if another screen is shown (its sidebar entry shows a dot); a saved session goes to Uploads |
 | **Corpus** | Every recording: search and filters, a sortable table that pages as you scroll, the row detail, playback, the local transcript on request, spot-check verdicts |
 | **Journey** | The longitudinal analysis: the verdict, the range river, cause and effect, the vibrato story, what not to trust, song scorecards, repertoire threads, the take inspector |
 | **Practice** | The coach (songs due for a take, the frontier) and pre-registered goals |
 | **Referee** | Blind same-song A/B trials, loudness-matched and band-limited, and the results by year |
 
-`voice-lab-desktop --measure` opens the window on the Measurement screen. Prompted capture
-follows in 4c.
+`voice-lab-desktop --measure` opens the window on the Measurement screen.
 [docs/design/PHASE-4-CHECKLIST.md](../../docs/design/PHASE-4-CHECKLIST.md) maps every view
 and field of voice-journey's React SPA to these screens.
 
@@ -90,9 +90,10 @@ Pocket ID issuer in **Status → Settings…**, or in the settings file. Precede
 | `client_id` | `voice-lab-desktop` | `VOICE_LAB_DESKTOP_CLIENT_ID` |
 | `distance_cm` | `35`: the measurement chain's mouth-to-capsule distance (Status → Settings). Measure it once from your lips to the tip of the UMIK-1 and keep it: levels change about 6 dB per doubling of distance. Each session records it, and its package carries it to the PC | |
 | `bearer` | `access` (the access token when it is a JWT; `id` sends the ID token) | |
-| `catalog_file` | none: Record → Prompts offers the built-in pilot catalogs; a prompt-suite JSON file adds it (docs/FIRST-RUN.md §7) | |
-| `prompted_uploads` | `false`: prompted sessions stay on this machine until spike S-1 passes (D-042); the owner sets it per machine after recording the pass | |
+| `catalog_file` | none: the session flow (`prompts_mode = "sessions"`) offers the built-in pilot catalogs; a prompt-suite JSON file adds it (docs/FIRST-RUN.md §7) | |
+| `prompted_uploads` | `false`: the session flow's packages stay on this machine until spike S-1 passes (D-042); the owner sets it per machine after recording the pass | |
 | `corpus_sync` | `false`: the corpus client's takes, decisions and trims stay on this machine until spike S-1 passes (D-042's reason, D-052); the owner sets it per machine after recording the pass ([docs/CORPUS-CLIENT.md](docs/CORPUS-CLIENT.md)) | |
+| `prompts_mode` | `"studio"`: Record → Prompts is the prompt studio (D-051); `"sessions"` shows phase 4c's session flow (D-042) instead, until the studio retires it ([docs/PROMPT-STUDIO.md](docs/PROMPT-STUDIO.md)) | |
 | the data dir | `~/Library/Application Support/voice-lab-desktop` (macOS), `$XDG_DATA_HOME/voice-lab-desktop` (Linux) | `VOICE_LAB_DESKTOP_DATA` |
 
 The settings file is `config.toml` in `~/Library/Application Support/voice-lab-desktop/`

@@ -230,9 +230,11 @@ def make_rig(
     level_reader: Any = None,
 ) -> Iterator[AppRig]:
     """The app over a synthetic server. The measurement screen gets a simulated UMIK-1 and
-    level (never PortAudio) unless a test hands its own."""
+    level (never PortAudio) unless a test hands its own; Record → Prompts' capture worker
+    runs on its simulated UMIK-1 too."""
     from synthetic import ISSUER, serve
     from voice_lab_desktop.app import AppModel
+    from voice_lab_desktop.capture.process import WorkerRecorder
     from voice_lab_desktop.net import new_http
 
     with serve(tmp_path / "server", journey_config) as served:
@@ -256,6 +258,7 @@ def make_rig(
             measurement_backend=measurement_backend
             or SimulatedBackend(speed=200, block_frames=4800),
             level_reader=level_reader or SimulatedLevelReader(),
+            recorder_factory=lambda: WorkerRecorder(simulated={"speed": 20.0}),
         )
         try:
             yield AppRig(model, output, opened, served, tmp_path)

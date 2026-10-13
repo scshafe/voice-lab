@@ -94,10 +94,16 @@ until the server accepts it.
 
 ## 7. Prompted recording
 
-**Record → Prompts** records a catalog's prompts into the UMIK-1, one take at a time,
-through the app's PortAudio capture worker (D-039). Until spike S-1 has passed on this
-platform, the Swift app stays the macOS path, and what you record here stays on this
-machine (D-042).
+**Record → Prompts** is the prompt studio
+([PROMPT-STUDIO.md](PROMPT-STUDIO.md)): the PC's catalog, every prompt's status and the
+coverage, Continue Missing, and Record, Stop and Save (or Save & Next), one take at a time
+through the app's PortAudio capture worker (D-039). It needs to reach the PC once, for the
+catalog; after that it records offline too. Until spike S-1 has passed on this platform, the
+Swift app stays the macOS path, and what you record here stays on this machine
+(`corpus_sync = false`, [CORPUS-CLIENT.md](CORPUS-CLIENT.md)).
+
+The rest of this section is phase 4c's session flow, which `prompts_mode = "sessions"` in
+`config.toml` brings back until the studio retires it (D-042):
 
 1. Choose the catalog: the built-in pilot catalog (prompt suite v2, or v1), or a
    prompt-suite JSON file named in `config.toml` (`catalog_file = "/path/to/suite.json"`).

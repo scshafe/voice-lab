@@ -27,6 +27,7 @@ EXPOSED = (
     "status",
     "uploads",
     "prompts",
+    "studio",
     "measurement",
     "corpus",
     "journey",

@@ -17,6 +17,8 @@ file; nothing secret ever goes in it (tokens live in the OS keychain).
     prompted_uploads = false # send prompted sessions; only once spike S-1 passed (D-042)
     corpus_sync = false      # send corpus takes, decisions and trims to the PC; only once
                              # spike S-1 passed (D-042, D-052)
+    prompts_mode = "studio"  # Record → Prompts: the prompt studio (corpus-first, D-051),
+                             # or "sessions" for phase 4c's session flow (D-042)
 
 Environment overrides (each wins over the file):
 
@@ -54,7 +56,11 @@ KEYS: Final = (
     "catalog_file",
     "prompted_uploads",
     "corpus_sync",
+    "prompts_mode",
 )
+#: What Record → Prompts shows: the prompt studio (D-051, RECORDING-V1.md step 6), or the
+#: session flow of phase 4c (D-042), kept until the studio reaches parity and retires it.
+PROMPTS_MODES: Final = ("studio", "sessions")
 #: Each key's TOML type (the others are strings).
 _KINDS: Final[dict[str, type]] = {
     "distance_cm": int,
@@ -114,6 +120,8 @@ class Config:
     #: The corpus client sends takes, decisions and trims to the PC only when this is on:
     #: after spike S-1 passed on this platform (D-042's reason; ``corpus/``, D-052).
     corpus_sync: bool = False
+    #: Record → Prompts: ``studio`` (the prompt studio) or ``sessions`` (phase 4c's flow).
+    prompts_mode: str = "studio"
     data_dir: Path = field(default_factory=default_data_dir)
     #: Where the settings came from (for --check-config and the Settings dialog).
     source: str = "defaults"
@@ -142,6 +150,8 @@ class Config:
             raise ConfigError(f"prompted_uploads must be true or false: {self.prompted_uploads!r}")
         if not isinstance(self.corpus_sync, bool):
             raise ConfigError(f"corpus_sync must be true or false: {self.corpus_sync!r}")
+        if self.prompts_mode not in PROMPTS_MODES:
+            raise ConfigError(f"prompts_mode must be 'studio' or 'sessions': {self.prompts_mode!r}")
         return replace(self, server_url=server, issuer=issuer, data_dir=Path(self.data_dir))
 
     @property

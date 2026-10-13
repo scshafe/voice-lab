@@ -96,6 +96,15 @@ class CatalogAnswer:
     view: CatalogView | None
 
 
+@dataclass(frozen=True)
+class LibraryAnswer:
+    """``GET /api/v1/corpus/library``: the PC's read-model digest (the answer's ``ETag``) and
+    the library, or ``None`` when the client already holds that one (``304``)."""
+
+    tag: str
+    library: CorpusLibrary | None
+
+
 def _etag(response: httpx.Response) -> str | None:
     """The digest an answer's ``ETag`` names (``"<64 hex>"``), or ``None``."""
     match = _ETAG.fullmatch(response.headers.get("ETag", "").strip())
@@ -286,6 +295,22 @@ class ApiClient:
     def library(self) -> CorpusLibrary:
         """The library of the PC's active catalog version: every prompt and its status."""
         return self._get(CorpusLibrary, "/api/v1/corpus/library")
+
+    def library_if_changed(self, if_none_match: str | None = None) -> LibraryAnswer:
+        """The library, unless the PC's is still the one tagged ``if_none_match`` (``304``).
+
+        Raises: ``ApiUnavailable`` (``catalog_unavailable``, ``library_unavailable`` while the
+        PC rebuilds it), ``ApiError`` for an answer without its digest as ``ETag``."""
+        headers = {"If-None-Match": f'"{if_none_match}"'} if if_none_match else None
+        response = self._request("GET", "/api/v1/corpus/library", headers=headers)
+        tag = _etag(response)
+        if tag is None:
+            raise ApiError("the library's answer carries no digest as its ETag")
+        if response.status_code == 304:
+            if tag != if_none_match:
+                raise ApiError("the server answered 304 for another library")
+            return LibraryAnswer(tag, None)
+        return LibraryAnswer(tag, self._read(CorpusLibrary, response))
 
     def prompt_takes(self, prompt_id: str) -> TakeHistory:
         """One prompt's row and every take that counts for it, newest first."""

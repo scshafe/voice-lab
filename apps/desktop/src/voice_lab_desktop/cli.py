@@ -512,6 +512,7 @@ def smoke(config: Config) -> int:
     qInstallMessageHandler(handler)
     app = _application()
     from .app import SCREENS, AppModel
+    from .capture.process import WorkerRecorder
     from .measurement.simulated import SimulatedBackend, SimulatedLevelReader
     from .net import new_http
     from .tokens import MemoryStore
@@ -537,6 +538,8 @@ def smoke(config: Config) -> int:
             open_url=lambda url: None,
             measurement_backend=SimulatedBackend(speed=200, block_frames=4800),
             level_reader=SimulatedLevelReader(),
+            # Record → Prompts' worker on its simulated UMIK-1: the smoke opens no device.
+            recorder_factory=lambda: WorkerRecorder(simulated={"speed": 20.0}),
         )
         engine = load_main_window(model)
         ok = bool(engine.rootObjects())

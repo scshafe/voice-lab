@@ -2,7 +2,7 @@
 
 `voice_lab_desktop/corpus/` is how the app records into the PC's corpus (D-051, D-052;
 [RECORDING-V1.md](../../../docs/design/RECORDING-V1.md) step 5). It has no window of its own:
-the prompt studio (step 6) is built on it. It is offline-first. A take, a decision or a trim
+the prompt studio ([PROMPT-STUDIO.md](PROMPT-STUDIO.md), step 6) is built on it. It is offline-first. A take, a decision or a trim
 is saved on this machine at once, then sent to the PC in order. Once the PC has them, the PC
 is canonical.
 
@@ -37,6 +37,7 @@ are canonical JSON, written atomically.
 | `takes/<take_id>/package/` | The take package (`cole-voice-lab.corpus-take/v1`). It is built once by `corpus_takes.build_take_package` and sent as built: a rebuilt manifest would be another package under the same take id. A local-only take has none. |
 | `takes/<take_id>/take.json` | `LocalTake`: the exact prompt and catalog version, the times, the device, the audio. It is never rewritten. |
 | `takes/<take_id>/state.json` | `TakeSync`: the decision and the trim here, the revisions the PC last confirmed, the upload state and receipt, and the **outbox**. |
+| `library/library.json` | `CachedLibrary`: the PC's library (each prompt's status and take count, the coverage) as last read, with its `ETag`. No audio, no prompt text. The prompt studio counts coverage from it and the takes here. |
 | `notices.json` | Notices for the UI that have not been dismissed yet. |
 | `sync.json` | When the client last reached the PC, and its last error. |
 
@@ -130,6 +131,11 @@ under a new id.
 A pass the server stops answering mid-way ends there; nothing is lost, and the next pass
 resumes. A retried request reuses its id, so the PC never applies a change twice.
 
+Last, a pass that reached the PC reads its library (`GET /api/v1/corpus/library`,
+`If-None-Match`: a `304` rewrites nothing), also while sending is held: like the catalog, it
+sends nothing of the corpus. A PC that has no library yet leaves the last one read; a
+library that is not Cole's is not kept; neither stops the pass (`PassResult.library_error`).
+
 ## The catalog and sessions
 
 Making a `CorpusClient` starts a session. The session pins the PC's active catalog version
@@ -149,6 +155,7 @@ task pool. It offers:
 - `pinned` and `start_new_session()`;
 - `begin_take(prompt_id)`, then `save_take(pending, captured)` (or `discard_take`);
 - `decide`, `restore`, `set_trim`, `takes()`, `takes_for_prompt()`;
+- `library`, the PC's library as last read (`LibraryCache.latest`);
 - `notices()` and `dismiss_notice()`;
 - `status()`, a `SyncStatus` value;
 - `add_listener(fn)`, which is called on the GUI thread whenever the status may have changed.
