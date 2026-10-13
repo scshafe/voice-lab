@@ -92,6 +92,7 @@ Pocket ID issuer in **Status → Settings…**, or in the settings file. Precede
 | `bearer` | `access` (the access token when it is a JWT; `id` sends the ID token) | |
 | `catalog_file` | none: Record → Prompts offers the built-in pilot catalogs; a prompt-suite JSON file adds it (docs/FIRST-RUN.md §7) | |
 | `prompted_uploads` | `false`: prompted sessions stay on this machine until spike S-1 passes (D-042); the owner sets it per machine after recording the pass | |
+| `corpus_sync` | `false`: the corpus client's takes, decisions and trims stay on this machine until spike S-1 passes (D-042's reason, D-052); the owner sets it per machine after recording the pass ([docs/CORPUS-CLIENT.md](docs/CORPUS-CLIENT.md)) | |
 | the data dir | `~/Library/Application Support/voice-lab-desktop` (macOS), `$XDG_DATA_HOME/voice-lab-desktop` (Linux) | `VOICE_LAB_DESKTOP_DATA` |
 
 The settings file is `config.toml` in `~/Library/Application Support/voice-lab-desktop/`
@@ -125,6 +126,9 @@ voice-lab-desktop --install-desktop-entry [--replace]   # Linux: the app in the 
   §3.5). A `401` refreshes once; redirects are never followed; no cookies are kept.
 - **Audio** is played from memory and never written to disk (D-038). Measurement sessions
   stay in the data dir until the server accepts them; they go only to the configured server.
+- **Corpus takes** (the corpus client, docs/CORPUS-CLIENT.md) stay in `<data dir>/corpus/`;
+  they, their decisions and trims go only to the configured server, and only once
+  `corpus_sync` is on. Takes of the simulated device never leave the machine.
 - **Logs and toasts** carry ids, counts and error codes, never audio, a transcript or a
   token.
 

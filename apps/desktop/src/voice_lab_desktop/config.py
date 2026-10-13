@@ -15,6 +15,8 @@ file; nothing secret ever goes in it (tokens live in the OS keychain).
     bearer = "access"        # or "id": which token the door is sent
     catalog_file = "/path/to/suite.json"   # Record: prompts may also use this prompt suite
     prompted_uploads = false # send prompted sessions; only once spike S-1 passed (D-042)
+    corpus_sync = false      # send corpus takes, decisions and trims to the PC; only once
+                             # spike S-1 passed (D-042, D-052)
 
 Environment overrides (each wins over the file):
 
@@ -51,9 +53,14 @@ KEYS: Final = (
     "bearer",
     "catalog_file",
     "prompted_uploads",
+    "corpus_sync",
 )
 #: Each key's TOML type (the others are strings).
-_KINDS: Final[dict[str, type]] = {"distance_cm": int, "prompted_uploads": bool}
+_KINDS: Final[dict[str, type]] = {
+    "distance_cm": int,
+    "prompted_uploads": bool,
+    "corpus_sync": bool,
+}
 ENV: Final = {
     "server_url": "VOICE_LAB_DESKTOP_SERVER",
     "issuer": "VOICE_LAB_DESKTOP_ISSUER",
@@ -104,6 +111,9 @@ class Config:
     catalog_file: str = ""
     #: Prompted sessions upload only when this is on: after spike S-1 passed (D-042).
     prompted_uploads: bool = False
+    #: The corpus client sends takes, decisions and trims to the PC only when this is on:
+    #: after spike S-1 passed on this platform (D-042's reason; ``corpus/``, D-052).
+    corpus_sync: bool = False
     data_dir: Path = field(default_factory=default_data_dir)
     #: Where the settings came from (for --check-config and the Settings dialog).
     source: str = "defaults"
@@ -130,6 +140,8 @@ class Config:
             raise ConfigError(f"bearer must be 'access' or 'id': {self.bearer!r}")
         if not isinstance(self.prompted_uploads, bool):
             raise ConfigError(f"prompted_uploads must be true or false: {self.prompted_uploads!r}")
+        if not isinstance(self.corpus_sync, bool):
+            raise ConfigError(f"corpus_sync must be true or false: {self.corpus_sync!r}")
         return replace(self, server_url=server, issuer=issuer, data_dir=Path(self.data_dir))
 
     @property
@@ -160,6 +172,11 @@ class Config:
     def prompted_dir(self) -> Path:
         """Record: prompts' sessions, takes and packages (``prompted/store.py``)."""
         return Path(self.data_dir) / "prompted"
+
+    @property
+    def corpus_dir(self) -> Path:
+        """The corpus client's spool, catalog cache and outbox (``corpus/``, D-052)."""
+        return Path(self.data_dir) / "corpus"
 
     @property
     def measurement_dir(self) -> Path:

@@ -5,7 +5,7 @@
 # Harvard sentences and the CMU ARCTIC prompts, refuses either unless its SHA-256 is the pinned
 # one (nothing is written before both match), then builds cole-corpus in the PC's lab exactly as
 # docs/CORPUS_STORE.md "Seeding a library" does and activates version 2 for cole-self only when
-# its digest is the Mac's. Safe to run again: it continues from wherever the store is, and once
+# its digests are the Mac's. Safe to run again: it continues from wherever the store is, and once
 # seeded it re-checks version 2 and re-activates it, which rewrites what /api/v1/catalog serves.
 #
 #   scripts/seed-pc-catalog           seed (or finish seeding)
@@ -23,6 +23,7 @@ ARCTIC_URL=http://festvox.org/cmu_arctic/cmuarctic.data
 HARVARD_SHA256=f8c981aed97020642fd2423de787b3ccd2a7233f32fe07ebd26d2279c195cb75
 ARCTIC_SHA256=60e3d9a4dc33732c9100baadd747312bdc1a200fc891766507397289753a25c7
 VERSION_2_SHA256=1ebd48cbc6f6a2b2ea0fe70d0cff8f1df1e91b3bbf2a5be52959ffba141ff90f
+VERSION_2_SNAPSHOT_SHA256=db5037567f4688c7ebb871b990d9123e06d67b4df067d26105d124cf33cdb452
 
 say() { printf 'seed-pc-catalog: %s\n' "$*"; }
 fail() { printf 'seed-pc-catalog: %s\n' "$1" >&2; exit "${2:-1}"; }
@@ -60,8 +61,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Version 2 is activated only when its digest is the Mac's. Activating it again is harmless, and
-# from the build with GET /api/v1/catalog on, it rewrites the read model that route serves.
+# Version 2 is activated only when its digests are the Mac's: the suite's (catalog_sha256) and the
+# snapshot file's (snapshot_sha256), since a take names the whole reference and the PC admits it
+# only when every field is the published one. Activating it again is harmless, and from the
+# build with GET /api/v1/catalog on, it rewrites the read model that route serves.
 activate_version_2() {
   # The first line names version 2's own digest: "cole-corpus version 2 · … · catalog <sha256>".
   vl catalog show --version 2 >"$work/version-2.txt"
@@ -69,7 +72,11 @@ activate_version_2() {
     "cole-corpus version 2 "*" catalog $VERSION_2_SHA256") ;;
     *) fail "version 2's catalog_sha256 is not $VERSION_2_SHA256: not activated. Find out why first (docs/CORPUS_STORE.md)." ;;
   esac
-  say "version 2 is the Mac's catalog ($VERSION_2_SHA256)"
+  # Only version 2's own reference has this key (the snapshot holds no digest of itself).
+  vl catalog show --version 2 --json >"$work/version-2.json"
+  grep -q "\"snapshot_sha256\": \"$VERSION_2_SNAPSHOT_SHA256\"" "$work/version-2.json" ||
+    fail "version 2's snapshot_sha256 is not $VERSION_2_SNAPSHOT_SHA256: not activated. Find out why first (docs/CORPUS_STORE.md)."
+  say "version 2 is the Mac's catalog ($VERSION_2_SHA256, snapshot $VERSION_2_SNAPSHOT_SHA256)"
   vl catalog activate --subject-id "$SUBJECT" --version 2 >"$work/activated.json"
   if grep -q '"read_model": "' "$work/activated.json"; then
     say "the API serves it: GET /api/v1/catalog"
