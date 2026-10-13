@@ -1,10 +1,19 @@
 """The repo-safe recording index (index-recordings.mjs), ``voice-journey.recording-index.v1``.
 
-Ports ``index-recordings.mjs`` unchanged: the phone drop and the measurement sessions are
-listed through ``journey/corpus.py`` (directory entries and stat metadata only, never
-audio bytes), phone rows are marked ``present`` / ``deleted`` / ``unverified`` against
-the drop's mirror manifest and the previous index, and the manifest is written as the
-Node pipeline wrote it (``--compact`` is ``JSON.stringify(manifest, null, 0)``).
+Ports ``index-recordings.mjs``: the recordings are listed through the configured sources
+(``journey/sources.py``: the phone drop, then the measurement sessions, through
+``journey/corpus.py``; directory entries and stat metadata only, never audio bytes),
+phone rows are marked ``present`` / ``deleted`` / ``unverified`` against the drop's
+mirror manifest and the previous index, and the manifest is written as the Node pipeline
+wrote it (``--compact`` is ``JSON.stringify(manifest, null, 0)``).
+
+One deliberate difference in the manifest (D-051, Recording v1 step 7): every row says
+its ``source``. Node gave only measurement rows one; phone rows now carry
+``{"type": "voice-memos"}`` (in the row's existing ``source`` slot, after ``file``), and the
+dry run lists ``source`` among the row fields. The schema stays
+``voice-journey.recording-index.v1``: ``source`` was already a v1 row field, the change
+only adds it where it was absent, and a reader that branches on ``source.type`` keeps its
+path for every row. The parity harness counts this addition apart, by a named rule.
 
 Differences from the JS: the defaults (``resolve_paths()``) are read when the command
 runs, not when the module is imported; the manifest file is replaced atomically
@@ -16,13 +25,14 @@ from __future__ import annotations
 
 import math
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from . import jscompat as js
-from .corpus import Entry, list_corpus_entries, list_measurement_entries
+from .corpus import Entry
 from .jsonio import iso_timestamp, read_json, write_json
 from .paths import resolve_paths
+from .sources import RecordingSource, configured_sources, list_source_entries
 
 SCHEMA_VERSION = "voice-journey.recording-index.v1"
 
@@ -124,6 +134,7 @@ def build_dry_run(options: dict[str, Any]) -> dict[str, Any]:
                 "capturedAt",
                 "durationSeconds",
                 "file",
+                "source",
                 "indexingStatus",
                 "contentClassification",
                 "contaminationClassification",
@@ -332,8 +343,25 @@ def write_manifest(manifest: dict[str, Any], out: str, *, pretty: bool) -> None:
 # ---- entry points ---------------------------------------------------------------------
 
 
-def run(argv: Sequence[str]) -> int:
-    """The command; refusals and read errors raise."""
+def index_sources(options: Mapping[str, Any]) -> tuple[RecordingSource, ...]:
+    """The configured sources for these options: the phone drop (``--corpus-root``,
+    ``--limit``), then the measurement sessions (``--measurement-root``)."""
+
+    return configured_sources(
+        js.path_resolve(options["corpusRoot"]),
+        js.path_resolve(options["measurementRoot"]),
+        limit=options["limit"],
+    )
+
+
+def run(
+    argv: Sequence[str],
+    *,
+    sources: Callable[[Mapping[str, Any]], Sequence[RecordingSource]] = index_sources,
+) -> int:
+    """The command; refusals and read errors raise. ``sources`` builds the sources from the
+    parsed options: a new kind of recording is an adapter in
+    ``sources.configured_sources``, not a change here."""
 
     options = parse_args(argv)
     if options["help"]:
@@ -342,13 +370,10 @@ def run(argv: Sequence[str]) -> int:
     if options["dryRun"]:
         write_json("-", build_dry_run(options))
         return 0
-    phone = list_corpus_entries(
-        js.path_resolve(options["corpusRoot"]), limit=options["limit"], mirror_manifest=True
-    )
-    recordings = [
-        *mark_phone_state(phone, read_previous_index(options["out"])),
-        *list_measurement_entries(js.path_resolve(options["measurementRoot"])),
-    ]
+    entries = list_source_entries(sources(options))
+    # Phone states come from the drop's mirror manifest (`inManifest`); an entry without
+    # that flag (a measurement session's) passes through unchanged.
+    recordings = mark_phone_state(entries, read_previous_index(options["out"]))
     manifest = build_manifest(recordings, options)
     write_manifest(manifest, options["out"], pretty=options["pretty"])
     return 0

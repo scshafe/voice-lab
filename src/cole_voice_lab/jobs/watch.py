@@ -1,8 +1,9 @@
 """The journey pipeline's watcher (voice-journey's ``watchd.mjs``, the breathing loop).
 
-It lists the corpus (the phone drop through its mirror manifest, plus accepted measurement
-sessions), and when two scans agree and the agreed state differs from the recording index
-it runs the incremental pipeline, in order, as child processes::
+It lists the corpus through the index's configured sources (``journey/sources.py``: the
+phone drop through its mirror manifest, plus accepted measurement sessions), and when two
+scans agree and the agreed state differs from the recording index it runs the incremental
+pipeline, in order, as child processes::
 
     index -> filter -> stt -> lyric -> reclassify -> features -> journeys
 
@@ -83,7 +84,6 @@ from types import FrameType
 from typing import Any, NotRequired, TypedDict
 
 from cole_voice_lab.journey import jscompat as js
-from cole_voice_lab.journey.corpus import list_corpus_entries, list_measurement_entries
 from cole_voice_lab.journey.jsonio import (
     MISSING,
     format_number,
@@ -95,6 +95,7 @@ from cole_voice_lab.journey.jsonio import (
     write_json,
 )
 from cole_voice_lab.journey.paths import JourneyPaths, resolve_paths
+from cole_voice_lab.journey.sources import configured_sources, list_source_entries
 
 DAY_INDEX: Mapping[str, int] = {
     "sunday": 0,
@@ -570,11 +571,9 @@ class Watchd:
     # -- collaborators
 
     def _default_list_entries(self) -> list[Entry]:
-        # Phone recordings and accepted measurement sessions are scanned together.
-        return [
-            *list_corpus_entries(self.corpus_root, mirror_manifest=True),
-            *list_measurement_entries(self.measurement_root),
-        ]
+        # Every configured source is scanned together, as the index lists them: phone
+        # recordings, then accepted measurement sessions (journey/sources.py).
+        return list_source_entries(configured_sources(self.corpus_root, self.measurement_root))
 
     @property
     def notifies(self) -> bool:
