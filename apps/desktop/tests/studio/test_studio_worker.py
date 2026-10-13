@@ -51,7 +51,7 @@ def test_a_take_over_the_worker_is_saved_here(
             )
             studio.toggleRecord()
             wait_phase(qtbot, studio, "failed")
-            assert "deviation" in studio.statusText or "continuity" in studio.statusText.lower()
+            assert "deviation" in studio.problemText or "continuity" in studio.problemText.lower()
             studio.discard()
             wait_phase(qtbot, studio, "ready")
             assert len(studio.client.takes()) == 1

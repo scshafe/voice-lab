@@ -102,6 +102,7 @@ class StudioModel(ViewModel):
     showOptions = qproperty("QVariantList", "showOptions", libraryChanged)
     labelOptions = qproperty("QVariantList", "labelOptions", libraryChanged)
     labelsTitle = qproperty(str, "labelsTitle", libraryChanged)
+    labelsButton = qproperty(str, "labelsButton", libraryChanged)
     rowCount = qproperty(int, "rowCount", rowsChanged)
     emptyText = qproperty(str, "emptyText", rowsChanged)
     currentOutside = qproperty(bool, "currentOutside", rowsChanged)
@@ -136,6 +137,8 @@ class StudioModel(ViewModel):
     statusTone = qproperty(str, "statusTone", statusChanged)
     syncText = qproperty(str, "syncText", statusChanged)
     syncTone = qproperty(str, "syncTone", statusChanged)
+    syncDetail = qproperty(str, "syncDetail", statusChanged)
+    problemText = qproperty(str, "problemText", statusChanged)
     noticeId = qproperty(str, "noticeId", statusChanged)
     # -- the microphone
     deviceOk = qproperty(bool, "deviceOk", deviceChanged)
@@ -170,6 +173,7 @@ class StudioModel(ViewModel):
                 "showOptions": list(library.SHOW_OPTIONS),
                 "labelOptions": [],
                 "labelsTitle": presentation.labels_menu_title(()),
+                "labelsButton": presentation.labels_button_text(()),
                 "rowCount": 0,
                 "emptyText": "",
                 "currentOutside": False,
@@ -201,6 +205,8 @@ class StudioModel(ViewModel):
                 "statusTone": "neutral",
                 "syncText": "",
                 "syncTone": "neutral",
+                "syncDetail": "",
+                "problemText": "",
                 "noticeId": "",
                 "deviceOk": False,
                 "deviceLabel": "",
@@ -389,6 +395,7 @@ class StudioModel(ViewModel):
                 for token in options
             ],
             labelsTitle=presentation.labels_menu_title(selected),
+            labelsButton=presentation.labels_button_text(selected),
         )
         self._update_navigation()
 
@@ -624,7 +631,7 @@ class StudioModel(ViewModel):
         try:
             pending = self.client.begin_take(self._current)
         except (SpoolError, OSError) as exc:
-            self._outcome = status.Line(f"No take started: {exc}", "danger")
+            self._outcome = status.Line("No take started", "danger", f"No take started: {exc}")
             self._update_status()
             return
         self._pending = pending
@@ -642,7 +649,9 @@ class StudioModel(ViewModel):
             if error is not None or running is None:
                 self._discard_pending()
                 message = str(error) if error is not None else "the worker did not start"
-                self._outcome = status.Line(f"The take did not start: {message}", "danger")
+                self._outcome = status.Line(
+                    "The take did not start", "danger", f"The take did not start: {message}"
+                )
                 self._phase("ready")
                 return
             self._running = running
@@ -708,7 +717,11 @@ class StudioModel(ViewModel):
             try:
                 self.client.discard_take(pending)
             except SpoolError as exc:
-                self._outcome = status.Line(f"The take could not be discarded: {exc}", "danger")
+                self._outcome = status.Line(
+                    "The take could not be discarded",
+                    "danger",
+                    f"The take could not be discarded: {exc}",
+                )
 
     def _leave_take(self) -> None:
         """Before another take or prompt: a failed take is discarded; a take under review is
@@ -733,7 +746,9 @@ class StudioModel(ViewModel):
                 if not isinstance(error, (SpoolError, OSError)):
                     raise error
                 self._outcome = status.Line(
-                    f"The earlier take was not saved ({error}); it stays on disk", "warn"
+                    "The earlier take was not saved: it stays on disk",
+                    "warn",
+                    f"The earlier take was not saved: {error}",
                 )
             self._refresh()
 
@@ -769,13 +784,17 @@ class StudioModel(ViewModel):
             if error is not None or result is None:
                 if error is not None and not isinstance(error, (SpoolError, OSError)):
                     raise error
-                self._outcome = status.Line(f"Not saved: {error}", "danger")
+                self._outcome = status.Line(
+                    "Not saved · Save again, Retake or Discard", "danger", f"Not saved: {error}"
+                )
                 self._phase("review")
                 return
             _take, problem = result
             self._pending = self._captured = None
             if problem:
-                self._outcome = status.Line(f"Saved as a draft, not kept: {problem}", "warn")
+                self._outcome = status.Line(
+                    "Saved as a draft, not kept", "warn", f"Saved as a draft, not kept: {problem}"
+                )
             else:
                 self._outcome = status.Line("Saved · kept on this machine", "ok")
             self._phase("ready", elapsedText=elapsed_text(0))
@@ -824,7 +843,11 @@ class StudioModel(ViewModel):
         if phase == "blocked":
             return status.Line("No catalog yet: nothing can be recorded", "warn")
         if phase == "failed":
-            return status.Line(f"The take failed: {self._failure}", "danger")
+            return status.Line(
+                "The take failed · Retake or Discard",
+                "danger",
+                f"The take failed: {self._failure}",
+            )
         if phase in STATE_TEXT:
             if phase == "review" and self._outcome is not None:
                 return self._outcome
@@ -833,7 +856,9 @@ class StudioModel(ViewModel):
             return self._outcome
         if not self._v["deviceOk"]:
             label = self._v["deviceLabel"] or "checking the microphone"
-            return status.Line(f"No microphone: {label}", "warn")
+            return status.Line(
+                "No microphone · click it to look again", "warn", f"No microphone: {label}"
+            )
         return status.Line("Ready to record", "neutral")
 
     def _update_status(self) -> None:
@@ -848,6 +873,8 @@ class StudioModel(ViewModel):
             statusTone=transport.tone,
             syncText=line.text,
             syncTone=line.tone,
+            syncDetail=line.detail,
+            problemText=transport.detail,
             noticeId=sync.notices[-1].notice_id if sync.notices else "",
         )
         self._set(self.libraryChanged, switchText=status.switch_line(sync))

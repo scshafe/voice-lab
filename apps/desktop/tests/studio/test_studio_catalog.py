@@ -47,7 +47,7 @@ def test_offline_without_a_cached_catalog_nothing_is_recorded(
             studio.syncNow()
             wait_phase(qtbot, studio, "ready")
             assert studio.rowCount == 34 and studio.promptId == prompt_ids(pc)[0]
-            assert studio.catalogText == "cole-corpus · version 1"
+            assert studio.catalogText == "cole-corpus · v1"
     finally:
         model.shutdown()
 
@@ -111,8 +111,11 @@ def test_a_new_version_on_the_pc_switches_at_the_next_session(
             qtbot.waitUntil(lambda: studio.canSwitch, timeout=10000)
             # This session stays on version 1 and says so; the PC's library (version 2)
             # still counts the prompt the two versions share.
-            assert studio.switchText == "Version 2 switches at the next session"
-            assert studio.catalogText == "cole-corpus · version 1"
+            assert (
+                studio.switchText
+                == "Version 2 is active on the PC: it switches at the next session"
+            )
+            assert studio.catalogText == "cole-corpus · v1"
             qtbot.waitUntil(lambda: "version 2" in studio.coverageSource, timeout=10000)
             assert studio.coverageText == "1 / 34" and studio.rowCount == 34
             assert window.find("studioSwitch").property("visible")
@@ -120,13 +123,13 @@ def test_a_new_version_on_the_pc_switches_at_the_next_session(
             take_one(qtbot, window, recorder)
             assert not window.find("studioSwitch").property("enabled")
             studio.switchCatalog()
-            assert studio.catalogText.startswith("cole-corpus · version 1")
+            assert studio.catalogText.startswith("cole-corpus · v1")
             click(window, "studioSave")
             wait_phase(qtbot, studio, "ready")
             assert studio.client.takes()[0].record.catalog.catalog_version == 1
             click(window, "studioSwitch")
             qtbot.waitUntil(lambda: studio.rowCount == 35, timeout=5000)
-            assert studio.catalogText == "cole-corpus · version 2" and not studio.canSwitch
+            assert studio.catalogText == "cole-corpus · v2" and not studio.canSwitch
             assert studio.switchText == ""
             # The take of version 1 still counts: its prompt is unchanged in version 2.
             assert studio.coverageText == "2 / 35"
@@ -150,13 +153,19 @@ def test_a_notice_stays_until_it_is_dismissed(
     )
     studio.client.sync_now()
     qtbot.waitUntil(lambda: studio.noticeId != "", timeout=5000)
-    assert studio.syncText == (
+    assert studio.syncText == "Reference Neutral 01: changed elsewhere"
+    assert studio.syncTone == "warn"
+    # Details shows the client's whole notice, and dismisses it.
+    details = studio_window.find("studioDetails")
+    qtbot.waitUntil(lambda: details.property("visible"), timeout=5000)
+    click(studio_window, "studioDetails")
+    popup = studio_window.find("studioDetailsPopup")
+    qtbot.waitUntil(lambda: popup.property("visible"), timeout=5000)
+    assert studio_window.items("studioDetailsText")[0].property("text") == (
         "Reference Neutral 01: Changed elsewhere: this take now shows the PC's state."
     )
-    assert studio.syncTone == "warn"
-    dismiss = studio_window.find("studioDismissNotice")
-    qtbot.waitUntil(lambda: dismiss.property("visible"), timeout=5000)
-    click(studio_window, "studioDismissNotice")
+    studio_window.items("studioDismissNotice")[0].clicked.emit()
     qtbot.waitUntil(lambda: studio.noticeId == "", timeout=5000)
     assert studio.client.notices() == ()
     assert studio.syncText.startswith("Uploads off until S-1 passes")
+    assert not popup.property("visible") and not details.property("visible")

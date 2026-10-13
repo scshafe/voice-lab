@@ -306,3 +306,12 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   - **Left to 6b and 6c:** 6b adds the take picker and history, the live waveform, trims,
     Zoom and Fit, playback, and Reject, Remove and Restore. 6c adds the keys: `toggleRecord`,
     `saveNext` and `save` are what they call, and no shortcut is installed yet.
+  - **After review:** the prompt is always shown whole. The card sets it at 24 points, or at
+    the largest smaller size that fits, down to 16. Below the base height the waveform gives
+    way first (down to 64 points), then the card (down to 160). The longest catalog prompt
+    fits at 960×600 and 1440×900, idle and recording, and a test measures it. Every
+    sidebar and status line fits in two lines on the smallest window: the catalog line
+    reads `cole-corpus · v1`, Show and Labels stack, and a status names its cause in a few
+    words. The whole message goes to the take's place (a failure, a take that did not
+    start, no microphone) or to the status line's Details (a notice with Dismiss, why
+    uploads cannot start).

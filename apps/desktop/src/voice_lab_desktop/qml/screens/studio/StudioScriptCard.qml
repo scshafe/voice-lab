@@ -1,11 +1,16 @@
 // The script card (NATIVE_RECORDING_UX.md §4, "labels, Prompt and Instructions"): one layout
 // for every kind, top to bottom: a kind banner (none for a spoken prompt); a Prompt section
-// (PROMPT · READ ALOUD, the text at the reading size) only for spoken prompts, a muted "No
-// spoken prompt" line otherwise; and an Instructions section that is always there
-// (INSTRUCTIONS · NOT READ ALOUD, the instructions, then the guidance and the duration in a
-// fixed 32-point row). Under a Prompt the Instructions keep their natural height up to 40%
-// of the card and scroll beyond it; without one they fill the card. Long text scrolls inside
-// its section; the scroll position resets only for a new prompt. Plain text only.
+// (PROMPT · READ ALOUD) only for spoken prompts, a muted "No spoken prompt" line otherwise;
+// and an Instructions section that is always there (INSTRUCTIONS · NOT READ ALOUD, the
+// instructions, then the guidance and the duration in a fixed row). Under a Prompt the
+// Instructions keep their natural height up to 40% of the card and scroll beyond it; without
+// one they fill the card. Plain text only.
+//
+// The prompt is always shown whole: it is set at the reading size (24 points) when it fits,
+// else at the largest smaller size that does, down to 16 points. A card too small even for
+// that (no window the app allows, for any catalog prompt) scrolls. Only the card's size and
+// the prompt decide the size, never the transport. A small card tightens its margins and its
+// guidance row. The scroll position resets only for a new prompt.
 import QtQuick
 import Scshafe.Ui
 import VoiceLab.StandIn
@@ -15,18 +20,32 @@ Rectangle {
     objectName: "studioScriptCard"
 
     required property var rec
-    readonly property int pad: SuiTheme.spaceLg
+    readonly property bool compact: height < 240
+    readonly property int pad: compact ? SuiTheme.spaceMd : SuiTheme.spaceLg
+    readonly property int spacing: compact ? 6 : SuiTheme.spaceSm
     readonly property int headingHeight: 18
-    readonly property int guidanceHeight: 32
+    readonly property int guidanceHeight: compact ? 24 : 32
     readonly property bool hasPrompt: rec.promptId !== ""
     readonly property bool spoken: rec.promptText !== ""
     readonly property string shownId: rec.promptId
-    readonly property real bodyTop: pad + (bannerText.visible ? headingHeight + SuiTheme.spaceSm : 0)
+    readonly property real bodyTop: pad + (bannerText.visible ? headingHeight + spacing : 0)
     readonly property real instructionsNatural: headingHeight + SuiTheme.spaceXs
         + (rec.instructions !== "" ? instructionsText.implicitHeight : 0) + guidanceHeight
     readonly property real instructionsHeight: !hasPrompt ? 0
         : spoken ? Math.min(instructionsNatural, (height - 2 * pad) * 0.4)
-        : Math.max(0, height - pad - (bodyTop + headingHeight + SuiTheme.spaceSm))
+        : Math.max(0, height - pad - (bodyTop + headingHeight + spacing))
+    // The reading sizes, largest first; the prompt takes the first one it fits at.
+    readonly property var readingSizes: [24, 22, 20, 18, 17, 16]
+    readonly property real textRoom: scriptFlick.height
+    readonly property int readingSize: {
+        const room = textRoom
+        for (let i = 0; i < readingSizes.length; ++i) {
+            const probe = probes.itemAt(i)
+            if (probe !== null && probe.implicitHeight <= room)
+                return readingSizes[i]
+        }
+        return readingSizes[readingSizes.length - 1]
+    }
 
     radius: SuiTheme.radiusLg
     color: SuiTheme.panel
@@ -49,6 +68,22 @@ Rectangle {
         verticalAlignment: Text.AlignVCenter
     }
 
+    // The prompt laid out at each reading size, unseen, to find the largest that fits.
+    Repeater {
+        id: probes
+        model: card.readingSizes
+        delegate: Text {
+            required property int modelData
+            visible: false
+            width: scriptFlick.width
+            textFormat: Text.PlainText
+            text: card.rec.promptText
+            font.pixelSize: modelData
+            lineHeight: 1.2
+            wrapMode: Text.Wrap
+        }
+    }
+
     Heading {
         id: bannerText
         objectName: "studioBanner"
@@ -68,7 +103,7 @@ Rectangle {
         y: card.bodyTop
         width: card.width - 2 * card.pad
         height: card.spoken
-            ? Math.max(0, card.height - card.pad - card.bodyTop - card.instructionsHeight - SuiTheme.spaceSm)
+            ? Math.max(0, card.height - card.pad - card.bodyTop - card.instructionsHeight - card.spacing)
             : card.headingHeight
         Heading {
             objectName: "studioPromptHeading"
@@ -85,6 +120,7 @@ Rectangle {
             visible: card.spoken
             clip: true
             contentHeight: scriptText.implicitHeight
+            interactive: contentHeight > height
             boundsBehavior: Flickable.StopAtBounds
             Accessible.name: "Prompt, read aloud"
             Text {
@@ -94,8 +130,8 @@ Rectangle {
                 textFormat: Text.PlainText
                 text: card.rec.promptText
                 color: SuiTheme.textStrong
-                font.pixelSize: 24
-                lineHeight: 1.25
+                font.pixelSize: card.readingSize
+                lineHeight: 1.2
                 wrapMode: Text.Wrap
             }
         }
@@ -116,7 +152,7 @@ Rectangle {
         id: instructionsSection
         objectName: "studioInstructionsSection"
         x: card.pad
-        y: promptSection.y + promptSection.height + SuiTheme.spaceSm
+        y: promptSection.y + promptSection.height + card.spacing
         width: card.width - 2 * card.pad
         height: card.instructionsHeight
         visible: card.hasPrompt
@@ -133,6 +169,7 @@ Rectangle {
             height: Math.max(0, parent.height - y - card.guidanceHeight)
             clip: true
             contentHeight: instructionsText.implicitHeight
+            interactive: contentHeight > height
             boundsBehavior: Flickable.StopAtBounds
             Text {
                 id: instructionsText
@@ -160,8 +197,6 @@ Rectangle {
                 variant: "caption"
                 font.pixelSize: 13
                 elide: Text.ElideRight
-                maximumLineCount: 2
-                wrapMode: Text.Wrap
             }
             SuiText {
                 id: durationText

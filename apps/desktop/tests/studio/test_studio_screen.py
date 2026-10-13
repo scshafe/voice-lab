@@ -94,7 +94,7 @@ def test_the_workspace_loads_the_pinned_catalog_and_its_coverage(
             assert window.find("studioCoverage").property("text") == "2 / 34"
             assert studio.coverageSpoken == "2 of 34 prompts recorded"
             assert studio.coverageSource.startswith("The PC's library (read ")
-            assert studio.catalogText == "cole-corpus · version 1" and studio.switchText == ""
+            assert studio.catalogText == "cole-corpus · v1" and studio.switchText == ""
             # Every prompt of the pinned version, in catalog order, with its status.
             assert rows(window) == ids and studio.rowCount == 34
             statuses = {row["promptId"]: row["statusTitle"] for row in studio.rowsModel.rows}
@@ -253,7 +253,7 @@ def test_record_stop_save_keeps_a_local_take(
     assert studio.coverageText == "1 / 34"
     assert studio.rowsModel.rows[0]["statusTitle"] == "Recorded · this machine"
     assert studio.takesText == "1 take of this prompt"
-    assert studio.syncText.endswith("1 take on this machine")
+    assert studio.syncText.endswith("1 take here")
     assert [e["status"] for e in model.sidebar if e["key"] == "prompts"] == ["none"]
 
 
@@ -320,7 +320,11 @@ def test_retake_keeps_the_earlier_take_as_a_draft_and_discard_drops_a_failed_one
     qtbot.waitUntil(lambda: len(recorder.takes) == 4, timeout=5000)
     click(studio_window, "studioRecord")
     wait_phase(qtbot, studio, "failed")
-    assert studio.statusText == "The take failed: deviation of 4800 frames at block 3"
+    assert studio.statusText == "The take failed · Retake or Discard"
+    # Its cause, whole, in the take's place.
+    assert studio.problemText == "The take failed: deviation of 4800 frames at block 3"
+    assert studio_window.find("studioProblem").property("text") == studio.problemText
+    assert studio_window.find("studioProblemFlick").property("visible")
     assert studio.statusTone == "danger" and studio.canDiscard and not studio.canSave
     recording = studio.client.spool.recording_root
     assert len(list(recording.iterdir())) == 2  # its directory and its rec-….json
@@ -466,7 +470,8 @@ def test_without_a_microphone_nothing_records(
             qtbot.waitUntil(lambda: studio.deviceLabel != "", timeout=10000)
             assert not studio.deviceOk and not studio.canRecord
             assert window.find("studioDevice").property("text") == "No microphone"
-            assert studio.statusText == "No microphone: no UMIK-1 among the inputs"
+            assert studio.statusText == "No microphone · click it to look again"
+            assert studio.problemText == "No microphone: no UMIK-1 among the inputs"
             assert not window.find("studioRecord").property("enabled")
             studio.toggleRecord()
             assert recorder.takes == []
@@ -474,6 +479,122 @@ def test_without_a_microphone_nothing_records(
             recorder.refused = None
             click(window, "studioDevice")
             qtbot.waitUntil(lambda: studio.deviceOk and studio.canRecord, timeout=10000)
-            assert studio.statusText == "Ready to record"
+            assert studio.statusText == "Ready to record" and studio.problemText == ""
+    finally:
+        model.shutdown()
+
+
+def resize(qtbot: Any, window: Window, width: int, height: int) -> None:
+    root = window.root
+    root.resize(width, height)
+    qtbot.waitUntil(lambda: (root.width(), root.height()) == (width, height), timeout=5000)
+    qtbot.wait(50)
+
+
+def scene_rect(item: Any) -> tuple[float, float, float, float]:
+    corner = item.mapToScene(QPointF(0, 0))
+    return corner.x(), corner.y(), item.width(), item.height()
+
+
+def assert_prompt_whole(window: Window, text: str) -> int:
+    """The prompt is all there: its laid-out height fits its section, inside the card, and it
+    does not scroll. Returns the reading size it is set at."""
+    card, flick = window.find("studioScriptCard"), window.find("studioScriptFlick")
+    script = window.find("studioScript")
+    assert script.property("text") == text
+    assert script.property("implicitHeight") <= flick.height()
+    assert not flick.property("interactive") and flick.property("contentY") == 0
+    cx, cy, cw, ch = scene_rect(card)
+    fx, fy, fw, fh = scene_rect(flick)
+    assert cx <= fx and fx + fw <= cx + cw and cy <= fy and fy + fh <= cy + ch
+    size = int(card.property("readingSize"))
+    assert 16 <= size <= 24
+    return size
+
+
+@pytest.mark.parametrize("size", [(960, 600), (1440, 900)])
+def test_the_longest_prompt_is_shown_whole(
+    qtbot: Any, studio_window: Window, recorder: StudioRecorder, pc: PC, size: tuple[int, int]
+) -> None:
+    studio = studio_window.model.studio
+    longest = max(pc.catalog[1].suite.prompts, key=lambda prompt: len(prompt.text or ""))
+    assert longest.text is not None and len(longest.text) >= 140
+    studio.selectPrompt(longest.prompt_id)
+    resize(qtbot, studio_window, *size)
+    idle = geometry(studio_window)
+    reading = assert_prompt_whole(studio_window, longest.text)
+    if size == (1440, 900):
+        assert reading == 24  # the reading size, untouched on a roomy window
+    studio.toggleRecord()
+    qtbot.waitUntil(lambda: len(recorder.takes) == 1, timeout=5000)
+    recorder.last.advance(4_800)
+    wait_phase(qtbot, studio, "recording")
+    assert assert_prompt_whole(studio_window, longest.text) == reading
+    assert geometry(studio_window) == idle
+    studio.toggleRecord()
+    wait_phase(qtbot, studio, "review")
+    assert assert_prompt_whole(studio_window, longest.text) == reading
+
+
+def test_nothing_is_cut_off_on_the_smallest_window(
+    qtbot: Any, data_dir: Path, tmp_path: Path, pc: PC, recorder: StudioRecorder
+) -> None:
+    run_catalog = pytest.importorskip("corpus_take_fixtures").run_catalog
+    from cole_voice_lab.models import COLE_SUBJECT
+
+    model = studio_app(data_dir, tmp_path, pc, recorder)
+    try:
+        with open_studio(qtbot, model, tmp_path) as window:
+            ready(qtbot, model)
+            studio = model.studio
+            resize(qtbot, window, 960, 600)
+            lines = (
+                "studioLabels",
+                "studioCatalog",
+                "studioSwitchNotice",
+                "studioCoverageSource",
+                "studioStatusText",
+                "studioSyncText",
+            )
+
+            def whole() -> None:
+                for name in lines:
+                    item = window.find(name)
+                    if name == "studioLabels":  # a button: its label
+                        item = item.property("contentItem")
+                    assert item.property("truncated") is False, (name, item.property("text"))
+
+            studio.setLabel("reference-candidate", True)
+            # Sending held until S-1, with a take here.
+            take_one(qtbot, window, recorder)
+            studio.save()
+            wait_phase(qtbot, studio, "ready")
+            assert window.find("studioSyncText").property("text").startswith("Uploads off")
+            whole()
+            # A failed take names its cause.
+            recorder.fail_next = (
+                "deviation of 4800 frames at block 3, beyond the 64-frame tolerance"
+            )
+            studio.toggleRecord()
+            qtbot.waitUntil(lambda: len(recorder.takes) == 2, timeout=5000)
+            studio.toggleRecord()
+            wait_phase(qtbot, studio, "failed")
+            assert studio.problemText.endswith("beyond the 64-frame tolerance")
+            problem = window.find("studioProblem")
+            assert problem.property("text") == studio.problemText
+            assert not problem.property("truncated")
+            assert problem.property("implicitHeight") <= window.find("studioProblemFlick").height()
+            whole()
+            studio.discard()
+            # A new version on the PC: the switch notice and Switch now.
+            run_catalog(pc.layout, "add-prompt", "warm-05", "--text", "The kettle clicked off.")
+            run_catalog(pc.layout, "publish")
+            run_catalog(pc.layout, "activate", "--subject-id", COLE_SUBJECT, "--version", "2")
+            studio.syncNow()
+            qtbot.waitUntil(lambda: studio.canSwitch, timeout=10000)
+            qtbot.waitUntil(lambda: "version 2" in studio.coverageSource, timeout=10000)
+            assert window.find("studioSwitch").property("visible")
+            assert window.find("studioSwitchNotice").property("text").startswith("Version 2")
+            whole()
     finally:
         model.shutdown()

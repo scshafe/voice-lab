@@ -17,7 +17,9 @@ T.ItemDelegate {
     required property bool current
     property var rec
 
-    implicitHeight: 44
+    implicitHeight: Math.max(44, implicitContentHeight + topPadding + bottomPadding)
+    topPadding: SuiTheme.spaceXs
+    bottomPadding: SuiTheme.spaceXs
     leftPadding: SuiTheme.spaceSm
     rightPadding: SuiTheme.spaceSm
     hoverEnabled: true
@@ -43,6 +45,8 @@ T.ItemDelegate {
             Layout.fillWidth: true
             text: row.title
             font.weight: row.current ? SuiTheme.fontWeightStrong : SuiTheme.fontWeightNormal
+            wrapMode: Text.Wrap
+            maximumLineCount: 2
             elide: Text.ElideRight
         }
         SuiText {

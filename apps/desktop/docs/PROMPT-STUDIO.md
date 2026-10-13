@@ -17,18 +17,25 @@ The layout follows docs/NATIVE_RECORDING_UX.md §4. Every region keeps its place
 whatever the take, the transport or the sync is doing. Only the window's size changes them:
 
 - a taller window gives 70% of the extra height to the script and 30% to the waveform;
-- a window shorter than the workspace shrinks the script card down to 120 points, then
+- a window shorter than the workspace gives the prompt the room first: the waveform shrinks
+  down to 64 points, then the script card down to 160 points; only a window shorter still
   scrolls.
+
+The prompt is always shown whole. It is set at the reading size, 24 points, when it fits the
+card, and otherwise at the largest smaller size that does, down to 16 points. The longest
+catalog prompt fits whole at every window size the app allows: at 17 points on the smallest
+(960×600), at 24 points at 1440×900. The size depends only on the card and the prompt, never
+on the transport.
 
 | Region | What |
 | --- | --- |
-| **Library** (left, 280 points) | `Library` with the covered count (`n / 1,886`), and where it comes from. Then **Continue Missing**, the search, **Show** (All prompts, Missing, Needs attention) and **Labels**. Then the catalog version this run records against, and the switch the next session makes. Then every prompt, with its status. |
+| **Library** (left, 280 points; 240 below a 1,000-point screen) | `Library` with the covered count (`n / 1,886`), and where it comes from. Then **Continue Missing**, the search, **Show** (All prompts, Missing, Needs attention) and **Labels**. Then the catalog version this run records against, and the switch the next session makes. Then every prompt, with its status. |
 | **Header** | The prompt's title and its label chips. Chips that do not fit collapse into `+N`, but the category always shows. The microphone is on the right. |
-| **Script card** | For a spoken prompt, `PROMPT · READ ALOUD` and the text at 24 points. For room tone or a test step, a banner and "No spoken prompt" instead. The `INSTRUCTIONS · NOT READ ALOUD` section is always there, with the guidance and the duration. |
-| Take picker, waveform, trim row, playback row | Held at their final size for step 6b. For now the picker's row says how many takes the prompt has. The waveform's frame turns red while recording. |
+| **Script card** | For a spoken prompt, `PROMPT · READ ALOUD` and the text, whole (see above). For room tone or a test step, a banner and "No spoken prompt" instead. The `INSTRUCTIONS · NOT READ ALOUD` section is always there, with the guidance and the duration. |
+| Take picker, waveform, trim row, playback row | Held at their final size for step 6b. For now the picker's row says how many takes the prompt has. The waveform's frame turns red while recording. When a take fails or does not start, or there is no microphone, the waveform's place shows the whole message. |
 | **Timer** | The take's length, from the frames the worker confirmed (D-014), never a clock. |
 | **Footer** | The 56-point Record/Stop control, then **Retake**, **Discard**, **Save** and **Save & Next**. Actions that do not apply stay in place, greyed out. |
-| **Status line** | On the left, what the take is doing. On the right, the sync, or a notice. |
+| **Status line** | Two lines at most on each side, never cut short. On the left, what the take is doing. On the right, the sync, or a notice. |
 
 ## Recording
 
@@ -74,7 +81,8 @@ is filtered out, it stays reachable at the top of the list.
 ## The catalog version
 
 The studio records against the version pinned when the app started. When the PC activates
-another version, the library says *Version N switches at the next session*. The switch
+another version, the library says *Version N is active on the PC: it switches at the next
+session*. The switch
 happens at the next start, or at **Switch now** (only between takes, never with one under
 review). With no catalog cached and no PC, nothing can be recorded. The studio says *No
 catalog yet* until the PC has answered once.
@@ -83,16 +91,19 @@ catalog yet* until the PC has answered once.
 
 The right half reads the corpus client's `SyncStatus`:
 
-- `Uploads off until S-1 passes (corpus_sync) · N takes on this machine` while sending is
-  held (`corpus_sync = false`, the default). This is a statement, not an error.
+- `Uploads off until S-1 passes (corpus_sync) · N takes here` while sending is held
+  (`corpus_sync = false`, the default). This is a statement, not an error.
 - `Offline · N queued · M sent · last synced HH:MM`.
 - `N takes waiting for the PC's state` after the PC refused a change and its state is read
   again.
 - Damaged takes and recordings an earlier run could not save come first.
 - Otherwise `Waiting to sync`, `Syncing` or `Up to date`, with the queued and sent counts.
 
-A notice from the client (*Changed elsewhere*, a change the PC cannot read, a refusal) takes
-the right half until you press **Dismiss**.
+A notice from the client takes the right half, in a few words that name its cause: *changed
+elsewhere*, *a change waits: the PC cannot read it*, *the PC refused a change
+(trim_out_of_bounds)*, *the PC refused this take*. **Details** opens the client's whole
+message, with **Dismiss**. A line that leaves something out (for example why uploads cannot
+start) has the same **Details**.
 
 ## Switching back to the session flow
 
@@ -123,7 +134,8 @@ What 6b and 6c attach to:
 
 - `toggleRecord`, `saveNext` and `save` are what R (record, stop), Return (Save & Next) and
   Ctrl+S or ⌘S (Save) will call. The screen installs no shortcuts yet.
-- `menuOpen` on the screen says when the Show or Labels menu is open, so keys can step aside.
+- `menuOpen` on the screen says when the Show or Labels menu or the Details popup is open,
+  so keys can step aside.
 - The placeholders (`studioTakePicker`, `studioWaveform`, `studioTrimRow`,
   `studioPlaybackRow`) are the regions 6b fills.
 - `CorpusClient.decide`, `restore`, `set_trim` and `takes_for_prompt` are the calls 6b needs.

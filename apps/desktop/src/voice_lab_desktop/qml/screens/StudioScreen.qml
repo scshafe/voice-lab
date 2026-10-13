@@ -12,6 +12,7 @@
 // save and saveNext are what they call).
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Templates as T
 import Scshafe.Ui
 import VoiceLab.StandIn
 import "studio"
@@ -22,7 +23,7 @@ Item {
 
     readonly property var rec: app.studioModel
     readonly property bool shown: app.screen === "prompts"
-    readonly property bool menuOpen: libraryPane.menuOpen
+    readonly property bool menuOpen: libraryPane.menuOpen || detailsPopup.visible
 
     // Layout tokens: an 8-point scale, 16-point insets, a 280-point library (240 below a
     // 1,000-point screen), a 56-point Record/Stop target.
@@ -35,18 +36,22 @@ Item {
     readonly property int timerHeight: 24
     readonly property int playbackHeight: 32
     readonly property int footerHeight: 56
-    readonly property int statusHeight: 24
+    readonly property int statusHeight: 40
     readonly property int scriptBase: 256
     readonly property int waveformBase: 120
-    readonly property int scriptFloor: 120
+    readonly property int scriptFloor: 160
+    readonly property int waveformFloor: 64
     readonly property int fixedHeight: headerHeight + pickerHeight + trimHeight + timerHeight
         + playbackHeight + footerHeight + statusHeight + 8 * gap + 2 * inset
-    // Height beyond the workspace's base: 70% to the script, 30% to the waveform; below it
-    // the script gives way down to its floor, and the waveform keeps its 120 points.
+    // Height beyond the workspace's base goes 70% to the script and 30% to the waveform.
+    // Below the base the prompt comes first: the waveform gives way down to its floor, then
+    // the script down to its own; a window shorter still scrolls.
     readonly property real extra: height - fixedHeight - scriptBase - waveformBase
+    readonly property real waveformGives: Math.min(Math.max(0, -extra), waveformBase - waveformFloor)
     readonly property real scriptHeight: extra >= 0 ? scriptBase + 0.7 * extra
-                                                    : Math.max(scriptFloor, scriptBase + extra)
-    readonly property real waveformHeight: extra >= 0 ? waveformBase + 0.3 * extra : waveformBase
+        : Math.max(scriptFloor, scriptBase + extra + waveformGives)
+    readonly property real waveformHeight: extra >= 0 ? waveformBase + 0.3 * extra
+                                                      : waveformBase - waveformGives
     readonly property real contentX: sidebarWidth + inset
     readonly property real contentWidth: Math.max(0, width - contentX - inset)
 
@@ -173,7 +178,30 @@ Item {
                 x: SuiTheme.spaceSm
                 width: parent.width - 2 * SuiTheme.spaceSm
                 height: 1
+                visible: studio.rec.problemText === ""
                 color: studio.live ? SuiTheme.toneRed : SuiTheme.borderStrong
+            }
+            // What went wrong with the take, whole, in the take's place.
+            Flickable {
+                objectName: "studioProblemFlick"
+                anchors.fill: parent
+                anchors.margins: SuiTheme.spaceSm
+                visible: studio.rec.problemText !== ""
+                clip: true
+                contentHeight: Math.max(height, problem.implicitHeight)
+                interactive: problem.implicitHeight > height
+                boundsBehavior: Flickable.StopAtBounds
+                SuiText {
+                    id: problem
+                    objectName: "studioProblem"
+                    width: parent.width
+                    height: Math.max(implicitHeight, parent.height)
+                    verticalAlignment: Text.AlignVCenter
+                    horizontalAlignment: Text.AlignHCenter
+                    text: studio.rec.problemText
+                    tone: studio.rec.statusTone === "neutral" ? "default" : studio.rec.statusTone
+                    wrapMode: Text.Wrap
+                }
             }
         }
         Item {
@@ -282,6 +310,7 @@ Item {
         }
 
         // -- the status line: the take on the left, the sync (or a notice) on the right ----------
+        // Each half wraps to two lines, so the cause of a failure or a refusal stays in view.
         Item {
             objectName: "studioStatus"
             x: studio.inset
@@ -291,36 +320,87 @@ Item {
             SuiText {
                 objectName: "studioStatusText"
                 anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
+                anchors.top: parent.top
                 width: Math.floor(parent.width * 0.45)
+                height: parent.height
                 text: studio.rec.statusText
                 tone: studio.rec.statusTone === "neutral" ? "default" : studio.rec.statusTone
                 variant: "caption"
+                wrapMode: Text.Wrap
+                maximumLineCount: 2
                 elide: Text.ElideRight
+                verticalAlignment: Text.AlignVCenter
             }
             SuiText {
                 objectName: "studioSyncText"
-                anchors.right: dismiss.visible ? dismiss.left : parent.right
-                anchors.rightMargin: dismiss.visible ? SuiTheme.spaceXs : 0
-                anchors.verticalCenter: parent.verticalCenter
+                anchors.right: details.visible ? details.left : parent.right
+                anchors.rightMargin: details.visible ? SuiTheme.spaceXs : 0
+                anchors.top: parent.top
                 width: Math.floor(parent.width * 0.55) - SuiTheme.spaceSm
-                    - (dismiss.visible ? dismiss.width + SuiTheme.spaceXs : 0)
+                    - (details.visible ? details.width + SuiTheme.spaceXs : 0)
+                height: parent.height
                 horizontalAlignment: Text.AlignRight
+                verticalAlignment: Text.AlignVCenter
                 text: studio.rec.syncText
                 tone: studio.rec.syncTone === "neutral" ? "muted" : studio.rec.syncTone
                 variant: "caption"
+                wrapMode: Text.Wrap
+                maximumLineCount: 2
                 elide: Text.ElideRight
             }
             SuiButton {
-                id: dismiss
-                objectName: "studioDismissNotice"
+                id: details
+                objectName: "studioDetails"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                height: parent.height
-                text: "Dismiss"
+                text: "Details"
                 variant: "ghost"
-                visible: studio.rec.noticeId !== ""
-                onClicked: studio.rec.dismissNotice()
+                visible: studio.rec.syncDetail !== ""
+                onClicked: detailsPopup.open()
+            }
+            // The sync half's whole message (and, for a notice, Dismiss).
+            T.Popup {
+                id: detailsPopup
+                objectName: "studioDetailsPopup"
+                x: 0
+                y: -height - SuiTheme.spaceXs
+                width: parent.width
+                padding: SuiTheme.spaceMd
+                closePolicy: T.Popup.CloseOnEscape | T.Popup.CloseOnPressOutside
+                background: Rectangle {
+                    radius: SuiTheme.radiusMd
+                    color: SuiTheme.popover
+                    border.width: 1
+                    border.color: SuiTheme.borderStrong
+                }
+                contentItem: ColumnLayout {
+                    spacing: SuiTheme.spaceSm
+                    SuiText {
+                        objectName: "studioDetailsText"
+                        Layout.fillWidth: true
+                        text: studio.rec.syncDetail
+                        wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        Layout.alignment: Qt.AlignRight
+                        spacing: SuiTheme.spaceSm
+                        SuiButton {
+                            objectName: "studioDismissNotice"
+                            text: "Dismiss"
+                            visible: studio.rec.noticeId !== ""
+                            onClicked: {
+                                detailsPopup.close()
+                                studio.rec.dismissNotice()
+                            }
+                        }
+                        SuiButton {
+                            objectName: "studioCloseDetails"
+                            text: "Close"
+                            variant: "primary"
+                            onClicked: detailsPopup.close()
+                        }
+                    }
+                }
             }
         }
     }

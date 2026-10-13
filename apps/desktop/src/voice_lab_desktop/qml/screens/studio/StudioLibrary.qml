@@ -80,37 +80,35 @@ Rectangle {
             onTextEdited: library.rec.setSearch(text)
             onCleared: library.rec.setSearch("")
         }
-        RowLayout {
+        SuiSelect {
+            id: showSelect
+            objectName: "studioShow"
             Layout.fillWidth: true
-            spacing: SuiTheme.spaceSm
-            SuiSelect {
-                id: showSelect
-                objectName: "studioShow"
+            label: "Show"
+            options: library.rec.showOptions
+            value: library.rec.show
+            onValueSelected: (value) => library.rec.setShow(value)
+        }
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 2
+            Caption { text: "Labels" }
+            SuiButton {
+                id: labelsButton
+                objectName: "studioLabels"
                 Layout.fillWidth: true
-                label: "Show"
-                options: library.rec.showOptions
-                value: library.rec.show
-                onValueSelected: (value) => library.rec.setShow(value)
-            }
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 2
-                Caption { text: "Labels" }
-                SuiButton {
-                    id: labelsButton
-                    objectName: "studioLabels"
-                    Layout.fillWidth: true
-                    implicitHeight: SuiTheme.controlHeight
-                    text: library.rec.labelsTitle
-                    onClicked: labelsPopup.visible ? labelsPopup.close() : labelsPopup.open()
-                }
+                implicitHeight: SuiTheme.controlHeight
+                text: library.rec.labelsButton
+                Accessible.name: library.rec.labelsTitle
+                onClicked: labelsPopup.visible ? labelsPopup.close() : labelsPopup.open()
             }
         }
         // The catalog version this run records against, and the switch the next session
-        // makes (or why nothing can be recorded): two lines, always there.
+        // makes (or why nothing can be recorded): a line and a notice of up to two lines,
+        // always there.
         ColumnLayout {
             Layout.fillWidth: true
-            Layout.preferredHeight: 40
+            Layout.preferredHeight: 58
             spacing: 2
             RowLayout {
                 Layout.fillWidth: true
@@ -138,9 +136,13 @@ Rectangle {
             SuiText {
                 objectName: "studioSwitchNotice"
                 Layout.fillWidth: true
+                Layout.preferredHeight: 36
+                verticalAlignment: Text.AlignTop
                 text: library.rec.switchText
                 variant: "caption"
                 tone: library.rec.canSwitch ? "info" : (library.rec.phase === "blocked" ? "warn" : "muted")
+                wrapMode: Text.Wrap
+                maximumLineCount: 2
                 elide: Text.ElideRight
             }
         }

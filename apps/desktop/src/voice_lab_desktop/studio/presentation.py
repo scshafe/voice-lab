@@ -145,3 +145,12 @@ def labels_menu_title(selected: tuple[str, ...]) -> str:
     if len(selected) <= 2:
         return "Labels: " + ", ".join(label_title(token) for token in selected)
     return f"Labels: {len(selected)} selected"
+
+
+def labels_button_text(selected: tuple[str, ...], *, room: int = 26) -> str:
+    """The Labels button under its "Labels" caption: ``Any``, the selected titles while they
+    fit in ``room`` characters, else how many are selected."""
+    if not selected:
+        return "Any"
+    titles = ", ".join(label_title(token) for token in selected)
+    return titles if len(titles) <= room else f"{len(selected)} selected"

@@ -92,6 +92,9 @@ def test_labels_are_in_effective_order_and_titled_verbatim() -> None:
     assert presentation.labels_menu_title(("arctic",)) == "Labels: Arctic"
     assert presentation.labels_menu_title(("arctic", "holdout")) == "Labels: Arctic, Holdout"
     assert presentation.labels_menu_title(("a1", "b2", "c3")) == "Labels: 3 selected"
+    assert presentation.labels_button_text(()) == "Any"
+    assert presentation.labels_button_text(("arctic", "holdout")) == "Arctic, Holdout"
+    assert presentation.labels_button_text(("reference-candidate", "technical")) == "2 selected"
     options = presentation.label_options(views())
     assert options[:3] == ("room-tone", "reference", "reference-candidate")
     assert len(options) == len(set(options))

@@ -95,8 +95,10 @@ def test_the_sync_line_for_each_state() -> None:
     assert status.sync_line(given(refreshing=1, queued=1)) == Line(
         "1 take waiting for the PC's state · 1 queued · 6 sent", "info"
     )
-    assert status.sync_line(given(queued=1, upload_blocked="no standing approval")) == Line(
-        "Uploads cannot start: no standing approval", "warn"
+    # A long cause: the line says what, its detail says why, whole.
+    blocked = "no home-host approval is bound on this machine yet; approve the home host once"
+    assert status.sync_line(given(queued=1, upload_blocked=blocked)) == Line(
+        "Uploads cannot start", "warn", f"Uploads cannot start: {blocked}"
     )
     assert status.sync_line(given(sign_in_required=True)) == Line(
         "Sign in on the Status screen to sync with the PC", "warn"
@@ -104,13 +106,13 @@ def test_the_sync_line_for_each_state() -> None:
     # Held until S-1: said plainly, with what stays here, whatever else is true.
     held = given(enabled=False, held=HELD_FOR_S1, queued=4, offline=True)
     assert status.sync_line(held) == Line(
-        "Offline · Uploads off until S-1 passes (corpus_sync) · 4 takes on this machine",
+        "Offline · Uploads off until S-1 passes (corpus_sync) · 4 takes here",
         "neutral",
     )
     assert status.sync_line(given(enabled=False, held=HELD_FOR_S1)) == Line(
-        "Uploads off until S-1 passes (corpus_sync) · 4 takes on this machine", "neutral"
+        "Uploads off until S-1 passes (corpus_sync) · 4 takes here", "neutral"
     )
-    assert status.sync_line(given(enabled=False, takes=1)).text.endswith("1 take on this machine")
+    assert status.sync_line(given(enabled=False, takes=1)).text.endswith("1 take here")
     # What cannot be read or saved comes first.
     assert status.sync_line(given(unsaved_recordings=("rec-1", "rec-2"))) == Line(
         "2 recordings from an earlier run could not be saved: kept on disk", "warn"
@@ -127,25 +129,44 @@ def test_notices_show_the_newest_until_dismissed() -> None:
         "changed-elsewhere", "Changed elsewhere: this take now shows the PC's state."
     )
     assert status.notice_line((elsewhere,), titles) == Line(
-        "Neutral 01: Changed elsewhere: this take now shows the PC's state.", "warn"
+        "Neutral 01: changed elsewhere",
+        "warn",
+        "Neutral 01: Changed elsewhere: this take now shows the PC's state.",
     )
     blocked = notice("change-blocked", "The PC cannot read this change (invalid_request).", 2)
     line = status.notice_line((elsewhere, blocked), titles)
     assert line == Line(
-        "Neutral 01: The PC cannot read this change (invalid_request). (+1 more)", "warn"
+        "Neutral 01: a change waits: the PC cannot read it (+1 more)",
+        "warn",
+        "Neutral 01: The PC cannot read this change (invalid_request).",
     )
     refused = notice("take-refused", "The PC refused this take: refused_by_intake", 3)
     assert status.notice_line((refused,), {}) == Line(
-        "neutral-01: The PC refused this take: refused_by_intake", "danger"
+        "neutral-01: the PC refused this take",
+        "danger",
+        "neutral-01: The PC refused this take: refused_by_intake",
     )
+    change = notice(
+        "change-refused",
+        "The PC refused a change of this take (trim_out_of_bounds): the PC's state for it is "
+        "read again before anything more is sent; 2 queued change(s) were dropped.",
+        4,
+    )
+    line = status.notice_line((change,), titles)
+    assert line is not None
+    assert line.text == "Neutral 01: the PC refused a change (trim_out_of_bounds)"
+    assert line.detail.endswith("2 queued change(s) were dropped.")
 
 
 def test_the_catalog_lines() -> None:
-    assert status.catalog_line(BASE) == Line("cole-corpus · version 1")
+    assert status.catalog_line(BASE) == Line("cole-corpus · v1")
     assert status.switch_line(BASE) == ""
     switching = given(pc_catalog=reference(2, "2"), switch_pending=True)
-    assert status.catalog_line(switching) == Line("cole-corpus · version 1")
-    assert status.switch_line(switching) == "Version 2 switches at the next session"
+    assert status.catalog_line(switching) == Line("cole-corpus · v1")
+    assert (
+        status.switch_line(switching)
+        == "Version 2 is active on the PC: it switches at the next session"
+    )
     nothing = given(
         pinned_catalog=None, pc_catalog=None, can_record=False, record_blocked=NO_CATALOG
     )
@@ -184,7 +205,11 @@ def test_the_window_shows_the_clients_status(qtbot: Any, studio_window: Window) 
         studio._client_changed()
         expected = status.notice_line(value.notices, {"neutral-01": "Neutral 01"})
         expected = expected or status.sync_line(value)
-        assert (studio.syncText, studio.syncTone) == (expected.text, expected.tone)
+        assert (studio.syncText, studio.syncTone, studio.syncDetail) == (
+            expected.text,
+            expected.tone,
+            expected.detail,
+        )
         qtbot.waitUntil(lambda e=expected: sync.property("text") == e.text, timeout=5000)
-        dismiss = studio_window.find("studioDismissNotice")
-        assert dismiss.property("visible") == bool(value.notices)
+        details = studio_window.find("studioDetails")
+        assert details.property("visible") == bool(expected.detail)
