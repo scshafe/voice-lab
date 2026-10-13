@@ -67,8 +67,9 @@ the corpus on the PC, so the corpus needs no new host unit and no new mount. It 
   D-021 ledger and the standing home-host approval (class `capture`). The publisher tells a
   take package from a capture package by its manifest's schema;
 - **corpus requests**, for decisions and trims. The API writes each as a small JSON file and
-  renames it into `incoming/.corpus-request-<id>.json`, which fires the path unit. The
-  publisher applies the request in order, checks its revision, and records the outcome;
+  renames it into `incoming/.corpus-request-<received time>-<id>.json`, which fires the path
+  unit. The publisher applies the requests in that order, checks each one's revision, and
+  records the outcome;
 - **the read model** (`derived/corpus/`): the active catalog's reference, coverage, and each
   prompt's take history, which the API serves. The publisher rewrites it on every pass, and
   `voice-lab catalog publish|activate` rewrites it too.
@@ -111,8 +112,16 @@ every vault pass.
 - **`cole-voice-lab.corpus-take-state/v1`**: a take's current decision (with revision, reason
   and time) and its trim (`start_frame`, `end_frame`, revision).
 - **`cole-voice-lab.corpus-request/v1`**: a decision or trim request, with its expected
-  revision.
-- **API views:** `CatalogView`, `CorpusLibrary` (rows per prompt, plus coverage), `TakeHistory`.
+  revision: the client's `request_id` (`req-` and 32 hex digits, stable across retries), the
+  take, the API's `received_at`, and one change (a decision with its reason, or a trim's
+  `start_frame`/`end_frame`, both `null` to reset).
+- **`cole-voice-lab.corpus-request-outcome/v1`**: what the publisher did with a request
+  (`provenance/corpus-requests/<request_id>.json`): `applied` with the new revision, or
+  `refused` with a code (`revision_conflict`, `take_not_found`, `trim_out_of_bounds`,
+  `invalid_request`) and the take's current revision; the publisher's time.
+- **API views:** `CatalogView`, `CorpusLibrary` (rows per prompt, plus coverage), `TakeHistory`;
+  the bodies `TakeDecisionRequest` and `TakeTrimRequest`, and `CorpusRequestStatus` (`queued`,
+  `applied` or `refused`, with the outcome).
 
 The Swift app's take records (`RecordingTake`, Core Audio seals) are not reused. They are
 bound to Core Audio and the Swift helper. Mac takes reach the PC through an exporter (step 9)
@@ -248,3 +257,17 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   later source, such as the singing studio, is a third adapter in `configured_sources`, plus a
   playback location in the browser's seam (`browser.open_recording_audio`) if its audio is
   served.
+- 2026-10-12: step 4, decisions and trims. `POST /api/v1/corpus/takes/{id}/decision` and
+  `PUT /api/v1/corpus/takes/{id}/trim` (`api/corpus_request_routes.py`) check the take, a
+  trim's frames and the body read-only, never the revision, and queue a
+  `cole-voice-lab.corpus-request/v1` in `incoming/` under a name that sorts in arrival order;
+  `GET /api/v1/corpus/requests/{id}` serves its status. Each intake pass applies the queue in
+  order (`corpus_requests`): a change applies only at the revision its client expected, the
+  outcome (`provenance/corpus-requests/`, copied by the vault) is written before the take's
+  record so an interrupted pass is finished by the next, and the library follows in the same
+  pass. A request id answers a retry as before and refuses another change (409); a request
+  for a take still on its way (uploading, finalized but not yet recorded, or deferred) waits
+  for it, with the take's later requests; one publisher pass runs at a time (a lock); an
+  unsafe request file is set aside in `incoming/.refused/`. The queue holds at most 10,000
+  requests (503). A restore sends the decision the take had before (`kept` or `draft`): the
+  PC keeps no restore target.

@@ -38,6 +38,9 @@ JWKS, issuer, audience `voice-lab-desktop`, lifetime, and a one-subject allow-li
 | `GET /api/v1/corpus/library` | `CorpusLibrary`: a row per prompt of the active version (status `missing`, `draft`, `kept` or `needs-attention`, take count, the take that stands for it) and coverage totals; `ETag` is the library read model's SHA-256 (`If-None-Match` → 304); `library_unavailable` (503) while the active version's library is not built yet |
 | `GET /api/v1/corpus/prompts/{prompt_id}/takes` | `TakeHistory`: the prompt's row and every take that counts for it, newest first (request time, duration, host, device, decision and revision, trim, QC); same `ETag`; `prompt_not_found` (404) for a prompt the active version does not hold |
 | `GET /api/v1/corpus/takes/{take_id}/audio` | the take's `original.wav` from `raw/`, `Range` answered 206 (`range_not_satisfiable`, 416, outside the file), `ETag` the audio's SHA-256; only with `serve --playback-approval` (`playback_not_approved`, 403, without it); `take_not_found` (404), `take_invalid` (500) when the file disagrees with its record |
+| `POST /api/v1/corpus/takes/{take_id}/decision` | `TakeDecisionRequest` (`request_id`, `decision`, `reason`, `expected_revision`): queues the take's new decision for the publisher (below); 202 `CorpusRequestStatus` with `Location` |
+| `PUT /api/v1/corpus/takes/{take_id}/trim` | `TakeTrimRequest` (`request_id`, `start_frame`, `end_frame`, both `null` to reset, `expected_revision`): queues the take's new trim; 202 `CorpusRequestStatus` with `Location` |
+| `GET /api/v1/corpus/requests/{request_id}` | `CorpusRequestStatus`: `queued`, or `applied`/`refused` with the publisher's outcome; `request_not_found` (404) |
 
 Limits: 8 open sessions; 4,096 files and 64 GiB per session; 8 GiB per file; 64 MiB per
 `PUT`; the intake disk floor (10 GiB free) plus the declared bytes, or
@@ -50,9 +53,10 @@ The API never writes `raw/` and never decides acceptance. The publisher
 package with `accept_capture_session`; a package it refuses is moved untouched to
 `incoming/.refused/<id>.<time>` with a record in `provenance/intake/refusals/<id>.json`.
 Each pass then writes the record of each new take (`provenance/corpus-takes/<take_id>.json`,
-an undecided draft; its summary's `takes_recorded`) and refreshes the corpus read model
-(`derived/corpus/`: the active catalog and its library) the corpus routes serve (D-052); its
-summary's `read_model` says `current`, `no catalog` or the error.
+an undecided draft; its summary's `takes_recorded`), applies the queued decisions and trims
+(below; `requests_applied`, `requests_refused`, `requests_waiting`), and refreshes the corpus
+read model (`derived/corpus/`: the active catalog and its library) the corpus routes serve
+(D-052); its summary's `read_model` says `current`, `no catalog` or the error.
 
 ## Take packages (D-052)
 
@@ -97,6 +101,72 @@ An admitted take is published like any package, into `raw/<manifest_sha256>/`, r
 with `intake-qc.json` and the receipt, and recorded in `provenance/intake/sessions/`. The take
 store's record names it; the vault copies the raw package (`raw-packages`) and the record
 (`corpus-take-states`), and never the read model.
+
+## Decisions and trims (D-052)
+
+A take's decision (`draft`, `kept`, `rejected` with a reason, `removed`) and its trim (the
+frames `[start_frame, end_frame)` it keeps, or all of them) each carry a revision, 0 until
+first changed. The API cannot write them: its lab mount is read-only except `incoming/`. So
+a change travels as a **corpus request** (`corpus_requests`), which the publisher applies:
+
+1. The client sends the change with its own `request_id` (`req-` and 32 lower-case hex
+   digits, the same on every retry) and the revision it last saw (`expected_revision`:
+   `decision_revision`, or `trim.revision`, from the library). A client sends a take's
+   changes one at a time, in order. A restore is the decision the take had before (`kept`,
+   or `draft`); `removed` is a state, never a deletion.
+2. The API checks only what it can know read-only: the take id, that the PC has the take's
+   record (or its package is uploading or waiting in `incoming/`), a trim's end within the
+   take's frames, and the body. It never checks the revision: requests already queued may
+   change it first. It writes `cole-voice-lab.corpus-request/v1` (with `received_at`) to
+   `incoming/.corpus-request-tmp-<hex>` (0600, fsynced) and renames it to
+   `incoming/.corpus-request-<UTC time to the nanosecond>-<request_id>.json`, which starts the
+   publisher. Names sort in arrival order (a later request is always named after every
+   request still queued). It answers 202 `queued`.
+3. The publisher applies the queued requests in name order. It reads each one without
+   following a link or blocking on a FIFO, bounded, and requires it canonical and named for
+   its request. A change applies only when `expected_revision` is the take's current
+   revision of that kind; the take's record is rewritten with the next revision (a decision
+   with the publisher's time). The outcome
+   (`cole-voice-lab.corpus-request-outcome/v1`, `provenance/corpus-requests/<request_id>.json`)
+   is written first, then the record, then the request file is removed: an interrupted pass
+   is finished from the outcome by the next one, so a change applies exactly once. The
+   library follows in the same pass. The path unit does not start a pass for what changes
+   while one runs, so the pass lists `incoming/` again after its requests and after the
+   library, and applies what arrived meanwhile (up to three rounds; the timer catches the
+   rest). One pass runs at a time: `publish_pending` holds `provenance/intake/.publisher.lock`
+   (`flock`), and a second pass (the unit's while one runs by hand) waits for it, up to an
+   hour, rather than interleave an outcome and its record.
+
+A retry with the same `request_id` and body answers as before (202, with the outcome once
+there is one); the same id with another take or change is `request_conflict` (409). The
+outcome's `revision` is the take's revision after the request: the new one when applied, the
+current one when refused for a conflict, so the client can rebase.
+
+| Outcome code | When |
+| --- | --- |
+| `revision_conflict` | `expected_revision` is not the take's current decision (or trim) revision |
+| `take_not_found` | the PC has no record of the take, and it is not on its way (below): intake refused it, say |
+| `trim_out_of_bounds` | the trim ends after the take's last frame (the API checks this when it can) |
+| `invalid_request` | the request file could not be read safely (a link, a FIFO, a hard link, too large, not canonical, not named for its request): its outcome is written, then it is set aside in `incoming/.refused/`, and the outcome names no take. A file that could not be opened for now (EACCES, EMFILE) waits instead |
+
+A request whose take has no record yet **waits** in `incoming/` while the take is on its way:
+its package is uploading (`incoming/.uploads/<take_id>` without `FINALIZED`), waits in
+`incoming/` itself (finalized, or deferred), or was finalized and intake has not refused it
+(`provenance/intake/refusals/<take_id>.json`): a pass has claimed it in `tmp/` or accepted it
+and records it at the end of its packages. The API queues such a request rather than answering
+404. Every later request of that take waits with it; the pass lists them under `requests_waiting`. So
+does a request the pass could not finish (an `OSError`, a damaged record). Nothing waits
+forever unnoticed: each pass lists it again.
+
+API refusals besides the body's (`invalid_json` 400, `invalid_request` 422,
+`content_length_required` 411, `body_too_large` 413 past 8 KiB): `take_not_found` (404),
+`trim_out_of_bounds` (422), `request_conflict` (409), `request_queue_full` (503, with
+`Retry-After: 60`, while 10,000 requests wait: the publisher is not running), `take_invalid`
+(500, the take's record fails its checks). No audio is involved, so no transfer approval or
+ledger entry; the bearer token is checked as on every `/api/` route.
+
+The vault copies the outcomes (`corpus-request-outcomes`, records) with the take records;
+`incoming/` (the queue and `.refused/`) never leaves the PC.
 
 ## The capturing host
 
