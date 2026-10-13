@@ -88,7 +88,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "``GET /api/v1/recordings``: one page of rows (always paged: ``limit`` defaults to\n100, at most 500). Query: ``bucket``, ``year``, ``spotCheckStatus``,\n``transcriptStatus``, ``lyricMatchStatus``, ``reviewQueue=selected``, ``q``,\n``sort``, ``direction``, ``limit``, ``offset``, ``fields=list``.",
+  "description": "``GET /api/v1/recordings``: one page of rows (always paged: ``limit`` defaults to\n100, at most 500). Query: ``bucket``, ``year``, ``spotCheckStatus``,\n``transcriptStatus``, ``lyricMatchStatus``, ``sourceType``, ``reviewQueue=selected``,\n``q``, ``sort``, ``direction``, ``limit``, ``offset``, ``fields=list``. Every row says\nits ``sourceType`` (``voice-memos``, ``measurement``; D-051), also under\n``fields=list``.",
   "properties": {
     "generated_at": {
       "title": "Generated At",

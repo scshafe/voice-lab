@@ -27,6 +27,10 @@ and no HTTP (the routes are ``api/journey_routes.py``):
 Outputs are the JavaScript's, byte for byte where the JS wrote JSON
 (``jsonio.stringify``). Differences from the JS:
 
+- Every row says its source (D-051, Recording v1 step 7): ``sourceType``, after
+  ``filename``, is the index row's ``source.type`` (``sources.source_type``: ``voice-memos``
+  for a row of an index written before the source port). It is an exact filter like
+  ``bucket`` (``sourceType=measurement``) and a column of the ``fields=list`` projection.
 - ``serve`` is ``python -m cole_voice_lab.api serve --journey``; this command line keeps
   ``merge-verdicts`` (and ``help``), with ``--results``, ``--state`` and ``--out``.
   Its default state file is in the state directory (the JS used the artifacts
@@ -82,6 +86,7 @@ from .jsonio import (
     write_json,
 )
 from .paths import JourneyPaths, resolve_paths
+from .sources import source_type
 
 Json = dict[str, Any]
 SearchParams = Sequence[tuple[str, str]]
@@ -139,6 +144,7 @@ _MAX_SAFE_INTEGER: Final = 2**53 - 1
 LIST_PROJECTION_FIELDS: Final = (
     "recordingId",
     "filename",
+    "sourceType",
     "capturedAt",
     "year",
     "durationSeconds",
@@ -400,6 +406,7 @@ def _row_for(
     return {
         "recordingId": recording_key,
         "filename": js.get(recording, "filename"),
+        "sourceType": source_type(recording),
         "capturedAt": captured_at,
         "year": js.coalesce(js.get(result, "year"), year_for(captured_at)),
         "durationSeconds": js.coalesce(
@@ -641,7 +648,14 @@ def filter_rows(rows: Sequence[Json], filters: Mapping[str, Any] | None = None) 
 
     filters = filters or {}
     query = _normalize(filters.get("q"))
-    exact = ("bucket", "year", "spotCheckStatus", "transcriptStatus", "lyricMatchStatus")
+    exact = (
+        "bucket",
+        "year",
+        "spotCheckStatus",
+        "transcriptStatus",
+        "lyricMatchStatus",
+        "sourceType",
+    )
     searchable = (
         "filename",
         "recordingId",

@@ -647,6 +647,53 @@ def test_v1_recordings_are_paged_projected_and_typed(tmp_path: Path) -> None:
         assert api.json("GET", "/api/v1/recordings/a/other")[1]["error"] == "not_found"
 
 
+def test_v1_recordings_say_their_source_and_filter_by_it(tmp_path: Path) -> None:
+    """D-051 (Recording v1 step 7): every row says its ``sourceType``; a row of an index
+    written before the source port (no ``source``) is a Voice Memos row."""
+
+    index = fake_index()
+    rows = index["recordings"]
+    for row in rows[:3]:
+        row["source"] = {"type": "voice-memos"}
+    rows[6]["source"] = {
+        "type": "measurement",
+        "chainId": "umik1",
+        "sessionId": "sessionA1",
+        "segmentKey": "vowel-a",
+    }
+    with running(tmp_path, journey_config(_data(tmp_path, index=index))) as api:
+        page = JourneyRecordings.model_validate_json(api.call("GET", "/api/v1/recordings")[2])
+        assert {row["recordingId"]: row["sourceType"] for row in page.rows} == {
+            "a": "voice-memos",
+            "b": "voice-memos",
+            "c": "voice-memos",
+            "d": "voice-memos",
+            "e": "voice-memos",
+            "f": "voice-memos",
+            "g": "measurement",
+        }
+        measured = JourneyRecordings.model_validate_json(
+            api.call("GET", "/api/v1/recordings?sourceType=measurement&fields=list")[2]
+        )
+        assert [row["recordingId"] for row in measured.rows] == ["g"]
+        assert measured.rows[0]["sourceType"] == "measurement"
+        assert measured.page.total_filtered == measured.totals.rows == 1
+        memos = JourneyRecordings.model_validate_json(
+            api.call("GET", "/api/v1/recordings?sourceType=voice-memos&year=2020")[2]
+        )
+        assert [row["recordingId"] for row in memos.rows] == ["b", "c"]
+        none = JourneyRecordings.model_validate_json(
+            api.call("GET", "/api/v1/recordings?sourceType=singing-studio")[2]
+        )
+        assert none.rows == () and none.page.total_filtered == 0
+        one = JourneyRecording.model_validate_json(api.call("GET", "/api/v1/recordings/g")[2])
+        assert one.row["sourceType"] == "measurement"
+        assert "source" not in one.row
+        assert [
+            row["recordingId"] for row in api.get("/api/rows?sourceType=measurement")["rows"]
+        ] == ["g"]
+
+
 def test_v1_audio_honours_range_and_refuses_with_stable_codes(tmp_path: Path) -> None:
     corpus, recording_key = _one_recording(tmp_path)
     path = f"/api/v1/recordings/{recording_key}/audio"

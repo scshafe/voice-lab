@@ -16,7 +16,10 @@ every derived artifact (transcripts, feature detail): byte equality first; if th
 differ, a structural JSON comparison (key sets, key order, array lengths, types, values;
 numbers within the absolute ``--float-tolerance``, by default 0, i.e. exact). A few paths
 are known not to be comparable (wall-clock fields no flag pins, the filter's
-self-description); they are listed in the report with the reason and counted apart.
+self-description) or differ by decision (the ``source`` that Voice Memos rows of the index
+carry since D-051, which Node never wrote); they are listed in the report with the reason
+and counted apart. A rule may also name the one kind of difference and the one Python
+value it excuses, so that anything else on the same path still counts.
 
 The report is JSON on standard output (or ``--out``): per stage the exit codes and
 timings, per file the two SHA-256 digests and the count of differences by JSON path. It
@@ -151,14 +154,28 @@ def stage_command(side: str, stage: Stage, *, node: str, tree: Path, python: str
 # ------------------------------------------------------------------- comparison
 
 
+ANY_VALUE: Any = object()
+
+
 @dataclass(frozen=True)
 class IgnoreRule:
+    """Differences in ``file`` at ``path`` (a regex over the general path, its descendants
+    included) are counted apart with ``reason``. With ``kind`` the rule excuses only that
+    kind of difference at exactly ``path``; with ``python_value`` only that Python value."""
+
     file: str
     path: str
     reason: str
+    kind: str | None = None
+    python_value: Any = ANY_VALUE
 
-    def matches(self, file: str, general: str) -> bool:
-        return file == self.file and re.fullmatch(self.path + r"(?:[.\[].*)?", general) is not None
+    def matches(self, file: str, difference: Difference) -> bool:
+        if file != self.file or (self.kind is not None and difference.kind != self.kind):
+            return False
+        if self.python_value is not ANY_VALUE and difference.python != self.python_value:
+            return False
+        pattern = self.path if self.kind is not None else self.path + r"(?:[.\[].*)?"
+        return re.fullmatch(pattern, difference.general) is not None
 
 
 IGNORE_RULES = (
@@ -191,6 +208,14 @@ IGNORE_RULES = (
         "manifests/full-corpus-filter-results.json",
         r"\$\.toolChoices\[\*\]\.(?:name|version|notes)",
         "deliberate (filter.py docstring): the DSP tool choice names the Python implementation",
+    ),
+    IgnoreRule(
+        "manifests/recording-index.json",
+        r"\$\.recordings\[\*\]\.source",
+        "deliberate (D-051, Recording v1 step 7): every row says its source; Voice Memos "
+        "rows gain {type: voice-memos}, which Node never wrote (index.py docstring)",
+        kind="extraInPython",
+        python_value={"type": "voice-memos"},
     ),
 )
 
@@ -385,7 +410,7 @@ def compare_file(
     ignored: dict[str, dict[str, Any]] = {}
     unexpected: list[Difference] = []
     for difference in differences:
-        rule = next((r for r in rules if r.matches(label, difference.general)), None)
+        rule = next((r for r in rules if r.matches(label, difference)), None)
         bucket = by_path if rule is None else ignored
         slot = bucket.setdefault(difference.general, {"count": 0, "kinds": {}})
         slot["count"] += 1
@@ -1626,7 +1651,13 @@ def build_report(args: argparse.Namespace, work: Path) -> dict[str, Any]:
             "totalSeconds": round(time.monotonic() - started, 3),
         },
         "ignoreRules": [
-            {"file": rule.file, "path": rule.path, "reason": rule.reason} for rule in IGNORE_RULES
+            {
+                "file": rule.file,
+                "path": rule.path,
+                "reason": rule.reason,
+                **({"kind": rule.kind} if rule.kind is not None else {}),
+            }
+            for rule in IGNORE_RULES
         ],
         "stages": stage_reports,
         "artifacts": artifacts,

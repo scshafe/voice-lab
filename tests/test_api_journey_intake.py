@@ -610,8 +610,8 @@ def test_an_accepted_session_is_indexed_as_a_measurement_take(
     assert index.main([*argv, "--generated-at", "2026-10-03T00:00:00.000Z"]) == 0
     capsys.readouterr()
     manifest = json.loads(out.read_text())
-    kinds = sorted(row.get("source", {}).get("type", "phone") for row in manifest["recordings"])
-    assert kinds == ["measurement", "measurement", "phone"]
+    kinds = sorted(row["source"]["type"] for row in manifest["recordings"])
+    assert kinds == ["measurement", "measurement", "voice-memos"]  # every row says (D-051)
     assert manifest["totals"]["recordings"] == 3
 
 
