@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import shiboken6
-from conftest import RecordingOutput
+from conftest import RecordingOutput, offline_corpus
 from voice_lab_desktop.app import AppModel
 from voice_lab_desktop.config import Config
 from voice_lab_desktop.net import new_http
@@ -46,6 +46,7 @@ def app(tmp_path: Path, name: str) -> AppModel:
         output=RecordingOutput(),
         open_url=lambda _url: None,
         recorder_factory=lambda: None,  # type: ignore[arg-type,return-value]
+        corpus_factory=offline_corpus,
     )
 
 

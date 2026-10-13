@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import AppRig, RecordingOutput, Window, open_window
+from conftest import AppRig, RecordingOutput, Window, offline_corpus, open_window
 from PySide6.QtCore import Qt
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (root objects come back as QQuickWindow)
 from PySide6.QtTest import QTest
@@ -50,7 +50,7 @@ def screen(
         measurement_backend=backend,
         level_reader=levels,
         start_screen="measurement",
-        **kwargs,
+        **{"corpus_factory": offline_corpus, **kwargs},
     )
     try:
         with open_window(AppRig(model, RecordingOutput(), [], None, tmp_path)) as window:
@@ -202,7 +202,7 @@ def test_the_level_moving_while_recording_aborts_the_session(
     qtbot.waitUntil(lambda: controller.phase == "aborted", timeout=10000)
     assert ui.find("abortBanner").property("visible")
     assert "40%" in controller.abortReason
-    assert sessions.pending() == [] and intake.requests == []
+    assert sessions.pending() == [] and intake.intake_requests == []  # nothing uploaded
 
 
 def test_escape_opens_the_abort_dialog(qtbot: Any, ui: Window) -> None:
@@ -319,7 +319,12 @@ def test_without_portaudio_the_screen_says_so(
 
     monkeypatch.setattr(app_module, "_portaudio_backend", missing)
     model = AppModel(
-        config, signed_in, http=new_http(), output=RecordingOutput(), open_url=lambda url: None
+        config,
+        signed_in,
+        http=new_http(),
+        output=RecordingOutput(),
+        open_url=lambda url: None,
+        corpus_factory=offline_corpus,
     )
     try:
         assert calls == []  # nothing loads PortAudio before the screen is shown

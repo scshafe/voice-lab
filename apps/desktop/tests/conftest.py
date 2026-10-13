@@ -201,6 +201,22 @@ def app_tokens() -> Tokens:
     )
 
 
+def offline_corpus(context: Any) -> Any:
+    """The prompt studio's corpus client for tests that are not about the studio: it never
+    contacts a server. No scheduler, so no sync pass ever runs; a read the studio would make
+    itself (a prompt's history) is refused as if no server were set (``ConfigError``). The
+    studio's own tests (``tests/studio``, ``tests/corpus_client``) use the real client."""
+    from voice_lab_desktop.config import ConfigError
+    from voice_lab_desktop.corpus.client import CorpusClient
+
+    def no_server() -> Any:
+        raise ConfigError("this test's app never contacts a server for the corpus")
+
+    return CorpusClient(
+        context.config.corpus_dir, api=no_server, uploader=no_server, enabled=lambda: False
+    )
+
+
 @dataclass
 class AppRig:
     """A signed-in app model over a synthetic server, and what it did outside."""
@@ -259,6 +275,7 @@ def make_rig(
             or SimulatedBackend(speed=200, block_frames=4800),
             level_reader=level_reader or SimulatedLevelReader(),
             recorder_factory=lambda: WorkerRecorder(simulated={"speed": 20.0}),
+            corpus_factory=offline_corpus,  # the screens here are not the studio's
         )
         try:
             yield AppRig(model, output, opened, served, tmp_path)
