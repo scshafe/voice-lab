@@ -339,3 +339,28 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
     Next; trims with In/Out, Save trim and Reset; Zoom and Fit; playback with ±0.1 s; take
     history across every session.
   - **Left to 6c:** the keys, through the slots the model already has.
+- 2026-10-13: step 6c, keys, takes recorded elsewhere, and polish. **§5 parity is reached.**
+  Every item of §5 is built and covered by an offscreen test on synthetic audio; the
+  checklist in apps/desktop/docs/PROMPT-STUDIO.md names each test. Cole signs parity off in
+  step 10, on the Mac, after S-1 (step 8).
+  - **Takes recorded elsewhere** are decided and trimmed in the studio. These are other
+    clients' takes and step 9's imported Swift takes. The corpus client notes such a take
+    from the PC's history (`RemoteTake`, `upload = "remote"`, no audio). Its changes chain
+    on the PC's revisions, fold, are refused and adopted, and wait offline, by step 5's
+    rules. A newer state in the PC's history is installed for a take with nothing queued,
+    never an older one. The picker shows the PC's `origin` (*imported from the Mac*) once
+    the PC's contracts carry it (#61).
+  - **Keys:**
+    - R records and stops. Space stops a recording, or else plays and pauses; it never
+      starts one, which is the Swift app's rule.
+    - Return is Save & Next; ⌘S (Ctrl+S off macOS) is Save.
+    - In the waveform, ←/→ step 0.1 s and Home/End go to the kept edges.
+    - Keys are ignored while typing, with a menu or dialog open, on another screen, and
+      on repeats.
+  - **An unsaved trim edit** is asked about (Save trim, Discard edit or Cancel) before a
+    saved take is left for another take or prompt, Continue Missing, Record or another
+    screen.
+  - **Polish:**
+    - the header's text-size choice (24, 28 or 32 pt), kept per viewer;
+    - the picker's short line, whole at 960×600, whose open list is the take history;
+    - the dB display scale's name moved beside the timer, clear of the trim handles.
