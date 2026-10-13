@@ -11,8 +11,9 @@ Writer: the intake publisher only (the PC's one lab writer). ``record_takes`` ru
 pass and writes the revision-0 record (decision ``draft``, no trim) of every take package in
 ``raw/`` that has none: of each take the pass accepted, and of any take an interrupted pass
 left without one. So the store at revision 0 is rebuildable from ``raw/``. Decisions and trims
-(step 4) are the only later writes; they raise their revision and cannot be rebuilt, so the
-vault copies these records (``library_classification``: ``corpus-take-states``).
+(``corpus_requests``, step 4) are the only later writes; they raise their revision and cannot
+be rebuilt, so the vault copies these records (``library_classification``:
+``corpus-take-states``) and the requests' outcomes.
 """
 
 from __future__ import annotations

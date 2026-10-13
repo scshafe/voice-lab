@@ -2032,9 +2032,16 @@ def library_sources() -> tuple[ReplicationSource, ...]:
     job is queued again and a package publication is never resolved to its map), so analysis
     and packages come first and fall back with the takes. Because raw sessions fall back with
     the package maps, a take store commit during a pass also holds back every owner that names
-    raw sessions. The PC's take records (D-052) name raw take packages and catalog snapshots.
+    raw sessions. The PC's take records (D-052) name raw take packages and catalog snapshots,
+    and the outcomes of the requests that changed them name the takes.
     """
     return (
+        RecordTreeSource(
+            "corpus-requests",
+            frozenset({"corpus-request-outcomes"}),
+            (ScanRoot("provenance/corpus-requests"),),
+            referents=frozenset({"corpus-takes"}),
+        ),
         RecordTreeSource(
             "corpus-takes",
             frozenset({"corpus-take-states"}),

@@ -33,6 +33,9 @@ needs): without it every take's audio is refused, 403 ``playback_not_approved``.
 ``take_not_found`` for a take the PC has no record of; 500 ``take_invalid`` when the record or
 its raw file fails its checks.
 
+The decision and trim routes, and the status of the requests they queue, are
+``corpus_request_routes``'s; ``CorpusRoutes`` answers them too.
+
 Like every ``/api/`` route, these are reached only with a verified bearer token (``auth.py``).
 The library is parsed once per change of its file and kept, so a 1,886-prompt library with
 thousands of takes is not re-read for every request.
@@ -44,6 +47,8 @@ import os
 import re
 import stat
 import threading
+from collections.abc import Callable
+from datetime import datetime
 from typing import BinaryIO, Final
 
 from ..canonical import canonical_json_bytes, open_regular_no_follow
@@ -59,9 +64,10 @@ from ..corpus_store import read_catalog_snapshot
 from ..corpus_take_store import CorpusTakeState, read_take_state
 from ..corpus_takes import AUDIO_NAME, TAKE_ID_PATTERN
 from ..errors import ContractError, SecurityError
-from ..models import COLE_SUBJECT, ContractModel
+from ..models import COLE_SUBJECT, ContractModel, utc_now
 from ..paths import AssetLayout, confined_path
 from .corpus_contracts import CatalogView, CorpusLibrary, TakeHistory
+from .corpus_request_routes import CorpusRequestRoutes
 from .routing import RouteRefusal, RouteRequest, RouteResponse
 
 CATALOG_PATH: Final = "/api/v1/catalog"
@@ -132,7 +138,8 @@ class CorpusRoutes:
     """The corpus routes over the lab at ``layout``, for ``subject_id``.
 
     ``playback_approval`` is the operator's recorded approval for playback; without it no
-    take's audio is served."""
+    take's audio is served. ``clock`` stamps the decision and trim requests queued
+    (``corpus_request_routes``)."""
 
     def __init__(
         self,
@@ -140,14 +147,19 @@ class CorpusRoutes:
         subject_id: str = COLE_SUBJECT,
         *,
         playback_approval: str | None = None,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self.layout = layout
         self.subject_id = subject_id
         self.playback_approval = playback_approval or None
+        self.requests = CorpusRequestRoutes(layout, subject_id, clock=clock)
         self._lock = threading.Lock()
         self._cached: tuple[tuple[int, ...], _LibraryView] | None = None
 
     def __call__(self, request: RouteRequest) -> RouteResponse | None:
+        answer = self.requests(request)
+        if answer is not None:
+            return answer
         if request.path == CATALOG_PATH:
             self._methods(request)
             return self._catalog(request)

@@ -32,6 +32,7 @@ from .blind import (
 )
 from .capture import CaptureContinuityEvidence, ReadyMarker, RejectedTakeLog
 from .corpus_read_model import CorpusLibraryRecord
+from .corpus_requests import CorpusRequest, CorpusRequestOutcome
 from .corpus_take_store import CorpusTakeState
 from .corpus_takes import CorpusTakeManifest
 from .datasets import (
@@ -145,6 +146,8 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "capture-rejected-takes": RejectedTakeLog,
     "capture-desktop-session": DesktopSessionEvidence,
     "corpus-library": CorpusLibraryRecord,
+    "corpus-request": CorpusRequest,
+    "corpus-request-outcome": CorpusRequestOutcome,
     "corpus-take": CorpusTakeManifest,
     "corpus-take-state": CorpusTakeState,
     "dataset-manifest": DatasetManifest,

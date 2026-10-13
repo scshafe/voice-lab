@@ -94,8 +94,10 @@ CONTINUITY_NAME: Final = "continuity.json"
 TAKE_FILES: Final = frozenset(
     {MANIFEST_NAME, QC_REPORT_NAME, READY_NAME, AUDIO_NAME, CONTINUITY_NAME}
 )
-#: Eleven minutes of the canonical format and its header (the capture worker stops at ten).
-MAX_TAKE_AUDIO_BYTES: Final = WAV_HEADER_BYTES + CANONICAL_SAMPLE_RATE_HZ * 3 * 660
+#: Eleven minutes of the canonical format, and with its header (the capture worker stops at
+#: ten).
+MAX_TAKE_FRAMES: Final = CANONICAL_SAMPLE_RATE_HZ * 660
+MAX_TAKE_AUDIO_BYTES: Final = WAV_HEADER_BYTES + MAX_TAKE_FRAMES * CANONICAL_SAMPLE_WIDTH_BYTES
 TAKE_ID_PATTERN: Final = r"^take-[0-9a-f]{64}$"
 #: A UMIK-1 by the name its driver gives PortAudio: voice-lab-desktop's rule
 #: (``measurement.chain.is_umik1``), so the PC admits what the app records with.

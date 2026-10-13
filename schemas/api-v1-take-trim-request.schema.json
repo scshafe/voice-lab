@@ -1,0 +1,60 @@
+{
+  "$defs": {
+    "RequestId": {
+      "pattern": "^req-[0-9a-f]{32}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``PUT /api/v1/corpus/takes/{take_id}/trim``: keep the frames ``[start_frame,\nend_frame)`` of the take, or all of them (both ``null``: a reset), at the trim revision the\nclient last saw (``expected_revision``, ``LibraryTake.trim.revision``).",
+  "properties": {
+    "end_frame": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "maximum": 31680000,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "End Frame"
+    },
+    "expected_revision": {
+      "minimum": 0,
+      "title": "Expected Revision",
+      "type": "integer"
+    },
+    "request_id": {
+      "$ref": "#/$defs/RequestId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.take-trim-request/v1",
+      "default": "cole-voice-lab.api.take-trim-request/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "start_frame": {
+      "anyOf": [
+        {
+          "exclusiveMaximum": 31680000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Start Frame"
+    }
+  },
+  "required": [
+    "request_id",
+    "start_frame",
+    "end_frame",
+    "expected_revision"
+  ],
+  "title": "TakeTrimRequest",
+  "type": "object"
+}

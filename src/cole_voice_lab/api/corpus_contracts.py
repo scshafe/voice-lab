@@ -1,5 +1,6 @@
-"""The corpus API's answers (D-052, docs/design/RECORDING-V1.md §4): the catalog a subject
-records against, its library, and each prompt's takes.
+"""The corpus API's bodies and answers (D-052, docs/design/RECORDING-V1.md §4): the catalog a
+subject records against, its library, each prompt's takes, and the decisions and trims a
+client asks for (``corpus_requests``).
 
 Strict, versioned models like every ``/api/v1`` answer; their JSON schemas are generated into
 ``schemas/`` (``CORPUS_API_SCHEMA_MODELS``).
@@ -8,13 +9,25 @@ Strict, versioned models like every ``/api/v1`` answer; their JSON schemas are g
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final, Literal
+from typing import Annotated, Final, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from ..corpus_read_model import LibraryCoverage, LibraryRow, LibraryTake
+from ..corpus_requests import (
+    CorpusRequestOutcome,
+    DecisionChange,
+    RequestId,
+    TrimChange,
+    check_decision,
+    check_trim,
+)
+from ..corpus_take_store import TakeDecisionName
+from ..corpus_takes import MAX_TAKE_FRAMES, TakeId
 from ..models import ContractModel, PromptSuite, StableId
 from ..recording_contracts import CatalogReference, PromptAlias
+
+type _Reason = Annotated[str, StringConstraints(min_length=1, max_length=500)]
 
 
 class CatalogView(ContractModel):
@@ -63,8 +76,84 @@ class TakeHistory(ContractModel):
     takes: tuple[LibraryTake, ...]
 
 
+class TakeDecisionRequest(ContractModel):
+    """``POST /api/v1/corpus/takes/{take_id}/decision``: set the take's decision.
+
+    ``request_id`` is the client's id for this change (``req-`` and 32 lower-case hex digits),
+    the same on every retry. ``expected_revision`` is the take's decision revision the client
+    last saw (``LibraryTake.decision_revision``): the PC applies the change only at that
+    revision. ``reason`` is a rejection's, and only a rejection's. A restore sends the decision
+    the take had before (``kept``, or ``draft``); ``removed`` never deletes anything."""
+
+    schema_version: Literal["cole-voice-lab.api.take-decision-request/v1"] = (
+        "cole-voice-lab.api.take-decision-request/v1"
+    )
+    request_id: RequestId
+    decision: TakeDecisionName
+    reason: _Reason | None = None
+    expected_revision: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> TakeDecisionRequest:
+        check_decision(self.decision, self.reason)
+        return self
+
+    def change(self) -> DecisionChange:
+        return DecisionChange(
+            decision=self.decision, reason=self.reason, expected_revision=self.expected_revision
+        )
+
+
+class TakeTrimRequest(ContractModel):
+    """``PUT /api/v1/corpus/takes/{take_id}/trim``: keep the frames ``[start_frame,
+    end_frame)`` of the take, or all of them (both ``null``: a reset), at the trim revision the
+    client last saw (``expected_revision``, ``LibraryTake.trim.revision``)."""
+
+    schema_version: Literal["cole-voice-lab.api.take-trim-request/v1"] = (
+        "cole-voice-lab.api.take-trim-request/v1"
+    )
+    request_id: RequestId
+    start_frame: int | None = Field(ge=0, lt=MAX_TAKE_FRAMES)
+    end_frame: int | None = Field(gt=0, le=MAX_TAKE_FRAMES)
+    expected_revision: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> TakeTrimRequest:
+        check_trim(self.start_frame, self.end_frame)
+        return self
+
+    def change(self) -> TrimChange:
+        return TrimChange(
+            start_frame=self.start_frame,
+            end_frame=self.end_frame,
+            expected_revision=self.expected_revision,
+        )
+
+
+class CorpusRequestStatus(ContractModel):
+    """A decision or trim request as the server sees it: the answer (202) to its ``POST`` or
+    ``PUT`` and to ``GET /api/v1/corpus/requests/{request_id}``.
+
+    ``queued``: it waits in ``incoming/`` for the PC's writer (the intake publisher), which
+    applies a take's requests in the order they arrived. ``applied`` or ``refused``:
+    ``outcome`` says what the writer did (an applied change's new revision; a refusal's code,
+    such as ``revision_conflict`` with the take's current revision)."""
+
+    schema_version: Literal["cole-voice-lab.api.corpus-request-status/v1"] = (
+        "cole-voice-lab.api.corpus-request-status/v1"
+    )
+    request_id: RequestId
+    take_id: TakeId | None
+    status: Literal["queued", "applied", "refused"]
+    received_at: datetime | None
+    outcome: CorpusRequestOutcome | None
+
+
 CORPUS_API_SCHEMA_MODELS: Final[dict[str, type[BaseModel]]] = {
     "api-v1-catalog": CatalogView,
     "api-v1-corpus-library": CorpusLibrary,
     "api-v1-take-history": TakeHistory,
+    "api-v1-take-decision-request": TakeDecisionRequest,
+    "api-v1-take-trim-request": TakeTrimRequest,
+    "api-v1-corpus-request-status": CorpusRequestStatus,
 }
