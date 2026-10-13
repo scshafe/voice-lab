@@ -398,8 +398,10 @@ _RULES: Final = (
         "incoming-sessions",
         "incoming{/**}",
         MAC_ONLY,
-        owner="sync and intake",
-        reason="capture sessions not yet accepted; intake publishes them under raw/",
+        owner="sync and intake (and the API's corpus requests)",
+        reason="capture sessions and take packages not yet accepted (intake publishes them "
+        "under raw/), and decisions and trims waiting for the publisher, whose outcomes and "
+        "take records it writes under provenance/",
         example="incoming/pilot-001/READY",
     ),
     _rule(
@@ -666,6 +668,15 @@ _RULES: Final = (
         reason="each take on the PC (D-052): what it is and its decision and trim, which only "
         "these records hold once a take is decided or trimmed",
         example=f"provenance/corpus-takes/take-{_EXAMPLE_SHA}.json",
+    ),
+    _rule(
+        "corpus-request-outcomes",
+        "provenance/corpus-requests/req-{hex32}.json",
+        "records",
+        owner="corpus_requests (written by the intake publisher)",
+        reason="what became of each decision and trim asked of a take on the PC (D-052): the "
+        "history of its changes, and the answer a client's retry gets",
+        example=f"provenance/corpus-requests/req-{_EXAMPLE_HEX32}.json",
     ),
     _rule(
         "desktop-edits",

@@ -99,6 +99,11 @@ type ApiErrorCode = Literal[
     "prompt_not_found",
     "take_not_found",
     "take_invalid",
+    # the corpus requests (api/corpus_request_routes.py): decisions and trims
+    "trim_out_of_bounds",
+    "request_conflict",
+    "request_not_found",
+    "request_queue_full",
     "internal_error",
 ]
 REFUSAL_CODES: Final[frozenset[str]] = frozenset(get_args(ApiErrorCode.__value__))

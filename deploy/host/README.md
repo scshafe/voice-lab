@@ -7,7 +7,7 @@ private network namespace, the btrfs snapshot tool). Design §3.2, §8.1; D-021,
 
 | Unit | Runs | Network |
 | --- | --- | --- |
-| `voice-lab-intake.path` → `voice-lab-intake.service` | `voice-lab intake publish`: validates each finalized package in `incoming/` and publishes it into `raw/`, then refreshes the corpus read model (`derived/corpus/`, D-052) | none (`PrivateNetwork=yes`) |
+| `voice-lab-intake.path` → `voice-lab-intake.service` | `voice-lab intake publish`: validates each finalized package in `incoming/` and publishes it into `raw/`, applies the decisions and trims the API queued in `incoming/` (`provenance/corpus-takes/`, `provenance/corpus-requests/`), then refreshes the corpus read model (`derived/corpus/`, D-052) | none (`PrivateNetwork=yes`) |
 | `voice-lab-intake.timer` | the same pass every 15 minutes, as a backstop | none |
 | `voice-lab-jobs.timer` → `.service` | `voice-lab journey watch --once`: one tick of the journey job runner (scan the Voice Memos drop; when two scans agree and differ from the index, run the pipeline). Inert until `/data/voice-lab/journey/manifests` and the owner's `/etc/voice-lab/journey.env` exist (phase 3 cutover) | none (`PrivateNetwork=yes`) |
 | `voice-lab-jwks.timer` → `.service` | `voice-lab home-host fetch-jwks`: the identity provider's signing keys into `state/auth/jwks.json` for the API | the tailnet only (`IPAddressDeny=any`, `IPAddressAllow=` the tailnet ranges, granted by infra's `host.conf` `HOST_NETWORK`); the service user's egress table narrows it to the issuer |

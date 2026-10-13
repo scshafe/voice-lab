@@ -1,0 +1,162 @@
+{
+  "$defs": {
+    "CorpusChange": {
+      "discriminator": {
+        "mapping": {
+          "decision": "#/$defs/DecisionChange",
+          "trim": "#/$defs/TrimChange"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/DecisionChange"
+        },
+        {
+          "$ref": "#/$defs/TrimChange"
+        }
+      ]
+    },
+    "DecisionChange": {
+      "additionalProperties": false,
+      "description": "Set the take's decision, if its decision revision is still ``expected_revision``.\n\n``kept``, ``rejected`` (with a reason) and ``removed`` are the operator's actions; a\nrestore sets the decision the take had before (``kept``, or ``draft`` for a take never\nkept). ``removed`` is a state, never a deletion.",
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/TakeDecisionName"
+        },
+        "expected_revision": {
+          "minimum": 0,
+          "title": "Expected Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "decision",
+          "default": "decision",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_Reason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "decision",
+        "reason",
+        "expected_revision"
+      ],
+      "title": "DecisionChange",
+      "type": "object"
+    },
+    "RequestId": {
+      "pattern": "^req-[0-9a-f]{32}$",
+      "type": "string"
+    },
+    "TakeDecisionName": {
+      "enum": [
+        "draft",
+        "kept",
+        "rejected",
+        "removed"
+      ],
+      "type": "string"
+    },
+    "TakeId": {
+      "pattern": "^take-[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "TrimChange": {
+      "additionalProperties": false,
+      "description": "Keep the frames ``[start_frame, end_frame)`` of the take, or all of them (both\n``None``: a reset), if its trim revision is still ``expected_revision``.",
+      "properties": {
+        "end_frame": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 31680000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "End Frame"
+        },
+        "expected_revision": {
+          "minimum": 0,
+          "title": "Expected Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "trim",
+          "default": "trim",
+          "title": "Kind",
+          "type": "string"
+        },
+        "start_frame": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 31680000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Start Frame"
+        }
+      },
+      "required": [
+        "start_frame",
+        "end_frame",
+        "expected_revision"
+      ],
+      "title": "TrimChange",
+      "type": "object"
+    },
+    "_Reason": {
+      "maxLength": 500,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One change to one take, as the API queued it: ``incoming/.corpus-request-\u2026json``.\n\n``request_id`` is the client's own id for the change (``req-`` and 32 lower-case hex\ndigits), stable across its retries; ``received_at`` is when the API received it.",
+  "properties": {
+    "change": {
+      "$ref": "#/$defs/CorpusChange"
+    },
+    "received_at": {
+      "format": "date-time",
+      "title": "Received At",
+      "type": "string"
+    },
+    "request_id": {
+      "$ref": "#/$defs/RequestId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.corpus-request/v1",
+      "default": "cole-voice-lab.corpus-request/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "take_id": {
+      "$ref": "#/$defs/TakeId"
+    }
+  },
+  "required": [
+    "request_id",
+    "take_id",
+    "received_at",
+    "change"
+  ],
+  "title": "CorpusRequest",
+  "type": "object"
+}

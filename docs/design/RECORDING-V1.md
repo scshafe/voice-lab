@@ -67,8 +67,9 @@ the corpus on the PC, so the corpus needs no new host unit and no new mount. It 
   D-021 ledger and the standing home-host approval (class `capture`). The publisher tells a
   take package from a capture package by its manifest's schema;
 - **corpus requests**, for decisions and trims. The API writes each as a small JSON file and
-  renames it into `incoming/.corpus-request-<id>.json`, which fires the path unit. The
-  publisher applies the request in order, checks its revision, and records the outcome;
+  renames it into `incoming/.corpus-request-<received time>-<id>.json`, which fires the path
+  unit. The publisher applies the requests in that order, checks each one's revision, and
+  records the outcome;
 - **the read model** (`derived/corpus/`): the active catalog's reference, coverage, and each
   prompt's take history, which the API serves. The publisher rewrites it on every pass, and
   `voice-lab catalog publish|activate` rewrites it too.
@@ -111,8 +112,16 @@ every vault pass.
 - **`cole-voice-lab.corpus-take-state/v1`**: a take's current decision (with revision, reason
   and time) and its trim (`start_frame`, `end_frame`, revision).
 - **`cole-voice-lab.corpus-request/v1`**: a decision or trim request, with its expected
-  revision.
-- **API views:** `CatalogView`, `CorpusLibrary` (rows per prompt, plus coverage), `TakeHistory`.
+  revision: the client's `request_id` (`req-` and 32 hex digits, stable across retries), the
+  take, the API's `received_at`, and one change (a decision with its reason, or a trim's
+  `start_frame`/`end_frame`, both `null` to reset).
+- **`cole-voice-lab.corpus-request-outcome/v1`**: what the publisher did with a request
+  (`provenance/corpus-requests/<request_id>.json`): `applied` with the new revision, or
+  `refused` with a code (`revision_conflict`, `take_not_found`, `trim_out_of_bounds`,
+  `invalid_request`) and the take's current revision; the publisher's time.
+- **API views:** `CatalogView`, `CorpusLibrary` (rows per prompt, plus coverage), `TakeHistory`;
+  the bodies `TakeDecisionRequest` and `TakeTrimRequest`, and `CorpusRequestStatus` (`queued`,
+  `applied` or `refused`, with the outcome).
 
 The Swift app's take records (`RecordingTake`, Core Audio seals) are not reused. They are
 bound to Core Audio and the Swift helper. Mac takes reach the PC through an exporter (step 9)
@@ -248,3 +257,44 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   later source, such as the singing studio, is a third adapter in `configured_sources`, plus a
   playback location in the browser's seam (`browser.open_recording_audio`) if its audio is
   served.
+- 2026-10-12: step 4, decisions and trims. `POST /api/v1/corpus/takes/{id}/decision` and
+  `PUT /api/v1/corpus/takes/{id}/trim` (`api/corpus_request_routes.py`) check the take, a
+  trim's frames and the body read-only, never the revision, and queue a
+  `cole-voice-lab.corpus-request/v1` in `incoming/` under a name that sorts in arrival order;
+  `GET /api/v1/corpus/requests/{id}` serves its status. Each intake pass applies the queue in
+  order (`corpus_requests`): a change applies only at the revision its client expected, the
+  outcome (`provenance/corpus-requests/`, copied by the vault) is written before the take's
+  record so an interrupted pass is finished by the next, and the library follows in the same
+  pass. A request id answers a retry as before and refuses another change (409); a request
+  for a take still on its way (uploading, finalized but not yet recorded, or deferred) waits
+  for it, with the take's later requests; one publisher pass runs at a time (a lock); an
+  unsafe request file is set aside in `incoming/.refused/`. The queue holds at most 10,000
+  requests (503). A restore sends the decision the take had before (`kept` or `draft`): the
+  PC keeps no restore target.
+- 2026-10-12: step 5, the app's corpus client (`apps/desktop/src/voice_lab_desktop/corpus/`,
+  apps/desktop/docs/CORPUS-CLIENT.md). The PC's `CatalogView` is cached in
+  `<data dir>/corpus/catalog/` by snapshot digest, checked against its reference (the
+  snapshot it describes hashes to `snapshot_sha256`), refreshed with `If-None-Match`, and
+  pinned per session: a new active version on the PC is recorded for the next session, and
+  each take is bound to a prompt of the pinned version when it starts. With no cached
+  catalog and no PC nothing is recorded; with one, recording works offline. A take is saved
+  in `<data dir>/corpus/takes/<take_id>/` (the worker's WAV and evidence, its package built
+  once and kept, `take.json`, and `state.json` with the decision, trim, confirmed revisions
+  and the take's ordered outbox). Changes get a request id made once and a chained expected
+  revision. The sync engine runs off the GUI thread and sends each take's operations one at
+  a time: the upload (`upload_session`, class `capture`, the D-021 approval and ledger; a
+  deferred take keeps its changes queued), then each change, polled until applied. Any
+  refusal adopts the PC's state for the take, drops what is queued behind it and leaves a
+  notice. A `take_not_found` re-checks the upload once. Network failures leave the outbox
+  as it is. Nothing is sent until `corpus_sync = true` (off until S-1 passes, D-042's
+  reason), and takes of the simulated device stay local-only. The tests run an offline
+  session that syncs after a restart against the real API and publisher.
+  After review, only the PC's explicit take-level verdicts end a take's operations
+  (`refused_by_intake` or `session_conflict` for the upload; `revision_conflict`,
+  `trim_out_of_bounds`, `request_conflict` or `take_not_found` after its re-check for a
+  change). Everything else is transient: the queue is kept, the try backs off, and
+  `SyncStatus` says why. Version skew waits with a notice. The PC's state is adopted only
+  once its library is at least at the refusal's revision; until then the take waits for a
+  refresh, and the operator's changes are held and never treated as no-ops. Unsent changes
+  fold into one per kind. Interrupted saves are finished or reported at start. Pokes and
+  listeners run on the GUI thread.
