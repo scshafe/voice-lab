@@ -14,6 +14,10 @@ from typing import Any
 
 import pytest
 
+from cole_voice_lab.journey import index as journey_index
+from cole_voice_lab.journey import jsonio
+from cole_voice_lab.journey.corpus import list_corpus_entries, list_measurement_entries
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "journey-parity"
 PRIVATE_NAME = "20190101 120000-ABCDEF12.m4a"
@@ -150,6 +154,93 @@ def test_ignore_rules_are_counted_apart(tmp_path: Path) -> None:
     other = parity.compare_file("manifests/song-journeys.json", node, python, tolerance=0.0,
                                 allowed=None)  # fmt: skip
     assert other["differences"] == 1
+
+
+INDEX_LABEL = "manifests/recording-index.json"
+
+
+def _index_entry(node: Any, python: Any, tmp_path: Path, label: str = INDEX_LABEL) -> Any:
+    left = _write(tmp_path / "node-index.json", node)
+    right = _write(tmp_path / "python-index.json", python)
+    return parity.compare_file(label, left, right, tolerance=0.0, allowed=None)
+
+
+def test_the_index_source_rule_excuses_only_the_voice_memos_tag(tmp_path: Path) -> None:
+    """D-051: Voice Memos rows gain {type: voice-memos}; nothing else on the path is excused."""
+
+    measured = {"type": "measurement", "chainId": "umik1", "sessionId": "s", "segmentKey": None}
+    node = {
+        "recordings": [{"recordingId": "p", "file": {}}, {"recordingId": "m", "source": measured}]
+    }
+    tagged = {"type": "voice-memos"}
+    python = {
+        "recordings": [
+            {"recordingId": "p", "file": {}, "source": tagged},
+            {"recordingId": "m", "source": measured},
+        ]
+    }
+    entry = _index_entry(node, python, tmp_path)
+    assert (entry["differences"], entry["ignoredDifferences"]) == (0, 1)
+    excused = entry["ignoredByPath"]["$.recordings[*].source"]
+    assert excused["kinds"] == {"extraInPython": 1}
+    assert "D-051" in excused["reason"]
+    rule = next(rule for rule in parity.IGNORE_RULES if rule.file == INDEX_LABEL)
+    assert (rule.kind, rule.python_value) == ("extraInPython", tagged)
+
+    def unexpected(python_rows: list[Any], label: str = INDEX_LABEL) -> dict[str, Any]:
+        found = _index_entry(node, {"recordings": python_rows}, tmp_path, label)
+        assert found["differences"] == 1 and found["ignoredDifferences"] == 0
+        return dict(found["byPath"])
+
+    phone, measurement = python["recordings"]
+    other_tag = {**phone, "source": {"type": "voice-memos", "chainId": "iphone-voicememos"}}
+    assert unexpected([other_tag, measurement]) == {
+        "$.recordings[*].source": {"count": 1, "kinds": {"extraInPython": 1}}
+    }
+    changed = {**measurement, "source": {**measured, "type": "voice-memos"}}
+    assert unexpected([{"recordingId": "p", "file": {}}, changed]) == {
+        "$.recordings[*].source.type": {"count": 1, "kinds": {"value": 1}}
+    }
+    assert unexpected([{"recordingId": "p", "file": {}}, {"recordingId": "m"}]) == {
+        "$.recordings[*].source": {"count": 1, "kinds": {"missingInPython": 1}}
+    }
+    assert unexpected([phone, measurement], "manifests/full-corpus-filter-results.json") == {
+        "$.recordings[*].source": {"count": 1, "kinds": {"extraInPython": 1}}
+    }
+
+
+def test_the_index_through_the_source_port_has_parity_with_the_listers(tmp_path: Path) -> None:
+    """Offline stand-in for the Node side of the index stage: the index the listers built
+    before the port (the bytes phase 3 found identical to Node's) against the port's."""
+
+    phone = tmp_path / "phone"
+    phone.mkdir()
+    for name in ("20190301 090000-AAAA1111.m4a", "20200415 181500-BBBB2222.m4a", "memo.m4a"):
+        (phone / name).write_text(name)
+    session = tmp_path / "measurement" / "sessionA1"
+    session.mkdir(parents=True)
+    (session / "seg-1.wav").write_text("w")
+    started = "2024-01-01T00:00:00.000Z"
+    (session / "session.json").write_text(
+        json.dumps({"chainId": "umik1", "startedAt": started, "files": [{"name": "seg-1.wav"}]})
+    )
+    stamp = "2026-01-01T00:00:00.000Z"
+    roots = ["--corpus-root", str(phone), "--measurement-root", str(session.parent)]
+    python = tmp_path / "python" / "recording-index.json"
+    assert journey_index.main([*roots, "--out", str(python), "--generated-at", stamp]) == 0
+    before = journey_index.build_manifest(
+        [*list_corpus_entries(str(phone)), *list_measurement_entries(str(session.parent))],
+        {"generatedAt": stamp},
+    )
+    node = tmp_path / "node" / "recording-index.json"
+    node.parent.mkdir()
+    node.write_text(jsonio.stringify(before) + "\n", encoding="utf-8")
+    allowed = parity.schema_keys(sorted((REPO_ROOT / "src/cole_voice_lab/journey").glob("*.py")))
+    entry = parity.compare_file(INDEX_LABEL, node, python, tolerance=0.0, allowed=allowed)
+    assert entry["byteIdentical"] is False
+    assert (entry["differences"], entry["ignoredDifferences"]) == (0, 3)
+    assert entry["byPath"] == {}
+    assert list(entry["ignoredByPath"]) == ["$.recordings[*].source"]
 
 
 def test_byte_differences_without_structural_ones(tmp_path: Path) -> None:

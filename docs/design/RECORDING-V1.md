@@ -40,7 +40,8 @@ do. Progress is logged at the end, as each step lands.
 4. **Singing recordings, source-neutral.**
    - The journey index gets a source port: Voice Memos (phone) is its first adapter, and the
      UMIK-1 measurement sessions are its second, as they already are in practice.
-   - Every row says its `source`, in the index and in `/api/v1/recordings`, so a later
+   - Every row says its source, in the index (`source`, whose `type` is `voice-memos` or
+     `measurement`) and in `/api/v1/recordings` (`sourceType`, also a filter), so a later
      source (the singing studio) plugs in without reworking the pipeline.
 5. **The Swift app retired:**
    - the Mac library's existing takes exported to the PC first;
@@ -232,6 +233,30 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   take's whole catalog reference against the version its store published, and defers (never
   refuses) a take whose version is not on the PC yet or whose snapshot it cannot read; a
   named pipe in `incoming/` no longer blocks a pass; the worker's device must be a UMIK-1.
+- 2026-10-12: step 7, singing held source-neutral. `journey/sources.py` is the index's source
+  port: a `RecordingSource` has a stable `type` and lists metadata-only entries, each tagged
+  with that `source.type`. Its adapters are `VoiceMemosSource` (`voice-memos`: the phone
+  drop's listing, unchanged) and `MeasurementSource` (`measurement`: unchanged), and
+  `configured_sources` is the one list that both the index and the watcher's scan use. Each
+  type appears once, every entry carries its own source's type, and no recording id is listed
+  by two sources. Every index row now says its `source`: phone rows gain
+  `{"type": "voice-memos"}` and nothing more, because Voice Memos syncs memos from the phone
+  and from Macs, so the drop cannot name a chain, and memos have no sessions. Measurement rows
+  are unchanged. The schema stays `voice-journey.recording-index.v1`: `source` was already a
+  v1 row field, and it is only added where it was absent; a version change would also have
+  rippled into every manifest that records the index's version. Browser rows, and so
+  `/api/v1/recordings` and `/api/v1/recordings/{id}`, carry `sourceType` (also under
+  `fields=list`), and `?sourceType=` filters on it. A row from an index written before
+  the port reads as `voice-memos`, so the deployed index needs no rebuild. Filtering, STT,
+  lyrics, features and journeys are unchanged: they branch on `source.type == "measurement"`,
+  and a `voice-memos` row takes the path an untagged phone row took (tested stage by stage).
+  Parity with the pinned Node pipeline stays a check, with the harness's named rules for
+  intended differences. A seventh rule (deliberate, D-051) covers exactly the
+  `{"type": "voice-memos"}` that the port adds to Voice Memos index rows: kind
+  `extraInPython`, that value only. Every other byte of every manifest is still compared. A
+  later source, such as the singing studio, is a third adapter in `configured_sources`, plus a
+  playback location in the browser's seam (`browser.open_recording_audio`) if its audio is
+  served.
 - 2026-10-12: step 4, decisions and trims. `POST /api/v1/corpus/takes/{id}/decision` and
   `PUT /api/v1/corpus/takes/{id}/trim` (`api/corpus_request_routes.py`) check the take, a
   trim's frames and the body read-only, never the revision, and queue a
@@ -241,7 +266,8 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   outcome (`provenance/corpus-requests/`, copied by the vault) is written before the take's
   record so an interrupted pass is finished by the next, and the library follows in the same
   pass. A request id answers a retry as before and refuses another change (409); a request
-  for a take still uploading or deferred waits for it, with the take's later requests; an
+  for a take still on its way (uploading, finalized but not yet recorded, or deferred) waits
+  for it, with the take's later requests; one publisher pass runs at a time (a lock); an
   unsafe request file is set aside in `incoming/.refused/`. The queue holds at most 10,000
   requests (503). A restore sends the decision the take had before (`kept` or `draft`): the
   PC keeps no restore target.

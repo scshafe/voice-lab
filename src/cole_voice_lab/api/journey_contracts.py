@@ -64,8 +64,10 @@ class RowTotals(ContractModel):
 class JourneyRecordings(ContractModel):
     """``GET /api/v1/recordings``: one page of rows (always paged: ``limit`` defaults to
     100, at most 500). Query: ``bucket``, ``year``, ``spotCheckStatus``,
-    ``transcriptStatus``, ``lyricMatchStatus``, ``reviewQueue=selected``, ``q``,
-    ``sort``, ``direction``, ``limit``, ``offset``, ``fields=list``."""
+    ``transcriptStatus``, ``lyricMatchStatus``, ``sourceType``, ``reviewQueue=selected``,
+    ``q``, ``sort``, ``direction``, ``limit``, ``offset``, ``fields=list``. Every row says
+    its ``sourceType`` (``voice-memos``, ``measurement``; D-051), also under
+    ``fields=list``."""
 
     schema_version: Literal["cole-voice-lab.api.journey-recordings/v1"] = (
         "cole-voice-lab.api.journey-recordings/v1"
