@@ -175,6 +175,30 @@ def test_its_pins_and_paths_are_the_repositorys() -> None:
     assert f"--asset-root {pinned('LAB').split(':-')[1].rstrip('}')}" in unit
 
 
+LIST_EMPTY = "no catalogs\nprompts: 0 live · 0 retired\ncole-self has no active catalog\n"
+
+
+def test_an_empty_store_is_seeded_like_a_missing_one(bench: Bench) -> None:
+    # What a `catalog init` that did not finish leaves: init accepts it, so the script goes on
+    # to the downloads (here refused at the pin check, before anything is written).
+    bench.store(LIST_EMPTY)
+    result = bench.run()
+    assert "the corpus store is empty: seeding it" in result.stdout
+    assert result.returncode == 1 and "nothing was written" in result.stderr
+    assert "finish by hand" not in result.stderr
+    assert [call for call in bench.calls() if not call.startswith("curl ")] == [LIST]
+    assert len([call for call in bench.calls() if call.startswith("curl ")]) == 2
+
+
+def test_a_store_with_only_retired_prompts_is_left_for_a_person(bench: Bench) -> None:
+    bench.store("no catalogs\nprompts: 0 live · 3 retired\ncole-self has no active catalog\n")
+    result = bench.run()
+    assert result.returncode == 1 and "finish by hand" in result.stderr
+    assert "0 live · 3 retired" in result.stderr  # it says what the store holds
+    assert "empty" not in result.stdout
+    assert bench.calls() == [LIST]  # nothing downloaded either
+
+
 def test_a_list_that_is_not_the_pinned_one_stops_before_anything_is_written(bench: Bench) -> None:
     bench.store(LIST_MISSING, status=1)
     result = bench.run()

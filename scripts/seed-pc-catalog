@@ -53,6 +53,13 @@ else
     *) fail "the corpus store cannot be read: $status" ;;
   esac
 fi
+# An empty store (no catalog, no prompt, not even a retired one) is what a `catalog init` that did
+# not finish leaves behind; init seeds it as it seeds a missing one.
+if [ "$store" = present ] && printf '%s\n' "$status" | grep -qx 'no catalogs' &&
+  printf '%s\n' "$status" | grep -q '^prompts: 0 live .* 0 retired$'; then
+  say "the corpus store is empty: seeding it"
+  store=missing
+fi
 work=$(mktemp -d)
 shared=""
 cleanup() {
@@ -95,6 +102,11 @@ live=0
 if [ "$store" = present ]; then
   live=$(printf '%s\n' "$status" | sed -n 's/^prompts: \([0-9][0-9]*\) live.*/\1/p')
   [ -n "$live" ] || fail "unexpected 'catalog list' output: $status"
+  # Only the states a seed passes through are continued, and before anything is downloaded.
+  case "$live" in
+    34 | 754 | 1886) ;;
+    *) fail "the store holds $live live prompts, not 34, 754 or 1886: finish by hand (docs/CORPUS_STORE.md). It holds: $status" ;;
+  esac
 fi
 
 if [ "$live" -lt 1886 ]; then
