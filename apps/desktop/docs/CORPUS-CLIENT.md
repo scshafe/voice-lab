@@ -17,9 +17,11 @@ the PC's catalog, because it records against it. Takes recorded from the simulat
 device are never sent: the PC refuses that audio. They stay here as *local-only*.
 
 Uploads need the same standing home-host approval as every other upload (D-021), bound in
-this machine's library and covering the class `capture` (FIRST-RUN.md §4). Each upload is
-recorded in that library's ledger. Decisions and trims carry no audio, so they need no
-transfer approval.
+this machine's library and covering the class `capture`: **Approve uploads to my PC**
+(FIRST-RUN.md §4), which the studio's status line offers when a pass could not start an
+upload for that reason (`PassResult.upload_needs_approval`, then
+`SyncStatus.upload_needs_approval`). Each upload is recorded in that library's ledger.
+Decisions and trims carry no audio, so they need no transfer approval.
 
 ## On disk
 

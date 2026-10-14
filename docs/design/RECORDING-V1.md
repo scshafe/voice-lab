@@ -201,12 +201,37 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
    `GET /api/v1/catalog` serves (version 2, 1,886 prompts). It says so when the deployed build
    predates that route.
 2. **S-1 on the Mac** (step 8), with the UMIK-1: `scripts/s1-portaudio`, or ask the Mac agent.
+   Once it has passed on a machine (macOS passed on the Air, D-040), **turn on voice-lab.app's
+   uploads there**: `corpus_sync = true` in its `config.toml` (studio takes, decisions and
+   trims; `prompted_uploads = true` too for the session flow), then press **Approve uploads to
+   my PC** in the app (Status, Uploads, or **Approve** on the studio's *Uploads need your OK*
+   line, which a sync pass shows once `corpus_sync` is on and no approval stands).
+
+   voice-lab.app's uploads (`corpus_sync`, `prompted_uploads`, and measurement sessions) need
+   the standing home-host approval (D-021) in **the app's own library**, where its ledger
+   lives: `~/Library/Application Support/voice-lab-desktop/library` on macOS,
+   `~/.local/share/voice-lab-desktop/library` on Linux. The button makes it there. It takes
+   the endpoint from the app's server and the node from Tailscale (the peer named that
+   endpoint, which must carry `tag:voice-lab`), covers `capture` and `measurement` for 365
+   days, and binds it once you press Approve in its dialog
+   ([FIRST-RUN.md](../../apps/desktop/docs/FIRST-RUN.md) §4). Headless, the same record:
+   `voice-lab home-host approve --asset-root <that library> …` (preview, then approve with the
+   printed digest). An approval in the Swift app's library does not count for these uploads.
+   The app never reads that library, and an approval belongs with its ledger. Without one,
+   a take waits in the outbox and the studio says *Uploads need your OK*. A PC with a new
+   Tailscale node (a reinstall) is not flagged that way, since only Tailscale knows: uploads
+   fail their identity check, and **Approve uploads to my PC** on Status replaces the
+   approval.
 3. **The Mac's takes to the PC** (step 9, D-053), once step 9 is deployed and the PC's catalog
    is seeded (step 1). On the Mac, as you, from a checkout of `main` with its `.venv`
    (`voice-lab` is `.venv/bin/voice-lab`), with the Swift app's library as the asset root.
    Quit the Swift app first: a plan stops if the app commits a change while it reads (run it
    again). If it says the recording projection awaits a metadata commit, open the Swift app
    once and quit it (it finishes its last commit), then plan again.
+
+   This import is the only thing that needs the standing approval in the Swift app's library.
+   voice-lab.app's own uploads use the app's library and its button (step 2); this one is
+   made with the CLI, in the Swift app's library, where this import's ledger entries go.
 
    ```sh
    ASSET_ROOT=~/.local/share/cole-voice-lab          # the Swift app's library
@@ -481,3 +506,14 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   D-040. The slower `stop_to_sealed_review` (p95 340 ms against 300 ms) is a performance
   follow-up, not part of the verdict. Uploads from voice-lab-desktop on that Mac may now be
   turned on (`corpus_sync`). The Linux run is still to do.
+- 2026-10-14: **Approve uploads to my PC** in voice-lab.app. On the Air, the first corpus take
+  sat *queued* with no attempt, because no approval stood in the app's own library and the
+  studio did not say why. Now one button makes the D-021 approval in that library
+  (`apps/desktop/src/voice_lab_desktop/approval.py`). It derives every field from the settings
+  and Tailscale, and refuses, writing nothing, without Tailscale, the peer or
+  `tag:voice-lab`. It shows one dialog whose Approve is the review, never writes a second
+  approval for the same PC and node, and renews an expired, moved or narrower one, or one in
+  its last 30 days, under a new id. It then syncs at once. The studio's line says *Uploads
+  need your OK* with **Approve**, and gains **Sync now** while operations wait. Status and
+  Uploads offer the button too. The approval in the Swift app's library is for `corpus-import` only (owner steps 2 and
+  3).

@@ -217,6 +217,14 @@ The vault copies the outcomes (`corpus-request-outcomes`, records) with the take
 
 ## The capturing host
 
+voice-lab.app (`apps/desktop`) does steps 1 and 2 in its window: **Approve uploads to my PC**
+derives the approval from its settings and Tailscale and writes it into the app's own library,
+where its ledger lives (apps/desktop/docs/FIRST-RUN.md §4), and **Sign in** keeps the token in
+the keychain. Its uploads (measurement and prompted sessions, studio takes with
+`corpus_sync`) need that approval, in that library. The commands below are the headless way,
+and the way for a library the app does not use (the Swift app's, for `voice-lab
+corpus-import` only: design/RECORDING-V1.md §7).
+
 1. **Approve the home host once** (D-021). Preview, review the printed record and digest,
    then approve with that digest. The node's stable ID comes from
    `tailscale status --json` (the peer whose `DNSName` is the endpoint), never from a

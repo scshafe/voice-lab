@@ -487,4 +487,5 @@ class CorpusClient:
             record_blocked="" if pinned is not None else NO_CATALOG,
             notices=self.spool.notices(),
             ready=self.spool.listed,
+            upload_needs_approval=last.upload_needs_approval if last is not None else False,
         )

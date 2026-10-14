@@ -34,6 +34,7 @@ EXPOSED = (
     "practice",
     "referee",
     "player",
+    "approval",
 )
 
 

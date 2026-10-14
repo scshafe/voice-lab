@@ -2,7 +2,8 @@
 // models (app.py): `app` (account, settings, navigation) and one model per screen
 // (`status`, `uploads`, `measurement`, `corpus`, `journey`, `practice`, `referee`, `player`;
 // Record: prompts is the prompt studio, whose model is `app.studioModel`, or with
-// `prompts_mode = "sessions"` phase 4c's screen over `app.promptsModel`).
+// `prompts_mode = "sessions"` phase 4c's screen over `app.promptsModel`), and `approval`:
+// Approve uploads to my PC, whose one dialog lives here (Status, Uploads and the studio open it).
 // This file lays out scshafe-qt's shell around them.
 import QtQuick
 import QtQuick.Layouts
@@ -92,6 +93,74 @@ Window {
             PracticeScreen {}
             RefereeScreen {}
         }
+    }
+
+    // Approve uploads to my PC (D-021): what Approve writes, from Tailscale and the settings;
+    // or, when it cannot be approved, why. Pressing Approve is the review.
+    Connections {
+        target: approval
+        function onDialogChanged() {
+            if (approval.dialogOpen && !approveDialog.visible)
+                approveDialog.open()
+            else if (!approval.dialogOpen && approveDialog.visible)
+                approveDialog.close()
+        }
+    }
+    SuiDialog {
+        id: approveDialog
+        objectName: "approveDialog"
+        title: approval.dialogTitle
+        description: approval.dialogText
+        onRejected: if (approval.dialogOpen) approval.cancel()
+        ColumnLayout {
+            spacing: SuiTheme.spaceSm
+            GridLayout {
+                objectName: "approveFields"
+                visible: approval.canApprove
+                Layout.fillWidth: true
+                columns: 2
+                columnSpacing: SuiTheme.spaceLg
+                rowSpacing: SuiTheme.spaceXs
+                SuiText { text: "PC"; variant: "label" }
+                SuiText { objectName: "approveEndpoint"; text: approval.endpoint; variant: "mono" }
+                SuiText { text: "Tailscale node"; variant: "label" }
+                SuiText { objectName: "approveNode"; text: approval.nodeId; variant: "mono" }
+                SuiText { text: "What"; variant: "label" }
+                SuiText {
+                    objectName: "approveClasses"
+                    Layout.fillWidth: true
+                    text: approval.classesText
+                    wrapMode: Text.Wrap
+                }
+                SuiText { text: "Until"; variant: "label" }
+                SuiText { objectName: "approveExpires"; text: approval.expiresText }
+                SuiText { text: "Approved by"; variant: "label" }
+                SuiText { objectName: "approveBy"; text: approval.approvedBy }
+            }
+            SuiText {
+                objectName: "approveReason"
+                Layout.fillWidth: true
+                visible: approval.canApprove && approval.reasonText !== ""
+                text: approval.reasonText
+                variant: "caption"
+                wrapMode: Text.Wrap
+            }
+        }
+        actions: [
+            SuiButton {
+                objectName: "approveCancel"
+                text: approval.canApprove ? "Cancel" : "Close"
+                onClicked: approval.cancel()
+            },
+            SuiButton {
+                objectName: "approveConfirm"
+                visible: approval.canApprove
+                enabled: !approval.busy
+                text: "Approve"
+                variant: "primary"
+                onClicked: approval.confirm()
+            }
+        ]
     }
 
     SuiToastHost {

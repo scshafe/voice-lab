@@ -177,6 +177,9 @@ class PassResult:
     error: str = ""
     #: Why no upload could start (no standing approval, another server, ...).
     upload_blocked: str = ""
+    #: What blocks them is the home-host approval (none stands for this server covering
+    #: ``capture``): Approve uploads to my PC mends it (``approval.py``).
+    upload_needs_approval: bool = False
     catalog_changed: bool = False
     uploaded: int = 0
     applied: int = 0
@@ -295,6 +298,7 @@ class SyncEngine:
             uploads = _Uploads(uploader, library, approval)
         except (home_host.HomeHostNotReady, ConfigError, *TRANSIENT) as exc:
             result.upload_blocked = _message(exc)
+            result.upload_needs_approval = isinstance(exc, home_host.HomeHostNotReady)
         try:
             for take in self.spool.takes():
                 if not take.sync.outbox and take.sync.refresh is None:
