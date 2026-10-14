@@ -130,7 +130,8 @@ def test_import_capture_data_copies_and_never_overwrites(
     from voice_lab_desktop.measurement.simulated import UMIK
     from voice_lab_desktop.measurement.store import SessionStore
 
-    old = tmp_path / "home" / ".local" / "share" / "voice-journey-capture"
+    old = cli.capture_client_data_dir()  # the platform's place, under the test's HOME
+    assert old.is_relative_to(tmp_path)
     old_state, old_sessions = StateStore(old), SessionStore(old)
     old_state.set_pin(levels.read(UMIK), UMIK.name)
     recorded = record_session(backend, levels, old_state, old_sessions, skip_free=True)

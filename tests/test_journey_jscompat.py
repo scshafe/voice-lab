@@ -20,6 +20,17 @@ from cole_voice_lab.journey import jscompat as js
 from cole_voice_lab.journey import jsonio
 
 NODE = shutil.which("node")
+# The rules were checked against Node 24 (jscompat's docstring); Node 26's Math.log10 is not
+# fdlibm's, so it differs from the port (and from Node 24) in the last bit for some arguments.
+NODE_MAJOR = (
+    int(
+        subprocess.run(
+            [NODE, "-p", "process.versions.node"], capture_output=True, text=True, check=True
+        ).stdout.split(".")[0]
+    )
+    if NODE is not None
+    else None
+)
 node_missing = NODE is None
 
 DATES = [
@@ -325,6 +336,9 @@ def _node_input(script: str, payload: Any) -> Any:
 
 
 @pytest.mark.skipif(node_missing, reason="node is not installed")
+@pytest.mark.skipif(
+    NODE_MAJOR is not None and NODE_MAJOR > 24, reason="Math.log10 is fdlibm's only up to Node 24"
+)
 def test_log10_matches_node_on_frame_rms_values() -> None:
     rng = random.Random(7)
     values = [math.sqrt(rng.randrange(1, 2**40) / 2**30 / 1024) for _ in range(20000)]
