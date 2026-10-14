@@ -1,5 +1,6 @@
 // Sign-in and status (design §6.1; checklist S-01 to S-05, A-02): the account, the
-// settings, the server and its gates, the job runner, the spool, the evidence report.
+// settings, the server and its gates, the job runner, the upload approval (D-021: Approve
+// uploads to my PC, the app's `approval`), the spool, the evidence report.
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
@@ -105,6 +106,28 @@ ScreenPage {
                 variant: "secondary"
                 enabled: app.signedIn && status.state !== "loading"
                 onClicked: status.refresh()
+            }
+        }
+    }
+
+    Card {
+        heading: "Uploads to the PC"
+        subheading: "Recordings go only to the PC you approve, for a year at most (D-021). The app looks the PC up in Tailscale; pressing Approve in its dialog is your review."
+        RowLayout {
+            spacing: SuiTheme.spaceSm
+            SuiText {
+                objectName: "approvalSummary"
+                Layout.fillWidth: true
+                text: approval.summary
+                tone: approval.needed ? "warn" : "default"
+                wrapMode: Text.Wrap
+            }
+            SuiButton {
+                objectName: "statusApprove"
+                text: "Approve uploads to my PC"
+                variant: approval.needed || approval.expiringSoon ? "primary" : "secondary"
+                enabled: !approval.busy && app.server !== ""
+                onClicked: approval.begin()
             }
         }
     }

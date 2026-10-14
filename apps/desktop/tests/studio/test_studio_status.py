@@ -103,6 +103,17 @@ def test_the_sync_line_for_each_state() -> None:
     assert status.sync_line(given(sign_in_required=True)) == Line(
         "Sign in on the Status screen to sync with the PC", "warn"
     )
+    # Uploads wait for the home-host approval: said plainly, queued or not, with Approve.
+    unbound = given(upload_needs_approval=True, upload_blocked=blocked)
+    assert status.sync_line(unbound) == Line(
+        "Uploads need your OK · 6 sent", "warn", f"Uploads need your OK: {blocked}", "approve"
+    )
+    assert status.sync_line(dataclasses.replace(unbound, queued=2)).text == (
+        "Uploads need your OK · 2 queued · 6 sent"
+    )
+    # Held until S-1, or offline, comes first: nothing would be sent anyway.
+    assert status.sync_line(dataclasses.replace(unbound, enabled=False)).action == ""
+    assert status.sync_line(dataclasses.replace(unbound, offline=True)).action == ""
     # Held until S-1: said plainly, with what stays here, whatever else is true.
     held = given(enabled=False, held=HELD_FOR_S1, queued=4, offline=True)
     assert status.sync_line(held) == Line(
@@ -199,6 +210,12 @@ def test_the_window_shows_the_clients_status(qtbot: Any, studio_window: Window) 
         given(
             notices=(notice("change-blocked", "The PC cannot read this change (invalid_request)."),)
         ),
+        given(queued=2, upload_needs_approval=True, upload_blocked="no approval is bound"),
+        given(
+            upload_needs_approval=True,
+            upload_blocked="no approval is bound",
+            notices=(notice("changed-elsewhere", "Changed elsewhere: the PC's state."),),
+        ),
     ]
     for value in states:
         client.status = lambda value=value, **_: value  # type: ignore[method-assign]
@@ -213,3 +230,9 @@ def test_the_window_shows_the_clients_status(qtbot: Any, studio_window: Window) 
         qtbot.waitUntil(lambda e=expected: sync.property("text") == e.text, timeout=5000)
         details = studio_window.find("studioDetails")
         assert details.property("visible") == bool(expected.detail)
+        # Approve beside the line only while it says uploads need your OK (a notice in its
+        # place offers none).
+        assert studio.syncAction == expected.action
+        approve = studio_window.find("studioApprove")
+        assert approve.property("visible") == (expected.action == "approve")
+        assert studio_window.find("studioSyncNow").property("visible")

@@ -449,6 +449,7 @@ def main_window_properties(model: Any) -> dict[str, Any]:
         "practice": model.practice,
         "referee": model.referee,
         "player": model.player,
+        "approval": model.approval,
     }
 
 

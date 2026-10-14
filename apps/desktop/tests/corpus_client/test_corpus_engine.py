@@ -151,8 +151,24 @@ def test_an_upload_that_cannot_start_leaves_the_take_queued(pc: PC, data_dir: Pa
     assert result.reached and result.waiting == 1 and result.uploaded == 0
     assert "no home-host approval is bound on this machine yet" in result.upload_blocked
     assert corpus.status().upload_blocked == result.upload_blocked
+    # What blocks it is the approval: the studio offers Approve (approval.py).
+    assert result.upload_needs_approval and corpus.status().upload_needs_approval
     (op,) = corpus.spool.take(take.take_id).sync.outbox
     assert isinstance(op, UploadOp) and op.attempts == 0
+    assert pc.raw_packages() == []
+
+
+def test_a_library_that_is_not_private_blocks_uploads_without_asking_approval(
+    pc: PC, data_dir: Path
+) -> None:
+    library = bind_library(data_dir)
+    library.root.chmod(0o755)  # not private: no approval can mend it
+    corpus = client(data_dir, pc)
+    corpus.run_pass()
+    record(corpus, pc.catalog[1].suite.prompts[0].prompt_id, seed=44)
+    result = corpus.run_pass()
+    assert result.upload_blocked.startswith("asset root must not be group/world accessible")
+    assert not result.upload_needs_approval and not corpus.status().upload_needs_approval
     assert pc.raw_packages() == []
 
 

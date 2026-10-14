@@ -27,7 +27,7 @@ Item {
     readonly property bool menuOpen: libraryPane.menuOpen || detailsPopup.visible
                                      || takePicker.menuOpen || trimConfirm.visible
                                      || restoreAsk.visible
-                                     || sizeSelect.popup.visible
+                                     || sizeSelect.popup.visible || approval.dialogOpen
     // Typing in a field (the search, a dialog's) keeps the keys for the field.
     readonly property bool typing: {
         const item = studio.Window.activeFocusItem
@@ -677,6 +677,9 @@ Item {
 
         // -- the status line: the take on the left, the sync (or a notice) on the right ----------
         // Each half wraps to two lines, so the cause of a failure or a refusal stays in view.
+        // Beside the sync: Approve while uploads wait for the home-host approval (the app's
+        // `approval` model opens its dialog), Details when the line leaves something out, and
+        // Sync now (a pass now).
         Item {
             objectName: "studioStatus"
             x: studio.inset
@@ -699,11 +702,11 @@ Item {
             }
             SuiText {
                 objectName: "studioSyncText"
-                anchors.right: details.visible ? details.left : parent.right
-                anchors.rightMargin: details.visible ? SuiTheme.spaceXs : 0
+                anchors.right: syncActions.left
+                anchors.rightMargin: SuiTheme.spaceXs
                 anchors.top: parent.top
                 width: Math.floor(parent.width * 0.55) - SuiTheme.spaceSm
-                    - (details.visible ? details.width + SuiTheme.spaceXs : 0)
+                    - syncActions.width - SuiTheme.spaceXs
                 height: parent.height
                 horizontalAlignment: Text.AlignRight
                 verticalAlignment: Text.AlignVCenter
@@ -714,15 +717,34 @@ Item {
                 maximumLineCount: 2
                 elide: Text.ElideRight
             }
-            SuiButton {
-                id: details
-                objectName: "studioDetails"
+            Row {
+                id: syncActions
+                objectName: "studioSyncActions"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Details"
-                variant: "ghost"
-                visible: studio.rec.syncDetail !== ""
-                onClicked: detailsPopup.open()
+                spacing: SuiTheme.spaceXs
+                SuiButton {
+                    objectName: "studioApprove"
+                    text: "Approve"
+                    variant: "primary"
+                    visible: studio.rec.syncAction === "approve"
+                    enabled: !approval.busy
+                    onClicked: approval.begin()
+                }
+                SuiButton {
+                    id: details
+                    objectName: "studioDetails"
+                    text: "Details"
+                    variant: "ghost"
+                    visible: studio.rec.syncDetail !== ""
+                    onClicked: detailsPopup.open()
+                }
+                SuiButton {
+                    objectName: "studioSyncNow"
+                    text: "Sync now"
+                    variant: "ghost"
+                    onClicked: studio.rec.syncNow()
+                }
             }
             // The sync half's whole message (and, for a notice, Dismiss).
             T.Popup {

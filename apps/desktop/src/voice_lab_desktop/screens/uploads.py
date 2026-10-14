@@ -169,7 +169,7 @@ class UploadsModel(ViewModel):
         if self._classes is not None and "capture" not in self._classes:
             return (
                 "The home-host approval does not cover prompted sessions (capture packages); "
-                "approve the home host again with the class capture."
+                "press Approve uploads to my PC."
             )
         return ""
 

@@ -13,8 +13,9 @@ and waits for the intake receipt whose manifest digest must be the package's. Th
 stays here until then (``store.py``); the receipt's digests go into its ``upload.json``.
 
 The library is this machine's private asset root for the approval and its ledger:
-``<data dir>/library`` by default. The owner approves and binds the home host there once
-(``voice-lab home-host approve --asset-root <library> …``; FIRST-RUN.md).
+``<data dir>/library`` by default. The owner approves and binds the home host there once:
+with **Approve uploads to my PC** in the app (``approval.py``), or headless with
+``voice-lab home-host approve --asset-root <library> …`` (FIRST-RUN.md §4).
 """
 
 from __future__ import annotations
@@ -100,8 +101,9 @@ def standing_approval(layout: AssetLayout, server_url: str, *, now: datetime) ->
         approval, _digest = load_approval(layout, now=now)
     except ContractError as exc:
         raise HomeHostNotReady(
-            "no home-host approval is bound on this machine yet; approve the home host once "
-            f"(voice-lab home-host approve --asset-root {layout.root} …; FIRST-RUN.md)"
+            "no home-host approval is bound on this machine yet; press Approve uploads to my "
+            "PC (Uploads or Status), or approve the home host once with voice-lab home-host "
+            f"approve --asset-root {layout.root} … (FIRST-RUN.md §4)"
         ) from exc
     except SecurityError as exc:
         raise HomeHostNotReady(str(exc)) from exc
@@ -118,8 +120,8 @@ def require_class(approval: HomeHostApproval, package_class: HomeHostClass) -> N
     if package_class not in approval.classes:
         raise HomeHostNotReady(
             f"the home-host approval {approval.approval_id} does not cover "
-            f"{CLASS_NOUNS.get(package_class, package_class)}; approve the home host again "
-            f"with the class {package_class}"
+            f"{CLASS_NOUNS.get(package_class, package_class)}; press Approve uploads to my PC, "
+            f"or approve the home host again with the class {package_class}"
         )
 
 

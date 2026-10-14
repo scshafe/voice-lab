@@ -8,6 +8,8 @@ One line, always there (it never moves the layout). Its sync half says, in order
 - sending held until spike S-1 passes (``corpus_sync`` off): a plain statement, not an error
   (with "Offline" before it when the PC did not answer either);
 - offline, with what is queued and when the PC last answered;
+- uploads waiting for the home-host approval (none stands for this server, D-021): "Uploads
+  need your OK", with the Approve action beside it (``Line.action``);
 - the takes waiting for the PC's state after a refusal (``refreshing``);
 - otherwise what is queued and what was sent.
 
@@ -32,6 +34,9 @@ from ..corpus.status import SyncStatus
 type Tone = Literal["neutral", "info", "ok", "warn", "danger"]
 
 HELD: Final = "Uploads off until S-1 passes (corpus_sync)"
+NEEDS_APPROVAL: Final = "Uploads need your OK"
+#: The action a line offers beside it: Approve uploads to my PC (``approval.py``).
+APPROVE: Final = "approve"
 NOTICE_TONES: Final[dict[str, Tone]] = {
     "changed-elsewhere": "warn",
     "change-blocked": "warn",
@@ -54,12 +59,14 @@ _CODE: Final = re.compile(r"\(([a-z_]+)\)")
 
 @dataclass(frozen=True)
 class Line:
-    """A short line (``text``, at most two lines on the smallest window) and, when it leaves
-    something out, the whole message (``detail``)."""
+    """A short line (``text``, at most two lines on the smallest window), when it leaves
+    something out the whole message (``detail``), and the action it offers beside it
+    (``action``: ``APPROVE``, or ``""``)."""
 
     text: str
     tone: Tone = "neutral"
     detail: str = ""
+    action: str = ""
 
 
 def _count(count: int, one: str, many: str | None = None) -> str:
@@ -94,6 +101,9 @@ def sync_line(status: SyncStatus) -> Line:
         if status.last_sync_at is not None:
             parts.append(f"last synced {_clock(status.last_sync_at)}")
         return Line(" · ".join(parts), "neutral")
+    if status.upload_needs_approval:
+        detail = f"{NEEDS_APPROVAL}: {status.upload_blocked}"
+        return Line(" · ".join([NEEDS_APPROVAL, *counts]), "warn", detail, APPROVE)
     if status.refreshing:
         parts = [_count(status.refreshing, "take") + " waiting for the PC's state", *counts]
         return Line(" · ".join(parts), "info")

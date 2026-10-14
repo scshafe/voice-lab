@@ -7,7 +7,9 @@ machine's takes (``studio/library.py``), coverage (``n / 1,886``), Continue Miss
 next prompt with no kept take, in catalog order, whatever the filters), search, Show and
 Labels. The header carries the prompt's label chips, the script card its PROMPT · READ
 ALOUD or its INSTRUCTIONS, and the footer the Record/Stop control; the status line says what
-the take and the sync are doing (``studio/status.py``).
+the take and the sync are doing (``studio/status.py``), with Sync now (``syncNow``: a pass
+now) and, while uploads wait for the home-host approval, Approve (the app's ``approval``
+model, ``screens/approval.py``; ``syncAction``).
 
 A take: Record binds it to the selected prompt of the pinned version
 (``CorpusClient.begin_take``) and starts the capture worker (D-039) in its directory; Stop
@@ -155,6 +157,7 @@ class StudioModel(ViewModel):
     syncText = qproperty(str, "syncText", statusChanged)
     syncTone = qproperty(str, "syncTone", statusChanged)
     syncDetail = qproperty(str, "syncDetail", statusChanged)
+    syncAction = qproperty(str, "syncAction", statusChanged)
     problemText = qproperty(str, "problemText", statusChanged)
     noticeId = qproperty(str, "noticeId", statusChanged)
     # -- the reading size (kept per viewer)
@@ -232,6 +235,7 @@ class StudioModel(ViewModel):
                 "syncText": "",
                 "syncTone": "neutral",
                 "syncDetail": "",
+                "syncAction": "",
                 "problemText": "",
                 "noticeId": "",
                 "deviceOk": False,
@@ -1080,6 +1084,7 @@ class StudioModel(ViewModel):
 
     @Slot()
     def syncNow(self) -> None:  # noqa: N802
+        """Sync now: a pass now, operations in a backoff included."""
         self.client.sync_now()
 
     def _transport_line(self, sync: SyncStatus) -> status.Line:
@@ -1126,6 +1131,7 @@ class StudioModel(ViewModel):
             syncText=line.text,
             syncTone=line.tone,
             syncDetail=line.detail,
+            syncAction=line.action,
             problemText=transport.detail,
             noticeId=sync.notices[-1].notice_id if sync.notices else "",
         )

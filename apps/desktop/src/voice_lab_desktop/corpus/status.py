@@ -67,3 +67,6 @@ class SyncStatus:
     #: This machine's takes are listed (``False`` while the first listing and its recovery
     #: run: the counts above are then partial).
     ready: bool = True
+    #: What blocks uploads is the home-host approval: none stands for this server covering
+    #: ``capture`` (the studio offers Approve).
+    upload_needs_approval: bool = False

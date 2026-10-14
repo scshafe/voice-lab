@@ -1,6 +1,7 @@
 // Uploads (design §6.1; checklist U-01 to U-04): the local spool, per-session progress,
 // resume, retry and receipts. Measurement sessions and prompted packages (phase 4c; held
-// here until prompted uploads are on, D-042).
+// here until prompted uploads are on, D-042). While uploads wait for the home-host approval
+// (D-021), or it expires within 30 days, Approve uploads to my PC (the app's `approval`).
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
@@ -28,6 +29,26 @@ ScreenPage {
             text: uploads.readiness
             variant: "caption"
             wrapMode: Text.Wrap
+        }
+        RowLayout {
+            objectName: "uploadsApproval"
+            Layout.fillWidth: true
+            visible: approval.needed || approval.expiringSoon
+            spacing: SuiTheme.spaceSm
+            SuiText {
+                objectName: "uploadsApprovalText"
+                Layout.fillWidth: true
+                text: approval.summary
+                tone: approval.needed ? "warn" : "default"
+                wrapMode: Text.Wrap
+            }
+            SuiButton {
+                objectName: "uploadsApprove"
+                text: "Approve uploads to my PC"
+                variant: "primary"
+                enabled: !approval.busy
+                onClicked: approval.begin()
+            }
         }
         RowLayout {
             spacing: SuiTheme.spaceSm

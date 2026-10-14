@@ -3,7 +3,8 @@
 This is the app's composition root. It builds one model per screen over a shared
 :class:`~voice_lab_desktop.viewmodel.AppContext` and hands them to QML as context
 properties (``app``, ``status``, ``uploads``, ``measurement``, ``corpus``, ``journey``,
-``practice``, ``referee``, ``player``; Record: prompts' model is ``app.studioModel``, the prompt
+``practice``, ``referee``, ``player``, and ``approval``: Approve uploads to my PC, which Status,
+Uploads and the studio offer; Record: prompts' model is ``app.studioModel``, the prompt
 studio, or with ``prompts_mode = "sessions"`` phase 4c's ``app.promptsModel``). It
 owns the sign-in (Pocket ID, PKCE, a loopback
 redirect; ``auth.py``) and the settings (``config.py``), and it navigates: a screen's model is
@@ -33,6 +34,7 @@ from .measurement.levels import LevelReader
 from .measurement.store import SessionStore
 from .playback import AudioOutput, Player
 from .prompted.store import PromptedStore
+from .screens.approval import ApprovalModel
 from .screens.corpus import CorpusModel
 from .screens.journey import JourneyModel
 from .screens.practice import PracticeModel
@@ -163,6 +165,9 @@ class AppModel(ViewModel):
         self.prompted = PromptedStore(config.data_dir)
         self.status = StatusModel(context, self.spool, self.prompted)
         self.uploads = UploadsModel(context, self.spool, self.prompted)
+        # Approve uploads to my PC (D-021): one model, offered by Status, Uploads and the
+        # studio's status line; a new approval sends what waits at once.
+        self.approval = ApprovalModel(context)
         self.prompts = PromptsModel(
             context, recorder_factory=recorder_factory or default_recorder, store=self.prompted
         )
@@ -202,8 +207,9 @@ class AppModel(ViewModel):
             "practice": self.practice,
             "referee": self.referee,
         }
-        for model in self.models.values():
+        for model in (*self.models.values(), self.approval):
             model.toast.connect(self.toast)
+        self.approval.approved.connect(self._uploads_approved)
         self.uploads.spoolChanged.connect(self.status.refresh_spool)
         self.uploads.spoolChanged.connect(self._refresh_sidebar)
         self.measurement.sessionChanged.connect(self._refresh_sidebar)
@@ -294,6 +300,7 @@ class AppModel(ViewModel):
         self._activate(key)
 
     def _activate(self, key: str) -> None:
+        self.approval.refresh()  # a screen shown says whether uploads wait for an approval
         model = self.models[key]
         activate = getattr(model, "activate", None)
         if activate is not None:
@@ -308,6 +315,17 @@ class AppModel(ViewModel):
         """A measurement session was saved: Uploads shows it, and sends it when signed in."""
         self.uploads.refresh()
         if self.session.signed_in and self.context.config.configured:
+            self.uploads.uploadAll()
+
+    @Slot()
+    def _uploads_approved(self) -> None:
+        """A new home-host approval stands: Uploads says so, the studio's corpus client syncs
+        now, and the sessions that wait are sent (when signed in)."""
+        self.uploads.check_readiness()
+        self.uploads.refresh()
+        if self.studio is not None:
+            self.studio.syncNow()
+        if self.uploads.pending_count and self.session.signed_in and self.context.config.configured:
             self.uploads.uploadAll()
 
     @Slot()

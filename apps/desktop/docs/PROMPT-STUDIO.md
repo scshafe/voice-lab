@@ -178,6 +178,10 @@ The right half reads the corpus client's `SyncStatus`:
 - `Uploads off until S-1 passes (corpus_sync) · N takes here` while sending is held
   (`corpus_sync = false`, the default). This is a statement, not an error.
 - `Offline · N queued · M sent · last synced HH:MM`.
+- `Uploads need your OK · N queued` while no home-host approval stands in this machine's
+  library for the server (none yet, expired, another PC, or without `capture`), with
+  **Approve** beside it: the app's approval dialog (FIRST-RUN.md §4). Approving syncs at
+  once.
 - `N takes waiting for the PC's state` after the PC refused a change and its state is read
   again.
 - Damaged takes and recordings an earlier run could not save come first.
@@ -187,7 +191,8 @@ A notice from the client takes the right half, in a few words that name its caus
 elsewhere*, *a change waits: the PC cannot read it*, *the PC refused a change
 (trim_out_of_bounds)*, *the PC refused this take*. **Details** opens the client's whole
 message, with **Dismiss**. A line that leaves something out (for example why uploads cannot
-start) has the same **Details**.
+start) has the same **Details**. **Sync now**, always at the end of the line, runs a pass now,
+operations waiting out a backoff included.
 
 ## Switching back to the session flow
 

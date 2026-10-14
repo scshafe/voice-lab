@@ -31,16 +31,42 @@ to the app. If the browser says the redirect is not allowed, quit and start with
 `--fixed-port` (it listens on `127.0.0.1:53683`). **Status** then shows the server's build,
 its API versions and its gates.
 
-## 4. Approve the home host (once per machine)
+## 4. Approve uploads to your PC (once per machine)
 
-Sessions go to the PC through `/api/v1/intake` only under a standing approval you author on
-this machine (D-021): it names the PC's endpoint, its tailnet node and the classes of what
-may be sent, for at most 366 days, and every upload is written into this machine's ledger
-before its first byte. **Uploads** says when it is missing. The library that holds it is
-`~/.local/share/voice-lab-desktop/library` (Linux) or `~/Library/Application
-Support/voice-lab-desktop/library` (macOS); open **Uploads** once and the app creates it.
-The node's stable ID comes from `tailscale status --json` (the peer whose `DNSName` is the
-endpoint), never from a document:
+Nothing goes to the PC through `/api/v1/intake` until you approve it as the destination on
+this machine (D-021): a standing approval that names the PC's endpoint, its Tailscale node
+and what may be sent, for a year. Every upload is then written into this machine's ledger
+before its first byte.
+
+Press **Approve uploads to my PC**. Status always has it (the card *Uploads to the PC*);
+Uploads shows it, and the studio's status line says *Uploads need your OK* with
+**Approve**, whenever no approval stands. The app fills in everything:
+
+- the endpoint: the host of the server in Settings, lowercased;
+- the tailnet and the node: from Tailscale on this machine (`tailscale status --json`, the
+  peer whose `DNSName` is that endpoint, and `whois` for its stable ID). The node must carry
+  `tag:voice-lab`. If Tailscale is not running, knows no such peer, or the peer is not
+  tagged, the app says why and approves nothing;
+- `capture` and `measurement` (studio takes, prompted and measurement sessions), from now
+  for 365 days, approved by the name your sign-in gives (else "Cole"), with the statement
+  "My recordings, to my own PC.", under a new id.
+
+One dialog shows the PC, the node, the classes and the expiry. Pressing **Approve** is your
+review: the app writes exactly that approval, write-once, into its own library and binds it,
+then syncs and uploads what waits. Pressing it again while an approval stands for the same PC
+and node writes nothing and says so. An approval that has expired, names another PC or node,
+lacks a class, or expires within 30 days is replaced by a new one (the old file stays;
+Status and Uploads offer the renewal in its last 30 days). Before each upload the app still
+checks, through Tailscale, that the node answering is the approved one.
+
+The library is the app's own: `~/.local/share/voice-lab-desktop/library` (Linux) or
+`~/Library/Application Support/voice-lab-desktop/library` (macOS), where its ledger lives too.
+An approval made for the Swift app's library (`~/.local/share/cole-voice-lab`) does not count
+here; that one serves only `voice-lab corpus-import`
+([RECORDING-V1.md](../../../docs/design/RECORDING-V1.md) §7).
+
+**Headless** (no window, the same record): preview, review the printed digest, then approve
+with it.
 
 ```sh
 LIB=~/.local/share/voice-lab-desktop/library      # macOS: ~/Library/Application Support/voice-lab-desktop/library
@@ -54,8 +80,9 @@ voice-lab home-host approve --asset-root "$LIB" \
 #   --reviewed-approval-sha256 <the printed approval_sha256> --i-approve-this-destination
 ```
 
-The server in Settings must be `https://` that same endpoint. Before each upload the app
-checks, through Tailscale, that the node answering for it is the approved one.
+The node's stable ID comes from `tailscale status --json` (the peer whose `DNSName` is the
+endpoint), never from a document. The server in Settings must be `https://` that same
+endpoint.
 
 ## 5. Coming from voice-journey-capture
 
@@ -130,5 +157,5 @@ do only after S-1 has passed on this platform (DECISIONS.md):
 prompted_uploads = true
 ```
 
-It then uploads as a `capture` package, which the home-host approval must cover (`--classes
-capture measurement`, §4).
+It then uploads as a `capture` package, which the home-host approval must cover (an
+approval made with **Approve uploads to my PC** covers it; §4).
