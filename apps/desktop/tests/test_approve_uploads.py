@@ -345,7 +345,7 @@ def test_settings_saved_meanwhile_drop_the_proposal(
     again(tailscale)
     approval.begin()
     dialog_open(qtbot, approve_window)
-    approval.server = lambda: "https://other-pc.example.ts.net"
+    approval.server_url = lambda: "https://other-pc.example.ts.net"
     approve_window.items("approveConfirm")[0].clicked.emit()
     qtbot.waitUntil(lambda: not approval.busy and not approval.canApprove, timeout=10000)
     assert approval.dialogOpen and approval.dialogText == logic.STALE

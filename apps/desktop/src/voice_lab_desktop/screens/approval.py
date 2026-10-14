@@ -93,9 +93,10 @@ class ApprovalModel(ViewModel):
         #: Asks Tailscale for a tailnet suffix (tests: recorded answers, never the binary).
         self.resolver_factory: approval.ResolverFactory = approval.tailscale_resolver
         self.clock: Callable[[], datetime] = utc_now
-        #: The server the approval is for: the settings' (tests: the name the loopback home
-        #: host stands for).
-        self.server: Callable[[], str] = lambda: self.context.config.server_url
+        #: The server the approval is for when not the settings' (tests: the name the loopback
+        #: home host stands for). A seam, not a closure over this model: no reference cycle
+        #: leaves this QObject to the cyclic garbage collector.
+        self.server_url: Callable[[], str] | None = None
         self._proposal: approval.Proposal | None = None
         #: Counts the settings saved: a lookup begun before the last one is for old settings.
         self._generation = 0
@@ -104,10 +105,13 @@ class ApprovalModel(ViewModel):
         context.configChanged.connect(self._settings_changed)
         self.refresh()
 
+    def _server(self) -> str:
+        return self.server_url() if self.server_url is not None else self.context.config.server_url
+
     @Slot()
     def refresh(self) -> None:
         """Whether uploads wait for an approval, from the library and the settings."""
-        found = approval.standing(self.context.config.library_dir, self.server(), now=self.clock())
+        found = approval.standing(self.context.config.library_dir, self._server(), now=self.clock())
         self._set(
             self.changed, needed=found.needed, expiringSoon=found.expiring, summary=found.text
         )
@@ -127,7 +131,7 @@ class ApprovalModel(ViewModel):
         self.refresh()
 
     def _still_current(self, proposal: approval.Proposal) -> bool:
-        return approval.still_current(proposal, self.server(), self.context.config.library_dir)
+        return approval.still_current(proposal, self._server(), self.context.config.library_dir)
 
     def _approver(self) -> str:
         tokens = self.context.session.tokens
@@ -145,7 +149,7 @@ class ApprovalModel(ViewModel):
         if self._v["busy"]:
             return
         library_dir = self.context.config.library_dir
-        server_url, approved_by, now = self.server(), self._approver(), self.clock()
+        server_url, approved_by, now = self._server(), self._approver(), self.clock()
         resolver_factory, generation = self.resolver_factory, self._generation
         self._set(self.changed, busy=True)
 
@@ -203,7 +207,7 @@ class ApprovalModel(ViewModel):
         proposal = self._proposal
         if proposal is None or self._v["busy"]:
             return
-        server_url, library_dir = self.server(), self.context.config.library_dir
+        server_url, library_dir = self._server(), self.context.config.library_dir
         now = self.clock()
         self._set(self.changed, busy=True)
         self._confirming = True

@@ -33,7 +33,7 @@ def test_uploads_need_your_ok_then_approve_sends_the_take(
     tailscale = FakeTailscale()
     model.approval.resolver_factory = tailscale.factory
     # The approval is for the name the loopback PC stands for (as the uploader's, corpus_rig).
-    model.approval.server = lambda: SERVER_URL
+    model.approval.server_url = lambda: SERVER_URL
     try:
         with open_studio(qtbot, model, tmp_path) as window:
             qtbot.waitExposed(window.root)
