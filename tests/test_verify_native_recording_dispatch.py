@@ -305,3 +305,73 @@ def test_packaged_dispatch_never_discovers_real_rollback_and_honors_explicit_opt
     )
     identity = json.loads((root / "verification.json").read_text())
     assert identity["packaged_app_rollback_release_present"] is (rollback == "present")
+
+
+CLT_FRAMEWORKS = "Library/Developer/Frameworks"
+CLT_LIBRARIES = "Library/Developer/usr/lib"
+XCODE_FRAMEWORKS = "Platforms/MacOSX.platform/Developer/Library/Frameworks"
+XCODE_LIBRARIES = "Platforms/MacOSX.platform/Developer/usr/lib"
+
+
+@pytest.mark.parametrize(
+    ("present", "expected"),
+    [
+        ((CLT_FRAMEWORKS,), (CLT_FRAMEWORKS, CLT_LIBRARIES)),
+        ((XCODE_FRAMEWORKS,), (XCODE_FRAMEWORKS, XCODE_LIBRARIES)),
+        ((CLT_FRAMEWORKS, XCODE_FRAMEWORKS), (CLT_FRAMEWORKS, CLT_LIBRARIES)),
+    ],
+)
+def test_swift_testing_is_found_in_the_command_line_tools_or_in_xcode(
+    tmp_path: Path, present: tuple[str, ...], expected: tuple[str, str]
+) -> None:
+    for frameworks in present:
+        (tmp_path / frameworks / "Testing.framework").mkdir(parents=True)
+    assert verifier.swift_testing_paths(tmp_path) == (
+        tmp_path / expected[0],
+        tmp_path / expected[1],
+    )
+
+
+def test_without_swift_testing_the_error_names_both_places(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError) as caught:
+        verifier.swift_testing_paths(tmp_path)
+    assert str(tmp_path / CLT_FRAMEWORKS / "Testing.framework") in str(caught.value)
+    assert str(tmp_path / XCODE_FRAMEWORKS / "Testing.framework") in str(caught.value)
+
+
+def test_a_full_xcode_puts_its_platform_paths_into_the_test_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Air (macOS 27, Xcode 27 selected): Swift Testing only in the macOS platform.
+    developer = tmp_path / "Xcode.app/Contents/Developer"
+    (developer / XCODE_FRAMEWORKS / "Testing.framework").mkdir(parents=True)
+    root = tmp_path / "fresh"
+    root.mkdir(mode=0o700)
+    commands: list[list[str]] = []
+
+    class ReachedSuite(Exception):
+        pass
+
+    def output(command: list[str], **kwargs: Any) -> str:
+        if command == ["xcode-select", "-p"]:
+            return str(developer)
+        if "--show-bin-path" in command:
+            return str(tmp_path / "binaries")
+        raise AssertionError(f"unexpected command before selected suite: {command}")
+
+    def run(command: list[str], **kwargs: Any) -> None:
+        commands.append(command)
+        if "test" in command:
+            raise ReachedSuite
+
+    monkeypatch.setattr(verifier, "output", output)
+    monkeypatch.setattr(verifier, "run", run)
+    with pytest.raises(ReachedSuite):
+        verifier.main(["--suite", "recovery", "--output", str(root)])
+    test = commands[-1]
+    frameworks, libraries = str(developer / XCODE_FRAMEWORKS), str(developer / XCODE_LIBRARIES)
+    flag = test.index("-F")
+    assert test[flag - 1 : flag + 3] == ["-Xswiftc", "-F", "-Xswiftc", frameworks]
+    rpaths = [test[i + 2] for i, part in enumerate(test) if part == "-rpath"]
+    assert rpaths == [frameworks, libraries]
+    assert str(developer / CLT_FRAMEWORKS) not in " ".join(test)
