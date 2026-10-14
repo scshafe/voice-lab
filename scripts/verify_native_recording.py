@@ -37,6 +37,33 @@ def output(command: list[str], *, cwd: Path) -> str:
     return subprocess.check_output(command, cwd=cwd, text=True, stderr=subprocess.STDOUT).strip()
 
 
+def swift_testing_paths(developer: Path) -> tuple[Path, Path]:
+    """Where the selected developer tools keep Swift Testing: its framework and its library.
+
+    The Command Line Tools keep them under ``Library/Developer``; a full Xcode keeps them in
+    the macOS platform, ``Platforms/MacOSX.platform/Developer`` (``Library/Frameworks`` and
+    ``usr/lib``, with ``lib_TestingInterop.dylib``). Selecting the Command Line Tools to find
+    them is no way round: they lack the SwiftUIMacros plugin RecordingUI's ``@State`` needs.
+    Raises: ``RuntimeError`` naming every place looked in when neither has the framework.
+    """
+    xcode = developer / "Platforms" / "MacOSX.platform" / "Developer"
+    layouts = (
+        (
+            developer / "Library" / "Developer" / "Frameworks",
+            developer / "Library" / "Developer" / "usr" / "lib",
+        ),
+        (xcode / "Library" / "Frameworks", xcode / "usr" / "lib"),
+    )
+    for frameworks, libraries in layouts:
+        if (frameworks / "Testing.framework").is_dir():
+            return frameworks, libraries
+    looked = ", ".join(str(frameworks / "Testing.framework") for frameworks, _ in layouts)
+    raise RuntimeError(
+        "The selected developer tools do not contain the Swift Testing framework "
+        f"(looked in {looked})"
+    )
+
+
 def isolated_script(repository: Path, module: str) -> list[str]:
     """Run a verifier module with explicit fixture imports and no ambient Python path."""
     return [
@@ -133,12 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         "-warnings-as-errors",
     ]
     developer = Path(output(["xcode-select", "-p"], cwd=repository))
-    test_frameworks = developer / "Library" / "Developer" / "Frameworks"
-    test_libraries = developer / "Library" / "Developer" / "usr" / "lib"
-    if not (test_frameworks / "Testing.framework").is_dir():
-        raise RuntimeError(
-            "The selected developer tools do not contain the Swift Testing framework"
-        )
+    test_frameworks, test_libraries = swift_testing_paths(developer)
     test_location = [
         "--package-path",
         str(package),
