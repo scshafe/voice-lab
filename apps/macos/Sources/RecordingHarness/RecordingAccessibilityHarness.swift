@@ -20,6 +20,8 @@ extension RecordingHarness {
         registerLightAppearancePreference()
         let size = CGSize(width: 1060, height: 700)
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .resizable], backing: .buffered, defer: true)
+        // Swift owns the window: `close()` must not release it too (a double release on macOS 27).
+        window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: RecordingPageContainer(model: model).accessibilityElement(children: .contain).environment(\.recordingReduceMotionOverride, true))
         window.contentView = host; host.frame = CGRect(origin: .zero, size: size)
         let accessibilityRequest = await Task.detached {

@@ -29,6 +29,8 @@ extension RecordingHarness {
         NSApplication.shared.finishLaunching()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1060, height: 700),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: true)
+        // Swift owns the window: `close()` must not release it too (a double release on macOS 27).
+        window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: RecordingPageContainer(model: model))
         window.contentView = host
         defer { window.contentView = nil; window.close() }
