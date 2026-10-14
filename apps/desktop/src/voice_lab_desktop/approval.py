@@ -17,13 +17,17 @@ is typed:
   ``APPROVAL_DAYS`` later; ``approved_by`` the sign-in's name, else ``APPROVER``;
   ``STATEMENT``; and a fresh ``approval_id`` that no approval in the library has.
 
-``propose`` asks Tailscale and says what Approve would write: nothing when an approval stands
-for this endpoint and node, covers both classes and does not expire within ``RENEW_WITHIN``.
-Any other approval (none, expired, another endpoint or node, a missing class, one about to
-expire) is replaced by a new one with a new id; the old file stays, as approvals are
-write-once. ``confirm`` is the review: it writes exactly the approval the dialog showed, with
-that approval's own digest, through ``cole_voice_lab.home_host.approve`` (0400, write-once,
-bound). ``standing`` says, from the library alone, whether uploads wait for an approval.
+``propose`` asks Tailscale and says what Approve would write, with its digest: nothing when
+an approval stands for this endpoint, tailnet and node, covers both classes and does not
+expire within ``RENEW_WITHIN``. Any other approval (none, expired, another endpoint, tailnet
+or node, a missing class, one about to expire) is replaced by a new one with a new id; the old
+file stays, as approvals are write-once. ``confirm`` is the review: it writes exactly the
+approval the dialog showed, under the digest the proposal carries, through
+``cole_voice_lab.home_host.approve`` (0400, write-once, bound), unless the settings name
+another server or library since (``still_current``). ``standing`` says, from the library
+alone, whether uploads wait for an approval; it cannot see a node that changed (a reinstalled
+PC), which only Tailscale knows: uploads then fail their identity check, and Approve (which
+asks Tailscale) replaces the approval. Dates are shown in local time (``local_date``).
 
 The CLI (``voice-lab home-host approve``) stays the headless way. The Swift app's library
 (``~/.local/share/cole-voice-lab``) is never read here: an approval and its ledger belong to
@@ -68,12 +72,21 @@ APPROVAL_DAYS: Final = 365
 RENEW_WITHIN: Final = timedelta(days=30)
 #: What the app uploads: corpus and prompted takes (``capture``) and measurement sessions.
 CLASSES: Final[tuple[HomeHostClass, ...]] = ("capture", "measurement")
+#: Each class as the dialog names it.
+CLASS_TEXT: Final[dict[str, str]] = {
+    "capture": "capture (takes, prompted sessions)",
+    "measurement": "measurement (measurement sessions)",
+}
 STATEMENT: Final = "My recordings, to my own PC."
 #: Who approves when the sign-in names no one.
 APPROVER: Final = "Cole"
 ID_PREFIX: Final = "pc-home-host"
 #: The lead of every line that says uploads wait for an approval.
 NEEDED: Final = "Uploads need your OK"
+STALE: Final = (
+    "The settings changed since Tailscale was asked (another server or library): nothing was "
+    "approved. Approve again."
+)
 
 #: Makes the resolver for a tailnet suffix (tests: one over recorded Tailscale answers).
 type ResolverFactory = Callable[[str], TailnetResolver]
@@ -99,13 +112,17 @@ class Destination:
 
 @dataclass(frozen=True)
 class Proposal:
-    """What the confirm dialog shows: the destination, the approval Approve writes (``None``:
-    ``standing`` covers it already, nothing is written) and why it replaces another (``""``
-    when none stands)."""
+    """What the confirm dialog shows, for which settings (``server_url``, ``library_dir``):
+    the destination, the approval Approve writes (``None``: ``standing`` covers it already,
+    nothing is written) with the digest of its stored bytes (``digest``, what Approve
+    reviews), and why it replaces another (``reason``, ``""`` when none stands)."""
 
     destination: Destination
     approval: HomeHostApproval | None
     standing: HomeHostApproval | None
+    server_url: str
+    library_dir: Path
+    digest: str = ""
     reason: str = ""
 
 
@@ -132,12 +149,26 @@ class Standing:
     approval: HomeHostApproval | None = None
 
 
+def local_date(moment: datetime) -> str:
+    """``moment``'s date in this machine's time zone (every date the approval UI shows)."""
+    return moment.astimezone().date().isoformat()
+
+
+def classes_text(classes: Collection[str]) -> str:
+    """The classes an approval covers, as the dialog names them."""
+    return " · ".join(CLASS_TEXT.get(name, name) for name in classes)
+
+
+def _host(server_url: str) -> str:
+    return (urlsplit(server_url).hostname or "").lower()
+
+
 def endpoint_of(server_url: str) -> str:
     """The configured server's host, lowercased: the endpoint an approval names.
 
     Raises: ``ApprovalRefused`` when no server is set or its host is not a name that can be
     on a tailnet (an IP address, ``localhost``)."""
-    host = (urlsplit(server_url).hostname or "").lower()
+    host = _host(server_url)
     if not host:
         raise ApprovalRefused("Set the server on the Status screen first (Settings…).")
     try:
@@ -149,6 +180,14 @@ def endpoint_of(server_url: str) -> str:
             "(https://voice-lab.<tailnet>.ts.net), so it cannot be approved."
         ) from exc
     return host
+
+
+def still_current(proposal: Proposal, server_url: str, library_dir: Path) -> bool:
+    """Whether the settings still name the server and the library ``proposal`` was made for."""
+    return (
+        Path(library_dir) == proposal.library_dir
+        and _host(server_url) == proposal.destination.endpoint
+    )
 
 
 def find_destination(
@@ -202,7 +241,9 @@ def _home_host_dir(library_dir: Path) -> Path:
 
 
 def taken_ids(library_dir: Path) -> set[str]:
-    """The ids of every approval the library holds (bound or not)."""
+    """The ids of every approval the library holds (bound or not).
+
+    Raises: ``OSError`` when its approvals cannot be listed (none yet is no error)."""
     approvals = _home_host_dir(library_dir) / "approvals"
     try:
         names = os.listdir(approvals)
@@ -223,10 +264,6 @@ def fresh_approval_id(
         candidate = f"{ID_PREFIX}-{now:%Y%m%d}-{token()}"
         if candidate not in taken:
             return candidate
-
-
-def _until(approval: HomeHostApproval) -> str:
-    return approval.expires_at.date().isoformat()
 
 
 def _current(library_dir: Path, *, now: datetime) -> tuple[HomeHostApproval | None, str]:
@@ -268,11 +305,16 @@ def _replaces(current: HomeHostApproval, destination: Destination) -> str:
             f"It replaces the approval {old}, which names {current.endpoint} "
             f"(node {current.node_stable_id})."
         )
+    if current.tailnet_suffix != destination.tailnet_suffix:
+        return (
+            f"It replaces the approval {old}, which names the tailnet {current.tailnet_suffix}, "
+            f"not {destination.tailnet_suffix}."
+        )
     missing = [c for c in CLASSES if c not in current.classes]
     if missing:
         nouns = " and ".join(home_host.CLASS_NOUNS[c] for c in missing)
         return f"It replaces the approval {old}, which does not cover {nouns}."
-    return f"It renews the approval {old}, which expires on {_until(current)}."
+    return f"It renews the approval {old}, which expires on {local_date(current.expires_at)}."
 
 
 def _library_refused(exc: BaseException) -> ApprovalRefused:
@@ -288,24 +330,26 @@ def propose(
     resolver_factory: ResolverFactory = tailscale_resolver,
     token: Callable[[], str] = _token,
 ) -> Proposal:
-    """What Approve would write for the configured server (Tailscale is asked first; nothing
-    is written).
+    """What Approve would write for the configured server, with its digest (Tailscale is
+    asked first; nothing is written).
 
     Raises: ``ApprovalRefused`` (see ``endpoint_of``, ``find_destination``), or for a
     library that cannot be used."""
     destination = find_destination(endpoint_of(server_url), resolver_factory)
+    library_dir = Path(library_dir)
     try:
         current, why = _current(library_dir, now=now)
+        taken = taken_ids(library_dir)
     except (SecurityError, OSError) as exc:
         raise _library_refused(exc) from exc
     if current is not None and _covers(current, destination, now):
-        return Proposal(destination, None, current)
+        return Proposal(destination, None, current, server_url, library_dir)
     if current is not None:
         reason = _replaces(current, destination)
     else:
         reason = f"It replaces the approval bound now: {why}" if why else ""
     approval = HomeHostApproval(
-        approval_id=fresh_approval_id(taken_ids(library_dir), now, token=token),
+        approval_id=fresh_approval_id(taken, now, token=token),
         approved=True,
         endpoint=destination.endpoint,
         tailnet_suffix=destination.tailnet_suffix,
@@ -316,20 +360,32 @@ def propose(
         approved_by=approved_by,
         statement=STATEMENT,
     )
-    return Proposal(destination, approval, current, reason)
+    return Proposal(
+        destination,
+        approval,
+        current,
+        server_url,
+        library_dir,
+        digest=record_sha256(approval),
+        reason=reason,
+    )
 
 
-def confirm(library_dir: Path, proposal: Proposal, *, now: datetime) -> Approved:
-    """Approve was pressed: write the proposal's approval as shown, with its own digest, and
-    bind it (the library is made, private, when it does not exist). When an approval that
-    covers the destination stands by now (approved meanwhile), nothing is written.
+def confirm(proposal: Proposal, *, server_url: str, library_dir: Path, now: datetime) -> Approved:
+    """Approve was pressed: write the proposal's approval as shown, under the digest the
+    proposal carries, and bind it (the library is made, private, when it does not exist).
+    When an approval that covers the destination stands by now (approved meanwhile), nothing
+    is written.
 
-    Raises: ``ApprovalRefused`` when the library cannot be used, an approval with this id
-    exists, the approval does not stand at ``now`` (the clock went back), or the one that
-    stood when the dialog opened no longer does: nothing is written, approve again."""
+    Raises: ``ApprovalRefused``, with nothing written, when the settings (``server_url``,
+    ``library_dir``) no longer name the proposal's server and library, the one that stood when
+    the dialog opened no longer does, the approval is not the one reviewed or does not stand
+    at ``now`` (the clock went back), the library cannot be used, or an approval with this id
+    exists. Approve again."""
+    if not still_current(proposal, server_url, library_dir):
+        raise ApprovalRefused(STALE)
     try:
-        current, _why = _current(library_dir, now=now)
-        layout = home_host.library_layout(library_dir)
+        current, _why = _current(proposal.library_dir, now=now)
     except (SecurityError, OSError) as exc:
         raise _library_refused(exc) from exc
     if current is not None and _covers(current, proposal.destination, now):
@@ -337,8 +393,16 @@ def confirm(library_dir: Path, proposal: Proposal, *, now: datetime) -> Approved
     approval = proposal.approval
     if approval is None:
         raise ApprovalRefused("The approval that stood no longer does: approve again.")
+    if record_sha256(approval) != proposal.digest:
+        raise ApprovalRefused("The approval is not the one shown: nothing was approved.")
+    if not approval.effective_at(now):
+        raise ApprovalRefused("The approval would not stand now (the clock moved): approve again.")
     try:
-        approve(layout, approval, reviewed_sha256=record_sha256(approval), now=now)
+        layout = home_host.library_layout(proposal.library_dir)
+    except (SecurityError, OSError) as exc:
+        raise _library_refused(exc) from exc
+    try:
+        approve(layout, approval, reviewed_sha256=proposal.digest, now=now)
     except FileExistsError as exc:
         raise ApprovalRefused(
             f"An approval named {approval.approval_id} exists already: approve again."
@@ -349,8 +413,9 @@ def confirm(library_dir: Path, proposal: Proposal, *, now: datetime) -> Approved
 
 
 def standing(library_dir: Path, server_url: str, *, now: datetime) -> Standing:
-    """Whether uploads wait for an approval, from the library and the settings alone."""
-    host = (urlsplit(server_url).hostname or "").lower()
+    """Whether uploads wait for an approval, from the library and the settings alone (a node
+    that changed is not seen here: see the module's note)."""
+    host = _host(server_url)
     if not host:
         return Standing(False, False, "Set the server on the Status screen first (Settings…).")
     try:
@@ -376,7 +441,7 @@ def standing(library_dir: Path, server_url: str, *, now: datetime) -> Standing:
             current,
         )
     approved = (
-        f"Uploads to {current.endpoint} are approved until {_until(current)} "
+        f"Uploads to {current.endpoint} are approved until {local_date(current.expires_at)} "
         f"(approval {current.approval_id})"
     )
     if current.expires_at - now <= RENEW_WITHIN:

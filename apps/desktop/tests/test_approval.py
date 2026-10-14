@@ -7,6 +7,7 @@ new one, bound; and what the library alone says about uploads. Tailscale is reco
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 import stat
@@ -73,6 +74,13 @@ def bind(library: Path, made: HomeHostApproval, *, now: datetime = NOW) -> None:
     approve(layout, made, reviewed_sha256=record_sha256(made), now=now)
 
 
+def confirm(
+    library: Path, proposal: approval.Proposal, *, now: datetime, server: str = SERVER
+) -> Approved:
+    """Approve pressed, with the settings naming ``server`` and ``library``."""
+    return approval.confirm(proposal, server_url=server, library_dir=library, now=now)
+
+
 def propose(
     library: Path,
     fake: FakeTailscale | None = None,
@@ -103,6 +111,16 @@ def test_every_field_is_derived(library: Path) -> None:
     assert fake.suffixes == [TAILNET]
     assert fake.calls == [["status", "--json"], ["whois", "--json", PEER_ADDRESS]]
     assert not library.exists()  # proposing writes nothing
+    # What Approve reviews: this approval's digest, for these settings.
+    assert proposal.digest == record_sha256(made)
+    assert (proposal.server_url, proposal.library_dir) == (
+        "https://Voice-Lab.Example.TS.net",
+        library,
+    )
+    assert approval.classes_text(made.classes) == (
+        "capture (takes, prompted sessions) · measurement (measurement sessions)"
+    )
+    assert approval.local_date(made.expires_at) == made.expires_at.astimezone().date().isoformat()
     # In the app, the resolver is the local Tailscale client's (not run here).
     real = approval.tailscale_resolver(TAILNET)
     assert isinstance(real, TailscaleCliResolver) and real.tailnet_suffix == TAILNET
@@ -204,7 +222,7 @@ def test_approve_writes_and_binds_exactly_the_approval_shown(library: Path) -> N
     proposal = propose(library)
     made = proposal.approval
     assert made is not None
-    result = approval.confirm(library, proposal, now=NOW + timedelta(seconds=30))
+    result = confirm(library, proposal, now=NOW + timedelta(seconds=30))
     assert result == Approved(made, written=True)
     layout = AssetLayout.validate(library)  # the library was made, private
     later = NOW + timedelta(minutes=1)
@@ -219,7 +237,7 @@ def test_approve_writes_and_binds_exactly_the_approval_shown(library: Path) -> N
     assert approval.standing(library, SERVER, now=later) == Standing(
         False,
         False,
-        f"Uploads to {ENDPOINT} are approved until {made.expires_at.date().isoformat()} "
+        f"Uploads to {ENDPOINT} are approved until {approval.local_date(made.expires_at)} "
         f"(approval {made.approval_id}).",
         made,
     )
@@ -230,13 +248,13 @@ def test_a_standing_approval_is_never_written_twice(library: Path) -> None:
     first = propose(library, fake)
     raced = propose(library, fake)  # Approve pressed twice before the first was confirmed
     assert first.approval is not None and raced.approval is not None
-    assert approval.confirm(library, first, now=NOW).written
-    assert approval.confirm(library, raced, now=NOW) == Approved(first.approval, written=False)
+    assert confirm(library, first, now=NOW).written
+    assert confirm(library, raced, now=NOW) == Approved(first.approval, written=False)
     # Pressed again later: the approval stands for this endpoint and node; nothing is written.
     later = NOW + timedelta(days=200)
     pressed = propose(library, fake, now=later)
     assert pressed.approval is None and pressed.standing == first.approval
-    assert approval.confirm(library, pressed, now=later) == Approved(first.approval, written=False)
+    assert confirm(library, pressed, now=later) == Approved(first.approval, written=False)
     assert approvals(library) == [f"{first.approval.approval_id}.json"]
 
 
@@ -257,7 +275,7 @@ def test_an_expired_approval_is_renewed_with_a_new_id(library: Path) -> None:
     assert made is not None and proposal.standing is None
     assert made.approval_id != old.approval_id and made.expires_at == NOW + timedelta(days=365)
     assert proposal.reason.startswith("It replaces the approval bound now: the home-host approval")
-    assert approval.confirm(library, proposal, now=NOW).written
+    assert confirm(library, proposal, now=NOW).written
     stored, _digest = load_approval(AssetLayout.validate(library), now=NOW)
     assert stored == made
     # Approvals are write-once: the expired one stays beside the new one.
@@ -275,11 +293,11 @@ def test_one_about_to_expire_is_offered_and_renewed(library: Path) -> None:
     assert found.text.endswith(f"(approval {soon.approval_id}): renew it before then.")
     proposal = propose(library)
     assert proposal.approval is not None and proposal.standing == soon
-    until = soon.expires_at.date().isoformat()
+    until = approval.local_date(soon.expires_at)
     assert (
         proposal.reason == f"It renews the approval {soon.approval_id}, which expires on {until}."
     )
-    assert approval.confirm(library, proposal, now=NOW).written
+    assert confirm(library, proposal, now=NOW).written
 
 
 @pytest.mark.parametrize(
@@ -288,8 +306,9 @@ def test_one_about_to_expire_is_offered_and_renewed(library: Path) -> None:
         ({"node_stable_id": "nOTHERNODE"}, f"which names {ENDPOINT} (node nOTHERNODE)"),
         ({"endpoint": f"old-pc.{TAILNET}"}, f"which names old-pc.{TAILNET} (node {NODE})"),
         ({"classes": ("measurement",)}, "which does not cover prompted sessions"),
+        ({"tailnet_suffix": "ts.net"}, f"which names the tailnet ts.net, not {TAILNET}"),
     ],
-    ids=["another-node", "another-endpoint", "a-missing-class"],
+    ids=["another-node", "another-endpoint", "a-missing-class", "another-tailnet"],
 )
 def test_another_node_endpoint_or_class_is_replaced(
     library: Path, changes: dict[str, Any], reason: str
@@ -299,7 +318,7 @@ def test_another_node_endpoint_or_class_is_replaced(
     proposal = propose(library)
     assert proposal.standing == old and proposal.approval is not None
     assert proposal.reason.startswith(f"It replaces the approval {old.approval_id}, {reason}")
-    assert approval.confirm(library, proposal, now=NOW).written
+    assert confirm(library, proposal, now=NOW).written
     stored, _digest = load_approval(AssetLayout.validate(library), now=NOW)
     assert stored == proposal.approval
 
@@ -318,7 +337,7 @@ def test_what_the_library_says_about_uploads(library: Path, tmp_path: Path) -> N
     assert approval.standing(library, SERVER, now=NOW) == Standing(
         False,
         False,
-        f"Uploads to {ENDPOINT} are approved until {made.expires_at.date().isoformat()} "
+        f"Uploads to {ENDPOINT} are approved until {approval.local_date(made.expires_at)} "
         "(approval pc-home-host).",
         made,
     )
@@ -337,13 +356,27 @@ def test_what_the_library_says_about_uploads(library: Path, tmp_path: Path) -> N
     )
     # A library that is not private: Approve cannot mend it, so it is not offered, and
     # neither proposing nor approving writes into it.
+    shown = propose(library)
     library.chmod(0o755)
     unsafe = approval.standing(library, SERVER, now=NOW)
     assert not unsafe.needed and unsafe.text.startswith("This app's library cannot be used: ")
     with pytest.raises(ApprovalRefused, match="This app's library cannot be used"):
         propose(library)
     with pytest.raises(ApprovalRefused, match="This app's library cannot be used"):
-        approval.confirm(library, propose(narrow), now=NOW)
+        confirm(library, shown, now=NOW)
+
+
+def test_a_library_whose_approvals_cannot_be_listed_is_refused(library: Path) -> None:
+    home_host.library_layout(library)
+    folder = library / "provenance" / "home-host" / "approvals"
+    folder.mkdir(parents=True, mode=0o700)
+    folder.chmod(0)
+    try:
+        with pytest.raises(ApprovalRefused, match="This app's library cannot be used"):
+            propose(library)
+    finally:
+        folder.chmod(0o700)
+    assert approvals(library) == []
 
 
 def test_approve_refuses_what_it_cannot_write(library: Path, tmp_path: Path) -> None:
@@ -357,17 +390,50 @@ def test_approve_refuses_what_it_cannot_write(library: Path, tmp_path: Path) -> 
     )
     bind(library, clash)
     with pytest.raises(ApprovalRefused, match="exists already: approve again"):
-        approval.confirm(library, proposal, now=NOW)
-    # The clock went back before the approval's own time: it would not stand; not written.
+        confirm(library, proposal, now=NOW)
+    # The clock went back before the approval's own time: it would not stand; nothing is
+    # written, not even the library.
     other = tmp_path / "other"
     early = propose(other, fake)
-    with pytest.raises(ApprovalRefused, match="The approval was not written .*does not stand"):
-        approval.confirm(other, early, now=NOW - timedelta(minutes=5))
-    assert approvals(other) == []
+    with pytest.raises(ApprovalRefused, match="would not stand now"):
+        confirm(other, early, now=NOW - timedelta(minutes=5))
+    assert not other.exists()
+    # Not the approval shown (its digest is another's): refused before anything is written.
+    altered = dataclasses.replace(early, digest="0" * 64)
+    with pytest.raises(ApprovalRefused, match="not the one shown"):
+        confirm(other, altered, now=NOW)
+    assert not other.exists()
+    # The settings name another server or library since: refused, nothing written.
+    for server, folder in ((f"https://other.{TAILNET}", other), (SERVER, tmp_path / "moved")):
+        with pytest.raises(ApprovalRefused, match="The settings changed"):
+            confirm(folder, early, now=NOW, server=server)
+    assert not other.exists() and not (tmp_path / "moved").exists()
+    assert approval.still_current(early, SERVER.upper(), other)
     # Nothing to write because one stood when the dialog opened, but it has expired since.
     standing_one = tmp_path / "standing"
     bind(standing_one, make_approval(classes=BOTH))
     pressed = propose(standing_one)
     assert pressed.approval is None
     with pytest.raises(ApprovalRefused, match="no longer does"):
-        approval.confirm(standing_one, pressed, now=NOW + timedelta(days=400))
+        confirm(standing_one, pressed, now=NOW + timedelta(days=400))
+    # The library cannot be made (its folder is read-only), or the approval cannot be
+    # written into it: refused, nothing bound.
+    sealed = tmp_path / "sealed"
+    sealed.mkdir(mode=0o500)
+    unmade = sealed / "library"
+    try:
+        with pytest.raises(ApprovalRefused, match="This app's library cannot be used"):
+            confirm(unmade, propose(unmade), now=NOW)
+    finally:
+        sealed.chmod(0o700)
+    assert not unmade.exists()
+    blocked = tmp_path / "blocked"
+    folder = blocked / "provenance" / "home-host" / "approvals"
+    home_host.library_layout(blocked)
+    folder.mkdir(parents=True, mode=0o500)
+    try:
+        with pytest.raises(ApprovalRefused, match="The approval was not written"):
+            confirm(blocked, propose(blocked), now=NOW)
+    finally:
+        folder.chmod(0o700)
+    assert approvals(blocked) == [] and not (folder.parent / "binding.json").exists()

@@ -7,9 +7,10 @@ machine's takes (``studio/library.py``), coverage (``n / 1,886``), Continue Miss
 next prompt with no kept take, in catalog order, whatever the filters), search, Show and
 Labels. The header carries the prompt's label chips, the script card its PROMPT · READ
 ALOUD or its INSTRUCTIONS, and the footer the Record/Stop control; the status line says what
-the take and the sync are doing (``studio/status.py``), with Sync now (``syncNow``: a pass
-now) and, while uploads wait for the home-host approval, Approve (the app's ``approval``
-model, ``screens/approval.py``; ``syncAction``).
+the take and the sync are doing (``studio/status.py``), with one button beside the sync
+(``syncAction``): Approve while uploads wait for the home-host approval (the app's
+``approval`` model, ``screens/approval.py``), Sync now (``syncNow``: a pass now) while
+operations wait or the PC did not answer, or Details.
 
 A take: Record binds it to the selected prompt of the pinned version
 (``CorpusClient.begin_take``) and starts the capture worker (D-039) in its directory; Stop

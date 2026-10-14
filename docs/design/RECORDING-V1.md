@@ -205,7 +205,7 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
    uploads there**: `corpus_sync = true` in its `config.toml` (studio takes, decisions and
    trims; `prompted_uploads = true` too for the session flow), then press **Approve uploads to
    my PC** in the app (Status, Uploads, or **Approve** on the studio's *Uploads need your OK*
-   line).
+   line, which a sync pass shows once `corpus_sync` is on and no approval stands).
 
    voice-lab.app's uploads (`corpus_sync`, `prompted_uploads`, and measurement sessions) need
    the standing home-host approval (D-021) in **the app's own library**, where its ledger
@@ -218,7 +218,10 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
    `voice-lab home-host approve --asset-root <that library> …` (preview, then approve with the
    printed digest). An approval in the Swift app's library does not count for these uploads.
    The app never reads that library, and an approval belongs with its ledger. Without one,
-   a take waits in the outbox and the studio says *Uploads need your OK*.
+   a take waits in the outbox and the studio says *Uploads need your OK*. A PC with a new
+   Tailscale node (a reinstall) is not flagged that way, since only Tailscale knows: uploads
+   fail their identity check, and **Approve uploads to my PC** on Status replaces the
+   approval.
 3. **The Mac's takes to the PC** (step 9, D-053), once step 9 is deployed and the PC's catalog
    is seeded (step 1). On the Mac, as you, from a checkout of `main` with its `.venv`
    (`voice-lab` is `.venv/bin/voice-lab`), with the Swift app's library as the asset root.
@@ -511,6 +514,6 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   `tag:voice-lab`. It shows one dialog whose Approve is the review, never writes a second
   approval for the same PC and node, and renews an expired, moved or narrower one, or one in
   its last 30 days, under a new id. It then syncs at once. The studio's line says *Uploads
-  need your OK* with **Approve**, and gains **Sync now**. Status and Uploads offer the button
-  too. The approval in the Swift app's library is for `corpus-import` only (owner steps 2 and
+  need your OK* with **Approve**, and gains **Sync now** while operations wait. Status and
+  Uploads offer the button too. The approval in the Swift app's library is for `corpus-import` only (owner steps 2 and
   3).

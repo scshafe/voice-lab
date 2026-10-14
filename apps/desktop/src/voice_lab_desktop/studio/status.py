@@ -9,7 +9,7 @@ One line, always there (it never moves the layout). Its sync half says, in order
   (with "Offline" before it when the PC did not answer either);
 - offline, with what is queued and when the PC last answered;
 - uploads waiting for the home-host approval (none stands for this server, D-021): "Uploads
-  need your OK", with the Approve action beside it (``Line.action``);
+  need your OK", with Approve beside it (``Line.action``);
 - the takes waiting for the PC's state after a refusal (``refreshing``);
 - otherwise what is queued and what was sent.
 
@@ -18,7 +18,9 @@ refusal) is shown instead until it is dismissed, the newest first.
 
 Each half wraps to two lines at most, so a line says its cause in a few words; what it
 leaves out is its ``detail`` (the client's whole message), which the screen shows on request
-(the sync half's Details) or in the take's place (the take half).
+(the sync half's Details) or in the take's place (the take half). Beside the sync half there
+is at most one button, so every line stays whole on the smallest window (960 × 600): Approve
+(``APPROVE``), Sync now while operations wait or the PC did not answer (``SYNC``), or Details.
 """
 
 from __future__ import annotations
@@ -35,8 +37,10 @@ type Tone = Literal["neutral", "info", "ok", "warn", "danger"]
 
 HELD: Final = "Uploads off until S-1 passes (corpus_sync)"
 NEEDS_APPROVAL: Final = "Uploads need your OK"
-#: The action a line offers beside it: Approve uploads to my PC (``approval.py``).
+#: The actions a line offers beside it: Approve uploads to my PC (``approval.py``; the
+#: approval dialog says the rest), and Sync now (a pass now).
 APPROVE: Final = "approve"
+SYNC: Final = "sync"
 NOTICE_TONES: Final[dict[str, Tone]] = {
     "changed-elsewhere": "warn",
     "change-blocked": "warn",
@@ -61,7 +65,7 @@ _CODE: Final = re.compile(r"\(([a-z_]+)\)")
 class Line:
     """A short line (``text``, at most two lines on the smallest window), when it leaves
     something out the whole message (``detail``), and the action it offers beside it
-    (``action``: ``APPROVE``, or ``""``)."""
+    (``action``: ``APPROVE``, ``SYNC``, or ``""``; never with a ``detail``)."""
 
     text: str
     tone: Tone = "neutral"
@@ -100,13 +104,12 @@ def sync_line(status: SyncStatus) -> Line:
         parts = ["Offline", *counts]
         if status.last_sync_at is not None:
             parts.append(f"last synced {_clock(status.last_sync_at)}")
-        return Line(" · ".join(parts), "neutral")
+        return Line(" · ".join(parts), "neutral", action=SYNC)
     if status.upload_needs_approval:
-        detail = f"{NEEDS_APPROVAL}: {status.upload_blocked}"
-        return Line(" · ".join([NEEDS_APPROVAL, *counts]), "warn", detail, APPROVE)
+        return Line(" · ".join([NEEDS_APPROVAL, *counts]), "warn", action=APPROVE)
     if status.refreshing:
         parts = [_count(status.refreshing, "take") + " waiting for the PC's state", *counts]
-        return Line(" · ".join(parts), "info")
+        return Line(" · ".join(parts), "info", action=SYNC)
     if status.upload_blocked and status.queued:
         return Line(
             "Uploads cannot start", "warn", f"Uploads cannot start: {status.upload_blocked}"
@@ -115,7 +118,8 @@ def sync_line(status: SyncStatus) -> Line:
     parts = [lead, *counts]
     if status.local_only:
         parts.append(f"{status.local_only:,} local-only")
-    return Line(" · ".join(parts), "ok" if lead == "Up to date" else "info")
+    action = SYNC if lead == "Waiting to sync" else ""
+    return Line(" · ".join(parts), "ok" if lead == "Up to date" else "info", action=action)
 
 
 def notice_line(notices: tuple[Notice, ...], title_of: dict[str, str]) -> Line | None:

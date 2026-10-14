@@ -38,9 +38,11 @@ this machine (D-021): a standing approval that names the PC's endpoint, its Tail
 and what may be sent, for a year. Every upload is then written into this machine's ledger
 before its first byte.
 
-Press **Approve uploads to my PC**. Status always has it (the card *Uploads to the PC*);
-Uploads shows it, and the studio's status line says *Uploads need your OK* with
-**Approve**, whenever no approval stands. The app fills in everything:
+Press **Approve uploads to my PC**. Status always has it (the card *Uploads to the PC*).
+Uploads shows it while no approval stands for the server (and in an approval's last 30 days).
+The studio offers it too, with `corpus_sync` on: once a sync pass has reached the PC and
+found no approval for the server, its status line says *Uploads need your OK* with
+**Approve** (unless a notice or a sign-in takes the line). The app fills in everything:
 
 - the endpoint: the host of the server in Settings, lowercased;
 - the tailnet and the node: from Tailscale on this machine (`tailscale status --json`, the
@@ -58,6 +60,11 @@ and node writes nothing and says so. An approval that has expired, names another
 lacks a class, or expires within 30 days is replaced by a new one (the old file stays;
 Status and Uploads offer the renewal in its last 30 days). Before each upload the app still
 checks, through Tailscale, that the node answering is the approved one.
+
+One change the app cannot see without asking Tailscale: a PC that got a new Tailscale node (a
+reinstall). Its approval still looks fine, so nothing says *Uploads need your OK*; uploads
+fail their identity check instead. Press **Approve uploads to my PC** on Status: it asks
+Tailscale, finds the new node and replaces the approval.
 
 The library is the app's own: `~/.local/share/voice-lab-desktop/library` (Linux) or
 `~/Library/Application Support/voice-lab-desktop/library` (macOS), where its ledger lives too.

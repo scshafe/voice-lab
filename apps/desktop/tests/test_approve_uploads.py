@@ -7,6 +7,7 @@ loopback stand-in (``home_rig``), Tailscale recorded answers (``tailscale_fakes`
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections.abc import Iterator
 from datetime import timedelta
@@ -150,7 +151,7 @@ def test_uploads_offer_approve_and_send_what_waits(
     assert text(approve_window, "approveEndpoint") == ENDPOINT
     assert text(approve_window, "approveNode") == NODE
     assert text(approve_window, "approveClasses").startswith("capture (takes, prompted")
-    until = (utc_now() + timedelta(days=365)).date().isoformat()
+    until = logic.local_date(utc_now() + timedelta(days=365))  # in local time
     assert text(approve_window, "approveExpires") == f"{until} (365 days)"
     assert text(approve_window, "approveBy") == "Cole"  # the sign-in names no one
     assert approve_window.items("approveConfirm")[0].isVisible()
@@ -188,7 +189,7 @@ def test_status_offers_approve_and_says_why_not(
     tailscale.answers[:] = [NOT_RUNNING]
     click(approve_window, "statusApprove")
     dialog_open(qtbot, approve_window)
-    assert not approval.canApprove and approval.dialogTitle == "Uploads are not approved"
+    assert not approval.canApprove and approval.dialogTitle == "Nothing was approved"
     assert approval.dialogText.startswith("Tailscale is not running on this machine")
     assert not approve_window.items("approveConfirm")[0].isVisible()
     assert not approve_window.items("approveFields")[0].isVisible()
@@ -246,16 +247,23 @@ def test_the_approval_model_at_its_edges(
     approval.begin()
     dialog_open(qtbot, approve_window)
     assert tailscale.calls == [["status", "--json"], ["whois", "--json", "100.64.0.7"]]
-    # Approved elsewhere meanwhile (the CLI, another window): Approve writes nothing more.
+    # Approved elsewhere meanwhile (the CLI, another window): Approve writes nothing more,
+    # and what waits is sent now all the same.
     again(tailscale)
+    library = data_dir / "library"
     elsewhere = logic.propose(
-        data_dir / "library", SERVER_URL, now=utc_now(), resolver_factory=tailscale.factory
+        library, SERVER_URL, now=utc_now(), resolver_factory=tailscale.factory
     )
-    assert logic.confirm(data_dir / "library", elsewhere, now=utc_now()).written
+    assert logic.confirm(
+        elsewhere, server_url=SERVER_URL, library_dir=library, now=utc_now()
+    ).written
     seen = toasts(approve_window)
+    fired: list[str] = []
+    approval.approved.connect(lambda: fired.append("approved"))
     press(qtbot, approve_window, "approveConfirm")
     qtbot.waitUntil(lambda: bool(seen), timeout=10000)
     assert seen[-1][0].endswith("nothing was written.") and len(approval_files(data_dir)) == 1
+    assert fired == ["approved"]
     # The library stopped being private between the dialog and Approve: the dialog says why.
     other = data_dir.parent / "other-library"
     model.context.set_config(  # another data dir, the same server
@@ -267,13 +275,79 @@ def test_the_approval_model_at_its_edges(
     again(tailscale)
     approval.begin()
     dialog_open(qtbot, approve_window)
-    library = other / "library"
-    library.mkdir(parents=True, mode=0o755)
-    library.chmod(0o755)
+    unsafe = other / "library"
+    unsafe.mkdir(parents=True, mode=0o755)
+    unsafe.chmod(0o755)
     approve_window.items("approveConfirm")[0].clicked.emit()
     qtbot.waitUntil(lambda: not approval.busy and not approval.canApprove, timeout=10000)
     assert approval.dialogOpen and approval.dialogText.startswith("This app's library cannot")
     press(qtbot, approve_window, "approveCancel")
-    # Anything but a refusal is a bug, and is raised.
-    with pytest.raises(RuntimeError, match="a bug"):
-        approval._refused(RuntimeError("a bug"))
+
+
+def test_an_unexpected_failure_closes_approve_and_is_raised(
+    qtbot: Any, approve_window: Window, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    approval = approve_window.model.approval
+    approval.begin()
+    dialog_open(qtbot, approve_window)
+
+    def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr(logic, "confirm", broken)
+    with qtbot.captureExceptions() as raised:
+        approve_window.items("approveConfirm")[0].clicked.emit()
+        qtbot.waitUntil(lambda: not approval.busy, timeout=10000)
+    assert [type(error) for _kind, error, _trace in raised] == [RuntimeError]
+    # The dialog says something failed, with Close only: no Approve is left that does nothing.
+    assert approval.dialogOpen and not approval.canApprove
+    assert approval.dialogTitle == "Nothing was approved"
+    assert approval.dialogText == "Something failed: RuntimeError."
+    assert not approve_window.items("approveConfirm")[0].isVisible()
+    press(qtbot, approve_window, "approveCancel")
+
+
+def test_settings_saved_meanwhile_drop_the_proposal(
+    qtbot: Any, approve_window: Window, tailscale: FakeTailscale, data_dir: Path
+) -> None:
+    """A proposal is for the server and the library it was made for: saved Settings drop one
+    being made or shown, and Approve refuses one the settings no longer match."""
+    model = approve_window.model
+    approval = model.approval
+    seen = toasts(approve_window)
+    home_server = model.context.config
+    other_server = dataclasses.replace(home_server, server_url="https://other-pc.example.ts.net")
+    # Saved while Tailscale is asked: its answer is for the old server; no dialog opens.
+    approval.begin()
+    model.context.set_config(other_server)
+    qtbot.waitUntil(lambda: not approval.busy, timeout=10000)
+    assert not approval.dialogOpen and seen[-1] == (logic.STALE, "info")
+    # Saved while the dialog shows the old server: it closes; nothing is written.
+    model.context.set_config(home_server)
+    again(tailscale)
+    approval.begin()
+    dialog = dialog_open(qtbot, approve_window)
+    assert approval.endpoint == ENDPOINT
+    model.context.set_config(other_server)
+    qtbot.waitUntil(lambda: not dialog.property("visible"), timeout=10000)
+    assert not approval.dialogOpen and seen[-1] == (logic.STALE, "info")
+    # Saved while a refusal shows: it closes too (nothing was proposed, so nothing to say).
+    shown = len(seen)
+    tailscale.answer(NOT_RUNNING)
+    approval.begin()
+    dialog = dialog_open(qtbot, approve_window)
+    assert not approval.canApprove
+    model.context.set_config(other_server)
+    qtbot.waitUntil(lambda: not dialog.property("visible"), timeout=10000)
+    assert len(seen) == shown
+    # The settings moved without a save being heard: Approve refuses, and says why.
+    model.context.set_config(home_server)
+    again(tailscale)
+    approval.begin()
+    dialog_open(qtbot, approve_window)
+    approval.server = lambda: "https://other-pc.example.ts.net"
+    approve_window.items("approveConfirm")[0].clicked.emit()
+    qtbot.waitUntil(lambda: not approval.busy and not approval.canApprove, timeout=10000)
+    assert approval.dialogOpen and approval.dialogText == logic.STALE
+    press(qtbot, approve_window, "approveCancel")
+    assert approval_files(data_dir) == []

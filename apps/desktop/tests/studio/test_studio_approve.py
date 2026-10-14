@@ -1,11 +1,13 @@
 """The studio says plainly when uploads wait for the home-host approval (D-021): "Uploads need
 your OK", with Approve beside it (the app's approval dialog), instead of a take that only
 looks queued; Approve writes and binds the approval in this app's library and syncs at once,
-so the take goes. Sync now runs a pass. The PC is the loopback stand-in (``corpus_rig``),
-Tailscale recorded answers (``tailscale_fakes``)."""
+so the take goes. Sync now runs a pass while operations wait. Neither works while a take is
+being recorded. The PC is the loopback stand-in (``corpus_rig``), Tailscale recorded answers
+(``tailscale_fakes``)."""
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +22,7 @@ from cole_voice_lab.models import utc_now
 from cole_voice_lab.paths import AssetLayout
 
 from .conftest import open_studio, ready, studio_app, wait_phase
-from .test_studio_screen import click, take_one
+from .test_studio_screen import click, drawn
 
 
 def test_uploads_need_your_ok_then_approve_sends_the_take(
@@ -37,17 +39,25 @@ def test_uploads_need_your_ok_then_approve_sends_the_take(
             qtbot.waitExposed(window.root)
             ready(qtbot, model)
             studio = model.studio
-            # Nothing is approved in this app's library: the line says so, with Approve.
+            # Nothing is approved in this app's library: the line says so, with Approve in
+            # Details' place.
             qtbot.waitUntil(lambda: studio.syncAction == "approve", timeout=10000)
             assert (studio.syncText, studio.syncTone) == ("Uploads need your OK", "warn")
-            assert studio.syncDetail.startswith(
-                "Uploads need your OK: no home-host approval is bound on this machine yet"
-            )
             approve = window.find("studioApprove")
-            assert approve.property("visible") and window.find("studioDetails").property("visible")
-            take_one(qtbot, window, recorder)
+            assert approve.property("visible") and approve.property("enabled")
+            assert not window.find("studioDetails").property("visible")
+            assert not window.find("studioSyncNow").property("visible")
+            # While a take is recorded, Approve waits.
+            click(window, "studioRecord")
+            qtbot.waitUntil(lambda: len(recorder.takes) == 1, timeout=5000)
+            recorder.last.advance(12_000)
+            wait_phase(qtbot, studio, "recording")
+            assert approve.property("visible") and not approve.property("enabled")
+            click(window, "studioRecord")
+            wait_phase(qtbot, studio, "review")
             click(window, "studioSave")
             wait_phase(qtbot, studio, "ready")
+            assert approve.property("enabled")
             # The take and its Save wait, and the line says why (not just "queued").
             qtbot.waitUntil(
                 lambda: studio.syncText == "Uploads need your OK · 2 queued", timeout=10000
@@ -55,7 +65,6 @@ def test_uploads_need_your_ok_then_approve_sends_the_take(
             sync = window.find("studioSyncText")
             qtbot.waitUntil(lambda: sync.property("text") == studio.syncText, timeout=5000)
             assert not sync.property("truncated")
-            # Sync now: a pass now, through the corpus client.
             calls: list[str] = []
             sync_now = studio.client.sync_now
 
@@ -64,8 +73,6 @@ def test_uploads_need_your_ok_then_approve_sends_the_take(
                 sync_now()
 
             studio.client.sync_now = counted  # type: ignore[method-assign]
-            click(window, "studioSyncNow")
-            assert calls == ["sync"]
             # Approve: the dialog shows what is written; pressing Approve writes it, and the
             # app syncs at once, so the take goes.
             click(window, "studioApprove")
@@ -79,7 +86,7 @@ def test_uploads_need_your_ok_then_approve_sends_the_take(
             assert window.items("approveNode")[0].property("text") == NODE
             window.items("approveConfirm")[0].clicked.emit()
             qtbot.waitUntil(lambda: not dialog.property("visible"), timeout=10000)
-            assert calls == ["sync", "sync"]
+            assert calls == ["sync"]
             qtbot.waitUntil(lambda: screen.property("keysEnabled"), timeout=5000)
             qtbot.waitUntil(lambda: studio.client.status().sent == 2, timeout=30000)
             qtbot.waitUntil(lambda: studio.syncText == "Up to date · 2 sent", timeout=30000)
@@ -88,5 +95,21 @@ def test_uploads_need_your_ok_then_approve_sends_the_take(
                 AssetLayout.validate(data_dir / "library"), now=utc_now()
             )
             assert (stored.endpoint, stored.node_stable_id) == (ENDPOINT, NODE)
+            # Sync now, beside what waits for the PC: a pass now, through the corpus client;
+            # it too waits while a take is recorded.
+            waiting = dataclasses.replace(studio.client.status(), offline=True, queued=1)
+            studio.client.status = lambda **_: waiting  # type: ignore[method-assign]
+            studio._client_changed()
+            qtbot.waitUntil(lambda: window.find("studioSyncNow").property("visible"))
+            drawn(qtbot, window)  # laid out beside the line
+            click(window, "studioSyncNow")
+            assert calls == ["sync", "sync"]
+            click(window, "studioRecord")
+            qtbot.waitUntil(lambda: len(recorder.takes) == 2, timeout=5000)
+            recorder.last.advance(4_800)
+            wait_phase(qtbot, studio, "recording")
+            assert not window.find("studioSyncNow").property("enabled")
+            click(window, "studioRecord")
+            wait_phase(qtbot, studio, "review")
     finally:
         model.shutdown()

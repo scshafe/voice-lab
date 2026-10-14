@@ -677,9 +677,11 @@ Item {
 
         // -- the status line: the take on the left, the sync (or a notice) on the right ----------
         // Each half wraps to two lines, so the cause of a failure or a refusal stays in view.
-        // Beside the sync: Approve while uploads wait for the home-host approval (the app's
-        // `approval` model opens its dialog), Details when the line leaves something out, and
-        // Sync now (a pass now).
+        // Beside the sync, one button at most (studio/status.py), so the line stays whole on the
+        // smallest window: Approve while uploads wait for the home-host approval (the app's
+        // `approval` model opens its dialog), Sync now while operations wait or the PC did not
+        // answer, or Details when the line leaves something out. Approve and Sync now wait
+        // while a take is being recorded or saved.
         Item {
             objectName: "studioStatus"
             x: studio.inset
@@ -703,10 +705,10 @@ Item {
             SuiText {
                 objectName: "studioSyncText"
                 anchors.right: syncActions.left
-                anchors.rightMargin: SuiTheme.spaceXs
+                anchors.rightMargin: syncActions.width > 0 ? SuiTheme.spaceXs : 0
                 anchors.top: parent.top
                 width: Math.floor(parent.width * 0.55) - SuiTheme.spaceSm
-                    - syncActions.width - SuiTheme.spaceXs
+                    - (syncActions.width > 0 ? syncActions.width + SuiTheme.spaceXs : 0)
                 height: parent.height
                 horizontalAlignment: Text.AlignRight
                 verticalAlignment: Text.AlignVCenter
@@ -728,7 +730,7 @@ Item {
                     text: "Approve"
                     variant: "primary"
                     visible: studio.rec.syncAction === "approve"
-                    enabled: !approval.busy
+                    enabled: !approval.busy && !studio.busy
                     onClicked: approval.begin()
                 }
                 SuiButton {
@@ -743,6 +745,8 @@ Item {
                     objectName: "studioSyncNow"
                     text: "Sync now"
                     variant: "ghost"
+                    visible: studio.rec.syncAction === "sync"
+                    enabled: !studio.busy
                     onClicked: studio.rec.syncNow()
                 }
             }

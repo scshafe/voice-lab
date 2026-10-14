@@ -178,10 +178,10 @@ The right half reads the corpus client's `SyncStatus`:
 - `Uploads off until S-1 passes (corpus_sync) · N takes here` while sending is held
   (`corpus_sync = false`, the default). This is a statement, not an error.
 - `Offline · N queued · M sent · last synced HH:MM`.
-- `Uploads need your OK · N queued` while no home-host approval stands in this machine's
-  library for the server (none yet, expired, another PC, or without `capture`), with
-  **Approve** beside it: the app's approval dialog (FIRST-RUN.md §4). Approving syncs at
-  once.
+- `Uploads need your OK · N queued` when a pass (with `corpus_sync` on) found no home-host
+  approval for the server in this machine's library (none yet, expired, another PC, or
+  without `capture`), with **Approve** beside it: the app's approval dialog (FIRST-RUN.md
+  §4). Approving syncs at once.
 - `N takes waiting for the PC's state` after the PC refused a change and its state is read
   again.
 - Damaged takes and recordings an earlier run could not save come first.
@@ -191,8 +191,12 @@ A notice from the client takes the right half, in a few words that name its caus
 elsewhere*, *a change waits: the PC cannot read it*, *the PC refused a change
 (trim_out_of_bounds)*, *the PC refused this take*. **Details** opens the client's whole
 message, with **Dismiss**. A line that leaves something out (for example why uploads cannot
-start) has the same **Details**. **Sync now**, always at the end of the line, runs a pass now,
-operations waiting out a backoff included.
+start) has the same **Details**. **Sync now** runs a pass now, operations waiting out a
+backoff included; it is beside the line while operations wait, the PC did not answer, or
+takes wait for its state. The line has one button at most (**Approve**, **Sync now** or
+**Details**), so every line stays whole, in two lines at most, on the smallest window
+(`test_every_sync_line_is_whole_on_the_smallest_window`). **Approve** and **Sync now** wait
+while a take is being recorded or saved.
 
 ## Switching back to the session flow
 
@@ -257,7 +261,7 @@ parity off in step 10, on the real Mac, after S-1 (step 8).
 | A text-size choice | yes | `test_the_text_size_is_chosen_and_kept` |
 | Script card: PROMPT · READ ALOUD, or INSTRUCTIONS for silent prompts | yes | `test_the_category_alone_decides_what_is_read_aloud` (silent kinds as a unit test: the rig's catalog has no room tone), `test_the_longest_prompt_is_shown_whole` (each reading size, 960×600 and 1440×900) |
 | Take picker, waveform, trim row, timer, playback row | yes | `test_the_picker_lists_this_machines_and_the_pcs_takes`, `test_zoom_and_fit`, `test_trims_save_and_reset…`, `test_steps_of_a_tenth_of_a_second` |
-| 56 pt Record/Stop footer and a status line | yes | `test_transport_never_moves_the_layout`, `test_the_sync_line_for_each_state`, `test_nothing_is_cut_off_on_the_smallest_window` |
+| 56 pt Record/Stop footer and a status line | yes | `test_transport_never_moves_the_layout`, `test_the_sync_line_for_each_state`, `test_nothing_is_cut_off_on_the_smallest_window`, `test_every_sync_line_is_whole_on_the_smallest_window` |
 | Transport state never moves the layout | yes | `test_transport_never_moves_the_layout` (with and without the sync line's Details), `test_transport_and_review_never_move_the_layout` (two window sizes, every region inside the content area), `test_the_longest_prompt_is_shown_whole` |
 | The live waveform while recording | yes | `test_the_live_waveform_while_recording` (from the worker's partial WAV) |
 | Take actions: Retake, Remove, Reject (with a reason), Restore | yes | `test_retake_keeps_the_earlier_take_as_a_draft…`, `test_a_good_take_is_never_discarded`, `test_each_decision_goes_through_the_client`, `test_reject_without_a_reason_is_impossible`, `test_takes_recorded_elsewhere_are_decided_and_trimmed_here`, `test_restore_asks_when_what_came_before_is_not_known` |
