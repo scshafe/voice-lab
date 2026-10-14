@@ -500,10 +500,10 @@ struct RecordingWorkspaceTests {
         // SwiftUI's accessibility nodes answer the informal NSAccessibility selectors without declaring the protocol.
         @discardableResult func visit(_ element: AnyObject, depth: Int) -> [String] {
             guard depth < 40 else { return [] }
-            let label = (element.accessibilityLabel?() ?? nil) ?? ""
-            let value = element.perform?(#selector(NSAccessibilityElement.accessibilityValue))?.takeUnretainedValue() as? String ?? ""
-            var texts = [label, (element.accessibilityTitle?() ?? nil) ?? "", value].filter { !$0.isEmpty }
-            let identifier = element.accessibilityIdentifier?() ?? ""
+            let label = accessibilityText(element, #selector(NSAccessibilityElement.accessibilityLabel))
+            let value = accessibilityText(element, #selector(NSAccessibilityElement.accessibilityValue))
+            var texts = [label, accessibilityText(element, #selector(NSAccessibilityElement.accessibilityTitle)), value].filter { !$0.isEmpty }
+            let identifier = accessibilityText(element, #selector(NSAccessibilityElement.accessibilityIdentifier))
             // Key-value coding reaches the struct-valued frame getter, which `perform` cannot return.
             let object = element as? NSObject
             let frame = object?.responds(to: NSSelectorFromString("accessibilityFrame")) == true
@@ -527,5 +527,16 @@ struct RecordingWorkspaceTests {
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: root)
         #expect(throws: NativeCaptureFailure.self) { try NativeCaptureStorage.preflight(assetRoot: alias) }
         #expect(throws: NativeCaptureFailure.self) { try NativeCaptureStorage.preflight(assetRoot: root, maximumFrames: 0) }
+    }
+}
+
+/// An accessibility string of `element` by its informal selector, or "" when it has none.
+/// Bridging the reply as `String` traps on macOS 27, where SwiftUI may answer an `NSAttributedString`.
+@MainActor func accessibilityText(_ element: AnyObject, _ selector: Selector) -> String {
+    guard let object = element as? NSObject, object.responds(to: selector) else { return "" }
+    switch object.perform(selector)?.takeUnretainedValue() {
+    case let text as NSAttributedString: return text.string
+    case let text as String: return text
+    default: return ""
     }
 }

@@ -8,6 +8,7 @@ The remaining tests pin the JavaScript semantics the port reproduces.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from datetime import UTC, datetime
@@ -177,7 +178,13 @@ def test_listing_keeps_regular_m4a_files_only_and_applies_the_limit(tmp_path: Pa
 
 
 def test_a_name_that_is_not_utf8_fails_the_listing_as_in_node(tmp_path: Path) -> None:
-    with open(os.fsencode(tmp_path) + b"/x\xff.m4a", "wb") as handle:
+    try:
+        handle = open(os.fsencode(tmp_path) + b"/x\xff.m4a", "wb")
+    except OSError as error:
+        if error.errno != errno.EILSEQ:
+            raise
+        pytest.skip("the file system refuses a name that is not UTF-8 (APFS on macOS 27)")
+    with handle:
         handle.write(b"abc")
     with pytest.raises(FileNotFoundError):
         list_corpus_entries(tmp_path)

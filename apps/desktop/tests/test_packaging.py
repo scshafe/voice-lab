@@ -146,6 +146,7 @@ def test_the_command_is_found_on_path_or_is_the_running_one(
     assert desktop_entry.installed_executable(str(running)) == linked
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="macOS refuses a desktop entry (tested above)")
 def test_the_command_line_installs_into_xdg_data_home_and_says_how_to_remove_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

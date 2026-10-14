@@ -42,6 +42,7 @@ from vault_binding_fixtures import (
     write_library_file,
 )
 
+import cole_voice_lab.canonical as canonical_module
 import cole_voice_lab.storage_binding as binding_module
 from cole_voice_lab.cli import main
 from cole_voice_lab.library_generations import (
@@ -61,6 +62,7 @@ from cole_voice_lab.storage_contracts import (
 from cole_voice_lab.storage_server import VaultServer
 
 REAL_KEYCHAIN_CLIENT = binding_module.keychain_client
+HOST_PLATFORM = sys.platform
 DESTINATIONS = ("laptop", "air")
 
 
@@ -69,6 +71,8 @@ def _linux_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("COLE_VOICE_LAB_ASSET_ROOT", raising=False)
     monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
     monkeypatch.setattr(sys, "platform", "linux")
+    # The credentials are Linux's; the file system's no-replace rename stays the host's.
+    monkeypatch.setattr(canonical_module, "_system_platform", lambda: HOST_PLATFORM)
 
 
 @pytest.fixture(autouse=True)

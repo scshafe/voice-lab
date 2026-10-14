@@ -110,10 +110,10 @@ struct RecordingSpeakTests {
         var nodes: [Node] = []
         @discardableResult func visit(_ element: AnyObject, depth: Int) -> [String] {
             guard depth < 40 else { return [] }
-            let label = (element.accessibilityLabel?() ?? nil) ?? ""
-            let value = element.perform?(#selector(NSAccessibilityElement.accessibilityValue))?.takeUnretainedValue() as? String ?? ""
-            var texts = [label, (element.accessibilityTitle?() ?? nil) ?? "", value].filter { !$0.isEmpty }
-            let identifier = element.accessibilityIdentifier?() ?? ""
+            let label = accessibilityText(element, #selector(NSAccessibilityElement.accessibilityLabel))
+            let value = accessibilityText(element, #selector(NSAccessibilityElement.accessibilityValue))
+            var texts = [label, accessibilityText(element, #selector(NSAccessibilityElement.accessibilityTitle)), value].filter { !$0.isEmpty }
+            let identifier = accessibilityText(element, #selector(NSAccessibilityElement.accessibilityIdentifier))
             let object = element as? NSObject
             let enabled = object?.responds(to: NSSelectorFromString("isAccessibilityEnabled")) == true
                 ? (object?.value(forKey: "accessibilityEnabled") as? Bool ?? true) : true
