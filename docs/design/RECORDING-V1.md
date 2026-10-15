@@ -522,5 +522,7 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   - the parent measuring every sample's level, at about 19 ms per second of audio, to check a
     digest and a frame count (`identify_canonical_wav` now).
 
-  With the simulated device on the PC, the median went from 218 ms to 145 ms. A new S-1 run on
-  the Air will show its p95.
+  With the simulated device on the PC, the median went from 218 ms to 145 ms. On the Air, S-1
+  at `f0e54ad` passed again, and the row now passes too: p95 293.8 ms against 300 (339.8 ms
+  before), median 289.9 ms. Every other performance row passes as well. D-040 has the numbers;
+  the margin is thin.

@@ -1144,6 +1144,28 @@ the take would remove most of the 98 ms, but would put Python work beside the au
 only an S-1 run could show that harmless. Whether the Air's p95 is now within 300 ms is for a
 new S-1 run there to say, and that run is the owner's.
 
+Amended 2026-10-15, later: the Air's new run. The Mac agent re-ran S-1 on the Air for the
+owner, with the UMIK-1 and the defaults, at commit `f0e54ad` (`main`, #76), on macOS 27.0.1.
+It passed again, with the same continuity: 43 of 43 takes successful and re-validated, largest
+ADC deviation 1.736 frames, no overflow or underflow, an ADC time on every block. Every
+performance row the harness measures now passes:
+
+- stop to sealed review p95 293.8 ms (target 300; 339.8 ms at `bbc269f`). Over the 40 takes
+  of at most 30 s, the median is 289.9 ms, the smallest 237.3 ms and the largest 299.0 ms. The
+  1 s and 3 s takes are alike (medians 289.4 and 290.2 ms);
+- record to first confirmed frames p95 243.8 ms (target 250);
+- cold device start p95 261.0 ms (750);
+- stop reaches the controller p95 0.13 ms (50);
+- worker memory growth 19.8 MB (64 MiB);
+- timer/frame agreement exact.
+
+Two rows are within about 6 ms of their targets: stop to sealed review and record to first
+confirmed frames. The Air's stop is about twice the PC's simulated 145 ms, and it doesn't grow
+with the take, so what remains there is a fixed cost. Where it goes on the Air wasn't measured,
+because the breakdown was to run only if the row still failed. Importing the evidence contract
+during the take stays undone. It is needed only if the row fails again, and it would need its
+own S-1 run.
+
 ## D-041 — Packaging the desktop app (spike S-7)
 
 Recorded 2026-10-11 (phase 4c; design §6.3). **Linux**: the uv tool (`uv tool install
