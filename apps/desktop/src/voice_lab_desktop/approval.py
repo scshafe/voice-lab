@@ -27,7 +27,8 @@ approval the dialog showed, under the digest the proposal carries, through
 another server or library since (``still_current``). ``standing`` says, from the library
 alone, whether uploads wait for an approval; it cannot see a node that changed (a reinstalled
 PC), which only Tailscale knows: uploads then fail their identity check, and Approve (which
-asks Tailscale) replaces the approval. Dates are shown in local time (``local_date``).
+asks Tailscale) replaces the approval. Expiries are shown in local time, with the zone
+(``local_time``).
 
 The CLI (``voice-lab home-host approve``) stays the headless way. The Swift app's library
 (``~/.local/share/cole-voice-lab``) is never read here: an approval and its ledger belong to
@@ -149,9 +150,11 @@ class Standing:
     approval: HomeHostApproval | None = None
 
 
-def local_date(moment: datetime) -> str:
-    """``moment``'s date in this machine's time zone (every date the approval UI shows)."""
-    return moment.astimezone().date().isoformat()
+def local_time(moment: datetime) -> str:
+    """``moment`` in this machine's time zone, to the minute and with the zone (every expiry
+    the approval UI shows): a date alone read a day early west of UTC, beside the CLI's
+    ``…T00:00:00Z``."""
+    return moment.astimezone().strftime("%Y-%m-%d %H:%M %Z")
 
 
 def classes_text(classes: Collection[str]) -> str:
@@ -314,7 +317,7 @@ def _replaces(current: HomeHostApproval, destination: Destination) -> str:
     if missing:
         nouns = " and ".join(home_host.CLASS_NOUNS[c] for c in missing)
         return f"It replaces the approval {old}, which does not cover {nouns}."
-    return f"It renews the approval {old}, which expires on {local_date(current.expires_at)}."
+    return f"It renews the approval {old}, which expires on {local_time(current.expires_at)}."
 
 
 def _library_refused(exc: BaseException) -> ApprovalRefused:
@@ -441,7 +444,7 @@ def standing(library_dir: Path, server_url: str, *, now: datetime) -> Standing:
             current,
         )
     approved = (
-        f"Uploads to {current.endpoint} are approved until {local_date(current.expires_at)} "
+        f"Uploads to {current.endpoint} are approved until {local_time(current.expires_at)} "
         f"(approval {current.approval_id})"
     )
     if current.expires_at - now <= RENEW_WITHIN:

@@ -163,10 +163,13 @@ Window {
         ]
     }
 
+    // Top right: at the bottom, a toast would cover the Studio's status line and its Sync now,
+    // Approve or Details button for as long as it shows.
     SuiToastHost {
         id: toasts
         objectName: "toasts"
         anchors.fill: parent
+        alignment: Qt.AlignTop | Qt.AlignRight
         z: 100
     }
 }

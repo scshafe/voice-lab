@@ -195,7 +195,7 @@ class ApprovalModel(ViewModel):
             endpoint=made.endpoint,
             nodeId=made.node_stable_id,
             classesText=approval.classes_text(made.classes),
-            expiresText=f"{approval.local_date(made.expires_at)} ({approval.APPROVAL_DAYS} days)",
+            expiresText=f"{approval.local_time(made.expires_at)} ({approval.APPROVAL_DAYS} days)",
             approvedBy=made.approved_by,
             reasonText=proposal.reason,
         )
@@ -233,7 +233,7 @@ class ApprovalModel(ViewModel):
             self.refresh()
             self.toast.emit(
                 f"Uploads to {made.endpoint} are approved until "
-                f"{approval.local_date(made.expires_at)} (approval {made.approval_id}).",
+                f"{approval.local_time(made.expires_at)} (approval {made.approval_id}).",
                 "ok",
             )
         else:
@@ -250,7 +250,7 @@ class ApprovalModel(ViewModel):
         self.refresh()
         self.toast.emit(
             f"Uploads to {standing.endpoint} are approved already, until "
-            f"{approval.local_date(standing.expires_at)} (approval {standing.approval_id}); "
+            f"{approval.local_time(standing.expires_at)} (approval {standing.approval_id}); "
             "nothing was written.",
             "info",
         )

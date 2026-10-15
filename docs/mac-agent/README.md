@@ -51,6 +51,12 @@ agent.
    it, and the microphone permission you grant an app survives rebuilds. Without it, builds
    are signed ad-hoc and macOS asks again after each one.
 
+   The sign-in voice-lab.app keeps in the keychain is different. The first time each new
+   build reads it, macOS asks for your login password ("voice-lab wants to access key
+   'voice-lab-desktop'"): choose **Always Allow**. This happens once per installed build. The
+   identity has no Apple team ID, so the keychain seems to tie the item to each build's own
+   code rather than to the certificate.
+
 ## Day to day
 
 ```sh
