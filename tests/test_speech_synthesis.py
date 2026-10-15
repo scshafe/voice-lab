@@ -1102,6 +1102,7 @@ def test_unreadable_run_records_are_left_to_the_worker(speech: Speech, speaking:
     assert failed.run_id is None and failed.reference_run_id is None
 
 
+@pytest.mark.serial
 def test_a_speak_request_past_its_deadline_is_killed_with_its_output(
     speech: Speech, speaking: Any
 ) -> None:
