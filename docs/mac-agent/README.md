@@ -51,11 +51,18 @@ agent.
    it, and the microphone permission you grant an app survives rebuilds. Without it, builds
    are signed ad-hoc and macOS asks again after each one.
 
-   The sign-in voice-lab.app keeps in the keychain is different. The first time each new
-   build reads it, macOS asks for your login password ("voice-lab wants to access key
-   'voice-lab-desktop'"): choose **Always Allow**. This happens once per installed build. The
-   identity has no Apple team ID, so the keychain seems to tie the item to each build's own
-   code rather than to the certificate.
+   That certificate has no Apple team ID, so the sign-in voice-lab.app keeps in the
+   keychain is tied to each build's own code: every new build asks for your login password
+   ("voice-lab wants to access key 'voice-lab-desktop'") before it can read it. Step 5 ends
+   that.
+5. A free Apple Development certificate (D-054), recommended. In Xcode, open Settings →
+   Accounts, add your Apple ID (Xcode makes a free Personal Team), then **Manage
+   Certificates… → + → Apple Development**. `scripts/mac-refresh` prefers it over
+   `voice-lab local signing` whenever the keychains hold one; check with
+   `security find-identity -v -p codesigning`. The first build signed with it asks once for
+   the microphone and once for the keychain sign-in (**Always Allow**). Later builds ask for
+   neither, because both are tied to the team rather than to one build. The certificate lasts
+   about a year; Xcode renews it from the same screen.
 
 ## Day to day
 

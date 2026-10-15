@@ -12,9 +12,11 @@ One run, from a clean checkout (docs/mac-agent/README.md):
 2. the checkout's ``.venv`` (Homebrew's Python 3.12, ``pip install -e '.[dev]'``);
 3. ``scripts/verify``, which on macOS also builds and tests the Swift app (skip with
    ``--skip-verify``); a failure stops the run;
-4. the signing identity: ``voice-lab local signing`` when the keychains hold it
-   (``scripts/mac-signing-identity``, D-043), so microphone permission survives rebuilds;
-   else ad-hoc (macOS asks again after each build); or ``--signing-identity``;
+4. the signing identity: an ``Apple Development`` certificate when the keychains hold one
+   (Xcode's free Personal Team, D-054), so the microphone permission and the keychain sign-in
+   survive rebuilds; else ``voice-lab local signing`` (``scripts/mac-signing-identity``,
+   D-043), which keeps the microphone permission only; else ad-hoc (macOS asks again after
+   each build); or ``--signing-identity``;
 5. the Swift app (``scripts/build-native-recording-app``, with the private build settings
    from ``--native-settings``; skipped when there are none), then its release verified;
 6. voice-lab-desktop's bundle (``scripts/build-desktop-bundle``);
@@ -55,6 +57,9 @@ SECURITY: Final = "/usr/bin/security"
 CODESIGN: Final = "/usr/bin/codesign"
 DITTO: Final = "/usr/bin/ditto"
 IDENTITY_NAME: Final = "voice-lab local signing"
+#: A free Apple Development certificate (Xcode's Personal Team) has a Team ID, so a keychain
+#: item a build is allowed to read stays readable by the next build (D-054); preferred.
+TEAM_IDENTITY_PREFIX: Final = "Apple Development: "
 AD_HOC: Final = "-"
 NATIVE_APP: Final = "Cole Voice Recorder Preview.app"
 DESKTOP_APP: Final = "voice-lab.app"
@@ -334,7 +339,16 @@ class Refresh:
             self.report["signing_identity"] = {"identity": chosen, "source": "--signing-identity"}
             return chosen
         listed = self.run((SECURITY, "find-identity", "-v", "-p", "codesigning"), REPO, None)
-        identity = valid_identities(listed.stdout).get(IDENTITY_NAME)
+        identities = valid_identities(listed.stdout)
+        team = [name for name in identities if name.startswith(TEAM_IDENTITY_PREFIX)]
+        if team:
+            self.report["signing_identity"] = {
+                "identity": identities[team[0]],
+                "name": team[0],
+                "source": "keychain (Apple Development)",
+            }
+            return identities[team[0]]
+        identity = identities.get(IDENTITY_NAME)
         if identity is None:
             print(
                 f"# no {IDENTITY_NAME!r} in the keychains: signing ad-hoc, so macOS asks for the "
@@ -567,8 +581,8 @@ def parse(argv: Sequence[str] | None) -> Options:
     ap.add_argument("--applications", type=Path, default=Path("/Applications"))
     ap.add_argument(
         "--signing-identity",
-        help=f"'-' (ad-hoc), or a certificate's SHA-1 or name (default: {IDENTITY_NAME!r} "
-        "when the keychains hold it, else ad-hoc)",
+        help="'-' (ad-hoc), or a certificate's SHA-1 or name (default: an Apple Development "
+        f"certificate when the keychains hold one, else {IDENTITY_NAME!r}, else ad-hoc)",
     )
     ap.add_argument("--allow-non-main-install", action="store_true")
     ap.add_argument("--allow-downgrade", action="store_true")
@@ -611,7 +625,8 @@ def preview(options: Options, home: Path) -> None:
         "3. " + ("no scripts/verify (--skip-verify)" if options.skip_verify else "scripts/verify")
     )
     identity = options.signing_identity or (
-        f"{IDENTITY_NAME!r} if the keychains hold it, else ad-hoc"
+        f"an Apple Development certificate if the keychains hold one, else {IDENTITY_NAME!r}, "
+        "else ad-hoc"
     )
     print(f"4. signing identity: {identity}")
     if options.native:

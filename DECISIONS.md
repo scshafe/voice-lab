@@ -1750,3 +1750,35 @@ nothing is deleted.
 docs/NATIVE_RECORDING_UX.md §9 and §15 ("nothing leaves the Mac"); and RECORDING-V1.md §4's
 last paragraph, which said the exporter maps Swift takes onto the PC's take contracts: it maps
 them onto their own.
+
+## D-054 — A free Apple Development certificate signs the Mac builds
+
+Recorded 2026-10-15; amends D-043.
+
+**Why.** D-043's self-signed `voice-lab local signing` keeps a build's designated requirement
+stable (the bundle identifier plus the certificate), so a microphone grant survives rebuilds.
+The keychain is different. voice-lab.app's sign-in is a keychain item, and every newly
+installed build stopped at "voice-lab wants to access key 'voice-lab-desktop'" until Cole
+typed his login password. A certificate without a Team ID ties the item to the code of the
+build that was allowed, not to the certificate.
+
+**The check, on the Air (2026-10-15).** Two copies of the installed voice-lab.app were
+re-signed with Cole's Apple Development certificate (Team ID `FAZW6QRN35`), the second with
+one extra resource file so its code hash differed, and both kept the hardened runtime and
+entitlements. The first asked once (Always Allow). The second opened signed in, with no
+prompt.
+
+**The decision.** `scripts/mac-refresh` signs with an `Apple Development: …` identity when the
+keychains hold one, ahead of `voice-lab local signing`, which stays the fallback, then
+ad-hoc. `--signing-identity` still overrides, and the report names the identity and its
+source. The certificate comes from Xcode's free Personal Team (Settings → Accounts, Manage
+Certificates). It costs nothing (D-028). Nothing is uploaded, notarized or distributed: it
+signs builds that run on Cole's own Macs, like D-043's identity. It lasts about a year and
+Xcode renews it; the designated requirement names the certificate's common name and
+Apple's anchor, which a renewal keeps.
+
+**Consequences.** The first team-signed build of each app asks once more for the microphone
+and the keychain item; later ones ask for neither. The Swift app is signed the same way, but
+it has not yet been built team-signed (the Air has no native build settings), so its first
+such refresh is the check. Anything signed with this certificate on this Mac would share these
+apps' grants, as with D-043's key, and the key stays in the login keychain.
