@@ -11,6 +11,7 @@ import threading
 import wave
 import webbrowser
 from collections.abc import Callable, Mapping
+from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -239,6 +240,16 @@ class _CaptureConsoleHandler(BaseHTTPRequestHandler):
         *,
         extra_headers: Mapping[str, str] | None = None,
     ) -> None:
+        self._json_answer(status, value, extra_headers=extra_headers)()
+
+    def _json_answer(
+        self,
+        status: HTTPStatus,
+        value: object,
+        *,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> Callable[[], None]:
+        """``value`` encoded now (so a value JSON refuses raises here), sent when called."""
         payload = json.dumps(
             value,
             allow_nan=False,
@@ -246,7 +257,8 @@ class _CaptureConsoleHandler(BaseHTTPRequestHandler):
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
-        self._respond(
+        return partial(
+            self._respond,
             status,
             payload,
             content_type="application/json; charset=utf-8",
@@ -313,40 +325,50 @@ class _CaptureConsoleHandler(BaseHTTPRequestHandler):
             return None
         return cast(dict[str, Any], value)
 
-    def _with_engine(self, callback: Callable[[], None]) -> None:
+    def _with_engine(self, operation: Callable[[], Callable[[], None]]) -> None:
+        """Run ``operation`` under the operation lock, and answer as it says once the lock is
+        released: a client that sends its next request as soon as it holds this answer (Stop,
+        then Accept) finds the lock free, never "another capture operation is in progress"."""
         if not self.console.operation_lock.acquire(blocking=False):
             self._error(HTTPStatus.CONFLICT, "another capture operation is in progress")
             return
+        answer: Callable[[], None]
         try:
-            callback()
+            answer = operation()
         except VoiceLabError as error:
-            self._error(HTTPStatus.CONFLICT, str(error))
+            answer = partial(self._error, HTTPStatus.CONFLICT, str(error))
         except OSError:
-            self._error(HTTPStatus.CONFLICT, "capture filesystem operation failed")
+            answer = partial(
+                self._error, HTTPStatus.CONFLICT, "capture filesystem operation failed"
+            )
         except Exception:
-            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "capture console operation failed")
+            answer = partial(
+                self._error, HTTPStatus.INTERNAL_SERVER_ERROR, "capture console operation failed"
+            )
         finally:
             self.console.operation_lock.release()
+        answer()
 
-    def _state(self) -> None:
-        self._json_response(
-            HTTPStatus.OK,
-            capture_state_payload(self.console.engine.current()),
+    def _state(self) -> Callable[[], None]:
+        return self._json_answer(
+            HTTPStatus.OK, capture_state_payload(self.console.engine.current())
         )
 
-    def _preview(self) -> None:
+    def _preview(self) -> Callable[[], None]:
         payload = preview_wav_bytes(self.console.engine.preview_path())
-        self._respond(HTTPStatus.OK, payload, content_type="audio/wav")
+        return partial(self._respond, HTTPStatus.OK, payload, content_type="audio/wav")
 
-    def _post_operation(self, body: dict[str, Any]) -> None:
+    def _post_operation(self, body: dict[str, Any]) -> Callable[[], None]:
         path = self.path
         if path == "/api/take/retake":
             if set(body) != {"reason"} or not isinstance(body.get("reason"), str):
-                self._error(HTTPStatus.BAD_REQUEST, "retake requires one string reason")
-                return
+                return partial(
+                    self._error, HTTPStatus.BAD_REQUEST, "retake requires one string reason"
+                )
         elif body:
-            self._error(HTTPStatus.BAD_REQUEST, "this operation requires an empty JSON object")
-            return
+            return partial(
+                self._error, HTTPStatus.BAD_REQUEST, "this operation requires an empty JSON object"
+            )
 
         if path == "/api/take/start":
             self.console.engine.start_take()
@@ -364,14 +386,16 @@ class _CaptureConsoleHandler(BaseHTTPRequestHandler):
                 raise ContractError("capture console may shut down only after finalization")
             if self.console.shutdown_requested:
                 raise ContractError("capture console shutdown is already in progress")
+            answer = self._json_answer(HTTPStatus.OK, capture_state_payload(state))
             self.console.shutdown_requested = True
-        if path == "/api/shutdown":
-            try:
-                self._state()
-            finally:
-                threading.Thread(target=self.console.shutdown, daemon=True).start()
-        else:
-            self._state()
+            return partial(self._then_shut_down, answer)
+        return self._state()
+
+    def _then_shut_down(self, answer: Callable[[], None]) -> None:
+        try:
+            answer()
+        finally:
+            threading.Thread(target=self.console.shutdown, daemon=True).start()
 
     def _dispatch(self, method: str) -> None:
         if not self._host_is_allowed():

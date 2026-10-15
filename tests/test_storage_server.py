@@ -115,13 +115,16 @@ class Vault:
 
 
 def settle(server: VaultServer, timeout: float = 5.0) -> None:
-    """Wait (at most ``timeout`` seconds) until none of ``server``'s workers is busy."""
+    """Wait until none of ``server``'s workers is busy; fail after ``timeout`` seconds.
+
+    It holds every free worker while it waits, so a connection that arrives meanwhile is
+    refused as if all were busy: never settle while another request is meant to be served."""
     deadline = time.monotonic() + timeout
     held = 0
     try:
         for _ in range(server.config.max_workers):
             if not server._slots.acquire(timeout=max(0.0, deadline - time.monotonic())):
-                break
+                pytest.fail(f"a vault worker was still busy after {timeout} s")
             held += 1
     finally:
         for _ in range(held):
@@ -239,8 +242,11 @@ def request(
     body: bytes | None = None,
     headers: Mapping[str, str] | None = None,
     timeout: float = 5.0,
+    logged: bool = True,
 ) -> Result:
-    """One request on a fresh connection, with the usual Authorization header."""
+    """One request on a fresh connection, with the usual Authorization header. It returns once
+    its access line is written (``settle``), so the log lists sequential requests in their
+    order; ``logged=False`` returns at once, for a request made while a worker is kept busy."""
     sent = dict(headers or {})
     if token is not None:
         sent["Authorization"] = f"Bearer {token}"
@@ -252,6 +258,8 @@ def request(
         result = Result(response.status, tuple(response.getheaders()), response.read())
     finally:
         connection.close()
+    if logged:
+        settle(vault.server)  # the handler writes its line after answering (Vault.records)
     for name, value in SECURITY_HEADERS.items():
         assert result.header(name) == value, name
     assert result.header("Connection") == "close"
@@ -267,7 +275,8 @@ def raw_request(
     body: bytes = b"",
     timeout: float = 5.0,
 ) -> Result:
-    """One request whose headers are sent exactly as given (repeated or malformed)."""
+    """One request whose headers are sent exactly as given (repeated or malformed); like
+    ``request``, it returns once its access line is written."""
     host, port = vault.address
     connection = HTTPConnection(host, port, timeout=timeout)
     try:
@@ -276,9 +285,11 @@ def raw_request(
             connection.putheader(name, value)
         connection.endheaders(body if body else None)
         response = connection.getresponse()
-        return Result(response.status, tuple(response.getheaders()), response.read())
+        result = Result(response.status, tuple(response.getheaders()), response.read())
     finally:
         connection.close()
+    settle(vault.server)
+    return result
 
 
 def blob_path(digest: str, *, size: int | None = None, namespace: str = NAMESPACE) -> str:
@@ -353,7 +364,7 @@ def health_within(vault: Vault, seconds: float) -> Result:
     """The first health answer that is not a saturation refusal, or the last one tried."""
     deadline = time.monotonic() + seconds
     while True:
-        answer = request(vault, "GET", "/healthz")
+        answer = request(vault, "GET", "/healthz", logged=False)
         if answer.status == 200 or time.monotonic() >= deadline:
             return answer
         time.sleep(0.05)
@@ -1345,7 +1356,7 @@ def test_a_client_that_dribbles_its_body_gives_its_worker_back_at_the_deadline(
                 b"Content-Length: " + str(MAX_BLOB_BYTES).encode("ascii") + b"\r\n\r\n"
             )
             with dribbling(stream, 0.5):
-                held = request(vault, "GET", "/healthz")
+                held = request(vault, "GET", "/healthz", logged=False)
                 freed = health_within(vault, 6.0)
 
         assert (held.status, held.code) == (503, "STORAGE.UNAVAILABLE")
