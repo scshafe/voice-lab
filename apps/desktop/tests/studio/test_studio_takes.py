@@ -58,6 +58,7 @@ def preview(qtbot: Any, window: Window) -> Any:
     """Play the selected take; the clip the device was handed."""
     takes = window.model.studio.takes
     played = len(output(window).played)
+    qtbot.waitUntil(lambda: takes.canPlay, timeout=5000)  # loaded: Play is enabled
     takes.togglePlay()
     qtbot.waitUntil(lambda: len(output(window).played) > played, timeout=5000)
     qtbot.waitUntil(lambda: takes.playing, timeout=5000)

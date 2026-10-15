@@ -323,6 +323,7 @@ def test_directory_sync_failure_after_commit_is_reported_with_the_version_stored
     assert not store.connection.in_transaction
 
 
+@pytest.mark.serial
 def test_real_index_migrations_parse_and_apply_through_the_shared_runner(store: Store) -> None:
     names = (
         INDEX_MIGRATION_NAME,

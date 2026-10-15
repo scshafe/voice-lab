@@ -59,7 +59,7 @@ required-version = ">=0.12.21"
 cole-voice-lab = { path = "../..", editable = true }
 
 [dependency-groups]
-dev = ["pytest>=8.3,<9", "pytest-qt==4.5.0", "pytest-cov>=6,<7"]
+dev = ["pytest>=8.3,<9", "pytest-qt==4.5.0", "pytest-cov>=6,<7", "pytest-xdist==3.8.0"]
 
 # scripts/verify runs this suite on its own (`pytest -c apps/desktop/pyproject.toml`):
 # the backend's suite runs without pytest-qt, whose hooks call QApplication.instance()

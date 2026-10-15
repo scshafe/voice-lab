@@ -80,8 +80,8 @@ scripts/mac-refresh --execute --allow-network --pr 38       # a pull request, no
 
 Here is what a refresh does:
 
-- It verifies with `scripts/verify`, which takes about half an hour on the Mac. A failure
-  stops it.
+- It verifies with `scripts/verify`, which takes about 15 minutes on the Mac (the Swift
+  suites are about half of it). A failure stops it.
 - It builds both apps into `~/Library/Application Support/voice-lab/mac-refresh/runs/`.
 - With `--install`, it copies them into `/Applications`. The previous copies are kept in
   the run's `replaced/`.

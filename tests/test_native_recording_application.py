@@ -149,6 +149,7 @@ def test_malformed_macho_fails_closed(tmp_path: Path, payload: bytes) -> None:
 
 
 @macos_only.MACHO_IMAGES
+@pytest.mark.serial
 def test_real_installed_python_deployment_floor_is_measured() -> None:
     result = inspect_macho_load_commands(Path(sys.executable).resolve())
     assert result.minimum_macos is not None and result.architectures
@@ -1196,6 +1197,7 @@ def signed_native_release(native_release_catalog: Any) -> Any:
     return release
 
 
+@pytest.mark.serial
 def test_actual_signed_preview_has_frozen_service_and_permissions(
     signed_native_release: Any,
 ) -> None:
@@ -1273,6 +1275,7 @@ def test_actual_signed_preview_has_frozen_service_and_permissions(
 @pytest.mark.parametrize(
     "changed", ["typing_extensions.py", "cryptography/__about__.py"], ids=["pydantic", "vault"]
 )
+@pytest.mark.serial
 def test_actual_frozen_service_rejects_changed_dependency_with_preserved_mtime(
     signed_native_release: Any, tmp_path: Path, changed: str
 ) -> None:
@@ -1344,6 +1347,7 @@ def _launch_verification(app: Path, report: Path, *flags: str) -> Any:
     )
 
 
+@pytest.mark.serial
 def test_actual_signed_preview_reaches_useful_state_without_window_or_audio(
     signed_native_release: Any, native_release_catalog: Any, tmp_path: Path
 ) -> None:
@@ -1529,6 +1533,7 @@ def test_configured_launch_refuses_a_missing_service_and_a_changed_peer_identity
         assert json.loads((mismatch / "report.json").read_bytes())["result"] != "passed"
 
 
+@pytest.mark.serial
 def test_actual_frozen_service_rejects_an_extension_module_shadowing_its_own_source(
     signed_native_release: Any, tmp_path: Path
 ) -> None:

@@ -147,6 +147,7 @@ def test_cleanup_treats_an_unallocated_registered_container_as_absent(
         ("PortBindings", {"8080/tcp": [{"HostIp": "0.0.0.0", "HostPort": "1234"}]}),
     ],
 )
+@pytest.mark.serial
 def test_actual_container_hardening_rejects_a_relaxed_control(
     container_module: ModuleType, field: str, value: Any
 ) -> None:
@@ -157,6 +158,7 @@ def test_actual_container_hardening_rejects_a_relaxed_control(
         container_module.check_hardening(inspection, 1234)
 
 
+@pytest.mark.serial
 def test_actual_container_hardening_rejects_root(container_module: ModuleType) -> None:
     inspection = _inspection(1234)
     inspection["Config"]["User"] = "0:0"

@@ -425,6 +425,7 @@ def test_hal_discovery_returns_only_input_devices_with_owned_strings(libraries):
     assert libraries.released == [100, 101]
 
 
+@pytest.mark.serial
 def test_real_bridge_abi_allocates_multiple_buffers_and_delivers_continuous_samples(libraries):
     backend = native._AudioQueueBackend()
     buffers = native._CaptureBuffers()

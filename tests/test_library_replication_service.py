@@ -1172,6 +1172,7 @@ def test_a_worker_kills_its_own_group_when_the_service_closes_its_stdin(
 
 
 @macos_only.REAL_RECORDING_SERVICE
+@pytest.mark.serial
 def test_a_real_service_keeps_save_fast_and_unrefused_while_an_upload_is_stalled(
     package_rig: Any, tmp_path: Path
 ) -> None:

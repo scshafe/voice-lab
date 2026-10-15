@@ -87,6 +87,7 @@ def test_container_spec_refuses_a_nonprivate_token_file(
         ("missing", "prefix", "missing", "prefix"),
     ],
 )
+@pytest.mark.serial
 def test_real_http_ref_cases_are_independent_in_reverse_and_repeat_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

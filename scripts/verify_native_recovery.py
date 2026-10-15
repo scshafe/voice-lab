@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 import wave
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from cole_voice_lab.canonical import write_canonical_json
 from cole_voice_lab.paths import AssetLayout
 from cole_voice_lab.recording_contracts import NativeRecoveryReceipt
 from cole_voice_lab.recording_recovery import RecordingRecovery, _read_native_receipt
-from cole_voice_lab.recording_takes import RecordingTakeStore
+from cole_voice_lab.recording_takes import RecordingMetadataBusyError, RecordingTakeStore
 
 SUBJECT = "synthetic-subject"
 
@@ -96,6 +97,20 @@ def verify_zero_frame(directory: Path) -> dict[str, object]:
     return evidence
 
 
+def _open_store(layout: AssetLayout, *, seconds: float = 10.0) -> RecordingTakeStore:
+    """The take store, once the restarted app's service has finished its last commit: the
+    report is written before the service exits, and the store refuses (never waits) while
+    another process holds its metadata lock."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            return RecordingTakeStore(layout)
+        except RecordingMetadataBusyError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
 def verify(directory: Path) -> None:
     verify_zero_frame(directory / "zero-frame")
     layout = AssetLayout.validate(directory / "assets")
@@ -103,7 +118,7 @@ def verify(directory: Path) -> None:
     restart = json.loads(
         (directory / "native-restart" / "recovery-restart-report.json").read_text()
     )
-    store = RecordingTakeStore(layout)
+    store = _open_store(layout)
     recovery = RecordingRecovery(store, subject_id=SUBJECT)
 
     failed = crash["take_id"]

@@ -230,6 +230,7 @@ def test_overlapped_retries_without_a_checkpoint_skip_legacy_and_never_show_comp
 
 
 @pytest.mark.parametrize("change", ["unprojected", "invalid"])
+@pytest.mark.serial
 def test_actual_native_change_still_publishes_regression_before_applying(
     nav: NavigationRig,
     session: RecordingServiceSession,

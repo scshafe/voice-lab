@@ -37,6 +37,8 @@ dev = [
   "mypy>=1.15,<2",
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
+  # scripts/verify runs both suites in parallel (-n auto).
+  "pytest-xdist==3.8.0",
   "ruff>=0.11,<1",
   "PySide6-Essentials==6.11.2",
   "cryptography==50.0.1",
@@ -73,6 +75,11 @@ addopts = "--strict-config --strict-markers -ra -p no:pytest-qt"
 testpaths = ["tests", "apps/mirror/tests"]
 # Port conformance suites are test modules too (tests/catalog_conformance.py, ...).
 python_files = ["test_*.py", "*_conformance.py"]
+# scripts/verify runs the suite in parallel (-n auto), then the `serial` tests alone: a real
+# service or native process with a deadline, which a fully loaded machine can miss.
+markers = [
+    "serial: needs the machine to itself (scripts/verify runs these after the parallel pass)",
+]
 # Keep only the newest run's temp directories: a full run leaves about 100,000 files,
 # and /tmp is a shared tmpfs with an inode limit.
 tmp_path_retention_count = 1

@@ -1966,6 +1966,7 @@ def test_a_killed_service_leaves_speak_output_that_the_next_start_removes(
 
 
 @macos_only.REAL_RECORDING_SERVICE
+@pytest.mark.serial
 def test_a_real_service_speaks_while_a_take_is_saved(package_rig: Any, tmp_path: Path) -> None:
     rig, analysis, _packages = package_rig
     layout = rig.layout

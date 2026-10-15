@@ -89,6 +89,7 @@ def test_fixtures_reject_repository_world_readable_and_symlink_roots(private_roo
         require_external_private_root(alias)
 
 
+@pytest.mark.serial
 def test_real_legacy_calls_reproduce_history_scans_without_opening_device(
     private_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

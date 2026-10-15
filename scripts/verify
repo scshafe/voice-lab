@@ -25,12 +25,18 @@ if [ "$(uname -s)" = Darwin ]; then
 else
     echo "verify: not macOS; skipping the native recording app build and tests" >&2
 fi
-.venv/bin/python -I -B -m pytest --cov=cole_voice_lab --cov-report=term-missing --cov-branch
+# In parallel (pytest-xdist, one worker per core), then the `serial` tests alone: they run a
+# real service or native process against a deadline. Coverage is appended across both passes
+# and checked once, at the end.
+.venv/bin/python -I -B -m pytest -n auto -m "not serial" \
+    --cov=cole_voice_lab --cov-branch --cov-report= --cov-fail-under=0
+.venv/bin/python -I -B -m pytest -m serial \
+    --cov=cole_voice_lab --cov-branch --cov-append --cov-report=term-missing
 # The desktop app's suite runs on its own, with pytest-qt (apps/desktop/pyproject.toml): its
 # screens offscreen against a local /api/v1 on synthetic manifests, a simulated UMIK-1, and
 # no audio device. Any Qt or QML warning fails it.
 # (Named explicitly: pytest reads testpaths only when run from the rootdir.)
-.venv/bin/python -I -B -m pytest -c apps/desktop/pyproject.toml apps/desktop/tests \
+.venv/bin/python -I -B -m pytest -n auto -c apps/desktop/pyproject.toml apps/desktop/tests \
     --cov=apps/desktop/src/voice_lab_desktop --cov-config=apps/desktop/pyproject.toml \
     --cov-report=term-missing --cov-branch
 .venv/bin/python -I -B -m build --no-isolation

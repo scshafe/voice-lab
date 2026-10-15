@@ -303,6 +303,7 @@ def test_provision_rejects_existing_destination(tmp_path: Path, monkeypatch) -> 
         execute_provision_plan(plan, allow_downloads=True)
 
 
+@pytest.mark.serial
 def test_real_directory_and_wheel_artifact_validation(tmp_path: Path) -> None:
     with pytest.raises(RuntimeUnavailableError, match="cannot inspect"):
         _normalized_real_directory(tmp_path / "missing", label="fixture")

@@ -235,6 +235,7 @@ def test_recovery_wire_rejects_cross_take_scope_and_mixed_pagination() -> None:
 
 
 @macos_only.REAL_RECORDING_SERVICE
+@pytest.mark.serial
 def test_actual_service_startup_recovers_then_independently_verifies(
     rig: Rig, tmp_path: Path
 ) -> None:
@@ -545,6 +546,7 @@ def test_supervisor_releases_held_work_and_retries_without_reopen(
 
 
 @pytest.mark.parametrize("background", [False, True])
+@pytest.mark.serial
 def test_real_analysis_submission_retains_recovered_seal_finding(
     rig: Rig, recovery_index: RecordingIndex, background: bool
 ) -> None:
@@ -626,6 +628,7 @@ def test_supervisor_close_interrupts_analysis_submission_after_publishing_recove
 
 
 @macos_only.REAL_RECORDING_SERVICE
+@pytest.mark.serial
 def test_actual_service_eof_cancels_startup_commit_and_restart_recovers(
     rig: Rig, tmp_path: Path
 ) -> None:

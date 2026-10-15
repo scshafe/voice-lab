@@ -320,6 +320,7 @@ def test_thousand_retakes_are_paged_bounded_from_one_snapshot(
     assert len(second.groups) == 77
 
 
+@pytest.mark.serial
 def test_actual_payload_budget_pages_maximum_unicode_prompt_metadata(layout: AssetLayout) -> None:
     base = synthetic_catalog(2)
     catalog = PromptSuite.model_validate(

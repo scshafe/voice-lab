@@ -17,7 +17,8 @@ voice-lab-desktop (`voice-lab.app`). Everything goes through one command, run fr
 - "try PR N" (built and verified, not installed):
   `scripts/mac-refresh --execute --allow-network --pr N`
 - Only one app: add `--only native` or `--only desktop`. A quick build without the
-  half-hour verify: `--skip-verify`, only when Cole asks for it.
+  verify: `--skip-verify`. Use your judgment: for example, when that exact
+  code was already verified in full on this Mac.
 
 The script stops at the first failure and writes `report.md` and `report.json` into its run
 directory; it prints the path. Tell Cole the outcome in a few lines. For a pull request, also

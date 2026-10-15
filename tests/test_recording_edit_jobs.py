@@ -23,6 +23,7 @@ def wait_for(path: Path, seconds: float = 5) -> None:
     assert path.exists()
 
 
+@pytest.mark.serial
 def test_actual_render_child_can_block_without_blocking_save_and_parent_loss_is_bounded(
     nav: NavigationRig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -67,6 +67,7 @@ def test_a_powered_small_library_cannot_hide_missing_or_thin_large_save_next(
     assert required_large["required_sample_count"] == 100
 
 
+@pytest.mark.serial
 def test_real_powered_advancing_saves_at_every_required_point_can_pass(
     required_cases: list[dict],
 ) -> None:

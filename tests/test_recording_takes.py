@@ -985,6 +985,7 @@ def test_metadata_evidence_is_canonical_private_and_filename_bound(rig: Rig) -> 
         rig.store.get_take(reservation.take_id)
 
 
+@pytest.mark.serial
 def test_actual_backend_reserves_seals_and_saves_without_global_revision_staleness(
     rig: Rig,
 ) -> None:

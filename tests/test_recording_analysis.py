@@ -90,6 +90,7 @@ def wait_until(predicate: Callable[[], bool], timeout: float = 10) -> None:
         time.sleep(0.01)
 
 
+@pytest.mark.serial
 def test_real_inspection_and_durable_result_preserve_saved_decision(
     rig: Rig, analysis_queue: RecordingAnalysisQueue
 ) -> None:
@@ -495,6 +496,7 @@ def test_worker_eof_while_inspection_blocked_exits_without_removing_source(
 
 
 @macos_only.REAL_RECORDING_SERVICE
+@pytest.mark.serial
 def test_actual_service_and_analysis_processes_keep_save_reachable(
     rig: Rig,
     tmp_path: Path,
