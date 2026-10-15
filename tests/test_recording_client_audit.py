@@ -162,6 +162,7 @@ def test_genuine_worker_read_and_startup_controls_are_not_interactive_service_re
     assert any(not row["control"] and row["role"] == "worker" for row in audit)
 
 
+@pytest.mark.serial
 def test_actual_service_open_keeps_pid_role_and_command_window_evidence() -> None:
     native, audit = native_audit_fixture()
     inspected = {

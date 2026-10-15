@@ -537,6 +537,7 @@ def read_response(
 
 
 @macos_only.REAL_RECORDING_SERVICE
+@pytest.mark.serial
 def test_real_process_handshake_snapshot_unprepared_registration_and_clean_shutdown(
     tmp_path: Path,
 ) -> None:
@@ -1339,6 +1340,7 @@ def test_a_workspace_service_takes_only_a_normalized_absolute_finetune_runtime_r
 
 
 @macos_only.REAL_RECORDING_SERVICE
+@pytest.mark.serial
 def test_real_workspace_service_delivers_its_catalog_before_a_referenced_context(
     tmp_path: Path,
 ) -> None:

@@ -796,6 +796,7 @@ class ServiceProcess:
 
 
 @macos_only.REAL_RECORDING_SERVICE
+@pytest.mark.serial
 def test_real_service_bootstrap_capture_save_next_lost_reply_and_cursor_recovery(
     tmp_path: Path,
 ) -> None:

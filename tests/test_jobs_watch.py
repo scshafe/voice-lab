@@ -766,6 +766,7 @@ def test_a_stage_that_cannot_start_reports_the_error_code(tmp_path: Path) -> Non
     assert watch._exit_reason(-999) == "signal ?"
 
 
+@pytest.mark.serial
 def test_a_real_stage_module_runs_under_this_interpreter(tmp_path: Path) -> None:
     stage = Stage("lyric", "lyrics", ("--help",), 60_000)
     result = default_run_stage(stage, StageContext(str(tmp_path), lambda child: None))

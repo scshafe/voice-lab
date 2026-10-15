@@ -96,6 +96,7 @@ def test_near_match_identity_commands_remain_unknown(argv: list[str], original: 
 
 
 @macos_only.REAL_RECORDING_SERVICE
+@pytest.mark.serial
 def test_actual_near_match_identity_preflight_fails_closed(audit_root: Path) -> None:
     _result, log = _run(audit_root, ["-c", SERVICE_IDENTITY_PREFLIGHT_COMMAND + "; pass"])
     with pytest.raises(ValueError, match="BENCHMARK_AUDIT_UNKNOWN_ROLE"):
@@ -155,6 +156,7 @@ def test_unknown_startup_cannot_inherit_worker_exemption(
         read_audit(log)
 
 
+@pytest.mark.serial
 def test_real_open_hook_separates_control_and_asset_files_from_sibling_prefix(
     audit_root: Path,
 ) -> None:

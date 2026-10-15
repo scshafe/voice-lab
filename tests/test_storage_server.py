@@ -1728,6 +1728,8 @@ def test_hashing_a_token_is_its_sha256_and_never_echoes_it() -> None:
 @pytest.mark.parametrize(
     "text",
     ["", "\n", "not-a-token\n", "cvlv_short", f"{new_token()} {new_token()}", "cvlv_\u00e9" * 8],
+    # Fixed ids: a fresh token in the id would differ between parallel workers' collections.
+    ids=["empty", "newline", "not-a-token", "short", "two-tokens", "non-ascii"],
 )
 def test_hashing_refuses_anything_that_is_not_one_token(text: str) -> None:
     with pytest.raises(StorageError) as refused:

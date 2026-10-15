@@ -42,7 +42,8 @@ def test_r_space_return_and_save(
     wait_phase(qtbot, studio, "recording")
     key(studio_window, Qt.Key.Key_R)
     wait_phase(qtbot, studio, "review")
-    # Space plays the take under review, and pauses it.
+    # Space plays the take under review (once it has loaded: Play is enabled), and pauses it.
+    qtbot.waitUntil(lambda: takes.canPlay, timeout=5000)
     key(studio_window, Qt.Key.Key_Space)
     qtbot.waitUntil(lambda: takes.playing, timeout=5000)
     key(studio_window, Qt.Key.Key_Space)

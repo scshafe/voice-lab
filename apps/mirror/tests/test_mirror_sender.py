@@ -153,6 +153,7 @@ def test_dry_run_reads_nothing_and_runs_nothing(tmp_path: Path) -> None:
     assert not (tmp_path / "state").exists()
 
 
+@pytest.mark.serial
 def test_real_run_needs_an_approval(tmp_path: Path) -> None:
     f = make_fixture(tmp_path)
     argv = ["--corpus-root", str(f.corpus), "--state-dir", str(tmp_path / "state")]

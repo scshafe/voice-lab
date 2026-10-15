@@ -2059,6 +2059,7 @@ def test_both_backends_answer_fine_tune_commands_without_an_open_context(
 
 
 @macos_only.REAL_RECORDING_SERVICE
+@pytest.mark.serial
 def test_a_real_service_keeps_save_fast_during_a_job_and_cancel_leaves_no_process(
     package_rig: Any, tmp_path: Path
 ) -> None:
@@ -2199,6 +2200,7 @@ def test_a_real_service_keeps_save_fast_during_a_job_and_cancel_leaves_no_proces
 
 
 @macos_only.REAL_RECORDING_SERVICE
+@pytest.mark.serial
 def test_a_real_service_reports_a_job_it_recovered_before_the_handshake(
     package_rig: Any, tmp_path: Path
 ) -> None:

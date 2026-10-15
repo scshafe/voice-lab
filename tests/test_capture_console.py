@@ -872,6 +872,7 @@ def test_preview_rejects_noncanonical_or_symlink_sources(tmp_path: Path) -> None
     assert "error" in wrong_format.json()
 
 
+@pytest.mark.serial
 def test_real_engine_finalizes_ready_then_allows_shutdown(tmp_path: Path) -> None:
     layout = AssetLayout.initialize(tmp_path / "voice-assets")
     suite = _suite()

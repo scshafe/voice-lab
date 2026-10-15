@@ -250,6 +250,7 @@ def test_late_derivative_cannot_replace_newer_trim(
     assert native_edit_derivative(nav.rig.layout, take.reservation.take_id) is None
 
 
+@pytest.mark.serial
 def test_real_owned_render_process_publishes_exact_current_recipe(nav: NavigationRig) -> None:
     take = nav.capture()
     edit(nav, take)
