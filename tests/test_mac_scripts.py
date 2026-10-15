@@ -29,6 +29,8 @@ COMMIT = "c0ffee" + "1" * 34
 OLDER = "0ldbad" + "2" * 34
 ORIGINAL = "aaaaaa" + "3" * 34
 IDENTITY = "AB" * 20
+TEAM_IDENTITY = "CD" * 20
+TEAM_NAME = "Apple Development: cole@example.com (ABCDE12345)"
 
 
 def _load(name: str) -> ModuleType:
@@ -66,6 +68,7 @@ class FakeMac:
         newer_than: dict[str, bool] | None = None,
         verify_status: int = 0,
         identity: bool = True,
+        team: bool = False,
     ) -> None:
         self.module = module
         self.commit = commit
@@ -74,6 +77,7 @@ class FakeMac:
         self.newer_than = newer_than or {}
         self.verify_status = verify_status
         self.identity = identity
+        self.team = team
         self.calls: list[tuple[str, ...]] = []
 
     def __call__(self, argv: Sequence[str], cwd: Path, log: Path | None) -> Any:
@@ -106,6 +110,8 @@ class FakeMac:
                 return result(self.verify_status)
             case ("/usr/bin/security", "find-identity", *_):
                 line = f'  1) {IDENTITY} "voice-lab local signing"\n' if self.identity else ""
+                if self.team:
+                    line += f'  2) {TEAM_IDENTITY} "{TEAM_NAME}"\n'
                 return result(0, line + "     1 valid identities found\n")
             case ("scripts/build-native-recording-app", *rest):
                 app = Path(rest[rest.index("--output") + 1])
@@ -264,6 +270,19 @@ def test_main_is_fetched_verified_built_signed_and_installed(
     replaced = Path(second["steps"]["install"]["apps"]["native"]["replaced"])
     assert replaced.parent == Path(second["run_directory"]) / "replaced"
     assert (replaced / "Contents").is_dir()
+
+
+def test_an_apple_development_identity_is_preferred(refresh: ModuleType, home: Path) -> None:
+    """D-054: a Team ID keeps the keychain sign-in readable across builds."""
+    mac = FakeMac(refresh, team=True)
+    assert _run(refresh, mac, home, "--allow-network", "--skip-verify") == 0
+    call = mac.builder("scripts/build-desktop-bundle")
+    assert call[call.index("--signing-identity") + 1] == TEAM_IDENTITY
+    assert _report(home)["signing_identity"] == {
+        "identity": TEAM_IDENTITY,
+        "name": TEAM_NAME,
+        "source": "keychain (Apple Development)",
+    }
 
 
 def test_without_the_identity_it_signs_ad_hoc_and_says_so(refresh: ModuleType, home: Path) -> None:
