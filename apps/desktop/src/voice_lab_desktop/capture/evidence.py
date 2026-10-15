@@ -117,15 +117,16 @@ def check_binding(take_dir: Path, *, progress_frames: int | None) -> PortAudioCo
     partial = take_dir / PARTIAL_NAME
     _read_private(partial, MAX_WAV_BYTES, read=False)
     # The digest, size and format, not the samples' levels: measuring every sample in
-    # Python would be most of the time from Stop to the sealed take (D-040).
-    inspection = identify_canonical_wav(partial)
-    if inspection.sha256 != evidence.wav_sha256:
+    # Python (about 19 ms per second of audio) was a quarter of the time from Stop to the
+    # sealed take of 3 s, and would be most of it for one of 30 s (D-040).
+    identity = identify_canonical_wav(partial)
+    if identity.sha256 != evidence.wav_sha256:
         raise ContractError("the WAV's SHA-256 is not the one the evidence names")
-    if inspection.size_bytes != evidence.wav_size_bytes:
+    if identity.size_bytes != evidence.wav_size_bytes:
         raise ContractError("the WAV's size is not the one the evidence names")
-    if inspection.audio.frames != evidence.frames:
+    if identity.audio.frames != evidence.frames:
         raise ContractError(
-            f"the WAV holds {inspection.audio.frames} frames; the evidence names {evidence.frames}"
+            f"the WAV holds {identity.audio.frames} frames; the evidence names {evidence.frames}"
         )
     if progress_frames is not None and progress_frames != evidence.frames:
         raise ContractError(

@@ -404,7 +404,7 @@ def identify_canonical_wav(path: Path) -> WavIdentity:
     measuring its samples: what binding a file to its evidence needs.
 
     ``inspect_canonical_wav`` also measures every sample, in Python, which costs about
-    20 ms per second of audio; this costs a read of the file.
+    19 ms per second of audio; this reads the file twice (its digest, then its frames).
     Raises: ``SecurityError``, ``ContractError``."""
 
     sha256, size, audio = _read_stable(path, _identify_open_wav)
