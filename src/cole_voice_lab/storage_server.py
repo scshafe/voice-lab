@@ -155,8 +155,8 @@ _NAMESPACE = re.compile(NAMESPACE_PATTERN)
 _TOKEN = re.compile(VAULT_TOKEN_PATTERN)
 _SIZE_QUERY = re.compile(r"size=([0-9]{1,32})")
 
-# Copied from capture_console.py:33-40, without the console's HTML policy: the vault serves
-# JSON and opaque bytes, so every source is denied.
+# Copied from capture_console's _SECURITY_HEADERS, without the console's HTML policy: the
+# vault serves JSON and opaque bytes, so every source is denied.
 _SECURITY_HEADERS: Final = (
     ("Cache-Control", "no-store"),
     ("X-Content-Type-Options", "nosniff"),
@@ -247,8 +247,8 @@ def _emit_line(line: str) -> None:
     print(line, flush=True)
 
 
-# Copied from capture_console.py:59-64: an ASCII-only constant-time compare, so a non-ASCII
-# value is unequal instead of raising.
+# Copied from capture_console._ascii_digest_equal: an ASCII-only constant-time compare, so a
+# non-ASCII value is unequal instead of raising.
 def _ascii_digest_equal(value: str, expected: str) -> bool:
     try:
         encoded = value.encode("ascii")
@@ -260,7 +260,7 @@ def _ascii_digest_equal(value: str, expected: str) -> bool:
 def _over_limit(digits: str, limit: int) -> bool:
     """Whether the decimal ``digits`` name more than ``limit``, compared as strings.
 
-    Copied from ``capture_console._read_json_body`` (capture_console.py:288-295): the
+    Copied from ``capture_console._read_json_body`` (its Content-Length check): the
     comparison happens before ``int()``, so a header of a thousand digits never becomes a
     thousand-digit integer.
     """
@@ -940,18 +940,18 @@ class _VaultHandler(BaseHTTPRequestHandler):
     def vault(self) -> VaultServer:
         return cast(VaultServer, self.server)
 
-    # Copied from capture_console.py:188-189: the default stderr access log repeats the
-    # request line, and this server keeps its own JSON log instead.
+    # Copied from the capture console handler's log_message: the default stderr access log
+    # repeats the request line, and this server keeps its own JSON log instead.
     def log_message(self, _format: str, *_args: object) -> None:
         return
 
     def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
         """Answer every error ``http.server`` raises itself as this API's JSON refusal.
 
-        Copied from capture_console.py:191-202: an unsupported method reaches ``_dispatch``,
-        so it is authorized, logged and answered like any other request; every other error
-        (an unparsable request line, a target that is too long, an unsupported version) is
-        answered as a protocol refusal and recorded.
+        Copied from the capture console handler's send_error: an unsupported method reaches
+        ``_dispatch``, so it is authorized, logged and answered like any other request; every
+        other error (an unparsable request line, a target that is too long, an unsupported
+        version) is answered as a protocol refusal and recorded.
         """
         del explain
         if code == HTTPStatus.NOT_IMPLEMENTED:
@@ -978,9 +978,9 @@ class _VaultHandler(BaseHTTPRequestHandler):
     ) -> None:
         """Send one complete answer and close the connection.
 
-        Copied from capture_console.py:208-229, with ``Connection: close`` on every answer
-        (one request per connection) and a ``length`` a ``HEAD`` answer declares without
-        sending the body.
+        Copied from the capture console handler's _respond, with ``Connection: close`` on every
+        answer (one request per connection) and a ``length`` a ``HEAD`` answer declares
+        without sending the body.
         """
         # Reading shrank the socket's timeout towards the request's deadline; writing the
         # answer gets its own budget, so a refusal the deadline caused still reaches the client.
@@ -1341,7 +1341,7 @@ def serve_vault(server: VaultServer, *, emit: Callable[[str], None] = _emit_line
     def stop(signal_number: int, frame: FrameType | None) -> None:
         del signal_number, frame
         # shutdown() waits for the serve_forever loop, which is this thread, so it cannot be
-        # called here (capture_console.py:368 starts the same one-shot thread).
+        # called here (the capture console's shutdown answer starts the same one-shot thread).
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     try:

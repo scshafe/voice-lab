@@ -788,6 +788,47 @@ def test_state_transitions_and_conflicts_are_explicit(tmp_path: Path) -> None:
     assert engine.rejection_reasons == ["pilot requested retake"]
 
 
+def test_every_answer_is_sent_after_the_operation_lock_is_released(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client sends its next request as soon as it holds an answer (Stop, then Accept): the
+    answer leaves only once the lock is free, so that request never finds it held."""
+    handler = console_module._CaptureConsoleHandler
+    respond = handler._respond
+    held: list[bool] = []
+
+    def recording(self: Any, *args: Any, **kwargs: Any) -> None:
+        held.append(self.console.operation_lock.locked())
+        respond(self, *args, **kwargs)
+
+    monkeypatch.setattr(handler, "_respond", recording)
+    engine = _fake_engine(tmp_path)
+    with _running_server(engine) as (server, _thread):
+        statuses = [
+            _api_post(server, "/api/take/stop", {}).status,  # a refusal (409)
+            _api_post(server, "/api/take/start", {"x": 1}).status,  # a bad request (400)
+            _api_post(server, "/api/take/start", {}).status,
+            _api_get(server, "/api/state").status,
+            _api_post(server, "/api/take/stop", {}).status,
+            _api_get(server, "/api/take/preview").status,
+            _api_post(server, "/api/take/accept", {}).status,
+        ]
+
+    assert statuses == [409, 400, 200, 200, 200, 200, 200]
+    assert held == [False] * len(statuses)
+
+    # Shutdown answers first, then stops the console, the lock free as it answers too.
+    held.clear()
+    (tmp_path / "finished").mkdir(mode=0o700)
+    finished = _fake_engine(tmp_path / "finished", status="complete")
+    with _running_server(finished) as (server, thread):
+        assert _api_post(server, "/api/finalize", {}).status == 200
+        assert _api_post(server, "/api/shutdown", {}).status == 200
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+    assert held == [False, False]
+
+
 def test_concurrent_engine_operation_answers_conflict_without_waiting(tmp_path: Path) -> None:
     session = _private_directory(tmp_path / "blocking-session")
     preview = session / "review.wav"
