@@ -81,9 +81,12 @@ def test_full_verification_launches_host_python_isolated_without_real_tools(tmp_
         " --cov=cole_voice_lab --cov-branch --cov-report= --cov-fail-under=0",
         "1:-I -B -m pytest -m serial"
         " --cov=cole_voice_lab --cov-branch --cov-append --cov-report=term-missing",
-        "1:-I -B -m pytest -n auto -c apps/desktop/pyproject.toml apps/desktop/tests"
+        "1:-I -B -m pytest -n auto -m not serial -c apps/desktop/pyproject.toml"
+        " apps/desktop/tests --cov=apps/desktop/src/voice_lab_desktop"
+        " --cov-config=apps/desktop/pyproject.toml --cov-branch --cov-report= --cov-fail-under=0",
+        "1:-I -B -m pytest -m serial -c apps/desktop/pyproject.toml apps/desktop/tests"
         " --cov=apps/desktop/src/voice_lab_desktop --cov-config=apps/desktop/pyproject.toml"
-        " --cov-report=term-missing --cov-branch",
+        " --cov-branch --cov-append --cov-report=term-missing",
         "1:-I -B -m build --no-isolation",
         "1:-I -B -m build --no-isolation --outdir dist apps/desktop",
         "1:-I -B -m cole_voice_lab.schema --check",
