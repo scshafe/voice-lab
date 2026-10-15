@@ -309,3 +309,22 @@ def test_every_sync_line_is_whole_on_the_smallest_window(qtbot: Any, studio_wind
         assert buttons(studio_window) == BUTTON_FOR[expected.action or bool(expected.detail)]
         assert sync.property("truncated") is False, (expected.text, sync.width())
         assert sync.property("lineCount") <= 2, expected.text
+
+
+def test_a_toast_never_covers_the_status_line(qtbot: Any, studio_window: Window) -> None:
+    """A toast shows top right: at the bottom it covered Sync now (seen on the Air)."""
+    from .test_studio_screen import drawn, resize, scene_rect
+
+    studio = studio_window.model.studio
+    resize(qtbot, studio_window, 960, 600)
+    studio.client.status = lambda **_: given(queued=2, sent=2)  # type: ignore[method-assign]
+    studio._client_changed()
+    qtbot.waitUntil(lambda: buttons(studio_window) == ["studioSyncNow"], timeout=5000)
+    stack = studio_window.find("toastStack")
+    for _ in range(4):  # as many as show at once
+        studio.toast.emit("Take removed", "ok")
+    qtbot.waitUntil(lambda: stack.height() > 0, timeout=5000)
+    drawn(qtbot, studio_window)
+    x, y, width, height = scene_rect(stack)
+    line = scene_rect(studio_window.find("studioStatus"))
+    assert y + height <= line[1] or x + width <= line[0], (scene_rect(stack), line)

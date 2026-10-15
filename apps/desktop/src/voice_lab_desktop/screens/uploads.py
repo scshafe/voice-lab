@@ -27,7 +27,7 @@ from PySide6.QtCore import Signal, Slot
 
 from cole_voice_lab.models import utc_now
 
-from ..approval import local_date
+from ..approval import local_time
 from ..auth import SignInRequired
 from ..measurement import home_host
 from ..measurement.store import LocalSession, SessionStore
@@ -212,7 +212,7 @@ class UploadsModel(ViewModel):
             self._set(self.changed, ready=False, readiness=str(exc))
             return
         self._classes = tuple(approval.classes)
-        expires = local_date(approval.expires_at)
+        expires = local_time(approval.expires_at)
         covers = ", ".join(home_host.CLASS_NOUNS.get(c, c) for c in approval.classes)
         text = (
             f"Uploads go to {approval.endpoint} under the home-host approval "

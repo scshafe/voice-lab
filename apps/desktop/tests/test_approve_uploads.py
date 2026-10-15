@@ -151,7 +151,7 @@ def test_uploads_offer_approve_and_send_what_waits(
     assert text(approve_window, "approveEndpoint") == ENDPOINT
     assert text(approve_window, "approveNode") == NODE
     assert text(approve_window, "approveClasses").startswith("capture (takes, prompted")
-    until = logic.local_date(utc_now() + timedelta(days=365))  # in local time
+    until = logic.local_time(utc_now() + timedelta(days=365))  # in local time
     assert text(approve_window, "approveExpires") == f"{until} (365 days)"
     assert text(approve_window, "approveBy") == "Cole"  # the sign-in names no one
     assert approve_window.items("approveConfirm")[0].isVisible()

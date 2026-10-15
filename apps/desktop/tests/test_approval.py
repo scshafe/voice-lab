@@ -120,7 +120,10 @@ def test_every_field_is_derived(library: Path) -> None:
     assert approval.classes_text(made.classes) == (
         "capture (takes, prompted sessions) · measurement (measurement sessions)"
     )
-    assert approval.local_date(made.expires_at) == made.expires_at.astimezone().date().isoformat()
+    local = made.expires_at.astimezone()
+    assert approval.local_time(made.expires_at) == (
+        f"{local.date().isoformat()} {local:%H:%M} {local.tzname()}"
+    )
     # In the app, the resolver is the local Tailscale client's (not run here).
     real = approval.tailscale_resolver(TAILNET)
     assert isinstance(real, TailscaleCliResolver) and real.tailnet_suffix == TAILNET
@@ -237,7 +240,7 @@ def test_approve_writes_and_binds_exactly_the_approval_shown(library: Path) -> N
     assert approval.standing(library, SERVER, now=later) == Standing(
         False,
         False,
-        f"Uploads to {ENDPOINT} are approved until {approval.local_date(made.expires_at)} "
+        f"Uploads to {ENDPOINT} are approved until {approval.local_time(made.expires_at)} "
         f"(approval {made.approval_id}).",
         made,
     )
@@ -293,7 +296,7 @@ def test_one_about_to_expire_is_offered_and_renewed(library: Path) -> None:
     assert found.text.endswith(f"(approval {soon.approval_id}): renew it before then.")
     proposal = propose(library)
     assert proposal.approval is not None and proposal.standing == soon
-    until = approval.local_date(soon.expires_at)
+    until = approval.local_time(soon.expires_at)
     assert (
         proposal.reason == f"It renews the approval {soon.approval_id}, which expires on {until}."
     )
@@ -337,7 +340,7 @@ def test_what_the_library_says_about_uploads(library: Path, tmp_path: Path) -> N
     assert approval.standing(library, SERVER, now=NOW) == Standing(
         False,
         False,
-        f"Uploads to {ENDPOINT} are approved until {approval.local_date(made.expires_at)} "
+        f"Uploads to {ENDPOINT} are approved until {approval.local_time(made.expires_at)} "
         "(approval pc-home-host).",
         made,
     )
