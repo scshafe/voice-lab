@@ -77,6 +77,7 @@ qt_log_level_fail = "WARNING"
 qt_log_ignore = ["^Populating font family aliases took .* missing font family \"Sans Serif\""]
 markers = [
     "checklist(*ids): the docs/design/PHASE-4-CHECKLIST.md items this test ticks",
+    "serial: runs alone after the parallel pass (scripts/verify)",
 ]
 
 [tool.coverage.run]

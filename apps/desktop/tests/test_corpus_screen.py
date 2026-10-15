@@ -548,6 +548,10 @@ def test_corpus_detail_listen(qtbot: Any, window: Window, quiet_window: Window) 
 
 
 @pytest.mark.checklist("C-33")
+# On the PC's Linux runner, in the parallel pass, the third detail (after a second app
+# window opens) never answers within 10 s, twice in a row; it passes there run serially, and
+# on the Mac in parallel. Cause not found yet.
+@pytest.mark.serial
 def test_corpus_detail_transcript_on_request(
     qtbot: Any, window: Window, quiet_window: Window, synthetic_root: Path
 ) -> None:
