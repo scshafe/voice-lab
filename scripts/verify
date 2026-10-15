@@ -39,9 +39,11 @@ fi
 .venv/bin/python -I -B -m pytest -n auto -m "not serial" -c apps/desktop/pyproject.toml \
     apps/desktop/tests --cov=apps/desktop/src/voice_lab_desktop \
     --cov-config=apps/desktop/pyproject.toml --cov-branch --cov-report= --cov-fail-under=0
+# The desktop suite may have no `serial` test: pytest's "no tests ran" (5) passes there, and only
+# there. A coverage shortfall still fails it (1), with or without tests.
 .venv/bin/python -I -B -m pytest -m serial -c apps/desktop/pyproject.toml apps/desktop/tests \
     --cov=apps/desktop/src/voice_lab_desktop --cov-config=apps/desktop/pyproject.toml \
-    --cov-branch --cov-append --cov-report=term-missing
+    --cov-branch --cov-append --cov-report=term-missing || [ $? -eq 5 ]
 .venv/bin/python -I -B -m build --no-isolation
 # Beside the backend in dist/, where guard-private-assets inspects every wheel built.
 .venv/bin/python -I -B -m build --no-isolation --outdir dist apps/desktop
