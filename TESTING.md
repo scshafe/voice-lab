@@ -74,7 +74,11 @@ these tests does not require the mini's exact installed Homebrew Python.
 - pytest with branch coverage (90% minimum), in parallel (`pytest-xdist`, `-n auto`), then
   the tests marked `serial` on their own: each runs a real service or native process
   against a deadline that a fully loaded machine can miss. Coverage is appended across the
-  two passes and checked once. The desktop suite runs the same way. A test must not
+  two passes and checked once. The desktop suite runs the same way; its serial pass may
+  find no test (none is marked now). `serial` is for a real deadline, not a cure for a
+  test that fails only under load: look for the race first (the two desktop failures of
+  the PC's parallel pass were app bugs, a dialog reopened during its exit transition and
+  a spool error raised on the GUI thread). A test must not
   depend on another's state or on a fixed port, and its parameters must be the same on
   every collection (a random value belongs in the test, not in its id).
 - package build

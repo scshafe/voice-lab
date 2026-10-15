@@ -55,6 +55,12 @@ STEP_FRAMES: Final = SAMPLE_RATE // 10
 MIN_VIEW_FRAMES: Final = SAMPLE_RATE // 20
 #: Where a failure to reach the PC's takes leaves the picker.
 PC_UNREACHED: Final = "The PC's takes of this prompt could not be read"
+#: Where a failure to read this machine's takes (to compare them with the PC's) leaves it.
+HERE_UNREAD: Final = "This machine's takes could not be compared with the PC's"
+
+
+class _HereUnread(Exception):
+    """The PC's history came, but this machine's takes could not be read to compare it."""
 
 
 def clock(frames: int) -> str:
@@ -438,6 +444,10 @@ class TakeReviewModel(ViewModel):
                 self._pc_again = False
                 self._fetch_history(select_latest=select_latest)
             if error is not None or history is None:
+                if isinstance(error, _HereUnread):
+                    # The spool, not the PC: the studio's status says so too.
+                    self._set(self.takesChanged, historyNote=f"{HERE_UNREAD}: {error}")
+                    return
                 if error is not None and not isinstance(error, (ApiError, AuthError, ConfigError)):
                     raise error
                 self._pc_tag = tag
@@ -463,7 +473,10 @@ class TakeReviewModel(ViewModel):
 
         def work() -> TakeHistory:
             history = client.prompt_history(prompt)
-            client.observe_history(history)  # a newer state of a take here is taken
+            try:
+                client.observe_history(history)  # a newer state of a take here is taken
+            except (SpoolError, OSError) as exc:
+                raise _HereUnread(str(exc) or type(exc).__name__) from exc
             return history
 
         self.context.tasks.submit(work, done)

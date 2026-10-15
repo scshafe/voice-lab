@@ -548,10 +548,6 @@ def test_corpus_detail_listen(qtbot: Any, window: Window, quiet_window: Window) 
 
 
 @pytest.mark.checklist("C-33")
-# On the PC's Linux runner, in the parallel pass, the third detail (after a second app
-# window opens) never answers within 10 s, twice in a row; it passes there run serially, and
-# on the Mac in parallel. Cause not found yet.
-@pytest.mark.serial
 def test_corpus_detail_transcript_on_request(
     qtbot: Any, window: Window, quiet_window: Window, synthetic_root: Path
 ) -> None:
@@ -690,6 +686,33 @@ def test_corpus_detail_states(qtbot: Any, window: Window) -> None:
     qtbot.waitUntil(lambda: corpus.detailState == "loaded", timeout=10000)
     qtbot.wait(100)
     assert corpus.detailTitle == take(1).filename
+
+
+@pytest.mark.checklist("C-10")
+def test_a_row_opened_as_the_sheet_closes_is_shown(qtbot: Any, window: Window) -> None:
+    """A closing sheet stays visible through its exit transition. A row opened then (a quick
+    click; a test, in one turn of the event loop) is shown, and the transition's end does
+    not close it again (the parallel suite's lost details, under load)."""
+    corpus = open_corpus(qtbot, window)
+    sheet = window.find("rowDetail")
+    open_detail(qtbot, corpus, take(0).recording_id)
+    qtbot.waitUntil(lambda: sheet.property("opened"), timeout=5000)
+    corpus.closeDetail()
+    assert sheet.property("visible") and not sheet.property("opened")  # its exit runs
+    open_detail(qtbot, corpus, take(3).recording_id)
+    qtbot.waitUntil(lambda: sheet.property("opened"), timeout=5000)
+    qtbot.wait(400)  # longer than any transition
+    assert corpus.detailOpen and corpus.detailId == take(3).recording_id
+    assert corpus.detailState == "loaded" and sheet.property("visible")
+    # Closed here: the model closes as the sheet starts to, and a row opened during the
+    # exit is shown too.
+    QTest.keyClick(window.root, Qt.Key.Key_Escape)
+    assert not corpus.detailOpen and sheet.property("visible")
+    open_detail(qtbot, corpus, take(6).recording_id)
+    qtbot.waitUntil(lambda: sheet.property("opened"), timeout=5000)
+    qtbot.wait(400)
+    assert corpus.detailOpen and corpus.detailId == take(6).recording_id
+    assert sheet.property("visible")
 
 
 # ---- show_query (Journey and Practice click-throughs) and the model's edges --------------

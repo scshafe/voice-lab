@@ -68,6 +68,31 @@ def test_another_take_save_discard_or_cancel(
     assert takes.selectedKey == first and trim_of(studio_window, second) == (4_800, 12_000)
 
 
+def test_asked_again_as_the_question_closes(
+    qtbot: Any, studio_window: Window, recorder: StudioRecorder
+) -> None:
+    """Asked again while the dialog's exit transition runs (Cancel, then the other take at
+    once): the dialog shows the question again, rather than closing with it still open."""
+    takes = studio_window.model.studio.takes
+    first = saved(qtbot, studio_window, recorder)
+    second = saved(qtbot, studio_window, recorder)
+    takes.selectTake(first)
+    qtbot.waitUntil(lambda: takes.frameCount > 0, timeout=5000)
+    edited(qtbot, studio_window)
+    dialog = studio_window.find("studioTrimConfirm")
+    takes.selectTake(second)
+    qtbot.waitUntil(lambda: dialog.property("opened"), timeout=5000)
+    studio_window.items("studioConfirmCancel")[0].clicked.emit()
+    assert not takes.confirmOpen and dialog.property("visible")  # its exit runs
+    takes.selectTake(second)
+    assert takes.confirmOpen
+    qtbot.waitUntil(lambda: dialog.property("opened"), timeout=5000)
+    qtbot.wait(400)  # longer than any transition
+    assert takes.confirmOpen and dialog.property("visible") and dialog.property("opened")
+    answer(qtbot, studio_window, "studioConfirmCancel")
+    assert takes.selectedKey == first and takes.trimDirty
+
+
 def test_another_prompt_continue_missing_record_and_another_screen(
     qtbot: Any, studio_window: Window, recorder: StudioRecorder, pc: PC
 ) -> None:

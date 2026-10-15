@@ -57,7 +57,10 @@ def _run(
     )
 
 
-def test_full_verification_launches_host_python_isolated_without_real_tools(tmp_path: Path) -> None:
+def _verify_bench(tmp_path: Path) -> Path:
+    """``scripts/verify`` beside stub tools: its Python logs each command to
+    ``$VERIFY_COMMAND_LOG`` and exits ``$VERIFY_FAIL_CODE`` for one containing
+    ``$VERIFY_FAIL_ON`` (0 otherwise)."""
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     entry = scripts / "verify"
@@ -71,8 +74,16 @@ def test_full_verification_launches_host_python_isolated_without_real_tools(tmp_
     python = binaries / "python"
     python.write_text(
         '#!/bin/sh\nprintf "%s\\n" "$PYTHONDONTWRITEBYTECODE:$*" >> "$VERIFY_COMMAND_LOG"\n'
+        'if [ -n "${VERIFY_FAIL_ON:-}" ]; then\n'
+        '  case "$*" in *"$VERIFY_FAIL_ON"*) exit "$VERIFY_FAIL_CODE" ;; esac\n'
+        "fi\n"
     )
     python.chmod(0o700)
+    return entry
+
+
+def test_full_verification_launches_host_python_isolated_without_real_tools(tmp_path: Path) -> None:
+    entry = _verify_bench(tmp_path)
     log = tmp_path / "commands.txt"
     result = _run(str(entry), env={**os.environ, "VERIFY_COMMAND_LOG": str(log)})
     assert result.returncode == 0, result.stderr
@@ -92,6 +103,33 @@ def test_full_verification_launches_host_python_isolated_without_real_tools(tmp_
         "1:-I -B -m cole_voice_lab.schema --check",
         "1:-I -B scripts/guard-private-assets",
     ]
+
+
+@pytest.mark.parametrize(
+    ("fails_on", "code", "passes"),
+    [
+        ("-m serial -c apps/desktop/pyproject.toml", 5, True),  # no desktop test is serial
+        ("-m serial -c apps/desktop/pyproject.toml", 1, False),  # a failure or low coverage
+        ("-m serial --cov=cole_voice_lab", 5, False),  # the backend's serial tests vanished
+        ("-m not serial -c apps/desktop/pyproject.toml", 5, False),
+    ],
+)
+def test_only_the_desktop_serial_pass_may_find_no_test(
+    tmp_path: Path, fails_on: str, code: int, passes: bool
+) -> None:
+    entry = _verify_bench(tmp_path)
+    log = tmp_path / "commands.txt"
+    env = {
+        **os.environ,
+        "VERIFY_COMMAND_LOG": str(log),
+        "VERIFY_FAIL_ON": fails_on,
+        "VERIFY_FAIL_CODE": str(code),
+    }
+    result = _run(str(entry), env=env)
+    assert (result.returncode == 0) is passes, result.stderr
+    # Verification stops at a failed pass: nothing is built after it.
+    built = any("-m build" in line for line in log.read_text().splitlines())
+    assert built is passes
 
 
 def _sha256(path: Path) -> str:
