@@ -67,6 +67,10 @@ def waveform(qt_app: QApplication) -> Iterator[WaveformView]:
     widget.resize(WAVEFORM_WIDTH, WAVEFORM_HEIGHT)
     widget.show()
     widget.activateWindow()
+    # Every test's window opens in the same place, and the pointer stays where the last test
+    # left it: Qt sends no move event for a move to where it already is. Park it in the
+    # corner, where no test moves first, so each test's first move is seen.
+    QTest.mouseMove(widget, QPoint(0, 0))
     QApplication.processEvents()
     yield widget
     widget.close()
