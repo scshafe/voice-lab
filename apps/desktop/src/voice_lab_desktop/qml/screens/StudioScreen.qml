@@ -681,7 +681,8 @@ Item {
         // smallest window: Approve while uploads wait for the home-host approval (the app's
         // `approval` model opens its dialog), Sync now while operations wait or the PC did not
         // answer, or Details when the line leaves something out. Approve and Sync now wait
-        // while a take is being recorded or saved.
+        // while a take is being recorded or saved. The split is 40/60: the sync half carries the
+        // button, and on macOS's wider system font 45/55 cut its longer lines at 960 × 600.
         Item {
             objectName: "studioStatus"
             x: studio.inset
@@ -692,7 +693,7 @@ Item {
                 objectName: "studioStatusText"
                 anchors.left: parent.left
                 anchors.top: parent.top
-                width: Math.floor(parent.width * 0.45)
+                width: Math.floor(parent.width * 0.40)
                 height: parent.height
                 text: studio.rec.statusText
                 tone: studio.rec.statusTone === "neutral" ? "default" : studio.rec.statusTone
@@ -707,7 +708,7 @@ Item {
                 anchors.right: syncActions.left
                 anchors.rightMargin: syncActions.width > 0 ? SuiTheme.spaceXs : 0
                 anchors.top: parent.top
-                width: Math.floor(parent.width * 0.55) - SuiTheme.spaceSm
+                width: Math.floor(parent.width * 0.60) - SuiTheme.spaceSm
                     - (syncActions.width > 0 ? syncActions.width + SuiTheme.spaceXs : 0)
                 height: parent.height
                 horizontalAlignment: Text.AlignRight
