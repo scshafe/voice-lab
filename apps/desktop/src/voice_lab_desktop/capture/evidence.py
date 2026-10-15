@@ -24,7 +24,7 @@ from typing import Final
 
 from pydantic import ValidationError
 
-from cole_voice_lab.audio import inspect_canonical_wav
+from cole_voice_lab.audio import identify_canonical_wav
 from cole_voice_lab.errors import ContractError, SecurityError
 
 # The contract is the backend's since a take package carries it to the PC (D-052); it is
@@ -116,7 +116,9 @@ def check_binding(take_dir: Path, *, progress_frames: int | None) -> PortAudioCo
         raise ContractError(f"the evidence describes {evidence.output_name}, not {PARTIAL_NAME}")
     partial = take_dir / PARTIAL_NAME
     _read_private(partial, MAX_WAV_BYTES, read=False)
-    inspection = inspect_canonical_wav(partial)
+    # The digest, size and format, not the samples' levels: measuring every sample in
+    # Python would be most of the time from Stop to the sealed take (D-040).
+    inspection = identify_canonical_wav(partial)
     if inspection.sha256 != evidence.wav_sha256:
         raise ContractError("the WAV's SHA-256 is not the one the evidence names")
     if inspection.size_bytes != evidence.wav_size_bytes:

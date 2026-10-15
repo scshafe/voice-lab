@@ -1070,6 +1070,12 @@ holds. Since Recording v1's step 3 (D-052), a take package carries the evidence 
 Audio Queue evidence travels too, inside the `seal.json` of a Swift take's imported-take
 package (D-053).
 
+Amended 2026-10-15 (D-040's slower stop): the parent checks the WAV with
+`identify_canonical_wav`, not `inspect_canonical_wav`. The checks are the same: digest, size,
+canonical format, and data length against the header. It no longer measures every sample's
+level in Python, which nothing in the binding used and which took about 19 ms per second of
+audio (562 ms for a 30 s take on the PC).
+
 ## D-040 — The S-1 harness, and what "S-1 passes" means
 
 Recorded 2026-10-11 (phase 4c). `scripts/s1-portaudio` runs the worker of D-039 on this
@@ -1115,6 +1121,28 @@ Consequences:
   `config.toml`.
 - The Swift app stays until the owner's parity sign-off (Recording v1 step 10), and
   docs/S-1.md's Linux run (ALSA `hw:`) is still to do.
+
+Amended 2026-10-15: the slower stop. Two waits between Stop and the sealed take had nothing to
+do with the take:
+
+- the worker's writer noticed the stop only at its next 50 ms poll;
+- the parent measured every sample's level just to check a digest and a frame count (D-039's
+  amendment).
+
+The writer is now woken at once, and the parent no longer measures. On the PC, with the
+simulated device at real time (3 s takes), Stop to sealed went from a median of 218 ms
+(largest 225) to 145 ms (largest 154).
+
+What remains:
+
+- the worker writing its evidence, about 98 ms, almost all of it the first import of the
+  pydantic contract;
+- the worker's exit, about 25 ms.
+
+The worker defers that import so that the first block never waits for it. Importing it during
+the take would remove most of the 98 ms, but would put Python work beside the audio callback;
+only an S-1 run could show that harmless. Whether the Air's p95 is now within 300 ms is for a
+new S-1 run there to say, and that run is the owner's.
 
 ## D-041 — Packaging the desktop app (spike S-7)
 

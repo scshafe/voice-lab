@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -14,9 +15,11 @@ from pathlib import Path
 
 import pytest
 from voice_lab_desktop.capture import process as process_module
+from voice_lab_desktop.capture import worker as worker_module
 from voice_lab_desktop.capture.backends import SimulatedSpec, SimulatedTimedBackend
 from voice_lab_desktop.capture.evidence import read_evidence
 from voice_lab_desktop.capture.process import WorkerRecorder, worker_command
+from voice_lab_desktop.capture.timing import BlockTiming, ContinuityTracker
 from voice_lab_desktop.capture.types import (
     EVIDENCE_NAME,
     ORIGINAL_NAME,
@@ -25,6 +28,7 @@ from voice_lab_desktop.capture.types import (
 )
 from voice_lab_desktop.capture.worker import (
     SUMMARY_PREFIX,
+    CaptureBuffers,
     CaptureError,
     Settings,
     parse_settings,
@@ -128,6 +132,50 @@ def test_a_full_queue_fails_rather_than_drop_audio(tmp_path):
     assert isinstance(error, CaptureError) and "fell 1 blocks behind" in str(error)
     evidence = read_evidence(take / EVIDENCE_NAME)
     assert evidence.queue_capacity == 1 and not evidence.success
+
+
+class _Watched(queue.Queue):
+    """A queue that says when the writer first asks it for a block."""
+
+    def __init__(self, capacity: int) -> None:
+        super().__init__(capacity)
+        self.asked = threading.Event()
+
+    def get(self, block=True, timeout=None):
+        self.asked.set()
+        return super().get(block, timeout)
+
+
+def _write_in_thread(buffers: CaptureBuffers, path: Path) -> tuple[threading.Thread, io.BytesIO]:
+    progress = io.BytesIO()
+    stream = path.open("wb")
+    writer = threading.Thread(
+        target=lambda: (buffers.write(stream, progress, None), stream.close()), daemon=True
+    )
+    writer.start()
+    return writer, progress
+
+
+@pytest.mark.parametrize("queued", [0, 1])
+def test_the_writer_ends_at_the_stop_not_at_its_next_poll(tmp_path, monkeypatch, queued):
+    """``finish`` wakes a writer waiting for a block (its poll would add up to 50 ms to every
+    stop); with a full queue there is no room to wake it, and it drains the queue first."""
+    monkeypatch.setattr(worker_module, "WRITER_POLL_SECONDS", 60.0)
+    buffers = CaptureBuffers(ContinuityTracker(), capacity=1)
+    buffers.pending = _Watched(1)
+    for _ in range(queued):
+        buffers.receive(bytes(16 * 3), BlockTiming(frames=16, adc_time=1.0, current_time=1.01))
+    if queued:
+        buffers.finish()  # the queue is full: no wake-up fits
+        writer, progress = _write_in_thread(buffers, tmp_path / "take.wav")
+    else:
+        writer, progress = _write_in_thread(buffers, tmp_path / "take.wav")
+        assert buffers.pending.asked.wait(10)
+        buffers.finish()
+    writer.join(timeout=10)
+    assert not writer.is_alive()
+    assert buffers.failure is None and buffers.written_frames == 16 * queued
+    assert progress.getvalue() == b"48\n" * queued
 
 
 def test_a_device_that_never_delivers_times_out(tmp_path):

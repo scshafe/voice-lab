@@ -53,6 +53,8 @@ DEFAULT_QUEUE_BLOCKS: Final = 64
 MAX_CAPTURE_SECONDS: Final = 600.0
 STARTUP_TIMEOUT_SECONDS: Final = 10.0
 POLL_SECONDS: Final = 0.02
+#: How long the writer waits for a block before it looks at ``finished`` again.
+WRITER_POLL_SECONDS: Final = 0.05
 
 
 class CaptureError(Exception):
@@ -95,7 +97,8 @@ class CaptureBuffers:
     capacity: int = DEFAULT_QUEUE_BLOCKS
     monotonic: Callable[[], float] = time.monotonic
     writer_delay: float = 0.0
-    pending: queue.Queue[_Block] = field(init=False)
+    #: Blocks to write; ``None`` only wakes the writer (``finish``).
+    pending: queue.Queue[_Block | None] = field(init=False)
     failed: threading.Event = field(default_factory=threading.Event)
     finished: threading.Event = field(default_factory=threading.Event)
     failure: BaseException | None = None
@@ -106,6 +109,15 @@ class CaptureBuffers:
 
     def __post_init__(self) -> None:
         self.pending = queue.Queue(maxsize=self.capacity)
+
+    def finish(self) -> None:
+        """The stream is closed: the writer drains the queue and ends at once, not at its
+        next poll (which would add up to ``WRITER_POLL_SECONDS`` to every stop)."""
+        self.finished.set()
+        try:
+            self.pending.put_nowait(None)
+        except queue.Full:
+            pass  # the writer is not waiting: it has blocks to drain first
 
     def fail(self, error: BaseException) -> None:
         with self.lock:
@@ -147,8 +159,10 @@ class CaptureBuffers:
                 writer.setframerate(SAMPLE_RATE)
                 while not self.finished.is_set() or not self.pending.empty():
                     try:
-                        block = self.pending.get(timeout=0.05)
+                        block = self.pending.get(timeout=WRITER_POLL_SECONDS)
                     except queue.Empty:
+                        continue
+                    if block is None:
                         continue
                     if self.writer_delay:
                         time.sleep(self.writer_delay)
@@ -169,7 +183,7 @@ class CaptureBuffers:
             # Keep draining, so the callback never blocks on a full queue after a failure.
             while not self.finished.is_set():
                 try:
-                    self.pending.get(timeout=0.05)
+                    self.pending.get(timeout=WRITER_POLL_SECONDS)
                 except queue.Empty:
                     continue
 
@@ -299,7 +313,7 @@ def run_capture(
                     cleanup()
                 except BaseException as error:  # noqa: BLE001
                     failures.append(error)
-        buffers.finished.set()
+        buffers.finish()
         if writer is not None:
             writer.join(timeout=10.0)
             if writer.is_alive():
