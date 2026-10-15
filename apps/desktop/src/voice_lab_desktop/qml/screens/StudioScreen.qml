@@ -70,9 +70,10 @@ Item {
     Connections {
         target: studio.takes
         function onConfirmChanged() {
-            if (studio.takes.confirmOpen && !trimConfirm.visible)
+            // open() reverses a closing dialog (RowDetailSheet.qml says why).
+            if (studio.takes.confirmOpen)
                 trimConfirm.open()
-            else if (!studio.takes.confirmOpen && trimConfirm.visible)
+            else if (trimConfirm.visible)
                 trimConfirm.close()
         }
     }
@@ -106,9 +107,10 @@ Item {
     Connections {
         target: studio.takes
         function onRestoreChanged() {
-            if (studio.takes.restoreAskOpen && !restoreAsk.visible)
+            // open() reverses a closing dialog (RowDetailSheet.qml says why).
+            if (studio.takes.restoreAskOpen)
                 restoreAsk.open()
-            else if (!studio.takes.restoreAskOpen && restoreAsk.visible)
+            else if (restoreAsk.visible)
                 restoreAsk.close()
         }
     }

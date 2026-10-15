@@ -100,9 +100,10 @@ Window {
     Connections {
         target: approval
         function onDialogChanged() {
-            if (approval.dialogOpen && !approveDialog.visible)
+            // open() reverses a closing dialog (RowDetailSheet.qml says why).
+            if (approval.dialogOpen)
                 approveDialog.open()
-            else if (!approval.dialogOpen && approveDialog.visible)
+            else if (approveDialog.visible)
                 approveDialog.close()
         }
     }

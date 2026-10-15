@@ -15,20 +15,25 @@ SuiSheet {
 
     property bool _syncing: false
 
+    // The sheet follows the model. A closing sheet stays visible until its exit transition
+    // ends; open() then reverses the transition (no closed follows), and does nothing to a
+    // sheet that is open or opening. So a row opened just after the last one closed is shown,
+    // instead of being skipped and closed again when the transition ends.
     Connections {
         target: corpus
         function onDetailChanged() {
             sheet._syncing = true
-            if (corpus.detailOpen && !sheet.visible) {
-                note.text = ""
+            if (corpus.detailOpen)
                 sheet.open()
-            } else if (!corpus.detailOpen && sheet.visible) {
+            else if (sheet.visible)
                 sheet.close()
-            }
             sheet._syncing = false
         }
     }
-    onClosed: if (!_syncing && corpus.detailOpen) corpus.closeDetail()
+    onAboutToShow: note.text = ""
+    // Closed here (Escape, a click outside): the detail closes as the sheet starts to, not
+    // when its transition ends, when the model may already show another row.
+    onAboutToHide: if (!_syncing && corpus.detailOpen) corpus.closeDetail()
 
     Flickable {
         id: body

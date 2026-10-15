@@ -65,7 +65,7 @@ The table (`CorpusTableComponent`, `PinnedDataTable`): rows are `fields=list` ro
 | Id | React: field | Desktop: where | `/api/v1` | Ticked by | ✓ |
 | --- | --- | --- | --- | --- | --- |
 | C-09 | Column Queue: `#reviewQueueOrder`; sorts by `reviewQueueOrder` | Corpus table: Queue | `recordings` row | `test_corpus_columns_render_the_list_fields` | ☑ |
-| C-10 | Column Filename (pinned, the row header); click opens the detail | Corpus table: Filename (first column, stays in view); activating a row opens the detail | row | `test_corpus_columns_render_the_list_fields`, `test_corpus_row_opens_detail` | ☑ |
+| C-10 | Column Filename (pinned, the row header); click opens the detail | Corpus table: Filename (first column, stays in view); activating a row opens the detail | row | `test_corpus_columns_render_the_list_fields`, `test_corpus_row_opens_detail`, `test_a_row_opened_as_the_sheet_closes_is_shown` | ☑ |
 | C-11 | Column Captured: `capturedAt` as `YYYY-MM-DD HH:MM`; the default sort, ascending | Corpus table: Captured, same format and default | row | `test_corpus_columns_render_the_list_fields`, `test_corpus_sorts_on_header` | ☑ |
 | C-12 | Column Year | Corpus table: Year | row | `test_corpus_columns_render_the_list_fields` | ☑ |
 | C-13 | Column Duration: `durationSeconds` rounded, `Ns` | Corpus table: Duration | row | `test_corpus_columns_render_the_list_fields` | ☑ |

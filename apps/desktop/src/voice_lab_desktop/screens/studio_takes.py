@@ -55,6 +55,8 @@ STEP_FRAMES: Final = SAMPLE_RATE // 10
 MIN_VIEW_FRAMES: Final = SAMPLE_RATE // 20
 #: Where a failure to reach the PC's takes leaves the picker.
 PC_UNREACHED: Final = "The PC's takes of this prompt could not be read"
+#: Where a failure to read this machine's takes (to compare them with the PC's) leaves it.
+HERE_UNREAD: Final = "This machine's takes could not be compared with the PC's"
 
 
 def clock(frames: int) -> str:
@@ -438,6 +440,10 @@ class TakeReviewModel(ViewModel):
                 self._pc_again = False
                 self._fetch_history(select_latest=select_latest)
             if error is not None or history is None:
+                if isinstance(error, (SpoolError, OSError)):
+                    # The spool, not the PC: the studio's status says so too.
+                    self._set(self.takesChanged, historyNote=f"{HERE_UNREAD}: {error}")
+                    return
                 if error is not None and not isinstance(error, (ApiError, AuthError, ConfigError)):
                     raise error
                 self._pc_tag = tag

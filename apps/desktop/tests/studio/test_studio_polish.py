@@ -13,6 +13,7 @@ from conftest import Window
 from corpus_rig import PC
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (root objects come back as QQuickWindow)
 from studio_fakes import StudioRecorder
+from voice_lab_desktop.screens.studio_takes import HERE_UNREAD
 
 from .conftest import open_studio, ready, studio_app, wait_phase
 from .test_studio_screen import assert_prompt_whole, click, prompt_ids, resize
@@ -178,5 +179,9 @@ def test_takes_that_cannot_be_listed_at_start_say_so(
             )
             assert studio.statusTone == "danger" and not studio.canRecord
             assert studio.problemText.endswith("the spool is not readable")
+            # The prompt's history comes from the PC, but cannot be compared with the takes
+            # here: the picker says so (never an error raised on the GUI thread).
+            qtbot.waitUntil(lambda: studio.takes.historyNote != "", timeout=10000)
+            assert studio.takes.historyNote == f"{HERE_UNREAD}: the spool is not readable"
     finally:
         model.shutdown()
