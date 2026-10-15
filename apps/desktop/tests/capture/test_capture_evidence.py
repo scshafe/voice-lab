@@ -23,6 +23,7 @@ from voice_lab_desktop.capture.types import (
     CaptureFailed,
 )
 
+import cole_voice_lab.audio as audio_module
 from cole_voice_lab.errors import ContractError, SecurityError
 
 
@@ -37,6 +38,20 @@ def test_a_good_take_is_published_with_its_numbers(tmp_path):
     assert captured.requested_at == STARTED
     assert stat.S_IMODE((take / ORIGINAL_NAME).stat().st_mode) == 0o600
     assert (take / ORIGINAL_NAME).stat().st_nlink == 1
+
+
+def test_the_binding_does_not_measure_the_samples(tmp_path, monkeypatch):
+    """Measuring every sample's level in Python took about 19 ms per second of audio between
+    Stop and the sealed take; the binding needs the digest, size, format and length only."""
+    take = tmp_path / "take"
+    make_take(take, frames=4800)
+
+    def measured(*_arguments):
+        raise AssertionError("a sample was measured")
+
+    monkeypatch.setattr(audio_module, "_sample_values", measured)
+    captured = validate_take(take, progress_frames=4800, requested_at=STARTED)
+    assert captured.frames == 4800 and captured.path == take / ORIGINAL_NAME
 
 
 @pytest.mark.parametrize(

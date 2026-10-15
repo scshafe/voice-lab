@@ -6,12 +6,19 @@ import random
 import wave
 from dataclasses import replace
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
 import cole_voice_lab.audio as audio_module
-from cole_voice_lab.audio import analyze_pcm_wav, inspect_canonical_wav, inspect_pcm_wav
+from cole_voice_lab.audio import (
+    analyze_pcm_wav,
+    identify_canonical_wav,
+    inspect_canonical_wav,
+    inspect_pcm_wav,
+)
 from cole_voice_lab.errors import ContractError, SecurityError
+from cole_voice_lab.models import AudioSpec
 
 
 def _write_wav(
@@ -74,6 +81,8 @@ def test_canonical_format_is_exact(
 
     with pytest.raises(ContractError, match="mono 48000 Hz 24-bit"):
         inspect_canonical_wav(audio)
+    with pytest.raises(ContractError, match="mono 48000 Hz 24-bit"):
+        identify_canonical_wav(audio)
     assert inspect_pcm_wav(audio).audio.sample_rate_hz == sample_rate
 
 
@@ -84,6 +93,77 @@ def test_truncated_pcm_payload_fails_closed(tmp_path: Path) -> None:
 
     with pytest.raises(ContractError, match="data chunk|data length"):
         inspect_canonical_wav(audio)
+
+
+def test_identify_is_the_inspection_without_measuring_a_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "voice.wav"
+    _write_wav(audio, [-4_000_000, 0, 4_000_000] * 1_000)
+    inspection = inspect_canonical_wav(audio)
+
+    def measured(payload: bytes, sample_width: int) -> list[int]:
+        raise AssertionError("a sample was measured")
+
+    monkeypatch.setattr(audio_module, "_sample_values", measured)
+    identity = identify_canonical_wav(audio)
+
+    assert identity.sha256 == inspection.sha256
+    assert identity.size_bytes == inspection.size_bytes == audio.stat().st_size
+    assert identity.audio == inspection.audio
+
+
+@pytest.mark.parametrize(
+    ("cut_bytes", "message"),
+    [(1, "data chunk ends inside a PCM frame"), (3, "data length disagrees with header")],
+)
+def test_identify_refuses_data_shorter_than_its_header(
+    tmp_path: Path, cut_bytes: int, message: str
+) -> None:
+    audio = tmp_path / "truncated.wav"
+    _write_wav(audio, [100, -100] * 100)
+    audio.write_bytes(audio.read_bytes()[:-cut_bytes])
+
+    with pytest.raises(ContractError, match=message):
+        identify_canonical_wav(audio)
+
+
+@pytest.mark.parametrize("fault", ["grows", "unreadable"])
+def test_identify_refuses_a_file_that_changes_or_fails_while_it_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    audio = tmp_path / "voice.wav"
+    _write_wav(audio, [100, -100] * 100)
+    read = audio_module._identify_open_wav
+
+    def interfering(stream: BinaryIO) -> AudioSpec:
+        if fault == "unreadable":
+            raise OSError("input/output error")
+        with audio.open("ab") as appended:
+            appended.write(b"\0")
+        return read(stream)
+
+    monkeypatch.setattr(audio_module, "_identify_open_wav", interfering)
+    if fault == "grows":
+        with pytest.raises(SecurityError, match="changed while it was being inspected"):
+            identify_canonical_wav(audio)
+    else:
+        with pytest.raises(ContractError, match="cannot inspect WAV .*input/output error"):
+            identify_canonical_wav(audio)
+
+
+def test_identify_refuses_a_symlink_and_a_malformed_file(tmp_path: Path) -> None:
+    target = tmp_path / "target.wav"
+    _write_wav(target, [100, -100] * 100)
+    link = tmp_path / "link.wav"
+    os.symlink(target, link)
+    malformed = tmp_path / "malformed.wav"
+    malformed.write_bytes(b"not-a-wave")
+
+    with pytest.raises(SecurityError, match="safely open"):
+        identify_canonical_wav(link)
+    with pytest.raises(ContractError, match="invalid PCM WAV"):
+        identify_canonical_wav(malformed)
 
 
 def test_symlink_is_not_followed(tmp_path: Path) -> None:

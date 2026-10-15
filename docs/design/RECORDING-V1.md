@@ -517,3 +517,10 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   need your OK* with **Approve**, and gains **Sync now** while operations wait. Status and
   Uploads offer the button too. The approval in the Swift app's library is for `corpus-import` only (owner steps 2 and
   3).
+- 2026-10-15: **the slower stop** (D-040's follow-up). Stop to sealed lost two waits:
+  - the writer's 50 ms poll;
+  - the parent measuring every sample's level, at about 19 ms per second of audio, to check a
+    digest and a frame count (`identify_canonical_wav` now).
+
+  With the simulated device on the PC, the median went from 218 ms to 145 ms. A new S-1 run on
+  the Air will show its p95.

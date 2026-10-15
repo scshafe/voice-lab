@@ -9,6 +9,7 @@ import hashlib
 import math
 import os
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Literal, cast
@@ -37,6 +38,16 @@ _CONTINUITY_LOCAL_RATIO = 8
 _CONTINUITY_IMMEDIATE_RATIO = 4
 _CONTINUITY_MINIMUM_COUNT = 4
 _CONTINUITY_CONTROL_RATIO = 4
+
+
+@dataclass(frozen=True, slots=True)
+class WavIdentity:
+    """One stable, descriptor-opened canonical WAV: its digest, size and format, its data
+    counted but not measured (``identify_canonical_wav``)."""
+
+    sha256: str
+    size_bytes: int
+    audio: AudioSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,30 +185,80 @@ class _BoundaryContinuityScan:
         self._tail = samples[-2 * _CONTINUITY_GRID_FRAMES :]
 
 
+def _checked_format(
+    reader: wave.Wave_read, *, require_canonical: bool
+) -> tuple[int, int, Literal[2, 3, 4], int]:
+    """The header's channels, sample rate, sample width and frames, refused unless they
+    describe uncompressed PCM (in the canonical format when ``require_canonical``).
+
+    Raises: ``ContractError``."""
+    channels = reader.getnchannels()
+    sample_rate = reader.getframerate()
+    sample_width = reader.getsampwidth()
+    frames = reader.getnframes()
+    if reader.getcomptype() != "NONE":
+        raise ContractError("canonical recordings must contain uncompressed PCM")
+    if sample_width not in {2, 3, 4}:
+        raise ContractError(f"unsupported PCM sample width: {sample_width}")
+    if channels < 1 or sample_rate < 1 or frames < 1:
+        raise ContractError("WAV header contains invalid channel, rate, or frame evidence")
+    if require_canonical and (
+        channels != CANONICAL_CHANNELS
+        or sample_rate != CANONICAL_SAMPLE_RATE_HZ
+        or sample_width != CANONICAL_SAMPLE_WIDTH_BYTES
+    ):
+        raise ContractError("raw recording must be mono 48000 Hz 24-bit little-endian PCM WAV")
+    return channels, sample_rate, cast(Literal[2, 3, 4], sample_width), frames
+
+
+def _audio_spec(
+    channels: int, sample_rate: int, sample_width: Literal[2, 3, 4], frames: int
+) -> AudioSpec:
+    encoding = cast(
+        Literal["pcm_s16le", "pcm_s24le", "pcm_s32le"],
+        {2: "pcm_s16le", 3: "pcm_s24le", 4: "pcm_s32le"}[sample_width],
+    )
+    return AudioSpec(
+        sample_rate_hz=sample_rate,
+        channels=channels,
+        sample_width_bytes=sample_width,
+        encoding=encoding,
+        frames=frames,
+        duration_seconds=frames / sample_rate,
+    )
+
+
+def _identify_open_wav(stream: BinaryIO) -> AudioSpec:
+    """A canonical WAV's format, its data read through to check its length."""
+    try:
+        with wave.open(stream, "rb") as reader:
+            channels, sample_rate, sample_width, frames = _checked_format(
+                reader, require_canonical=True
+            )
+            frame_bytes = channels * sample_width
+            data_bytes = 0
+            while payload := reader.readframes(_READ_FRAMES):
+                if len(payload) % frame_bytes:
+                    raise ContractError("WAV data chunk ends inside a PCM frame")
+                data_bytes += len(payload)
+    except (EOFError, wave.Error) as error:
+        raise ContractError(f"invalid PCM WAV: {error}") from error
+    if data_bytes != frames * frame_bytes:
+        raise ContractError(
+            "WAV data length disagrees with header: "
+            f"{data_bytes // sample_width} != {frames * channels} samples"
+        )
+    return _audio_spec(channels, sample_rate, sample_width, frames)
+
+
 def _inspect_open_wav(
     stream: BinaryIO, *, require_canonical: bool
 ) -> tuple[AudioSpec, dict[str, float | int]]:
     try:
         with wave.open(stream, "rb") as reader:
-            channels = reader.getnchannels()
-            sample_rate = reader.getframerate()
-            sample_width = reader.getsampwidth()
-            frames = reader.getnframes()
-            if reader.getcomptype() != "NONE":
-                raise ContractError("canonical recordings must contain uncompressed PCM")
-            if sample_width not in {2, 3, 4}:
-                raise ContractError(f"unsupported PCM sample width: {sample_width}")
-            typed_sample_width = cast(Literal[2, 3, 4], sample_width)
-            if channels < 1 or sample_rate < 1 or frames < 1:
-                raise ContractError("WAV header contains invalid channel, rate, or frame evidence")
-            if require_canonical and (
-                channels != CANONICAL_CHANNELS
-                or sample_rate != CANONICAL_SAMPLE_RATE_HZ
-                or sample_width != CANONICAL_SAMPLE_WIDTH_BYTES
-            ):
-                raise ContractError(
-                    "raw recording must be mono 48000 Hz 24-bit little-endian PCM WAV"
-                )
+            channels, sample_rate, sample_width, frames = _checked_format(
+                reader, require_canonical=require_canonical
+            )
 
             count = 0
             total = 0
@@ -263,18 +324,7 @@ def _inspect_open_wav(
 
     full_scale = float(1 << (sample_width * 8 - 1))
     rms = math.sqrt(squares / count) if count else 0.0
-    encoding = cast(
-        Literal["pcm_s16le", "pcm_s24le", "pcm_s32le"],
-        {2: "pcm_s16le", 3: "pcm_s24le", 4: "pcm_s32le"}[typed_sample_width],
-    )
-    spec = AudioSpec(
-        sample_rate_hz=sample_rate,
-        channels=channels,
-        sample_width_bytes=typed_sample_width,
-        encoding=encoding,
-        frames=frames,
-        duration_seconds=frames / sample_rate,
-    )
+    spec = _audio_spec(channels, sample_rate, sample_width, frames)
     metrics: dict[str, float | int] = {
         "peak_dbfs": _dbfs(absolute_peak / full_scale),
         "rms_dbfs": _dbfs(rms / full_scale),
@@ -288,13 +338,13 @@ def _inspect_open_wav(
     return spec, metrics
 
 
-def inspect_pcm_wav(path: Path, *, require_canonical: bool = False) -> WavInspection:
-    """Hash and inspect a WAV through one no-follow descriptor.
+def _read_stable[ResultT](
+    path: Path, read: Callable[[BinaryIO], ResultT]
+) -> tuple[str, int, ResultT]:
+    """The file's SHA-256, its size and what ``read`` makes of it, through one no-follow
+    descriptor whose identity did not change meanwhile.
 
-    The before/after descriptor metadata check makes a concurrent replacement or
-    mutation a hard failure instead of accepting evidence about mixed file states.
-    """
-
+    Raises: ``SecurityError`` (the path, or a change during the read), ``ContractError``."""
     try:
         with open_regular_no_follow(path) as stream:
             before = os.fstat(stream.fileno())
@@ -304,7 +354,7 @@ def inspect_pcm_wav(path: Path, *, require_canonical: bool = False) -> WavInspec
                 digest.update(chunk)
                 size += len(chunk)
             stream.seek(0)
-            audio, values = _inspect_open_wav(stream, require_canonical=require_canonical)
+            result = read(stream)
             after = os.fstat(stream.fileno())
     except SecurityError:
         raise
@@ -315,8 +365,21 @@ def inspect_pcm_wav(path: Path, *, require_canonical: bool = False) -> WavInspec
     identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
     if identity_before != identity_after or size != after.st_size:
         raise SecurityError(f"WAV changed while it was being inspected: {path}")
+    return digest.hexdigest(), size, result
+
+
+def inspect_pcm_wav(path: Path, *, require_canonical: bool = False) -> WavInspection:
+    """Hash and inspect a WAV through one no-follow descriptor.
+
+    The before/after descriptor metadata check makes a concurrent replacement or
+    mutation a hard failure instead of accepting evidence about mixed file states.
+    """
+
+    sha256, size, (audio, values) = _read_stable(
+        path, lambda stream: _inspect_open_wav(stream, require_canonical=require_canonical)
+    )
     return WavInspection(
-        sha256=digest.hexdigest(),
+        sha256=sha256,
         size_bytes=size,
         audio=audio,
         peak_dbfs=float(values["peak_dbfs"]),
@@ -334,6 +397,18 @@ def inspect_canonical_wav(path: Path) -> WavInspection:
     """Inspect one canonical raw recording and fail on any format deviation."""
 
     return inspect_pcm_wav(path, require_canonical=True)
+
+
+def identify_canonical_wav(path: Path) -> WavIdentity:
+    """Hash one canonical raw recording and check its format and data length, without
+    measuring its samples: what binding a file to its evidence needs.
+
+    ``inspect_canonical_wav`` also measures every sample, in Python, which costs about
+    19 ms per second of audio; this reads the file twice (its digest, then its frames).
+    Raises: ``SecurityError``, ``ContractError``."""
+
+    sha256, size, audio = _read_stable(path, _identify_open_wav)
+    return WavIdentity(sha256=sha256, size_bytes=size, audio=audio)
 
 
 def analyze_pcm_wav(
