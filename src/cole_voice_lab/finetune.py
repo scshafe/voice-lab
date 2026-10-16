@@ -3117,6 +3117,10 @@ FINETUNE_ROCM_RUNTIME_PYTHON: Final = (
 # pip run, after the sdists are built: harmless, since nothing builds after the install, and
 # both are hash-bound.
 FINETUNE_BUILD_REQUIREMENTS: Final = "requirements/development-build.txt"
+# PyTorch's indexes beside PyPI, named by the ROCm lock itself (its header's option lines,
+# PyPI first): a requirements file's --index-url replaces the index list pip was given on its
+# command line, so indexes passed there would be dropped. pip filters each index's files by
+# the lock's hashes, so an extra index can serve only a file the lock names.
 FINETUNE_ROCM_INDEX_URLS: Final = (
     "https://download.pytorch.org/whl/rocm7.2",
     "https://download.pytorch.org/whl/cpu",
@@ -3150,15 +3154,13 @@ class FineTuneRuntimeTarget:
     lock with ``--require-hashes`` and without build isolation, so that the packages in
     ``source_builds`` build from their hash-bound sdists with those hash-bound tools and
     nothing unpinned is fetched for a build; every other package installs from a wheel.
-    ``index_urls`` are added beside PyPI: pip filters each index's files by the lock's
-    hashes, so an extra index can serve only a file the lock names.
+    The lock names its own indexes (``FINETUNE_ROCM_INDEX_URLS``); the command names none.
     """
 
     name: FineTuneRuntimeTargetName
     python: str
     requirements: str
     build_requirements: str | None = None
-    index_urls: tuple[str, ...] = ()
     source_builds: tuple[str, ...] = ()
 
 
@@ -3175,7 +3177,6 @@ FINETUNE_RUNTIME_TARGETS: Final[Mapping[FineTuneRuntimeTargetName, FineTuneRunti
         python=FINETUNE_ROCM_RUNTIME_PYTHON,
         requirements=FINETUNE_ROCM_RUNTIME_REQUIREMENTS,
         build_requirements=FINETUNE_BUILD_REQUIREMENTS,
-        index_urls=FINETUNE_ROCM_INDEX_URLS,
         source_builds=FINETUNE_ROCM_SOURCE_BUILDS,
     ),
 }
@@ -3373,7 +3374,6 @@ def plan_finetune_runtime_provisioning(
         tools = _pinned_file(
             build_requirements or _checkout_file(spec.build_requirements, "--build-requirements")
         )
-        index = tuple(item for url in spec.index_urls for item in ("--extra-index-url", url))
         # Isolated (no PIP_* variables, no pip.conf) and without a cache: pip writes nothing
         # outside the runtime root but its temporary files.
         hashed = (*pip, "--isolated", "--no-cache-dir", "--require-hashes")
@@ -3384,7 +3384,6 @@ def plan_finetune_runtime_provisioning(
                 "--no-build-isolation",
                 "--only-binary=:all:",
                 *(("--no-binary=" + ",".join(spec.source_builds),) if spec.source_builds else ()),
-                *index,
                 "-r",
                 str(pins),
             ),

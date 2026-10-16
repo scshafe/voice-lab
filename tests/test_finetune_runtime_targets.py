@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -153,10 +155,6 @@ def test_the_rocm_plan_installs_the_build_tools_then_the_hash_locked_lock(tmp_pa
             "--no-build-isolation",
             "--only-binary=:all:",
             "--no-binary=antlr4-python3-runtime,encodec,transformers-stream-generator",
-            "--extra-index-url",
-            "https://download.pytorch.org/whl/rocm7.2",
-            "--extra-index-url",
-            "https://download.pytorch.org/whl/cpu",
             "-r",
             str(ROCM_LOCK),
         ),
@@ -208,7 +206,7 @@ def test_explicit_files_replace_the_checkouts(tmp_path: Path) -> None:
     assert [command[-1] for command in plan.install_commands] == [str(tools), str(pins)]
 
 
-def test_a_hash_locked_target_without_source_builds_or_indexes_names_neither(
+def test_a_hash_locked_target_without_source_builds_names_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setitem(
@@ -402,10 +400,81 @@ def test_the_rocm_lock_pins_and_hashes_every_package() -> None:
     # No CUDA build of anything, and the source builds are the lock's own packages.
     assert not [name for name in packages if name.startswith("nvidia-") or "cuda" in name]
     assert set(FINETUNE_ROCM_SOURCE_BUILDS) <= set(packages)
-    # PyPI is the one index the file names; pip's format options are the command's, never the
-    # file's (pip applies a file's in order, and `--only-binary :all:` last would cancel the
-    # source builds' `--no-binary`).
-    assert options == ["--index-url https://pypi.org/simple"]
+    # The file names its indexes, PyPI first (a requirements file's --index-url replaces the
+    # command line's index list, so they cannot come from the command). pip's format options
+    # are the command's, never the file's (pip applies a file's in order, and `--only-binary
+    # :all:` last would cancel the source builds' `--no-binary`).
+    assert options == [
+        "--index-url https://pypi.org/simple",
+        *(f"--extra-index-url {url}" for url in FINETUNE_ROCM_INDEX_URLS),
+    ]
+
+
+def test_pip_searches_pypi_and_both_pytorch_indexes_for_the_lock(tmp_path: Path) -> None:
+    # The real pip, given the install command's options and the lock's own option lines
+    # (with one of its pins), reports the indexes it would search. Nothing is fetched: every
+    # connection goes to a proxy that refuses it, and `--dry-run` installs nothing.
+    plan = plan_finetune_runtime_provisioning(tmp_path / "rt", target="linux-rocm")
+    command = plan.install_commands[1]
+    assert command[1:5] == ("-B", "-m", "pip", "install") and command[-2] == "-r"
+    text = ROCM_LOCK.read_text()
+    _, _, options = _lock(text)
+    pin = re.search(r"^six==\S+ \\\n    --hash=sha256:[0-9a-f]{64}", text, re.M)
+    assert pin is not None
+    probe = tmp_path / "probe.txt"
+    probe.write_text("\n".join(options) + "\n" + pin.group(0).replace(" \\\n   ", "") + "\n")
+    environment = {"PATH": os.environ.get("PATH", "/usr/bin"), "HOME": str(tmp_path)}
+    completed = subprocess.run(
+        [
+            sys.executable,
+            *command[1:-2],
+            "--dry-run",
+            "--no-deps",
+            "--proxy",
+            "http://127.0.0.1:9",
+            "--retries",
+            "0",
+            "--timeout",
+            "1",
+            "-r",
+            str(probe),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=environment,
+        check=False,
+    )
+    output = completed.stdout + completed.stderr
+    assert completed.returncode != 0  # the refused proxy: nothing was reachable
+    expected = ", ".join(("https://pypi.org/simple", *FINETUNE_ROCM_INDEX_URLS))
+    assert f"Looking in indexes: {expected}" in output, output
+    # The same command line with the lock's --index-url alone (the bug fixed here) loses the
+    # PyTorch indexes, which pip then never names.
+    alone = tmp_path / "alone.txt"
+    alone.write_text(probe.read_text().replace("--extra-index-url", "# --extra-index-url"))
+    completed = subprocess.run(
+        [
+            sys.executable,
+            *command[1:-2],
+            "--dry-run",
+            "--no-deps",
+            "--proxy",
+            "http://127.0.0.1:9",
+            "--retries",
+            "0",
+            "--timeout",
+            "1",
+            "-r",
+            str(alone),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=environment,
+        check=False,
+    )
+    assert "download.pytorch.org" not in completed.stdout + completed.stderr
 
 
 def test_the_rocm_lock_keeps_the_macs_versions_beside_its_torch() -> None:

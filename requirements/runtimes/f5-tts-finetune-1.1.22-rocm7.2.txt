@@ -17,21 +17,25 @@
 #   python -B -m pip install --disable-pip-version-check --require-virtualenv \
 #     --isolated --no-cache-dir --require-hashes --no-build-isolation --only-binary=:all: \
 #     --no-binary=antlr4-python3-runtime,encodec,transformers-stream-generator \
-#     --extra-index-url https://download.pytorch.org/whl/rocm7.2 \
-#     --extra-index-url https://download.pytorch.org/whl/cpu \
 #     -r requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2.txt
 #
-# Everything after this header is, unchanged, the output of (uv 0.12.21, repository root):
+# The three index lines below are this header's, written by hand: the indexes belong in this
+# file, because pip replaces its command line's index list with a requirements file's
+# --index-url, and they must be in this order, PyPI first (an --extra-index-url before it would
+# be dropped the same way). pip takes from PyTorch's indexes only files whose hashes are here.
+# Everything after them is, unchanged, the output of (uv 0.12.21, repository root):
 #   uv pip compile requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2/pyproject.toml \
 #     -c requirements/runtimes/f5-tts-finetune-1.1.22-mps.txt \
 #     --python-version 3.12 --python-platform x86_64-manylinux_2_28 \
 #     --only-binary :all: --no-binary antlr4-python3-runtime --no-binary encodec \
 #     --no-binary transformers-stream-generator \
-#     --emit-index-url --generate-hashes --no-header
-# (--emit-build-options is left out: pip applies a file's format options in order, and uv
-# writes `--only-binary :all:` last, which would cancel the three `--no-binary`.)
-
+#     --generate-hashes --no-header
+# (Neither --emit-index-url, which writes only PyPI, the two PyTorch indexes being explicit to
+# uv, nor --emit-build-options: pip applies a file's format options in order, and uv writes
+# `--only-binary :all:` last, which would cancel the three `--no-binary`.)
 --index-url https://pypi.org/simple
+--extra-index-url https://download.pytorch.org/whl/rocm7.2
+--extra-index-url https://download.pytorch.org/whl/cpu
 
 accelerate==1.15.0 \
     --hash=sha256:5654f8c5eaa0d4fa68b33e287a97765da6849bf6d51dcac874e73fbbddfb6134 \
