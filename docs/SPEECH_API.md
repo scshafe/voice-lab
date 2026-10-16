@@ -483,11 +483,12 @@ expected end. The rules:
   than waiting hours. Speech already queued waits, and fails `queue_timeout` if it has not
   started within `queue_timeout_seconds` (10 minutes): a stale reply is worth nothing.
 
-**No ROCm runtime yet.** The real backend takes its runtime from the configuration. When the
+**Without its runtime.** The real backend takes its runtime from the configuration. When the
 runtime root, its interpreter or its pinned weights are missing, the runtime probe fails, or
 the resident worker cannot load, the job fails `runtime_unavailable` with a plain message; the
-runner does not crash and the next job is tried. The PC's hash-locked ROCm runtime lock is a
-follow-up to spike S-2 (D-046).
+runner does not crash and the next job is tried. The PC's runtime is hash-locked in
+`requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2.txt` (spike S-2's stack, D-046) and
+provisioned with `voice-lab finetune provision-runtime --target linux-rocm`.
 
 ## 8. Webhooks
 
@@ -589,8 +590,10 @@ stack and door changes: `deploy/speech/compose.speech.yaml`; the host units:
 `deploy/host-manual/voice-lab-speech*`):
 
 1. **The runtime.** Provision the ROCm F5-TTS runtime on the PC (torch 2.14.0+rocm7.2,
-   torchcodec 0.16.0+cpu, from spike S-2; its hash-locked lock is a follow-up). Until then
-   every job fails `runtime_unavailable`.
+   torchcodec 0.16.0+cpu, from spike S-2), hash-locked in
+   `requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2.txt`, with `voice-lab finetune
+   provision-runtime --target linux-rocm` (docs/FINETUNE.md, "The runtime"). Until then every
+   job fails `runtime_unavailable`.
 2. **The voice release.** `voice-lab voice release designate --run <id> --config
    /etc/voice-lab/speech.json` on the PC. Only Cole; no consent record is needed (D-050).
 3. **Pocket ID.** Create the caller's confidential client with `client_credentials`; read one

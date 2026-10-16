@@ -104,8 +104,25 @@ normalized (`docs/CAPTURE_AND_SYNC.md`, "Raw means raw").
 
 ## The runtime
 
-Training and synthesis run out of process in a pinned F5-TTS environment
-(`requirements/runtimes/f5-tts-finetune-1.1.22-mps.txt`: torch 2.14 with MPS, f5-tts 1.1.22).
+Training and synthesis run out of process in a pinned F5-TTS environment, one per host
+(`--target`, this host's by default):
+
+| Target | Lock | Interpreter (default `--python`) |
+| --- | --- | --- |
+| `macos-mps` (the Mac) | `requirements/runtimes/f5-tts-finetune-1.1.22-mps.txt`: torch 2.14 with MPS, f5-tts 1.1.22; versions pinned, not yet hashed | Homebrew `python@3.12` |
+| `linux-rocm` (the PC, RX 6900 XT) | `requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2.txt`: spike S-2's stack (D-046), torch 2.14.0+rocm7.2, torchaudio 2.11.0+rocm7.2, torchcodec 0.16.0+cpu, f5-tts 1.1.22, every other package at the Mac's version; every file hash-bound | infra's host Python, `/opt/voice-lab/python/cpython-3.12.14-linux-x86_64-gnu/bin/python3.12` |
+
+The ROCm lock is compiled by uv from
+`requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2/pyproject.toml` (which routes only the
+torch family to PyTorch's `rocm7.2` and `cpu` indexes) with the Mac's lock as constraints;
+its header has the exact command, and its body is that command's unchanged output. It
+installs in two steps, both `--require-hashes`: the hash-locked build tools
+(`requirements/development-build.txt`, `--build-requirements`), then the lock without build
+isolation and wheels only, except the three packages that publish none
+(`antlr4-python3-runtime`, `encodec`, `transformers-stream-generator`), which build from their
+hash-bound sdists with those tools. PyTorch's two indexes are added beside PyPI; pip takes
+from them only files whose hashes the lock names.
+
 The runtime root must hold `bin/python` and these pinned files under `pretrained/`:
 
 | Path under `<runtime>/pretrained/` | Source (Hugging Face, immutable revision) | Bytes | SHA-256 |
@@ -129,15 +146,19 @@ sibling `pretrained/` directory the manual run downloaded, so its Vocos files be
 `~/.local/share/voice-lab/finetune-f5-01/pretrained/vocos-mel-24khz/`.
 
 ```sh
-voice-lab finetune provision-runtime --runtime-root <dir>                      # prints the plan
+voice-lab finetune provision-runtime --runtime-root <dir> [--target …]         # prints the plan
 voice-lab finetune provision-runtime --runtime-root <dir> --execute --allow-downloads
 voice-lab finetune fetch-pretrained  --runtime-root <dir> [--allow-downloads]  # verify or fetch
 ```
 
+The plan names the target, the interpreter, the lock (and, for `linux-rocm`, the build tools)
+and every command it would run. From an installed release rather than a checkout, pass
+`--requirements` (and `--build-requirements`) explicitly: the wheel carries no lock.
+
 `fetch-pretrained` and provisioning fetch all four files from their pinned revisions
 (`finetune.pretrained_downloads`), and only with `--allow-downloads`. A file that already
-matches its pin is kept. Provisioning needs about 3 GB for packages, 1.35 GB for the weights
-and 54 MB for the vocoder. Each download is verified against its pinned size and SHA-256
+matches its pin is kept. Provisioning needs about 3 GB for packages on the Mac (on the PC the ROCm
+torch wheel alone is a 6.2 GB download), 1.35 GB for the weights and 54 MB for the vocoder. Each download is verified against its pinned size and SHA-256
 before it is published.
 
 Every runtime subprocess (the probe, dataset packing, training and synthesis, from the

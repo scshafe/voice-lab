@@ -37,6 +37,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 import wave
 from collections.abc import Callable, Mapping, Sequence
@@ -3092,15 +3093,100 @@ def discard_unfinished_speech(layout: AssetLayout) -> tuple[str, ...]:
     return tuple(unfinished)
 
 
-# Provisioning: one venv from the pinned requirements plus the two pinned Hugging Face files.
+# Provisioning: one venv from the pinned requirements plus the pinned Hugging Face files.
 FINETUNE_RUNTIME_REQUIREMENTS: Final = "requirements/runtimes/f5-tts-finetune-1.1.22-mps.txt"
 FINETUNE_RUNTIME_PYTHON: Final = "/opt/homebrew/opt/python@3.12/bin/python3.12"
+# The PC's runtime (spike S-2, D-046): hash-locked, from PyPI and PyTorch's two indexes.
+FINETUNE_ROCM_RUNTIME_REQUIREMENTS: Final = (
+    "requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2.txt"
+)
+# The interpreter infra's host release installs on the PC (stacks/voice-lab/host.conf
+# HOST_PYTHON, under /opt/<app>/python), the one the deployed release runs on.
+FINETUNE_ROCM_RUNTIME_PYTHON: Final = (
+    "/opt/voice-lab/python/cpython-3.12.14-linux-x86_64-gnu/bin/python3.12"
+)
+# The hash-locked build tools (setuptools, wheel) the three sdists of the ROCm lock build with.
+FINETUNE_BUILD_REQUIREMENTS: Final = "requirements/development-build.txt"
+FINETUNE_ROCM_INDEX_URLS: Final = (
+    "https://download.pytorch.org/whl/rocm7.2",
+    "https://download.pytorch.org/whl/cpu",
+)
+# The ROCm lock's packages that publish no wheel; every other package installs from a wheel.
+FINETUNE_ROCM_SOURCE_BUILDS: Final = (
+    "antlr4-python3-runtime",
+    "encodec",
+    "transformers-stream-generator",
+)
 FINETUNE_PRETRAINED_VOCAB_SHA256: Final = (
     "2a05f992e00af9b0bd3800a8d23e78d520dbd705284ed2eedb5f4bd29398fa3c"
 )
 FINETUNE_PRETRAINED_VOCAB_SIZE_BYTES: Final = 13_800
 FINETUNE_HUGGINGFACE_BASE_URL: Final = "https://huggingface.co"
 _DOWNLOAD_CHUNK_BYTES: Final = 1 << 20
+
+type FineTuneRuntimeTargetName = Literal["macos-mps", "linux-rocm"]
+FINETUNE_RUNTIME_TARGET_NAMES: Final[tuple[FineTuneRuntimeTargetName, ...]] = (
+    "macos-mps",
+    "linux-rocm",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FineTuneRuntimeTarget:
+    """One host's F5-TTS runtime: its interpreter and pins, and how pip installs them.
+
+    ``requirements`` and ``build_requirements`` are paths in this checkout. A target with
+    ``build_requirements`` is hash-locked: it installs them first (wheels only), then its
+    lock with ``--require-hashes`` and without build isolation, so that the packages in
+    ``source_builds`` build from their hash-bound sdists with those hash-bound tools and
+    nothing unpinned is fetched for a build; every other package installs from a wheel.
+    ``index_urls`` are added beside PyPI: pip filters each index's files by the lock's
+    hashes, so an extra index can serve only a file the lock names.
+    """
+
+    name: FineTuneRuntimeTargetName
+    python: str
+    requirements: str
+    build_requirements: str | None = None
+    index_urls: tuple[str, ...] = ()
+    source_builds: tuple[str, ...] = ()
+
+
+FINETUNE_RUNTIME_TARGETS: Final[Mapping[FineTuneRuntimeTargetName, FineTuneRuntimeTarget]] = {
+    # The Mac's runtime, frozen from the environment that trained the first fine-tune: pinned
+    # versions, no hashes yet.
+    "macos-mps": FineTuneRuntimeTarget(
+        name="macos-mps",
+        python=FINETUNE_RUNTIME_PYTHON,
+        requirements=FINETUNE_RUNTIME_REQUIREMENTS,
+    ),
+    "linux-rocm": FineTuneRuntimeTarget(
+        name="linux-rocm",
+        python=FINETUNE_ROCM_RUNTIME_PYTHON,
+        requirements=FINETUNE_ROCM_RUNTIME_REQUIREMENTS,
+        build_requirements=FINETUNE_BUILD_REQUIREMENTS,
+        index_urls=FINETUNE_ROCM_INDEX_URLS,
+        source_builds=FINETUNE_ROCM_SOURCE_BUILDS,
+    ),
+}
+
+
+def host_finetune_target(platform: str | None = None) -> FineTuneRuntimeTargetName:
+    """The runtime target of a host: ``macos-mps`` on macOS, ``linux-rocm`` on Linux.
+
+    Params: ``platform`` is ``sys.platform``'s form (``None`` reads this host's).
+    Raises: ``FineTuneError`` FINETUNE.RUNTIME_UNAVAILABLE for any other platform.
+    """
+    name = sys.platform if platform is None else platform
+    if name == "darwin":
+        return "macos-mps"
+    if name.startswith("linux"):
+        return "linux-rocm"
+    raise FineTuneError(
+        "FINETUNE.RUNTIME_UNAVAILABLE",
+        f"no F5-TTS runtime target for {name}; pass --target "
+        + " or ".join(FINETUNE_RUNTIME_TARGET_NAMES),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3119,22 +3205,32 @@ class FineTuneDownload:
 
 @dataclass(frozen=True, slots=True)
 class FineTuneProvisionPlan:
-    """What provisioning would run; printed without ``--execute``, executed with it."""
+    """What provisioning would run; printed without ``--execute``, executed with it.
 
+    ``install_commands`` run in order in the new venv: for a hash-locked target the build
+    tools, then the lock.
+    """
+
+    target: FineTuneRuntimeTargetName
     runtime_root: Path
     python: Path
     requirements: Path
+    build_requirements: Path | None
     create_venv: bool
-    install_command: tuple[str, ...]
+    install_commands: tuple[tuple[str, ...], ...]
     downloads: tuple[FineTuneDownload, ...]
 
     def to_json(self) -> dict[str, object]:
         return {
+            "target": self.target,
             "runtime_root": str(self.runtime_root),
             "python": str(self.python),
             "requirements": str(self.requirements),
+            "build_requirements": (
+                None if self.build_requirements is None else str(self.build_requirements)
+            ),
             "create_venv": self.create_venv,
-            "install_command": list(self.install_command),
+            "install_commands": [list(command) for command in self.install_commands],
             "downloads": [
                 {
                     "url": item.url,
@@ -3148,15 +3244,18 @@ class FineTuneProvisionPlan:
         }
 
 
-def default_finetune_requirements() -> Path:
-    """The pinned requirements file in this checkout; wheel installs must pass one explicitly."""
-    candidate = Path(__file__).resolve().parents[2] / FINETUNE_RUNTIME_REQUIREMENTS
+def _checkout_file(relative: str, option: str) -> Path:
+    candidate = Path(__file__).resolve().parents[2] / relative
     if not candidate.is_file():
         raise FineTuneError(
-            "FINETUNE.REQUIREMENTS_MISSING",
-            f"no pinned requirements at {candidate}; pass --requirements",
+            "FINETUNE.REQUIREMENTS_MISSING", f"no pinned requirements at {candidate}; pass {option}"
         )
     return candidate
+
+
+def default_finetune_requirements(target: FineTuneRuntimeTargetName = "macos-mps") -> Path:
+    """The target's pinned requirements in this checkout; wheel installs must pass one."""
+    return _checkout_file(FINETUNE_RUNTIME_TARGETS[target].requirements, "--requirements")
 
 
 def pretrained_downloads(runtime_root: Path) -> tuple[FineTuneDownload, ...]:
@@ -3200,30 +3299,71 @@ def pretrained_downloads(runtime_root: Path) -> tuple[FineTuneDownload, ...]:
     )
 
 
-def plan_finetune_runtime_provisioning(
-    runtime_root: Path, *, python: Path | None = None, requirements: Path | None = None
-) -> FineTuneProvisionPlan:
-    root = Path(runtime_root).expanduser().resolve(strict=False)
-    interpreter = (python or Path(FINETUNE_RUNTIME_PYTHON)).expanduser()
-    pins = (requirements or default_finetune_requirements()).expanduser().resolve()
+def _pinned_file(path: Path) -> Path:
+    pins = path.expanduser().resolve()
     if not pins.is_file():
         raise FineTuneError("FINETUNE.REQUIREMENTS_MISSING", f"no requirements file at {pins}")
+    return pins
+
+
+def plan_finetune_runtime_provisioning(
+    runtime_root: Path,
+    *,
+    target: FineTuneRuntimeTargetName | None = None,
+    python: Path | None = None,
+    requirements: Path | None = None,
+    build_requirements: Path | None = None,
+) -> FineTuneProvisionPlan:
+    """The venv, the pip commands and the pinned downloads that provision ``runtime_root``.
+
+    Params: ``target`` defaults to this host's (``host_finetune_target``); ``python``,
+    ``requirements`` and ``build_requirements`` to the target's interpreter and this
+    checkout's files (only a hash-locked target uses ``build_requirements``).
+    Raises: ``FineTuneError`` FINETUNE.REQUIREMENTS_MISSING when a requirements file is
+    missing; FINETUNE.RUNTIME_UNAVAILABLE when the host has no target and none is given.
+    """
+    spec = FINETUNE_RUNTIME_TARGETS[host_finetune_target() if target is None else target]
+    root = Path(runtime_root).expanduser().resolve(strict=False)
+    interpreter = (python or Path(spec.python)).expanduser()
+    pins = _pinned_file(requirements or default_finetune_requirements(spec.name))
+    pip = (
+        str(root / "bin" / "python"),
+        "-B",
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--require-virtualenv",
+    )
+    tools: Path | None = None
+    if spec.build_requirements is None:
+        commands: tuple[tuple[str, ...], ...] = ((*pip, "-r", str(pins)),)
+    else:
+        tools = _pinned_file(
+            build_requirements or _checkout_file(spec.build_requirements, "--build-requirements")
+        )
+        index = tuple(item for url in spec.index_urls for item in ("--extra-index-url", url))
+        commands = (
+            (*pip, "--require-hashes", "--only-binary=:all:", "--no-deps", "-r", str(tools)),
+            (
+                *pip,
+                "--require-hashes",
+                "--no-build-isolation",
+                "--only-binary=:all:",
+                *(("--no-binary=" + ",".join(spec.source_builds),) if spec.source_builds else ()),
+                *index,
+                "-r",
+                str(pins),
+            ),
+        )
     return FineTuneProvisionPlan(
+        target=spec.name,
         runtime_root=root,
         python=interpreter,
         requirements=pins,
+        build_requirements=tools,
         create_venv=not (root / "bin" / "python").is_file(),
-        install_command=(
-            str(root / "bin" / "python"),
-            "-B",
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--require-virtualenv",
-            "-r",
-            str(pins),
-        ),
+        install_commands=commands,
         downloads=pretrained_downloads(root),
     )
 
@@ -3300,7 +3440,7 @@ def execute_finetune_runtime_provisioning(
     opener: Opener = _default_opener,
     runner: Callable[[tuple[str, ...]], int] | None = None,
 ) -> FineTuneRuntime:
-    """Create the venv, install the pins, fetch the pinned files, then describe the runtime.
+    """Create the venv, run the install commands, fetch the pinned files, then describe it.
 
     pip needs the network, so installing requires ``allow_downloads``. ``runner`` executes one
     command and returns its exit status (tests substitute one).
@@ -3326,8 +3466,9 @@ def execute_finetune_runtime_provisioning(
         if status != 0:
             raise FineTuneError("FINETUNE.RUNTIME_UNAVAILABLE", f"venv creation failed ({status})")
         os.chmod(plan.runtime_root, 0o700)
-    status = execute(plan.install_command)
-    if status != 0:
-        raise FineTuneError("FINETUNE.RUNTIME_UNAVAILABLE", f"pip install failed ({status})")
+    for command in plan.install_commands:
+        status = execute(command)
+        if status != 0:
+            raise FineTuneError("FINETUNE.RUNTIME_UNAVAILABLE", f"pip install failed ({status})")
     fetch_finetune_pretrained(plan.runtime_root, allow_downloads=True, opener=opener)
     return describe_finetune_runtime(plan.runtime_root)

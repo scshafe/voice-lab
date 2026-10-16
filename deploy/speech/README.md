@@ -16,8 +16,20 @@ retired, and Cole's standing decision permits his own voice for assistant speech
 1. **The runtime.** The F5-TTS runtime for the PC's GPU (design phase 5, spike S-2), with its
    pinned weights, at the `runtime.runtime_root` the configuration names (`model_family:
    "f5-tts"`, `device: "cuda"` on ROCm; torch 2.14.0+rocm7.2 and torchcodec 0.16.0+cpu, as
-   spike S-2 ran it; its hash-locked lock is a follow-up). Until it exists every job fails
-   `runtime_unavailable`; leaving `runtime` out of the configuration says so explicitly.
+   spike S-2 ran it, hash-locked in `requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2.txt`).
+   As `voice-lab`, print the plan, then run it (docs/FINETUNE.md, "The runtime"; the two
+   files must be readable by `voice-lab`, for example copied from a checkout at `main`):
+
+   ```sh
+   sudo -u voice-lab /opt/voice-lab/current/bin/voice-lab finetune provision-runtime \
+     --target linux-rocm --runtime-root /data/voice-lab/lab/runtimes/f5-tts-rocm \
+     --requirements <dir>/f5-tts-finetune-1.1.22-rocm7.2.txt \
+     --build-requirements <dir>/development-build.txt
+   # the same, with --execute --allow-downloads
+   ```
+
+   Until it exists every job fails `runtime_unavailable`; leaving `runtime` out of the
+   configuration says so explicitly.
    `runtime.nfe_steps` stays 32 until Cole's 16-versus-32 listening check.
 2. **A voice release.** On the PC, as `voice-lab`, preview, then designate a finished run of
    the pinned subject (`cole-self`, the configuration's `subject_id`; no other can be

@@ -1,0 +1,38 @@
+# The input of the PC's F5-TTS runtime lock, ../f5-tts-finetune-1.1.22-rocm7.2.txt, and nothing
+# else: a project file only because uv routes a package to one index only from a project's
+# [tool.uv.sources]. Nothing builds or installs this project; the lock's header has the
+# command that compiles it.
+#
+# The PyTorch stack that spike S-2 ran on the PC (RX 6900 XT, gfx1030; D-046): torch
+# 2.14.0+rocm7.2 with its torchaudio and triton from PyTorch's rocm7.2 index, and torchcodec's
+# CPU build (PyPI's x86_64 torchcodec 0.16.0 needs CUDA 13). The indexes are explicit, so
+# every other package comes from PyPI, at the versions of the Mac's fine-tune runtime
+# (../f5-tts-finetune-1.1.22-mps.txt, passed as constraints).
+[project]
+name = "voice-lab-f5-tts-runtime-rocm"
+version = "0"
+requires-python = "==3.12.*"
+dependencies = [
+  "f5-tts==1.1.22",
+  "torch==2.14.0+rocm7.2",
+  "torchaudio==2.11.0+rocm7.2",
+  "torchcodec==0.16.0+cpu",
+  # torch's own dependency, named here only so that it comes from the rocm7.2 index.
+  "triton-rocm",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-rocm7.2" }
+torchaudio = { index = "pytorch-rocm7.2" }
+triton-rocm = { index = "pytorch-rocm7.2" }
+torchcodec = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-rocm7.2"
+url = "https://download.pytorch.org/whl/rocm7.2"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
