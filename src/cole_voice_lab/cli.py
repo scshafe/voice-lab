@@ -936,8 +936,12 @@ def _finetune_provision_runtime(options: argparse.Namespace) -> int:
 
     plan = plan_finetune_runtime_provisioning(
         Path(options.runtime_root),
+        target=options.target,
         python=None if options.python is None else Path(options.python),
         requirements=None if options.requirements is None else Path(options.requirements),
+        build_requirements=(
+            None if options.build_requirements is None else Path(options.build_requirements)
+        ),
     )
     if not options.execute:
         _json_print({"executed": False, "plan": plan.to_json()})
@@ -4207,10 +4211,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     finetune_provision.add_argument("--runtime-root", required=True)
     finetune_provision.add_argument(
-        "--python", help="interpreter for the venv; Homebrew 3.12 by default"
+        "--target",
+        choices=("macos-mps", "linux-rocm"),  # finetune.FINETUNE_RUNTIME_TARGET_NAMES
+        help="macos-mps (Homebrew 3.12, MPS) or linux-rocm (the PC: hash-locked torch "
+        "2.14.0+rocm7.2); this host's by default",
     )
     finetune_provision.add_argument(
-        "--requirements", help="pinned requirements; this checkout's by default"
+        "--python", help="interpreter for the venv; the target's by default"
+    )
+    finetune_provision.add_argument(
+        "--requirements", help="pinned requirements; the target's in this checkout by default"
+    )
+    finetune_provision.add_argument(
+        "--build-requirements",
+        help="hash-locked build tools for a hash-locked target; this checkout's by default",
     )
     finetune_provision.add_argument("--execute", action="store_true")
     finetune_provision.add_argument("--allow-downloads", action="store_true")

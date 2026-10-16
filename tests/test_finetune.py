@@ -1103,9 +1103,9 @@ def test_provisioning_plan_names_venv_pins_and_pinned_downloads(tmp_path: Path) 
     pins = tmp_path / "pins.txt"
     pins.write_text("f5-tts==1.1.22\n")
     plan = plan_finetune_runtime_provisioning(
-        tmp_path / "rt", python=Path("/usr/bin/python3"), requirements=pins
+        tmp_path / "rt", target="macos-mps", python=Path("/usr/bin/python3"), requirements=pins
     )
-    assert plan.create_venv is True and plan.install_command[-2:] == ("-r", str(pins))
+    assert plan.create_venv is True and plan.install_commands[-1][-2:] == ("-r", str(pins))
     urls = [item.url for item in plan.downloads]
     vocos = "https://huggingface.co/charactr/vocos-mel-24khz/resolve/"
     assert urls == [
