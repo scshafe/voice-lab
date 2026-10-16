@@ -120,8 +120,18 @@ installs in two steps, both `--require-hashes`: the hash-locked build tools
 (`requirements/development-build.txt`, `--build-requirements`), then the lock without build
 isolation and wheels only, except the three packages that publish none
 (`antlr4-python3-runtime`, `encodec`, `transformers-stream-generator`), which build from their
-hash-bound sdists with those tools. PyTorch's two indexes are added beside PyPI; pip takes
-from them only files whose hashes the lock names.
+hash-bound sdists with those tools (the lock's own setuptools 84.0.0, a dependency of torch,
+then replaces the tools' 80.9.0, after the builds). Both runs are `--isolated` (no `PIP_*`
+variables, no `pip.conf`) and `--no-cache-dir`. PyTorch's two indexes are added beside PyPI;
+pip takes from them only files whose hashes the lock names.
+
+The default interpreter names infra's `HOST_PYTHON` patch release, and a venv links to the
+interpreter it was made with. When infra installs another 3.12 and prunes the old one, the
+runtime's `bin/python` dangles and every job fails `runtime_unavailable`. Provision again with
+the new interpreter (`--python`, until the default follows `HOST_PYTHON`): the plan lists the
+dangling links (`stale_interpreter_links`), execution removes them before it runs `venv`
+(which would keep them), and pip finds the 3.12 packages already installed; the weights are
+kept. Another minor version needs a new lock.
 
 The runtime root must hold `bin/python` and these pinned files under `pretrained/`:
 

@@ -145,11 +145,11 @@ def test_the_rocm_plan_installs_the_build_tools_then_the_hash_locked_lock(tmp_pa
     assert plan.target == "linux-rocm" and plan.create_venv is True
     assert plan.python == Path(FINETUNE_ROCM_RUNTIME_PYTHON)
     assert plan.requirements == ROCM_LOCK and plan.build_requirements == BUILD_TOOLS
+    hashed = (*pip, "--isolated", "--no-cache-dir", "--require-hashes")
     assert plan.install_commands == (
-        (*pip, "--require-hashes", "--only-binary=:all:", "--no-deps", "-r", str(BUILD_TOOLS)),
+        (*hashed, "--only-binary=:all:", "--no-deps", "-r", str(BUILD_TOOLS)),
         (
-            *pip,
-            "--require-hashes",
+            *hashed,
             "--no-build-isolation",
             "--only-binary=:all:",
             "--no-binary=antlr4-python3-runtime,encodec,transformers-stream-generator",
@@ -461,3 +461,60 @@ def test_the_lock_header_names_the_compile_and_install_commands(tmp_path: Path) 
             if argument.startswith("/"):
                 argument = Path(argument).relative_to(REPOSITORY).as_posix()
             assert argument in text
+
+
+def test_a_pruned_host_python_is_repaired_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The runtime was made with an interpreter infra has since pruned: its links dangle.
+    root = tmp_path / "rt"
+    (root / "bin").mkdir(parents=True)
+    gone = tmp_path / "cpython-3.12.14/bin/python3.12"
+    (root / "bin/python3.12").symlink_to(gone)
+    (root / "bin/python").symlink_to("python3.12")
+    (root / "bin/python3").symlink_to("python3.12")
+    (root / "bin/pip").symlink_to(gone)  # not an interpreter link: left alone
+    alive = tmp_path / "python3.12-alive"
+    alive.write_text("")
+    (root / "bin/python3.13").symlink_to(alive)  # resolves: left alone
+    (root / "lib/python3.12/site-packages").mkdir(parents=True)
+    plan = plan_finetune_runtime_provisioning(
+        root, target="linux-rocm", python=Path("/opt/new/bin/python3.12")
+    )
+    assert plan.create_venv is True
+    assert plan.stale_interpreter_links == tuple(
+        root.resolve() / "bin" / name for name in ("python", "python3", "python3.12")
+    )
+    assert plan.to_json()["stale_interpreter_links"] == [
+        str(path) for path in plan.stale_interpreter_links
+    ]
+    # A link that resolves again by the time the plan runs is left as it is.
+    (root / "bin/python3").unlink()
+    (root / "bin/python3").symlink_to(alive)
+    served = _fake_pins(monkeypatch)
+    monkeypatch.setattr(finetune_module, "describe_finetune_runtime", lambda root: "described")
+    ran: list[tuple[str, ...]] = []
+
+    def runner(command: tuple[str, ...]) -> int:
+        if command[1:4] == ("-B", "-m", "venv"):
+            # venv keeps an existing link, so the dangling ones must be gone by now.
+            assert not [p for p in (root / "bin").iterdir() if p.name.startswith("python3.12")]
+        ran.append(command)
+        return 0
+
+    execute_finetune_runtime_provisioning(
+        plan,
+        allow_downloads=True,
+        runner=runner,
+        opener=lambda url: io.BytesIO(served[url.rsplit("/", 1)[1]]),
+    )
+    assert ran[0] == ("/opt/new/bin/python3.12", "-B", "-m", "venv", str(root.resolve()))
+    assert (root / "bin/pip").is_symlink() and (root / "bin/python3.13").is_symlink()
+    assert (root / "bin/python3").resolve() == alive.resolve()
+    assert not (root / "bin/python").is_symlink() and not (root / "bin/python3.12").is_symlink()
+    assert (root / "lib/python3.12/site-packages").is_dir()  # the installed packages are kept
+
+
+def test_a_runtime_without_bin_names_no_stale_links(tmp_path: Path) -> None:
+    plan = plan_finetune_runtime_provisioning(tmp_path / "rt", target="linux-rocm")
+    assert plan.stale_interpreter_links == ()

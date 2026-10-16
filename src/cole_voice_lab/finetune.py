@@ -3101,11 +3101,21 @@ FINETUNE_ROCM_RUNTIME_REQUIREMENTS: Final = (
     "requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2.txt"
 )
 # The interpreter infra's host release installs on the PC (stacks/voice-lab/host.conf
-# HOST_PYTHON, under /opt/<app>/python), the one the deployed release runs on.
+# HOST_PYTHON, under /opt/<app>/python), the one the deployed release runs on. Its path names
+# the patch release: change it with HOST_PYTHON (or pass --python). A venv links to the
+# interpreter it was made with, so when infra installs another 3.12 and prunes this one, the
+# runtime's bin/python dangles and every job fails `runtime_unavailable` (the runtime check
+# finds no interpreter). Provisioning again with the new --python repairs it in place: the
+# plan names the dangling links (`stale_interpreter_links`), execution removes them before it
+# runs venv (which keeps an existing link, dangling or not), and pip finds the 3.12 packages
+# already installed; the pinned weights are kept. A new minor version needs a new lock.
 FINETUNE_ROCM_RUNTIME_PYTHON: Final = (
     "/opt/voice-lab/python/cpython-3.12.14-linux-x86_64-gnu/bin/python3.12"
 )
 # The hash-locked build tools (setuptools, wheel) the three sdists of the ROCm lock build with.
+# The lock's own setuptools (84.0.0, a dependency of torch) replaces this 80.9.0 in the same
+# pip run, after the sdists are built: harmless, since nothing builds after the install, and
+# both are hash-bound.
 FINETUNE_BUILD_REQUIREMENTS: Final = "requirements/development-build.txt"
 FINETUNE_ROCM_INDEX_URLS: Final = (
     "https://download.pytorch.org/whl/rocm7.2",
@@ -3208,7 +3218,9 @@ class FineTuneProvisionPlan:
     """What provisioning would run; printed without ``--execute``, executed with it.
 
     ``install_commands`` run in order in the new venv: for a hash-locked target the build
-    tools, then the lock.
+    tools, then the lock. ``stale_interpreter_links`` are ``<root>/bin`` interpreter links
+    whose interpreter is gone (a pruned host Python); execution removes them before it makes
+    the venv again.
     """
 
     target: FineTuneRuntimeTargetName
@@ -3219,6 +3231,7 @@ class FineTuneProvisionPlan:
     create_venv: bool
     install_commands: tuple[tuple[str, ...], ...]
     downloads: tuple[FineTuneDownload, ...]
+    stale_interpreter_links: tuple[Path, ...] = ()
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -3230,6 +3243,7 @@ class FineTuneProvisionPlan:
                 None if self.build_requirements is None else str(self.build_requirements)
             ),
             "create_venv": self.create_venv,
+            "stale_interpreter_links": [str(path) for path in self.stale_interpreter_links],
             "install_commands": [list(command) for command in self.install_commands],
             "downloads": [
                 {
@@ -3306,6 +3320,23 @@ def _pinned_file(path: Path) -> Path:
     return pins
 
 
+_INTERPRETER_LINK: Final = re.compile(r"^python(?:3(?:\.[0-9]+)?)?$")
+
+
+def _stale_interpreter_links(root: Path) -> tuple[Path, ...]:
+    """``<root>/bin``'s interpreter links (python, python3, python3.N) that resolve to nothing."""
+    try:
+        with os.scandir(root / "bin") as entries:
+            names = sorted(entry.name for entry in entries if entry.is_symlink())
+    except OSError:
+        return ()
+    return tuple(
+        root / "bin" / name
+        for name in names
+        if _INTERPRETER_LINK.fullmatch(name) and not (root / "bin" / name).exists()
+    )
+
+
 def plan_finetune_runtime_provisioning(
     runtime_root: Path,
     *,
@@ -3343,11 +3374,13 @@ def plan_finetune_runtime_provisioning(
             build_requirements or _checkout_file(spec.build_requirements, "--build-requirements")
         )
         index = tuple(item for url in spec.index_urls for item in ("--extra-index-url", url))
+        # Isolated (no PIP_* variables, no pip.conf) and without a cache: pip writes nothing
+        # outside the runtime root but its temporary files.
+        hashed = (*pip, "--isolated", "--no-cache-dir", "--require-hashes")
         commands = (
-            (*pip, "--require-hashes", "--only-binary=:all:", "--no-deps", "-r", str(tools)),
+            (*hashed, "--only-binary=:all:", "--no-deps", "-r", str(tools)),
             (
-                *pip,
-                "--require-hashes",
+                *hashed,
                 "--no-build-isolation",
                 "--only-binary=:all:",
                 *(("--no-binary=" + ",".join(spec.source_builds),) if spec.source_builds else ()),
@@ -3365,6 +3398,7 @@ def plan_finetune_runtime_provisioning(
         create_venv=not (root / "bin" / "python").is_file(),
         install_commands=commands,
         downloads=pretrained_downloads(root),
+        stale_interpreter_links=_stale_interpreter_links(root),
     )
 
 
@@ -3460,6 +3494,9 @@ def execute_finetune_runtime_provisioning(
             ) from error
 
     execute = runner or run
+    for link in plan.stale_interpreter_links:
+        if link.is_symlink() and not link.exists():
+            link.unlink()
     if plan.create_venv:
         plan.runtime_root.parent.mkdir(parents=True, exist_ok=True)
         status = execute((str(plan.python), "-B", "-m", "venv", str(plan.runtime_root)))

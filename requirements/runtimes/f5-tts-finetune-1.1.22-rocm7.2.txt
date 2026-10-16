@@ -4,16 +4,18 @@
 # 2.11.0+rocm7.2 and triton-rocm from PyTorch's rocm7.2 index, torchcodec 0.16.0+cpu from its
 # cpu index; every other package from PyPI, at the versions of the Mac's fine-tune runtime.
 # Every file is bound by SHA-256; three packages publish no wheel and build from their
-# hash-bound sdists with the hash-locked build tools (requirements/development-build.txt).
+# hash-bound sdists with the hash-locked build tools (requirements/development-build.txt);
+# the lock's own setuptools (84.0.0, torch's) then replaces that 80.9.0, after the builds.
 #
 # Install it with (a plan, unless both flags are given):
 #   voice-lab finetune provision-runtime --target linux-rocm --runtime-root <dir> \
 #     [--execute --allow-downloads]
 # which runs, in the new venv:
 #   python -B -m pip install --disable-pip-version-check --require-virtualenv \
-#     --require-hashes --only-binary=:all: --no-deps -r requirements/development-build.txt
+#     --isolated --no-cache-dir --require-hashes --only-binary=:all: --no-deps \
+#     -r requirements/development-build.txt
 #   python -B -m pip install --disable-pip-version-check --require-virtualenv \
-#     --require-hashes --no-build-isolation --only-binary=:all: \
+#     --isolated --no-cache-dir --require-hashes --no-build-isolation --only-binary=:all: \
 #     --no-binary=antlr4-python3-runtime,encodec,transformers-stream-generator \
 #     --extra-index-url https://download.pytorch.org/whl/rocm7.2 \
 #     --extra-index-url https://download.pytorch.org/whl/cpu \
