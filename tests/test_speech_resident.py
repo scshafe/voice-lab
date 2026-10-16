@@ -365,3 +365,15 @@ def test_the_real_resident_worker_renders_sequentially_and_offline() -> None:
     vocoder_keywords = {keyword.arg: ast.unparse(keyword.value) for keyword in vocoder.keywords}
     assert vocoder_keywords["is_local"] == "True"
     assert "HF_HUB_OFFLINE" in source and "attn" not in source.lower()
+    write = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "write"
+        and ast.unparse(node.func.value) == "sf"
+    )
+    # The runner's partial name (.NNNN.wav.part) gives soundfile no format of its own.
+    write_keywords = {keyword.arg: ast.unparse(keyword.value) for keyword in write.keywords}
+    assert write_keywords["format"] == "'WAV'"
+    assert write_keywords["subtype"] == "'PCM_16'"

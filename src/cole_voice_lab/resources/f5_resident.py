@@ -146,7 +146,9 @@ def _serve(job: dict[str, Any], protocol: IO[str]) -> int:
             ]
             wave = np.concatenate(chunks)
             output = Path(request["output_path"])
-            sf.write(str(output), wave, 24_000, subtype="PCM_16")
+            # The job runner renders to ".NNNN.wav.part": soundfile cannot tell the format
+            # from that name (TypeError), so it is named.
+            sf.write(str(output), wave, 24_000, format="WAV", subtype="PCM_16")
             os.chmod(output, 0o600)
             answer: dict[str, Any] = {
                 "event": "rendered",
