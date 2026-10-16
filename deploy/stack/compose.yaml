@@ -115,7 +115,6 @@ services:
     restart: unless-stopped
     user: "65532:65532"
     depends_on: [ts-voice-lab]
-    command: ["--trusted-proxy-ip=10.253.91.2/32"]
     environment:
       OAUTH2_PROXY_PROVIDER: oidc
       OAUTH2_PROXY_PROVIDER_DISPLAY_NAME: "Pocket ID"
@@ -129,7 +128,11 @@ services:
       OAUTH2_PROXY_COOKIE_SECURE: "true"
       OAUTH2_PROXY_COOKIE_EXPIRE: 12h
       OAUTH2_PROXY_HTTP_ADDRESS: 10.253.91.3:4180
-      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      # Off: tailscale serve passes the caller's X-Forwarded-* through, and in
+      # reverse-proxy mode X-Forwarded-Uri picks the path the skip-auth routes
+      # match (X-Forwarded-Uri: /healthz let any GET past the door). The
+      # redirect URL is absolute, so nothing here needs forwarded headers.
+      OAUTH2_PROXY_REVERSE_PROXY: "false"
       OAUTH2_PROXY_UPSTREAMS: http://10.253.91.11:8080
       OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
       # The capture CLI and the desktop app: a Pocket ID token (RS256 JWT,
