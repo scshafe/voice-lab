@@ -122,8 +122,11 @@ isolation and wheels only, except the three packages that publish none
 (`antlr4-python3-runtime`, `encodec`, `transformers-stream-generator`), which build from their
 hash-bound sdists with those tools (the lock's own setuptools 84.0.0, a dependency of torch,
 then replaces the tools' 80.9.0, after the builds). Both runs are `--isolated` (no `PIP_*`
-variables, no `pip.conf`) and `--no-cache-dir`. PyTorch's two indexes are added beside PyPI;
-pip takes from them only files whose hashes the lock names.
+variables, no `pip.conf`) and `--no-cache-dir`. The lock names its own indexes in its
+header, PyPI first, then PyTorch's two: pip replaces the index list of its command line with a
+requirements file's `--index-url`, so indexes given on the command line would be dropped (and
+an `--extra-index-url` written before the `--index-url` too). pip takes from PyTorch's indexes
+only files whose hashes the lock names.
 
 The default interpreter names infra's `HOST_PYTHON` patch release, and a venv links to the
 interpreter it was made with. When infra installs another 3.12 and prunes the old one, the
