@@ -55,19 +55,25 @@ def _absent_not_null(schema: dict[str, Any]) -> None:
     schema.pop("default", None)
 
 
-def historical_field(**constraints: Any) -> Any:
-    """A field only records written before D-050 carry (the retired consent bindings).
-
-    It defaults to absent and is left out of a record's JSON when absent, so a new record never
-    names it and a stored one keeps its exact bytes. ``reject_explicit_null`` refuses ``null``,
-    and the generated JSON schema offers no ``null`` either (``_absent_not_null``).
-    """
+def omitted_when_absent(**constraints: Any) -> Any:
+    """An optional field left out of a record's JSON when absent, so a record that never had
+    it keeps its exact bytes. ``reject_explicit_null`` refuses ``null``, and the generated JSON
+    schema offers no ``null`` either (``_absent_not_null``)."""
     return Field(
         default=None,
         exclude_if=lambda value: value is None,
         json_schema_extra=_absent_not_null,
         **constraints,
     )
+
+
+def historical_field(**constraints: Any) -> Any:
+    """A field only records written before D-050 carry (the retired consent bindings).
+
+    It defaults to absent and is left out of a record's JSON when absent, so a new record never
+    names it and a stored one keeps its exact bytes (``omitted_when_absent``).
+    """
+    return omitted_when_absent(**constraints)
 
 
 def reject_explicit_null(model: BaseModel, *names: str) -> None:

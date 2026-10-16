@@ -1337,6 +1337,11 @@ subject. A release written before keeps the consent record's id and digest it wa
 which nothing reads. Revoking consent no longer stops speech: designating another run, or none
 being current, does.
 
+Amended 2026-10-16 (D-055): the newest release speaks, and while there is none the base voice
+(the pinned weights with F5-TTS's public reference clip). The job runner releases each newer
+finished run of the pinned subject that passes these checks by itself (`designation: auto`);
+`designate` stays as Cole's pin, which holds until a newer run finishes.
+
 ## D-046 — Assistant speech over the tailnet API
 
 Cole decided on 2026-10-11: "I'm not familiar with how long the TTS takes — if necessary, we
@@ -1453,6 +1458,9 @@ Amended 2026-10-12 (D-050): the ledger names no consent digest, and neither the 
 nor the job runner before each job or sentence checks a consent record; before each sentence the
 runner still checks that the release is current, so a new designation stops a render. A caller's
 `allowed_purposes` stays as the caller's scope in the registry.
+
+Amended 2026-10-16 (D-055): audio is of the newest release, or of the base voice while there is
+none; a render of the base voice names release id `base` and its digest in the ledger.
 
 ## D-047 — Consent for synthesis on the home host
 
@@ -1623,7 +1631,9 @@ processes can just be handled more smoothly?" After the options were laid out, h
     pinned subject.
   - *Only the designated release speaks* (D-045): never the base weights, a zero-shot
     reference or another run; its files are re-hashed before every job, and before every
-    sentence the runner checks it is still the current release.
+    sentence the runner checks it is still the current release. (Superseded 2026-10-16 by
+    D-055: the newest release speaks, released automatically or pinned by Cole, and the base
+    voice while there is none.)
   - *The render ledger* (D-046) records every render, with the text's keyed digest only.
   - *Tailnet only, free, own hardware* (D-028): no public endpoint, nothing paid, no cloud.
   - *Human audio is never sent to a hosted service.* The separate transfer-approval rule stays:
@@ -1665,6 +1675,9 @@ processes can just be handled more smoothly?" After the options were laid out, h
   (docs/design/VOICE-PLATFORM.md); README; docs/SPEECH_API.md, docs/FINETUNE.md,
   docs/MODEL_FAMILIES.md, docs/REFERENCES_AND_DATASETS.md and docs/RUNBOOK.md; and
   deploy/speech/README.md and deploy/host-manual/.
+
+Amended 2026-10-16 (D-055): the pinned subject remains the safeguard for fine-tuned runs, and
+the newest release speaks without a designation step; the base voice speaks while none exists.
 
 ## D-051 — Recording v1: the owner's decisions
 
@@ -1832,3 +1845,56 @@ and the keychain item; later ones ask for neither. The Swift app is signed the s
 it has not yet been built team-signed (the Air has no native build settings), so its first
 such refresh is the check. Anything signed with this certificate on this Mac would share these
 apps' grants, as with D-043's key, and the key stays in the login keychain.
+
+## D-055 — The newest voice speaks; the base voice until a run exists
+
+Cole decided on 2026-10-16: "The voice-lab API should just use the base voice when no training
+has yet occurred. The API should always use the latest/newest voice, and where no training has
+been done, we should simply take the base voice to be the latest." Asked whether a new run
+should speak at once or wait for him, he chose automatic: the newest finished fine-tune run that
+passes its checks speaks right away, with no designation step; a bad run is live until a newer
+one replaces it or he pins an older one.
+
+- **What speaks.** The speech API uses the newest voice release; while there is none, the base
+  voice. `503 voice_release_unavailable` now means only that the base voice's files are missing
+  or not their pins, that the current release is of another subject, or that the release history
+  is damaged.
+- **The base voice.** F5-TTS's pinned pretrained weights (`F5TTS_v1_Base/model_1250000.safetensors`
+  of `SWivid/F5-TTS` at its pinned revision, the digest the fine-tune pipeline already pins) with
+  F5-TTS's public English reference clip and its exact transcript, as spike S-2 rendered them
+  (D-046): `f5_tts/infer/examples/basic/basic_ref_en.wav`, "Some call me nature, others call me
+  mother nature." The clip ships in the F5-TTS 1.1.22 wheel the runtime lock installs (the
+  wheel's SHA-256 f0505dfb5463645caa526bace346ed1c89bcc9acb9ef42fdffd56c2c4c0a09d1 is the lock's
+  own hash; the clip's, 256,018 bytes, is
+  b0e22048e72414fcc1e6b6342e47a774d748a195ed34e4a5b3fcf416707f2b71, both read from PyPI's
+  artifact). Both files are the configured runtime's, pinned in code by size and SHA-256, so
+  nothing is downloaded or provisioned for the base voice beyond the runtime itself. It is built
+  in code and never stored: its id is `base` and its digest is that of its canonical record
+  (`base-voice`), which the render ledger names where it names a release's. It is no recording
+  of Cole's and no subject's fine-tuned run.
+- **Automatic releases.** Before each job, the job runner releases the newest finished run that
+  finished after the newest release was written and passes designation's checks (finished, not
+  archived, of the pinned subject, every file hashing to its records): a new record in the same
+  append-only chain, `designation: auto`. A run that fails them is skipped, with the reason in the
+  runner's journal, and the next newer run is tried. The runner's unit may now write
+  `provenance/voice-releases/`; while it cannot, the journal says so and the current voice keeps
+  speaking.
+- **Cole's pin.** `voice-lab voice release designate --run <id>` stays, as Cole's pin
+  (`designation: owner`), for example to roll back to an older run. Newest wins: a pin holds
+  until a run that finished after it is released.
+- **The pinned subject stays.** No configuration can make another subject's fine-tuned run
+  speak: designation, automatic or Cole's, refuses one, and the API and the job runner refuse a
+  release of one. The base voice is the one voice that is not a fine-tuned run of `cole-self`,
+  and its reference is the public clip only: a zero-shot render from any other reference stays
+  refused.
+- **Records.** A release is now `voice-release/v2`, which names its `designation`; a v1 record
+  (every one Cole's) still validates byte for byte, names none, and the chain continues from it.
+  The job's records and the render ledger keep their schemas: a render of the base voice names
+  release id `base` and the base voice's digest, from which its seeds derive as from a release's.
+- **Supersedes** D-045's "Only the release speaks" (which refused the pinned base weights and
+  any run not designated) and its rule that designating is an act of judgement only Cole
+  performs, and D-050's "Only the designated release speaks". **Amends** D-045, D-046 and D-050
+  (dated notes); AGENTS.md's mission and its speech invariant; README, SECURITY.md,
+  ARCHITECTURE.md, CURRENT.md and the design (docs/design/VOICE-PLATFORM.md);
+  docs/SPEECH_API.md, docs/MODEL_FAMILIES.md, docs/FINETUNE.md and docs/RUNBOOK.md; and
+  deploy/speech/README.md and deploy/host-manual/.

@@ -3,7 +3,7 @@
 ## Outcome
 
 Produce evidence sufficient to choose a local voice system for Cole and speak
-with it, as the voice release he designates, without leaking biometric media,
+with it, as the newest voice release (D-055), without leaking biometric media,
 corrupting source recordings, or confusing runtime/model differences with voice
 quality. (Until 2026-10-11 the outcome was a handoff to ChloeSpeech, retired by
 D-044.)
@@ -20,8 +20,9 @@ D-044.)
 - Reproducible experiment plans, identical direct-TTS trials, separate
   voice-conversion trials, audio normalization, optional ASR/speaker metrics,
   static blind review, and a machine-readable verdict.
-- A checksum-bound voice release designated by Cole, and speech for registered
-  tailnet callers (D-045, D-046; docs/SPEECH_API.md).
+- A checksum-bound voice release, released automatically for the newest finished run or
+  pinned by Cole, the base voice until one exists, and speech for registered tailnet callers
+  (D-045, D-046, D-055; docs/SPEECH_API.md).
 
 ## Non-goals for v0.1
 
@@ -48,9 +49,9 @@ D-044.)
    free disk for the selected candidate.
 6. Blind ordering is deterministic but hides candidate identity; reveal and
    aggregation are reproducible from saved scoring evidence.
-7. A render uses only the current voice release of the pinned subject and refuses
-   when its checkpoint or reference digest no longer matches; every render is in the
-   ledger.
+7. A render uses only the current voice, the newest voice release of the pinned subject
+   or the base voice while there is none, and refuses when its checkpoint or reference
+   digest no longer matches; every render is in the ledger.
 8. An independent review reports no unresolved high-severity finding.
 
 ## Progress rule

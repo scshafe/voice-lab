@@ -3,8 +3,9 @@
 A model family is one kind of fine-tunable TTS model (D-048). F5-TTS is the only family
 today. Cole asked for the code to admit others, so that once the corpus is complete (about 800
 recordings) different models can be trained on it and compared for training time, inference
-time and quality. Which family speaks is never a user setting: Cole designates a release of
-one (D-045).
+time and quality. Which family speaks is never a user setting: the newest release speaks, the
+newest finished run (released by the job runner) or an older one Cole pins (D-045, D-055).
+While none exists, the base voice of the configured runtime's family speaks.
 
 The corpus does not belong to any family. Its takes are 48 kHz 24-bit mono WAV with their
 prompt text, and each family derives its own training format from them (sample rate,
@@ -21,14 +22,17 @@ F5-TTS's entry is `speech/f5.py`. An entry gives:
 | `family_id` | a stable id, recorded in every release and ledger entry | `f5-tts` |
 | `designate` | the files a release of a finished run binds, by role, and the family's section of the release record | `checkpoint` (the run's `model_last.pt`) and `reference` (a dataset clip); the reference prompt, its transcript's digest, the training runtime |
 | `verify` | the release checked against the run's records again; the segment limit; what the backend needs | upstream's per-pass limit from the reference clip |
+| `base_voice` | the base voice (D-055): what speaks while no release exists, as files of the runtime pinned by size and SHA-256, and the family's section of its record | `checkpoint` (the pinned `pretrained/F5TTS_v1_Base/model_1250000.safetensors`) and `reference` (F5-TTS 1.1.22's public `basic_ref_en.wav` in the installed package), with that clip's transcript |
+| `check_base` | the base voice's segment limit and what the backend needs, once its files are hashed | upstream's per-pass limit from the public clip |
 | `backend` | the family's `SpeechBackend`, from the configuration's runtime for it | the resident worker, `f5_resident.py` in the runtime's interpreter |
 | `native_sample_rate_hz` | what the model renders at | 24,000 |
 | `seeded` | whether a seed makes a render reproducible | yes |
 
-The release (`VoiceRelease`), the render fingerprint and the ledger entry are common to every
-family. The family-specific parts are two unions tagged by `family`: `ReleaseModel` (the
-release's `model` section) and `RenderSettings` (what a render was asked for; their digest
-seeds the job). The configuration's `runtime` is a third, tagged by `model_family`.
+The release (`VoiceRelease`), the base voice (`BaseVoice`), the render fingerprint and the
+ledger entry are common to every family. The family-specific parts are three unions tagged by
+`family`: `ReleaseModel` (the release's `model` section), `BaseVoiceModel` (the base voice's)
+and `RenderSettings` (what a render was asked for; their digest seeds the job). The
+configuration's `runtime` is a fourth, tagged by `model_family`; its family is the base voice's.
 
 Whatever the model renders, the backend delivers 24 kHz mono 16-bit WAV, the API's one format:
 a family that renders at another rate resamples inside its own runtime, and its fingerprint
@@ -153,8 +157,11 @@ Every step below is needed; the tests named fail until each is done.
    off disk.
 5. **The speech registry and contracts.** A `ModelFamily` in `speech/families.py`'s
    `_registry` (every training family must have one, and the reverse:
-   `test_training_families.py`), a member in `ReleaseModel` and `RenderSettings`
-   (`speech/contracts.py`) and in the configuration's `SpeechRuntime` (`speech/config.py`).
+   `test_training_families.py`), a member in `ReleaseModel`, `BaseVoiceModel` and
+   `RenderSettings` (`speech/contracts.py`) and in the configuration's `SpeechRuntime`
+   (`speech/config.py`). Its base voice is its pinned pretrained weights with a public
+   reference (or none, for a family that needs none), pinned by SHA-256 and found in its
+   runtime, never a recording of Cole's.
 6. **Its id once.** A `<FAMILY>_FAMILY` constant beside `F5_FAMILY` in `models.py`, imported
    by the adapter, the speech family and the contracts.
 7. **The command line.** Nothing to add for `finetune dataset|train|run --family <id>` (the

@@ -164,6 +164,12 @@ voice-lab finetune provision-runtime --runtime-root <dir> --execute --allow-down
 voice-lab finetune fetch-pretrained  --runtime-root <dir> [--allow-downloads]  # verify or fetch
 ```
 
+The installed F5-TTS 1.1.22 package also carries upstream's public English reference clip,
+`lib/python3.12/site-packages/f5_tts/infer/examples/basic/basic_ref_en.wav` (256,018 bytes,
+SHA-256 `b0e22048e72414fcc1e6b6342e47a774d748a195ed34e4a5b3fcf416707f2b71`, from the
+hash-locked wheel). The speech API's base voice is that clip on the pinned weights (D-055), so
+a provisioned runtime holds every file it needs; nothing else is fetched for it.
+
 The plan names the target, the interpreter, the lock (and, for `linux-rocm`, the build tools)
 and every command it would run. From an installed release rather than a checkout, pass
 `--requirements` (and `--build-requirements`) explicitly: the wheel carries no lock.
@@ -520,7 +526,9 @@ service remembers its last 64 ended requests for resends and cancels.
   when the worker runs.
 - `base` is the runtime's pinned F5-TTS v1 Base weights. Its reference comes from that same
   newest finished run, because a reference needs recorded audio. With no finished run,
-  every choice is refused `FINETUNE.NO_FINISHED_RUN`.
+  every choice is refused `FINETUNE.NO_FINISHED_RUN`. (The speech API's base voice, D-055,
+  is the same pinned weights with F5-TTS's public English reference clip instead, so it needs
+  no finished run: docs/SPEECH_API.md §3.)
 - Any other value must name a finished run (`FINETUNE.NO_FINISHED_RUN` names the missing or
   unfinished run). A run named `latest` or `base` cannot be chosen by its id.
 - The run that would speak must still have its checkpoints, else `FINETUNE.RUN_ARCHIVED`
@@ -665,8 +673,9 @@ like Speak clips. The synthesizer writes 16-bit PCM explicitly.
 
 Samples and Speak clips are for listening. They are not accepted raw, not a reference
 publication, not a dataset manifest and not a voice release. The lab's transfer rules are
-unchanged for any other use; speech for callers uses only a designated voice release
-(D-045, D-046). Neither `voice-lab finetune` nor the app (Fine-tune model or Speak) needs or
+unchanged for any other use; speech for callers uses only the newest voice release, which
+the speech job runner writes by itself for each newer finished run of `cole-self` that passes
+its checks (or Cole pins), and the base voice while there is none (D-045, D-046, D-055). Neither `voice-lab finetune` nor the app (Fine-tune model or Speak) needs or
 reads a consent record: Cole's standing decision (D-050) permits his own voice for
 fine-tuning and listening on his own hardware, and consent records are retired. The app
 does not play the listening samples, offers no epoch override or other training option, and

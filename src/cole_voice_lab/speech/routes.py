@@ -16,8 +16,10 @@ A caller holds at most ``MAX_EVENT_STREAMS`` streams at once (``429 too_many_str
 one caller cannot take every one of the API's threads.
 
 The API only enqueues and serves finished files: it reads the asset root (read-only) for the
-voice release, and the GPU slot's holder record; the job runner renders. No consent record is
-read (D-050): the pinned subject and the designated release are what speaks.
+voice release, the base voice's files in the runtime while there is none (their presence and
+pinned sizes, D-055), and the GPU slot's holder record; the job runner renders. No consent
+record is read (D-050): the pinned subject and the newest release, else the base voice, are
+what speaks.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ from ..paths import AssetLayout
 from .config import SpeechCaller, SpeechConfig, webhook_url_problem
 from .contracts import JOB_ID_PATTERN, TERMINAL_STATES, SpeechRequest
 from .gpu import busy_with_long_job
-from .release import current_release, require_subject
+from .release import check_voice
 from .store import (
     Job,
     SpeechRefusal,
@@ -295,12 +297,10 @@ class SpeechRoutes:
         if replay is not None:
             return _json(200, "speech.submit", to_status(replay))
         try:
-            layout = AssetLayout.validate(self.asset_root)
-            release, _ = current_release(layout)
-            require_subject(release, self.config.subject_id)
+            check_voice(AssetLayout.validate(self.asset_root), self.config)
         except (VoiceLabError, OSError, ValueError) as error:
             raise SpeechRefusal(
-                503, "voice_release_unavailable", "no usable voice release is designated"
+                503, "voice_release_unavailable", "no usable voice is available on this host"
             ) from error
         wait = busy_with_long_job(
             Path(self.config.gpu_slot_root),

@@ -7,6 +7,12 @@ Speak seam (``finetune.resolve_speech_model``); the segment limit is upstream's 
 limit for that reference clip; the model renders 24 kHz mono, the API's own format, and
 honours a seed.
 
+Its base voice (D-055) is the pretrained weights the fine-tune pipeline pins
+(``finetune.finetune_pretrained_pins``, ``<runtime>/pretrained/F5TTS_v1_Base/``) with F5-TTS's
+public English reference clip and its exact transcript, as spike S-2 rendered them (D-046):
+``basic_ref_en.wav`` of the F5-TTS 1.1.22 package the hash-locked runtime installs, pinned here
+by size and SHA-256 (from the PyPI wheel). Nothing is downloaded for it.
+
 ``F5ResidentBackend`` keeps one resident worker (``f5_resident.py`` in the runtime's
 interpreter, ``speech.resident``) with the model, the vocoder and the release's checkpoint
 and reference clip loaded between jobs. It checks the runtime first through the existing
@@ -22,18 +28,24 @@ import hashlib
 import os
 import pwd
 import shutil
-from collections.abc import Callable
+import wave
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
 from .. import __version__
 from ..finetune import (
+    FINETUNE_PRETRAINED_FILE,
+    FINETUNE_PRETRAINED_REPOSITORY,
+    FINETUNE_PRETRAINED_REVISION,
     FineTuneDigestCache,
     FineTuneError,
     FineTunePretrainedPins,
     FineTuneRuntimeIdentity,
     SpeechResolution,
     describe_finetune_runtime,
+    finetune_pretrained_pins,
     resolve_speech_model,
     synthesis_vocab_path,
 )
@@ -44,6 +56,8 @@ from .backend import PeakMemory, SpeechBackend, SpeechBackendError
 from .config import F5SpeechRuntime, SpeechConfig
 from .contracts import (
     API_SAMPLE_RATE_HZ,
+    BaseVoiceFile,
+    F5BaseVoiceModel,
     F5ReleaseModel,
     F5RenderSettings,
     F5RuntimeRef,
@@ -52,7 +66,14 @@ from .contracts import (
     ReleaseFile,
     RenderFingerprint,
 )
-from .release import DesignatedModel, FamilyCheck, VerifiedRelease, VoiceRelease, VoiceReleaseError
+from .release import (
+    BaseVoice,
+    DesignatedModel,
+    FamilyCheck,
+    VerifiedRelease,
+    VoiceRelease,
+    VoiceReleaseError,
+)
 from .resident import ResidentError, ResidentProcess
 
 RESIDENT_SCRIPT: Final = "f5_resident.py"
@@ -69,6 +90,69 @@ STARTUP_SECONDS: Final = 300.0
 F5_SAMPLE_RATE_HZ: Final = API_SAMPLE_RATE_HZ
 # Upstream's floor for a reference clip so long that its own formula gives almost nothing.
 MIN_SEGMENT_BYTES: Final = 50
+# The base voice's reference (D-055): F5-TTS 1.1.22's public English example clip, in the
+# package the runtime installs from the hash-locked wheel (PyPI f5_tts-1.1.22-py3-none-any.whl,
+# SHA-256 f0505dfb…c0a09d1, the lock's own hash). The runtime is a Python 3.12 venv (its lock is
+# 3.12's only). The transcript is upstream's (infer/examples/basic/basic.toml).
+BASE_REFERENCE_FILE: Final = (
+    "lib/python3.12/site-packages/f5_tts/infer/examples/basic/basic_ref_en.wav"
+)
+BASE_REFERENCE_SHA256: Final = "b0e22048e72414fcc1e6b6342e47a774d748a195ed34e4a5b3fcf416707f2b71"
+BASE_REFERENCE_SIZE_BYTES: Final = 256_018
+BASE_REFERENCE_TEXT: Final = "Some call me nature, others call me mother nature."
+BASE_REFERENCE_SOURCE: Final = "f5-tts 1.1.22: f5_tts/infer/examples/basic/basic_ref_en.wav"
+
+
+@dataclass(frozen=True, slots=True)
+class F5RenderState:
+    """What F5-TTS's backend needs beyond the files: the reference clip's exact transcript."""
+
+    reference_text: str
+
+
+def base_voice() -> BaseVoice:
+    """F5-TTS's base voice: the pinned pretrained weights and the public reference clip, with
+    their pins read at call time."""
+    weights = finetune_pretrained_pins().weights
+    return BaseVoice(
+        model_family=F5_FAMILY,
+        files=(
+            BaseVoiceFile(
+                role="checkpoint",
+                path=f"pretrained/{FINETUNE_PRETRAINED_FILE}",
+                sha256=weights.sha256,
+                size_bytes=weights.size_bytes,
+            ),
+            BaseVoiceFile(
+                role="reference",
+                path=BASE_REFERENCE_FILE,
+                sha256=BASE_REFERENCE_SHA256,
+                size_bytes=BASE_REFERENCE_SIZE_BYTES,
+            ),
+        ),
+        model=F5BaseVoiceModel(
+            weights_repository=FINETUNE_PRETRAINED_REPOSITORY,
+            weights_revision=FINETUNE_PRETRAINED_REVISION,
+            reference_source=BASE_REFERENCE_SOURCE,
+            reference_text=BASE_REFERENCE_TEXT,
+        ),
+    )
+
+
+def reference_frames(path: Path) -> int:
+    """The frames of a 24 kHz mono 16-bit reference clip.
+
+    Raises: ``ValueError`` for any other shape; ``OSError``.
+    """
+    try:
+        with wave.open(str(path), "rb") as handle:
+            shape = (handle.getframerate(), handle.getnchannels(), handle.getsampwidth())
+            frames = handle.getnframes()
+    except (wave.Error, EOFError) as error:
+        raise ValueError(f"{path.name} is not a WAV file: {error}") from error
+    if shape != (F5_SAMPLE_RATE_HZ, 1, 2) or frames < 1:
+        raise ValueError(f"{path.name} is not 24 kHz mono 16-bit PCM")
+    return frames
 
 
 def max_segment_bytes(reference_text: str, reference_frames: int) -> int:
@@ -154,7 +238,18 @@ class F5Family:
         reference = resolution.reference
         return FamilyCheck(
             max_segment_bytes=max_segment_bytes(reference.text, reference.frames),
-            state=resolution,
+            state=F5RenderState(reference_text=reference.text),
+        )
+
+    def base_voice(self) -> BaseVoice:
+        return base_voice()
+
+    def check_base(self, voice: BaseVoice, files: Mapping[str, Path]) -> FamilyCheck:
+        model = voice.model
+        frames = reference_frames(files["reference"])
+        return FamilyCheck(
+            max_segment_bytes=max_segment_bytes(model.reference_text, frames),
+            state=F5RenderState(reference_text=model.reference_text),
         )
 
     def backend(self, config: SpeechConfig) -> SpeechBackend:
@@ -234,8 +329,8 @@ class F5ResidentBackend:
                 "no F5-TTS runtime is configured on this host (design phase 5, spike S-2)",
             )
         record = release.release
-        resolution = release.family_state
-        if record.model_family != F5_FAMILY or not isinstance(resolution, SpeechResolution):
+        state = release.family_state
+        if record.model_family != F5_FAMILY or not isinstance(state, F5RenderState):
             raise SpeechBackendError("runtime_unavailable", "not an F5-TTS release")
         checkpoint, reference = record.file("checkpoint"), record.file("reference")
         key = (checkpoint.sha256, reference.sha256, runtime.device)
@@ -259,7 +354,7 @@ class F5ResidentBackend:
             "use_ema": True,
             "device": runtime.device,
             "reference_audio_path": str(release.files["reference"]),
-            "reference_text": resolution.reference.text,
+            "reference_text": state.reference_text,
             "work_directory": str(scratch),
         }
         python = self.python or str(described.python)

@@ -19,7 +19,15 @@ from typing import Any
 
 import pytest
 from finetune_stub_runtime import stub_finetune_runtime
-from speech_fixtures import NOW, Lab, OnePass, build_lab, finished_run
+from speech_fixtures import (
+    NOW,
+    Lab,
+    OnePass,
+    base_voice_runtime,
+    build_lab,
+    finished_run,
+    without_runs,
+)
 
 from cole_voice_lab.canonical import sha256_file
 from cole_voice_lab.finetune import FineTuneDigestCache, FineTunePretrainedPins
@@ -27,7 +35,7 @@ from cole_voice_lab.resources import resource_path
 from cole_voice_lab.speech.backend import SpeechBackendError
 from cole_voice_lab.speech.config import F5SpeechRuntime
 from cole_voice_lab.speech.contracts import SpeechRenderRecord, SpeechRequest
-from cole_voice_lab.speech.f5 import F5ResidentBackend
+from cole_voice_lab.speech.f5 import BASE_REFERENCE_FILE, BASE_REFERENCE_TEXT, F5ResidentBackend
 from cole_voice_lab.speech.release import current_release, verify_release
 from cole_voice_lab.speech.runner import check_wav, ledger_path
 from cole_voice_lab.speech.store import SpeechStore
@@ -158,7 +166,7 @@ def test_the_model_is_loaded_once_and_renders_each_segment(rig: Rig) -> None:
     assert load["checkpoint_path"] == str(root / release.file("checkpoint").path)
     assert load["reference_audio_path"] == str(root / release.file("reference").path)
     assert load["vocoder_path"].endswith("pretrained/vocos-mel-24khz") and load["use_ema"] is True
-    assert load["reference_text"] == verified.family_state.reference.text
+    assert load["reference_text"] == verified.family_state.reference_text  # type: ignore[attr-defined]
     env = rig.loaded["env"]
     assert env["HIP_VISIBLE_DEVICES"] == "0" and env["HF_HUB_OFFLINE"] == "1"
     assert env["MIOPEN_USER_DB_PATH"].startswith(rig.lab.config.state_root)
@@ -293,6 +301,38 @@ def test_a_job_runs_end_to_end_through_the_resident_worker(rig: Rig) -> None:
     )
     assert ledger.fingerprint is not None and ledger.fingerprint.settings.nfe_steps == 16
     assert ledger.fingerprint.runtime["torch_version"] == "2.14.0+rocm7.2"
+
+
+def test_before_any_training_the_worker_loads_the_base_weights_and_the_public_clip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, pin = base_voice_runtime(tmp_path.resolve() / "runtime", monkeypatch)
+    lab = without_runs(build_lab(tmp_path, release=False, runtime=runtime))
+    script = tmp_path.resolve() / "stand-in" / "resident.py"
+    script.parent.mkdir()
+    script.write_text(STAND_IN)
+    script.with_name("mode.json").write_text("{}")
+    made = Rig(lab, Path(runtime.runtime_root), pin, script)
+    store = SpeechStore(lab.config)
+    store.ensure()
+    job, _ = store.submit(lab.config.callers[0], SpeechRequest(text="Hello there."), now=NOW)
+    report = OnePass(lab.config, made.backend(), clock=lambda: NOW).run_pending()
+    assert report.outcomes == {job.record.job_id: "succeeded"}
+    load = made.loaded["load"]
+    root = Path(runtime.runtime_root)
+    assert load["checkpoint_path"] == str(
+        root / "pretrained/F5TTS_v1_Base/model_1250000.safetensors"
+    )
+    assert load["reference_audio_path"] == str(root / BASE_REFERENCE_FILE)
+    assert load["reference_text"] == BASE_REFERENCE_TEXT and load["use_ema"] is True
+    ledger = SpeechRenderRecord.model_validate_json(
+        ledger_path(lab.layout, job.record.job_id).read_bytes()
+    )
+    assert ledger.release.release_id == "base" and ledger.fingerprint is not None
+    assert {item.role: item.sha256 for item in ledger.fingerprint.files} == {
+        "checkpoint": pin.weights.sha256,
+        "reference": sha256_file(root / BASE_REFERENCE_FILE)[0],
+    }
 
 
 def test_the_real_resident_worker_renders_sequentially_and_offline() -> None:

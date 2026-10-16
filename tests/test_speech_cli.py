@@ -45,13 +45,21 @@ def test_designation_previews_then_writes_and_shows(
     assert main([*base, "--designated-by", "Cole"]) == 0
     preview = capsys.readouterr().out
     assert '"written": false' in preview and "preview only" in preview
-    assert main(["voice", "release", "show", "--asset-root", root]) == 2
-    assert "no voice release" in capsys.readouterr().err
-    assert main([*base, "--designated-by", "Cole", "--i-designate-this-run"]) == 0
-    assert '"written": true' in capsys.readouterr().out
+    # Nothing released yet: the base voice speaks, and the finished run is next (D-055).
     assert main(["voice", "release", "show", "--asset-root", root]) == 0
     shown = json.loads(capsys.readouterr().out)
-    assert shown["release"]["release_id"] == "vr-0001"
+    assert (shown["release"]["release_id"], shown["base"]) == ("base", True)
+    assert shown["newer_runs"] == ["finetune-a"] and shown["unavailable"] is None
+    # With the configuration, it says why the API would refuse (no runtime: no base files).
+    config = write_config(lab)
+    assert main(["voice", "release", "show", "--asset-root", root, "--config", str(config)]) == 0
+    assert "no f5-tts runtime is configured" in json.loads(capsys.readouterr().out)["unavailable"]
+    assert main([*base, "--designated-by", "Cole", "--i-designate-this-run"]) == 0
+    assert '"written": true' in capsys.readouterr().out
+    assert main(["voice", "release", "show", "--asset-root", root, "--config", str(config)]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert (shown["release"]["release_id"], shown["release"]["designation"]) == ("vr-0001", "owner")
+    assert (shown["base"], shown["newer_runs"], shown["unavailable"]) == (False, [], None)
     assert main(["voice", "release", "history", "--asset-root", root]) == 0
     assert len(json.loads(capsys.readouterr().out)) == 1
     assert main([*base, "--designated-by", "Cole", "--blind-review", "review-1"]) == 2

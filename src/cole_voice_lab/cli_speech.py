@@ -1,11 +1,14 @@
 """CLI commands of the voice release and the speech API: ``voice release …``, ``speech …``.
 
 @canonical cli_speech -- registered into ``voice-lab``'s parser by ``cli.build_parser``.
-``voice release designate`` previews, then (with ``--i-designate-this-run``) writes, the
-next voice release (D-045): an act of judgement that is Cole's, never an agent's. It
+``voice release designate`` previews, then (with ``--i-designate-this-run``) writes, Cole's
+pin: the next voice release (D-045, D-055), for example an older run to roll back to. It is
+Cole's, never an agent's; the job runner releases each newer finished run by itself. It
 designates only a run of the pinned subject (``cole-self``; ``--config``, when given, is
 loaded and checked) and reads no consent record (D-050).
-``voice release show|history`` print releases. ``speech run`` is the job runner with its
+``voice release show`` prints what speaks now (the newest release, else the base voice), the
+finished runs the runner will release at its next job and, with ``--config``, why the API would
+refuse it; ``history`` prints every release. ``speech run`` is the job runner with its
 resident model until SIGTERM (the host unit ``voice-lab-speech``, no network); ``--once`` is
 one pass by hand, refused (exit 2) while the unit runs; with ``--release-link`` it exits
 ``EXIT_OUTDATED`` once a deploy has moved that link off its own code, for systemd to start the
@@ -26,11 +29,22 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .errors import VoiceLabError
-from .models import utc_now
+from .models import F5_FAMILY, utc_now
 from .paths import AssetLayout
 from .speech.config import load_speech_config
 from .speech.families import ReleaseBackend, family_ids
-from .speech.release import BlindReviewRef, current_release, designate, history
+from .speech.release import (
+    BaseVoice,
+    BlindReviewRef,
+    Voice,
+    VoiceReleaseError,
+    base_voice,
+    check_voice,
+    designate,
+    history,
+    newer_runs,
+    voice_digest,
+)
 from .speech.runner import (
     EXIT_MISCONFIGURED,
     EXIT_OUTDATED,
@@ -89,8 +103,30 @@ def _designate(options: argparse.Namespace) -> int:
 
 
 def _show(options: argparse.Namespace) -> int:
-    release, digest = current_release(_layout(options))
-    _print({"release": release.model_dump(mode="json"), "release_sha256": digest})
+    layout = _layout(options)
+    config = None if options.config is None else load_speech_config(options.config)
+    releases = history(layout)
+    voice: Voice
+    if releases:
+        voice, digest = releases[-1]
+    else:
+        voice = base_voice(F5_FAMILY if config is None else config.base_family)
+        digest = voice_digest(voice)
+    unavailable: str | None = None
+    if config is not None:
+        try:
+            check_voice(layout, config)
+        except VoiceReleaseError as error:
+            unavailable = str(error)
+    _print(
+        {
+            "release": voice.model_dump(mode="json"),
+            "release_sha256": digest,
+            "base": isinstance(voice, BaseVoice),
+            "newer_runs": list(newer_runs(layout)),
+            "unavailable": unavailable,
+        }
+    )
     return 0
 
 
@@ -175,7 +211,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     release_commands = release.add_subparsers(dest="release_command", required=True)
 
     designate_parser = release_commands.add_parser(
-        "designate", help="preview, then designate, a finished fine-tune run as the voice"
+        "designate", help="preview, then pin, a finished fine-tune run as the voice"
     )
     designate_parser.add_argument("--asset-root")
     designate_parser.add_argument("--run", required=True)
@@ -189,8 +225,13 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     designate_parser.add_argument("--i-designate-this-run", action="store_true")
     designate_parser.set_defaults(handler=_designate)
 
-    show = release_commands.add_parser("show", help="the current voice release")
+    show = release_commands.add_parser(
+        "show", help="what speaks now: the newest release, else the base voice"
+    )
     show.add_argument("--asset-root")
+    show.add_argument(
+        "--config", type=Path, help="the speech configuration: its family, and the API's check"
+    )
     show.set_defaults(handler=_show)
 
     history_parser = release_commands.add_parser("history", help="every voice release")

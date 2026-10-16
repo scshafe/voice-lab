@@ -233,6 +233,13 @@ class SpeechConfig(ContractModel):
         runtime = self.runtime
         return runtime if runtime is not None and runtime.model_family == family else None
 
+    @property
+    def base_family(self) -> str:
+        """The family whose base voice speaks while no release exists (D-055): the configured
+        runtime's, else F5-TTS (whose base voice is then unavailable: its files are in the
+        runtime)."""
+        return F5_FAMILY if self.runtime is None else self.runtime.model_family
+
     callers: tuple[SpeechCaller, ...] = Field(min_length=1, max_length=MAX_CALLERS)
 
     @model_validator(mode="after")

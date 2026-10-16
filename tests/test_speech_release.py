@@ -6,6 +6,7 @@ can be designated.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -13,22 +14,43 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from speech_fixtures import NOW, build_lab, finished_run, forge_release
+from speech_fixtures import (
+    NOW,
+    base_voice_runtime,
+    build_lab,
+    finished_run,
+    forge_release,
+    without_runs,
+)
 
 from cole_voice_lab.canonical import sha256_file
 from cole_voice_lab.errors import ContractError, SecurityError
-from cole_voice_lab.finetune import FineTuneDigestCache
+from cole_voice_lab.finetune import (
+    FINETUNE_PRETRAINED_SHA256,
+    FINETUNE_PRETRAINED_SIZE_BYTES,
+    FineTuneDigestCache,
+)
 from cole_voice_lab.paths import AssetLayout
+from cole_voice_lab.speech.f5 import BASE_REFERENCE_FILE, BASE_REFERENCE_TEXT, max_segment_bytes
 from cole_voice_lab.speech.release import (
+    AUTO_DESIGNATED_BY,
+    BaseVoice,
     BlindReviewRef,
     VoiceRelease,
     VoiceReleaseError,
+    base_voice,
+    check_voice,
     current_release,
+    current_voice,
     designate,
+    designate_newest,
     history,
+    newer_runs,
     record_bytes,
     require_subject,
     verify_release,
+    verify_voice,
+    voice_digest,
 )
 
 
@@ -125,6 +147,7 @@ def test_a_damaged_history_is_refused(tmp_path: Path, damage: str) -> None:
 
 def test_a_release_record_is_strict() -> None:
     fields = {
+        "schema_version": "cole-voice-lab.voice-release/v1",
         "release_id": "vr-0002",
         "sequence": 1,
         "previous_release_sha256": None,
@@ -207,7 +230,7 @@ def test_verification_refuses_a_release_whose_files_changed(tmp_path: Path, what
     lab = build_lab(tmp_path)
     release, digest = current_release(lab.layout)
     verified = verify_release(lab.layout, release, digest, digests=FineTuneDigestCache())
-    assert verified.family_state.reference.prompt_id == release.model.reference_prompt_id  # type: ignore[attr-defined]
+    assert verified.family_state.reference_text.startswith("We can take this one step")  # type: ignore[attr-defined]
     assert set(verified.files) == {"checkpoint", "reference"} and verified.max_segment_bytes > 50
     root = lab.layout.root
     if what == "checkpoint":
@@ -302,3 +325,187 @@ def test_a_preview_designates_nothing(tmp_path: Path) -> None:
     assert preview.consent_id is None
     assert history(lab.layout) == []
     refused("no_release", lambda: current_release(lab.layout))
+
+
+# -- D-055: the newest voice speaks; the base voice while there is none ----------------------
+
+
+def test_without_a_release_the_base_voice_speaks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, pins = base_voice_runtime(tmp_path / "runtime", monkeypatch)
+    lab = without_runs(build_lab(tmp_path, release=False, runtime=runtime))
+    voice, digest = current_voice(lab.layout, lab.config)
+    assert isinstance(voice, BaseVoice) and voice.release_id == "base"
+    assert digest == voice_digest(voice) == hashlib.sha256(record_bytes(voice)).hexdigest()
+    assert check_voice(lab.layout, lab.config) == (voice, digest)
+    # Its files are the runtime's: the pinned weights and the public clip, never the lab's.
+    assert voice.file("checkpoint").path == "pretrained/F5TTS_v1_Base/model_1250000.safetensors"
+    assert voice.file("checkpoint").sha256 == pins.weights.sha256
+    assert voice.model.reference_text == BASE_REFERENCE_TEXT
+    assert b"cole-self" not in record_bytes(voice)  # the base voice is no subject's
+    verified = verify_voice(
+        lab.layout, voice, digest, config=lab.config, digests=FineTuneDigestCache()
+    )
+    root = Path(runtime.runtime_root)
+    assert verified.files == {
+        "checkpoint": root / "pretrained/F5TTS_v1_Base/model_1250000.safetensors",
+        "reference": root / BASE_REFERENCE_FILE,
+    }
+    assert verified.family_state.reference_text == BASE_REFERENCE_TEXT  # type: ignore[attr-defined]
+    assert verified.max_segment_bytes == max_segment_bytes(BASE_REFERENCE_TEXT, 4 * 24_000)
+    # Nothing was written: the base voice is built in, never stored.
+    assert history(lab.layout) == []
+
+
+def test_the_shipped_base_voice_names_the_pinned_weights_and_the_public_clip() -> None:
+    voice = base_voice("f5-tts")
+    weights, reference = voice.file("checkpoint"), voice.file("reference")
+    assert (weights.sha256, voice.files[0].size_bytes) == (
+        FINETUNE_PRETRAINED_SHA256,
+        FINETUNE_PRETRAINED_SIZE_BYTES,
+    )
+    assert reference.path.endswith("site-packages/f5_tts/infer/examples/basic/basic_ref_en.wav")
+    assert reference.sha256 == "b0e22048e72414fcc1e6b6342e47a774d748a195ed34e4a5b3fcf416707f2b71"
+    assert voice.model.reference_text == "Some call me nature, others call me mother nature."
+    assert voice_digest(voice) == voice_digest(base_voice("f5-tts"))  # stable, so seeds are
+
+
+@pytest.mark.parametrize("damage", ["no-runtime", "weights", "clip", "size", "link", "content"])
+def test_the_base_voice_is_unavailable_when_its_files_are_missing_or_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    runtime, _ = base_voice_runtime(tmp_path / "runtime", monkeypatch)
+    lab = without_runs(build_lab(tmp_path, release=False, runtime=runtime))
+    root = Path(runtime.runtime_root)
+    clip = root / BASE_REFERENCE_FILE
+    if damage == "no-runtime":
+        lab.config = lab.config.model_copy(update={"runtime": None})
+    elif damage == "weights":
+        (root / "pretrained/F5TTS_v1_Base/model_1250000.safetensors").unlink()
+    elif damage == "clip":
+        clip.unlink()
+    elif damage == "size":
+        clip.write_bytes(clip.read_bytes() + b"\0\0")
+    elif damage == "link":
+        clip.rename(clip.with_name("moved.wav"))
+        clip.symlink_to(clip.with_name("moved.wav"))
+    else:
+        data = clip.read_bytes()
+        clip.write_bytes(data[:-2] + bytes(255 - byte for byte in data[-2:]))
+    voice, digest = current_voice(lab.layout, lab.config)
+    check = lambda: verify_voice(  # noqa: E731
+        lab.layout, voice, digest, config=lab.config, digests=FineTuneDigestCache()
+    )
+    if damage == "content":
+        # The API's check does not hash: the job runner's does, before every job.
+        check_voice(lab.layout, lab.config)
+    else:
+        refused("base_unavailable", lambda: check_voice(lab.layout, lab.config))
+    refused("base_unavailable", check)
+
+
+def test_a_finished_run_becomes_the_voice_by_itself(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path, release=False)
+    assert newer_runs(lab.layout) == ("finetune-a",)
+    written = designate_newest(lab.layout, now=NOW)
+    assert written is not None
+    release, digest = written
+    assert (release.release_id, release.run_id, release.designation) == (
+        "vr-0001",
+        "finetune-a",
+        "auto",
+    )
+    assert release.automatic and release.designated_by == AUTO_DESIGNATED_BY
+    assert release.schema_version == "cole-voice-lab.voice-release/v2"
+    assert current_voice(lab.layout, lab.config) == (release, digest)
+    # Once released, it is not released again.
+    assert newer_runs(lab.layout) == () and designate_newest(lab.layout, now=NOW) is None
+    assert len(history(lab.layout)) == 1
+
+
+def test_a_pin_of_an_older_run_holds_until_a_newer_run_finishes(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path, release=False)
+    finished_run(lab.layout, "finetune-b", finished_at=NOW - timedelta(days=1))
+    first = designate_newest(lab.layout, now=NOW)
+    assert first is not None and first[0].run_id == "finetune-b"  # the newest of the two
+    # Cole pins the older run (a rollback): it is the voice now, and stays it.
+    pin, _ = designate(
+        lab.layout, run_id="finetune-a", designated_by="Cole", now=NOW + timedelta(hours=1)
+    )
+    assert (pin.designation, pin.automatic) == ("owner", False)
+    assert designate_newest(lab.layout, now=NOW + timedelta(hours=2)) is None
+    assert current_voice(lab.layout, lab.config)[0] == pin
+    # A run that finishes after the pin replaces it.
+    finished_run(lab.layout, "finetune-c", finished_at=NOW + timedelta(hours=3))
+    newest = designate_newest(lab.layout, now=NOW + timedelta(hours=4))
+    assert newest is not None and newest[0].run_id == "finetune-c" and newest[0].automatic
+    assert newest[0].previous_release_sha256 == history(lab.layout)[1][1]
+    assert current_voice(lab.layout, lab.config) == newest
+
+
+def test_an_automatic_release_never_lands_on_top_of_a_newer_release(tmp_path: Path) -> None:
+    # The check is made again under the history's lock, so a pin written meanwhile wins.
+    lab = build_lab(tmp_path)
+    message = refused(
+        "not_designatable",
+        lambda: designate(
+            lab.layout,
+            run_id="finetune-a",
+            designated_by=AUTO_DESIGNATED_BY,
+            now=NOW,
+            designation="auto",
+        ),
+    )
+    assert "finished before release vr-0001" in str(message)
+    assert len(history(lab.layout)) == 1
+
+
+def test_another_subjects_run_is_never_released_automatically(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path, release=False)
+    finished_run(
+        lab.layout, "finetune-other", subject_id="someone-else", finished_at=NOW - timedelta(days=1)
+    )
+    refusals: list[tuple[str, str]] = []
+    written = designate_newest(
+        lab.layout, now=NOW, refused=lambda run_id, why: refusals.append((run_id, why))
+    )
+    # The newer run is another subject's: refused, and the older run of the pinned one speaks.
+    assert [run_id for run_id, _ in refusals] == ["finetune-other"]
+    assert "pinned subject" in refusals[0][1]
+    assert written is not None and written[0].run_id == "finetune-a"
+    assert [release.run_id for release, _ in history(lab.layout)] == ["finetune-a"]
+    # With only another subject's run, nothing is released and the base voice stays.
+    layout = AssetLayout.initialize(tmp_path / "other-lab")
+    finished_run(layout, "finetune-other", subject_id="someone-else")
+    assert designate_newest(layout, now=NOW, refused=lambda *_: None) is None
+    assert history(layout) == []
+
+
+def test_a_release_written_before_d055_still_parses_and_chains(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path, release=False)
+    new, _ = designate(lab.layout, run_id="finetune-a", designated_by="Cole", now=NOW, write=False)
+    stored = json.loads(record_bytes(new))
+    del stored["designation"]
+    stored["schema_version"] = "cole-voice-lab.voice-release/v1"
+    data = json.dumps(stored, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    old = VoiceRelease.model_validate_json(data)
+    assert old.designation is None and not old.automatic and record_bytes(old) == data
+    (lab.layout.root / "provenance/voice-releases/0001.json").write_bytes(data)
+    assert current_voice(lab.layout, lab.config)[0] == old
+    # A newer run is released on top of it, as a v2 record.
+    finished_run(lab.layout, "finetune-b", finished_at=NOW + timedelta(hours=1))
+    written = designate_newest(lab.layout, now=NOW + timedelta(hours=2))
+    assert (
+        written is not None
+        and written[0].previous_release_sha256
+        == sha256_file(lab.layout.root / "provenance/voice-releases/0001.json")[0]
+    )
+    # A v1 record names no designation, and a v2 record always names one (never null).
+    with pytest.raises(ValueError, match="designation"):
+        VoiceRelease.model_validate_json(json.dumps({**stored, "designation": "owner"}))
+    v2 = {**stored, "schema_version": "cole-voice-lab.voice-release/v2"}
+    with pytest.raises(ValueError, match="designation"):
+        VoiceRelease.model_validate_json(json.dumps(v2))
+    with pytest.raises(ValueError, match="never null"):
+        VoiceRelease.model_validate_json(json.dumps({**v2, "designation": None}))
