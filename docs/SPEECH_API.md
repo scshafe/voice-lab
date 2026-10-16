@@ -1,9 +1,9 @@
 # Speech API: Cole's voice for registered callers
 
-Status: **built, not deployed** (designed 2026-10-11, D-044 to D-048). The code is in
+Status: **built, in the stack** (designed 2026-10-11, D-044 to D-048). The code is in
 `src/cole_voice_lab/speech/` (`voice-lab voice release …`, `voice-lab speech …`,
-`serve --speech-config`); nothing runs on the PC until the owner's steps in
-[deploy/speech/README.md](../deploy/speech/README.md) are done. It is part of the voice
+`serve --speech-config`), and `deploy/stack/compose.yaml` serves it; nothing renders on the
+PC until the owner's steps in [deploy/speech/README.md](../deploy/speech/README.md) are done. It is part of the voice
 platform design ([§3.6](design/VOICE-PLATFORM.md#36-speech-for-registered-callers)).
 
 The caller Cole has in mind is his own agent server, built later and outside this
@@ -206,19 +206,38 @@ the client's id, but that is to be read from one real token (decode the claims l
 never print or log the token) before the caller is registered.
 
 **The door.** oauth2-proxy admits bearer JWTs through `SKIP_JWT_BEARER_TOKENS` and
-`EXTRA_JWT_ISSUERS`, whose entries are `issuer=audience` pairs separated by commas. The change:
+`EXTRA_JWT_ISSUERS`, whose entries are `issuer=audience` pairs separated by commas. The stack
+(`deploy/stack/compose.yaml`) has:
 
 ```yaml
 OAUTH2_PROXY_EXTRA_JWT_ISSUERS: ${OIDC_ISSUER}=voice-lab-desktop,${OIDC_ISSUER}=${VOICE_LAB_SPEECH_AUDIENCE}
 ```
 
-with `VOICE_LAB_SPEECH_AUDIENCE` a new non-secret `.env` value. To confirm with the first real
-token: oauth2-proxy builds a session from a bearer token's claims and applies its email-domain
-rule (`*` here); a client-credentials token has no `email` claim. If the door refuses such a
-token, the narrow fix is `OAUTH2_PROXY_OIDC_EMAIL_CLAIM=sub` only if that leaves the browser
-sign-in unchanged, or a per-client email claim in Pocket ID; skipping the door for
-`/api/v1/speech` is not acceptable. Creating the Pocket ID client and changing the door are
-the owner's steps.
+with `VOICE_LAB_SPEECH_AUDIENCE` a required, non-secret `.env` value: the caller's client id,
+which Pocket ID puts in its client-credentials token's `aud` (`parley-relay` for Parley's
+relay, whose `sub` is `client-parley-relay`). The door admits exactly that one speech
+audience: a second caller, or a caller whose tokens carry another audience, needs one more
+`${OIDC_ISSUER}=<audience>` entry (and `.env` name) in the stack; the API's own check takes up
+to eight audiences from the configuration (§5, "The API's check"), so the door's list is the
+narrower one.
+
+A client-credentials token has no `email` claim, and that needs no change. For a token an
+extra JWT issuer verifies, oauth2-proxy (v7.15.3, `pkg/apis/middleware/session.go`,
+`CreateTokenToSessionFunc`) sets the session's email to the token's `sub` when it has no
+`email`, and treats a missing `email_verified` as verified; the door's email rule (`*`)
+accepts any non-empty email. Checked on 2026-10-16 against the pinned release's binary, with
+a synthetic issuer and the door's settings: a token with `aud` `parley-relay`, `sub`
+`client-parley-relay` and no `email` reaches the API, with `X-Forwarded-User` and
+`X-Forwarded-Email` both `client-parley-relay`; another audience, another issuer, an expired
+token or `email_verified: false` answer `401`; forwarded headers a client sends are replaced.
+So `OAUTH2_PROXY_OIDC_EMAIL_CLAIM` stays unset (it would change every browser session's
+email), and no route skips the door: a skip-auth route for `/api/v1/speech` would leave the
+API's own check as the only one, which this design refuses.
+
+The door admits such a token on every path, not only `/api/v1/speech`. The API refuses it
+everywhere else: the global check takes only the desktop audience and Cole's subject, and
+`/view/` takes the door's forwarded user only when it is Cole's subject. Creating the Pocket ID
+client and setting `VOICE_LAB_SPEECH_AUDIENCE` are the owner's steps.
 
 ## 6. Endpoints
 
@@ -587,10 +606,11 @@ Cole's 16-versus-32-step listening check decides the default steps (32 until the
 
 ## 11. Deployment and the owner's steps
 
-Written in the repository with the implementation, applied only by the owner (the
-procedure, with the commands: [deploy/speech/README.md](../deploy/speech/README.md); the
-stack and door changes: `deploy/speech/compose.speech.yaml`; the host units:
-`deploy/host-manual/voice-lab-speech*`):
+Written in the repository with the implementation; the stack and door changes are in
+`deploy/stack/compose.yaml` and deploy with a merge, the rest is the owner's (the procedure,
+with the commands: [deploy/speech/README.md](../deploy/speech/README.md); the host units:
+`deploy/host-manual/voice-lab-speech*`). Steps 3 to 5 come before the merge that brings the
+speech routes to the stack: the API does not start without a valid configuration.
 
 1. **The runtime.** Provision the ROCm F5-TTS runtime on the PC (torch 2.14.0+rocm7.2,
    torchcodec 0.16.0+cpu, from spike S-2), hash-locked in
@@ -605,8 +625,10 @@ stack and door changes: `deploy/speech/compose.speech.yaml`; the host units:
 4. **The configuration and secrets.** Write `/data/voice-lab/config/speech.json`; create each
    caller's webhook secret file (root:root 0600) and give the caller the same secret by a
    private channel.
-5. **The door and the stack.** The `EXTRA_JWT_ISSUERS` change and the read-only bind of
-   `/data/voice-lab/config/` into the API container (infra's `host.conf` grants binds).
+5. **The door and the stack.** `VOICE_LAB_SPEECH_AUDIENCE` in the stack's `.env`, and
+   infra's `host.conf` granting the read-only bind of `/data/voice-lab/config/` into the API
+   container (`HOST_BINDS` … `speech-config:/data/voice-lab/config:ro`); the compose file
+   already has the `EXTRA_JWT_ISSUERS` entry, `--speech-config` and the bind.
 6. **Host units.** Create the ledger's directory, then install and enable
    `voice-lab-speech.service` (long-running, with the resident worker) and
    `voice-lab-speech-webhooks.{path,service,timer}` by hand; through the runner lane's

@@ -15,6 +15,18 @@
 # allow-list (src/cole_voice_lab/api/auth.py). /api/ answers 401, never a login
 # redirect.
 #
+# The speech API's callers (docs/SPEECH_API.md §5, D-046) are machine clients:
+# a confidential Pocket ID client each, `client_credentials`, whose token's
+# `aud` is the caller's client id (VOICE_LAB_SPEECH_AUDIENCE, `parley-relay`)
+# and `sub` `client-<id>`. The door admits it through a second extra JWT issuer
+# entry; it has no `email` claim, and oauth2-proxy's bearer session then takes
+# the email from `sub` (pkg/apis/middleware/session.go), which the
+# `EMAIL_DOMAINS: "*"` rule accepts. So no claim mapping changes and no route
+# skips the door. The API checks the token again itself: /api/v1/speech
+# against the registered callers (the speech configuration), and every other
+# route refuses it (the desktop audience and Cole's subject only; /view/ wants
+# the forwarded user to be Cole's subject).
+#
 # Topology (exact addresses are authority; the door layout):
 #   door      internal /29   ts-voice-lab .2 -> oauth2-proxy .3:4180 (serve.json)
 #   upstream  internal /29   oauth2-proxy .10 -> api .11:8080
@@ -30,6 +42,10 @@
 #                             place the API writes. It cannot write raw/; the
 #                             network-less intake publisher (a host unit) does.
 #   /data/voice-lab/state rw   API state; state/auth/jwks.json (read)
+#   /data/voice-lab/config ro  the speech configuration, speech.json (root:voice-lab
+#                             0640, the directory 0750; deploy/speech/README.md).
+#                             No secret: the webhook secrets stay in /etc, for a
+#                             host unit only.
 # The API runs as the data root's owner, the `voice-lab` system user.
 name: voice-lab
 
@@ -117,9 +133,14 @@ services:
       OAUTH2_PROXY_UPSTREAMS: http://10.253.91.11:8080
       OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
       # The capture CLI and the desktop app: a Pocket ID token (RS256 JWT,
-      # aud = voice-lab-desktop) as `Authorization: Bearer`.
+      # aud = voice-lab-desktop) as `Authorization: Bearer`. The speech callers:
+      # a client_credentials token whose aud is VOICE_LAB_SPEECH_AUDIENCE (not a
+      # secret; read from one real token), admitted with its email taken from
+      # sub (header comment). issuer=audience pairs, comma-separated. One speech
+      # audience: a second caller, or a caller with another audience, needs one
+      # more ${OIDC_ISSUER}=<audience> entry here (and its .env name).
       OAUTH2_PROXY_SKIP_JWT_BEARER_TOKENS: "true"
-      OAUTH2_PROXY_EXTRA_JWT_ISSUERS: ${OIDC_ISSUER}=voice-lab-desktop
+      OAUTH2_PROXY_EXTRA_JWT_ISSUERS: ${OIDC_ISSUER}=voice-lab-desktop,${OIDC_ISSUER}=${VOICE_LAB_SPEECH_AUDIENCE:?set VOICE_LAB_SPEECH_AUDIENCE (the speech caller's token audience) in .env}
       OAUTH2_PROXY_API_ROUTES: "^/api/"
       # finalize re-hashes a whole package before it answers.
       OAUTH2_PROXY_UPSTREAM_TIMEOUT: 600s
@@ -170,6 +191,11 @@ services:
       # Phase 3 (design §3.4, §6.5): the journey routes and the read-only web view /view/.
       # Playback (audio, the blind referee) stays off: no --playback-approval (§4.2).
       - --journey
+      # The speech routes for the callers this configuration registers (D-046,
+      # docs/SPEECH_API.md). The API does not start without a valid file here: remove these
+      # two lines to stop new speech (deploy/speech/README.md, "Rollback").
+      - --speech-config
+      - /data/voice-lab/config/speech.json
     environment:
       VOICE_JOURNEY_CONTAINER: "1"
       VOICE_JOURNEY_DATA: /data/voice-lab/journey
@@ -204,6 +230,15 @@ services:
       - type: bind
         source: /data/voice-lab/memos
         target: /data/voice-lab/memos
+        read_only: true
+        bind:
+          create_host_path: false
+      # The speech configuration's directory, read-only (host.conf grants it read-only;
+      # infra refuses binds under /etc). The directory, not the file: a file bind would keep a
+      # replaced file's old inode.
+      - type: bind
+        source: /data/voice-lab/config
+        target: /data/voice-lab/config
         read_only: true
         bind:
           create_host_path: false

@@ -25,7 +25,7 @@
 # stop never kills a render.
 #
 # It writes only the speech state, the GPU slot's lock and the render ledger: the ledger's
-# directory must exist before the unit starts (deploy/speech/README.md, step 8).
+# directory must exist before the unit starts (deploy/speech/README.md, step 7).
 [Unit]
 Description=voice-lab speech job runner and resident model (no network, GPU)
 ConditionPathExists=/data/voice-lab/config/speech.json
