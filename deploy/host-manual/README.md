@@ -18,8 +18,11 @@ and the lane installs them like the others.
 
 The speech pair is here because infra's validator has no rule for GPU device access yet and
 because it is inert until the owner's steps in [`../speech/README.md`](../speech/README.md)
-are done; both services are conditioned on `/etc/voice-lab/speech.json`. The runner's ledger
-directory must exist before it starts (its `ReadWritePaths=` names it). Install them with:
+are done; both services are conditioned on `/data/voice-lab/config/speech.json` (not under
+`/etc`, so that the API container can bind its directory; `../speech/README.md`, step 4). The
+callers' webhook secrets stay in the root-only `/etc/voice-lab/speech-webhook-secrets/`, which
+only the delivery unit reads, as credentials. The runner's ledger directory must exist before
+it starts (its `ReadWritePaths=` names it). Install them with:
 
 ```sh
 sudo -u voice-lab install -d -m 0700 /data/voice-lab/lab/provenance/speech-renders

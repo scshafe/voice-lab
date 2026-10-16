@@ -26,30 +26,45 @@ retired, and Cole's standing decision permits his own voice for assistant speech
    ```sh
    VL=/opt/voice-lab/current/bin/voice-lab
    $VL voice release designate --asset-root /data/voice-lab/lab --run <run id> \
-     --config /etc/voice-lab/speech.json --designated-by Cole
+     --config /data/voice-lab/config/speech.json --designated-by Cole
    $VL voice release designate --asset-root /data/voice-lab/lab --run <run id> \
-     --config /etc/voice-lab/speech.json --designated-by Cole --i-designate-this-run
+     --config /data/voice-lab/config/speech.json --designated-by Cole --i-designate-this-run
    ```
 
 3. **Pocket ID.** One confidential client per caller with the `client_credentials` grant.
    Fetch one token with the client's credentials and decode its claims locally (never print,
    log or keep the token): its `sub` and `aud` are the caller's `subject` and `audiences`.
-4. **The configuration** `/etc/voice-lab/speech.json` (root:voice-lab 0640;
-   `cole-voice-lab.speech-config/v1`, example in docs/SPEECH_API.md §4), checked with
-   `voice-lab speech check-config --config /etc/voice-lab/speech.json`.
+4. **The configuration** `/data/voice-lab/config/speech.json` (root:voice-lab 0640, in the
+   directory `/data/voice-lab/config`, root:voice-lab 0750; `cole-voice-lab.speech-config/v1`,
+   example in docs/SPEECH_API.md §4), checked with
+   `voice-lab speech check-config --config /data/voice-lab/config/speech.json`. Not under
+   `/etc`: the API container reads it through a read-only bind of its directory, and infra
+   refuses any bind under `/etc`. Replace it whole (`install`): the bind is of the
+   directory, so the container sees the current file (a file bind would keep the old one's
+   inode). The API and the job runner read it when they start (restart the runner unit; the
+   API reads it when its container next starts), the webhook delivery on every pass.
+
+   ```sh
+   sudo install -d -o root -g voice-lab -m 0750 /data/voice-lab/config
+   sudo install -o root -g voice-lab -m 0640 <reviewed file> /data/voice-lab/config/speech.json
+   sudo -u voice-lab /opt/voice-lab/current/bin/voice-lab speech check-config \
+     --config /data/voice-lab/config/speech.json
+   ```
 5. **Webhook secrets.** For each caller with webhook URLs,
    `/etc/voice-lab/speech-webhook-secrets/<caller id>` (the directory root:root 0700, each
    file root:root 0600) holding one `whsec_` and the base64 of 32 random bytes; the caller
    gets the same secret by a private channel. Never in Git or the configuration. The
    delivery unit receives the directory as systemd credentials (`LoadCredential=`); no other
-   process, the API and the job runner included, can read a secret.
+   process, the API and the job runner included, can read a secret. They stay under `/etc`:
+   only that host unit reads them, and no container binds them (never put them under
+   `/data/voice-lab/config/`, which the API container sees).
 6. **The stack.** Fold `compose.speech.yaml` into `deploy/stack/compose.yaml` in a reviewed
    change, add `VOICE_LAB_SPEECH_AUDIENCE` to the stack's `.env` (`stack env-set`), and have
-   infra's `stacks/voice-lab/host.conf` grant the read-only bind of
-   `/etc/voice-lab/speech.json`. Then confirm with a caller's real token that the door admits
-   it: oauth2-proxy builds a session from a bearer token and a client-credentials token has
-   no `email` claim. If the door refuses it, fix the claim in Pocket ID or the door's claim
-   mapping; never skip the door for `/api/v1/speech`.
+   infra's `stacks/voice-lab/host.conf` grant the read-only bind of `/data/voice-lab/config`
+   (`HOST_BINDS` gains `speech-config:/data/voice-lab/config:ro`). Then confirm with a
+   caller's real token that the door admits it: oauth2-proxy builds a session from a bearer
+   token and a client-credentials token has no `email` claim. If the door refuses it, fix the
+   claim in Pocket ID or the door's claim mapping; never skip the door for `/api/v1/speech`.
 7. **Host units.** The runner writes only the speech state, the GPU slot's lock and the
    render ledger, so the ledger's directory must exist first:
    `sudo -u voice-lab install -d -m 0700 /data/voice-lab/lab/provenance/speech-renders`.
@@ -86,15 +101,15 @@ video`) and the delivery unit's `LoadCredential=`: an infra change, for the owne
 
 ## One pass by hand (`--once`)
 
-`voice-lab speech run --config /etc/voice-lab/speech.json --once` makes one pass (recover,
-render what is queued, sweep), unloads the model and prints the job ids and outcomes. It is for
-when the unit is stopped (a check after an install, or draining the queue while the unit is
-disabled), as `voice-lab`:
+`voice-lab speech run --config /data/voice-lab/config/speech.json --once` makes one pass
+(recover, render what is queued, sweep), unloads the model and prints the job ids and outcomes.
+It is for when the unit is stopped (a check after an install, or draining the queue while the
+unit is disabled), as `voice-lab`:
 
 ```sh
 sudo systemctl stop voice-lab-speech.service
 sudo -u voice-lab /opt/voice-lab/current/bin/voice-lab speech run \
-  --config /etc/voice-lab/speech.json --once
+  --config /data/voice-lab/config/speech.json --once
 sudo systemctl start voice-lab-speech.service
 ```
 
@@ -128,7 +143,7 @@ on (logging "the text key changed on disk").
 
   ```sh
   sudo -u voice-lab /opt/voice-lab/current/bin/voice-lab speech new-text-key \
-    --config /etc/voice-lab/speech.json --i-accept-the-lost-key
+    --config /data/voice-lab/config/speech.json --i-accept-the-lost-key
   ```
 
   It refuses while a key file is there, prints how many records and entries the lost key

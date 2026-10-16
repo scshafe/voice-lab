@@ -33,13 +33,15 @@ services:
       - --journey
       # The speech routes for the callers this configuration registers (D-046).
       - --speech-config
-      - /etc/voice-lab/speech.json
+      - /data/voice-lab/config/speech.json
     volumes:
-      # The speech configuration: root-owned, readable by voice-lab, read-only here. It holds
-      # no secret; the webhook secrets stay on the host for the delivery unit only.
+      # The speech configuration's directory (root:voice-lab 0750, the file 0640), read-only
+      # here (infra refuses binds under /etc). The directory, not the file: a file bind would
+      # keep a replaced file's old inode. It holds no secret; the webhook secrets stay in /etc
+      # on the host, for the delivery unit only.
       - type: bind
-        source: /etc/voice-lab/speech.json
-        target: /etc/voice-lab/speech.json
+        source: /data/voice-lab/config
+        target: /data/voice-lab/config
         read_only: true
         bind:
           create_host_path: false

@@ -13,7 +13,7 @@ to be fenced from the network. Nothing here starts a unit or reads a credential.
 from __future__ import annotations
 
 import ipaddress
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from cole_voice_lab.storage_contracts import (
     KEYCHAIN_ITEM_PREFIX,
@@ -206,7 +206,24 @@ def test_the_air_timer_probes_hourly_and_catches_up() -> None:
 
 SPEECH = MANUAL / "voice-lab-speech.service"
 WEBHOOKS = MANUAL / "voice-lab-speech-webhooks.service"
-SPEECH_CONFIG = "/etc/voice-lab/speech.json"
+SPEECH_CONFIG = "/data/voice-lab/config/speech.json"
+WEBHOOK_SECRETS = "/etc/voice-lab/speech-webhook-secrets"
+
+
+def test_the_speech_configuration_is_bindable_and_the_secrets_are_not() -> None:
+    # infra refuses a container bind under /etc (tools/stack_toml.py FORBIDDEN_PREFIXES), and
+    # the API container reads the configuration through a bind of its directory. The webhook
+    # secrets are the delivery unit's alone: outside that directory, so no bind reaches them.
+    config = PurePosixPath(SPEECH_CONFIG)
+    assert config.parent == PurePosixPath("/data/voice-lab/config")
+    assert not config.is_relative_to("/etc")
+    assert not PurePosixPath(WEBHOOK_SECRETS).is_relative_to(config.parent)
+    assert not PurePosixPath(WEBHOOK_SECRETS).is_relative_to("/data")
+    for unit in sorted(MANUAL.glob("*.service")) + sorted(HOST.glob("*.service")):
+        text = unit.read_text()
+        assert "/etc/voice-lab/speech.json" not in text, unit.name
+        if WEBHOOK_SECRETS in text:
+            assert unit == WEBHOOKS, unit.name
 
 
 def test_the_speech_units_stay_out_of_the_lanes_directory() -> None:

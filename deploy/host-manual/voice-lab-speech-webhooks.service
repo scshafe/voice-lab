@@ -13,7 +13,7 @@
 # name each caller's node:443 (infra host.conf HOST_EGRESS_TAILNET).
 [Unit]
 Description=voice-lab speech: deliver webhooks (tailnet only)
-ConditionPathExists=/etc/voice-lab/speech.json
+ConditionPathExists=/data/voice-lab/config/speech.json
 ConditionPathIsDirectory=/data/voice-lab/state/speech
 After=network-online.target tailscaled.service
 Wants=network-online.target
@@ -23,7 +23,7 @@ Type=oneshot
 User=voice-lab
 Group=voice-lab
 UMask=0077
-ExecStart=/opt/voice-lab/current/bin/voice-lab speech deliver --config /etc/voice-lab/speech.json
+ExecStart=/opt/voice-lab/current/bin/voice-lab speech deliver --config /data/voice-lab/config/speech.json
 LoadCredential=speech-webhook-secrets:/etc/voice-lab/speech-webhook-secrets
 TimeoutStartSec=10min
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
