@@ -31,7 +31,7 @@
 # --i-render-outside-the-sandbox is given (SECURITY.md).
 [Unit]
 Description=voice-lab model benchmark of one fine-tuned run (no network, GPU)
-ConditionPathExists=/etc/voice-lab/speech.json
+ConditionPathExists=/data/voice-lab/config/speech.json
 ConditionPathExists=/etc/voice-lab/speech-benchmark.env
 ConditionPathIsDirectory=/data/voice-lab/state/speech/benchmark
 After=local-fs.target
@@ -45,7 +45,7 @@ UMask=0077
 EnvironmentFile=/etc/voice-lab/speech-benchmark.env
 # The marker the command requires before it renders (with no network but loopback).
 Environment=VOICE_LAB_SANDBOX=voice-lab-speech-benchmark
-ExecStart=/opt/voice-lab/current/bin/voice-lab families record --asset-root /data/voice-lab/lab --run ${VOICE_LAB_BENCHMARK_RUN} --benchmark --config /etc/voice-lab/speech.json
+ExecStart=/opt/voice-lab/current/bin/voice-lab families record --asset-root /data/voice-lab/lab --run ${VOICE_LAB_BENCHMARK_RUN} --benchmark --config /data/voice-lab/config/speech.json
 TimeoutStartSec=2h
 PrivateNetwork=yes
 IPAddressDeny=any

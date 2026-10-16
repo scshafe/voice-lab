@@ -86,7 +86,7 @@ vault like the ledger; D-049):
   CPU model and count, the memory, each GPU's PCI ids, name, driver and VRAM, the ROCm
   release, or MPS; `null` for a run trained before hosts were recorded), and the runtime
   identity;
-- **inference**, with `--benchmark --config /etc/voice-lab/speech.json`: the
+- **inference**, with `--benchmark --config /data/voice-lab/config/speech.json`: the
   fixed, public, held-out text set `benchmark-v1` (six sentences; refused if any is a text the
   run trained on), rendered sentence by sentence through the same `SpeechBackend` port as the
   speech API, holding the GPU slot (kind `benchmark`). The seeds derive from the run, its

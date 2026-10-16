@@ -116,9 +116,12 @@ pins, or its run or a file no longer hashes to what the release names
 ## 4. Callers and the configuration
 
 One strict JSON file, `cole-voice-lab.speech-config/v1`, owned by root, readable by the
-`voice-lab` user, mounted read-only into the API container (`/etc/voice-lab/speech.json`). It
-holds no secret: only paths to secrets. The API, the job runner and the delivery process each
-read the parts they need.
+`voice-lab` user: `/data/voice-lab/config/speech.json` (root:voice-lab 0640, in a directory
+root:voice-lab 0750). The API container sees it through a read-only bind of that directory, at
+the same path; it is not under `/etc` because infra refuses any container bind there. It holds
+no secret: only paths to secrets, which stay under `/etc/voice-lab/speech-webhook-secrets/`
+(root only), outside every bind, read by the delivery unit alone (§8). The API, the job runner
+and the delivery process each read the parts they need.
 
 ```json
 {
@@ -595,14 +598,15 @@ stack and door changes: `deploy/speech/compose.speech.yaml`; the host units:
    provision-runtime --target linux-rocm` (docs/FINETUNE.md, "The runtime"). Until then every
    job fails `runtime_unavailable`.
 2. **The voice release.** `voice-lab voice release designate --run <id> --config
-   /etc/voice-lab/speech.json` on the PC. Only Cole; no consent record is needed (D-050).
+   /data/voice-lab/config/speech.json` on the PC. Only Cole; no consent record is needed
+   (D-050).
 3. **Pocket ID.** Create the caller's confidential client with `client_credentials`; read one
    token's claims locally to fill `subject` and `audiences`.
-4. **The configuration and secrets.** Write `/etc/voice-lab/speech.json`; create each
+4. **The configuration and secrets.** Write `/data/voice-lab/config/speech.json`; create each
    caller's webhook secret file (root:root 0600) and give the caller the same secret by a
    private channel.
 5. **The door and the stack.** The `EXTRA_JWT_ISSUERS` change and the read-only bind of
-   `/etc/voice-lab/speech.json` into the API container (infra's `host.conf` grants binds).
+   `/data/voice-lab/config/` into the API container (infra's `host.conf` grants binds).
 6. **Host units.** Create the ledger's directory, then install and enable
    `voice-lab-speech.service` (long-running, with the resident worker) and
    `voice-lab-speech-webhooks.{path,service,timer}` by hand; through the runner lane's

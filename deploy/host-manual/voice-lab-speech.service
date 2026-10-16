@@ -9,7 +9,7 @@
 #
 # Installed by hand, not by the runner lane (README.md here): it needs the GPU's devices,
 # which infra's host-unit validator has no rule for yet, and it is inert until the owner's
-# steps of docs/SPEECH_API.md §11 are done (/etc/voice-lab/speech.json exists).
+# steps of docs/SPEECH_API.md §11 are done (/data/voice-lab/config/speech.json exists).
 #
 # A deploy moves /opt/voice-lab/current but does not restart this unit (the lane does not
 # manage it). With --release-link the runner checks at every pass and before every job, model
@@ -28,7 +28,7 @@
 # directory must exist before the unit starts (deploy/speech/README.md, step 8).
 [Unit]
 Description=voice-lab speech job runner and resident model (no network, GPU)
-ConditionPathExists=/etc/voice-lab/speech.json
+ConditionPathExists=/data/voice-lab/config/speech.json
 ConditionPathIsDirectory=/data/voice-lab/state/speech
 After=local-fs.target
 
@@ -38,7 +38,7 @@ User=voice-lab
 Group=voice-lab
 SupplementaryGroups=render video
 UMask=0077
-ExecStart=/opt/voice-lab/current/bin/voice-lab speech run --config /etc/voice-lab/speech.json --release-link /opt/voice-lab/current
+ExecStart=/opt/voice-lab/current/bin/voice-lab speech run --config /data/voice-lab/config/speech.json --release-link /opt/voice-lab/current
 Restart=on-failure
 RestartSec=10s
 RestartPreventExitStatus=78

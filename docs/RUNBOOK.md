@@ -514,10 +514,10 @@ stays). Only a run of the pinned subject (`cole-self`) can be designated:
 ```bash
 voice-lab voice release designate --asset-root /data/voice-lab/lab \
   --run <finished run id> \
-  --config /etc/voice-lab/speech.json --designated-by Cole
+  --config /data/voice-lab/config/speech.json --designated-by Cole
 voice-lab voice release designate --asset-root /data/voice-lab/lab \
   --run <finished run id> \
-  --config /etc/voice-lab/speech.json --designated-by Cole --i-designate-this-run
+  --config /data/voice-lab/config/speech.json --designated-by Cole --i-designate-this-run
 voice-lab voice release show --asset-root /data/voice-lab/lab
 voice-lab voice release history --asset-root /data/voice-lab/lab
 ```

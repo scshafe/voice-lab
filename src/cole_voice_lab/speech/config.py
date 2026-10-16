@@ -1,8 +1,10 @@
 """The speech configuration and its caller registry (D-046, docs/SPEECH_API.md §4).
 
-@canonical speech.config -- one strict JSON file, ``/etc/voice-lab/speech.json`` on the PC,
-root-owned and readable by ``voice-lab``, read by the API, the job runner and the webhook
-delivery process. It holds no secret: a caller's webhook secret is a file named by path,
+@canonical speech.config -- one strict JSON file, ``/data/voice-lab/config/speech.json`` on the
+PC, root-owned and readable by ``voice-lab``, read by the API (its directory bound read-only
+into the container; infra refuses any bind under ``/etc``), the job runner and the webhook
+delivery process. It holds no secret: a caller's webhook secret is a file named by path
+(root-only, under ``/etc/voice-lab/speech-webhook-secrets/``, never bound into a container),
 which only the delivery process reads (``webhooks.read_secret``).
 
 A caller is a machine client of the identity provider. Its tokens' issuer, subject and
