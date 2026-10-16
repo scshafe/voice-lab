@@ -25,6 +25,6 @@ paths = [".env"]                     # the door's client and cookie secrets
 # copied, sealed, to the vaults (design §4.3, D-023).
 
 [env]
-required = ["TS_AUTHKEY", "OIDC_ISSUER", "OIDC_HOST", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "ID_TAILNET_IP", "VOICE_LAB_FQDN", "VOICE_LAB_UID", "VOICE_LAB_GID", "VOICE_LAB_SUBJECT"]
+required = ["TS_AUTHKEY", "OIDC_ISSUER", "OIDC_HOST", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "ID_TAILNET_IP", "VOICE_LAB_FQDN", "VOICE_LAB_UID", "VOICE_LAB_GID", "VOICE_LAB_SUBJECT", "VOICE_LAB_SPEECH_AUDIENCE"]
 generated = ["OAUTH2_PROXY_COOKIE_SECRET"]
 owner = []

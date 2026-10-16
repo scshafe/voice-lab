@@ -1,14 +1,18 @@
 # Deploying the speech API (the owner's steps)
 
-The speech API of D-046 ([docs/SPEECH_API.md](../../docs/SPEECH_API.md)) is in the code, but
-nothing here is applied by a merge:
+The speech API of D-046 ([docs/SPEECH_API.md](../../docs/SPEECH_API.md)) is in the code and
+in the stack:
 
-- `deploy/stack/compose.yaml` is unchanged; the stack changes are in
-  [`compose.speech.yaml`](compose.speech.yaml) here, for the owner to fold in;
+- `deploy/stack/compose.yaml` starts the API with `--speech-config
+  /data/voice-lab/config/speech.json` and binds that directory read-only, and the door admits
+  the callers' machine tokens (`VOICE_LAB_SPEECH_AUDIENCE`). A merge deploys that, so steps 3,
+  4 and 6 come before the merge that brings it: the API does not start without a valid
+  configuration, and the deploy refuses a bind that infra's `host.conf` does not grant or a
+  missing `.env` name (and rolls back);
 - the host units are in [`../host-manual/`](../host-manual/README.md), which the runner lane
   does not install.
 
-Until these steps are done the API serves no `/api/v1/speech`, and the units do not run.
+Until the units run, nothing renders: the API accepts jobs and they wait in the queue.
 Every step is Cole's; an agent prepares and reviews, it never designates a release, creates a
 Pocket ID client or touches the running stack. There is no consent step: consent records are
 retired, and Cole's standing decision permits his own voice for assistant speech (D-050).
@@ -58,13 +62,17 @@ retired, and Cole's standing decision permits his own voice for assistant speech
    process, the API and the job runner included, can read a secret. They stay under `/etc`:
    only that host unit reads them, and no container binds them (never put them under
    `/data/voice-lab/config/`, which the API container sees).
-6. **The stack.** Fold `compose.speech.yaml` into `deploy/stack/compose.yaml` in a reviewed
-   change, add `VOICE_LAB_SPEECH_AUDIENCE` to the stack's `.env` (`stack env-set`), and have
-   infra's `stacks/voice-lab/host.conf` grant the read-only bind of `/data/voice-lab/config`
-   (`HOST_BINDS` gains `speech-config:/data/voice-lab/config:ro`). Then confirm with a
-   caller's real token that the door admits it: oauth2-proxy builds a session from a bearer
-   token and a client-credentials token has no `email` claim. If the door refuses it, fix the
-   claim in Pocket ID or the door's claim mapping; never skip the door for `/api/v1/speech`.
+6. **The stack.** Before the deploy that brings the speech routes: add
+   `VOICE_LAB_SPEECH_AUDIENCE` (the caller's token audience, its client id: `parley-relay`)
+   to the stack's `.env` (`stack env-set`), and have infra's `stacks/voice-lab/host.conf`
+   grant the read-only bind of `/data/voice-lab/config` (`HOST_BINDS` gains
+   `speech-config:/data/voice-lab/config:ro`). Then confirm with a caller's real token that
+   the door admits it: a request for `/api/v1/speech/sp-does-not-exist` answers `404` from
+   the API (the caller authenticated; the id is not its job), not `401` or a redirect from the
+   door. A client-credentials token has no `email` claim; oauth2-proxy (v7.15.3) then takes
+   the session's email from `sub`, which `EMAIL_DOMAINS: "*"` accepts (docs/SPEECH_API.md §5).
+   If the door still refuses it, look at the token's `aud` first; never skip the door for
+   `/api/v1/speech`.
 7. **Host units.** The runner writes only the speech state, the GPU slot's lock and the
    render ledger, so the ledger's directory must exist first:
    `sudo -u voice-lab install -d -m 0700 /data/voice-lab/lab/provenance/speech-renders`.
@@ -154,8 +162,9 @@ on (logging "the text key changed on disk").
 
 ## Rollback
 
-- **Stop new speech:** remove `--speech-config` from the API's command (the API then answers
-  `404` under `/api/v1/speech`) and redeploy the stack.
+- **Stop new speech:** remove the two `--speech-config` lines from the API's command in
+  `deploy/stack/compose.yaml` (the API then answers `404` under `/api/v1/speech`) and merge;
+  or, at once, dispatch `deploy.yml` with an older commit (`allow_rollback=true`).
 - **Stop the host side:** `sudo systemctl disable --now voice-lab-speech.service
   voice-lab-speech-webhooks.path voice-lab-speech-webhooks.timer`. Stopping the runner
   mid-job ends that job `failed internal_error` after the sentence being rendered, with its
