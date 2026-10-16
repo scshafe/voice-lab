@@ -18,8 +18,10 @@ from typing import Any
 
 import pytest
 from home_host_fixtures import mint
+from home_host_fixtures import policy as desktop_policy
 from speech_fixtures import (
     CALLER_AUDIENCE,
+    CALLER_SUBJECT,
     HOOK,
     NOW,
     FakeBackend,
@@ -75,6 +77,11 @@ def answer(
 ) -> tuple[int, Any]:
     status, _, payload = call(rig, method, path, body, **options)
     return status, json.loads(payload) if payload else {}
+
+
+def desktop_policy_subject() -> str:
+    (subject,) = desktop_policy(Path("unused")).allowed_subjects
+    return subject
 
 
 def run_jobs(rig: SpeechRig) -> None:
@@ -149,6 +156,49 @@ def test_the_speech_routes_take_only_registered_callers(rig: SpeechRig) -> None:
     assert (status, refusal["error"]) == (401, "unauthorized")  # a caller reaches nothing else
     status, meta = answer(rig, "GET", "/api/v1/meta", token=desktop)
     assert status == 200 and meta["server_build"] == "test-build"
+
+
+def test_a_caller_token_reaches_no_route_but_speech(tmp_path: Path) -> None:
+    # The door admits a caller's token on every path (docs/SPEECH_API.md §5); every route but
+    # /api/v1/speech refuses it, as the stack's API serves them (api.server.main).
+    rig_ = start_speech_rig(build_lab(tmp_path), every_route=True)
+    rig = next(rig_)
+    try:
+        desktop = mint()
+        cole = desktop_policy_subject()
+        for path in ("/view/", "/view/recordings"):
+            # With the bearer the door passes through, and with the forwarded user it sets.
+            status, _, _ = call(rig, "GET", path, token=caller_token())
+            assert status == 401, path
+            status, _, _ = call(
+                rig, "GET", path, headers={"X-Forwarded-User": CALLER_SUBJECT}, token=None
+            )
+            assert status == 403, path
+            status, _, _ = call(
+                rig,
+                "GET",
+                path,
+                headers={"X-Forwarded-User": CALLER_SUBJECT},
+                token=caller_token(),
+            )
+            assert status == 401, path
+            # Cole passes the view's check (the rig serves no journey store: 503).
+            assert call(rig, "GET", path, token=desktop)[0] == 503, path
+            assert call(rig, "GET", path, headers={"X-Forwarded-User": cole}, token=None)[0] == 503
+        manifest = {"sessionId": "s-1", "files": []}
+        status, _, _ = call(rig, "POST", "/api/intake/sessions", manifest, token=caller_token())
+        assert status == 401
+        assert call(rig, "POST", "/api/intake/sessions", manifest, token=desktop)[0] != 401
+        status, refusal = answer(rig, "GET", "/api/v1/corpus/library", token=caller_token())
+        assert (status, refusal["error"]) == (401, "unauthorized")
+        assert answer(rig, "GET", "/api/v1/corpus/library", token=desktop)[0] != 401
+        status, refusal = answer(rig, "POST", "/api/v1/intake/sessions", {}, token=caller_token())
+        assert (status, refusal["error"]) == (401, "unauthorized")
+        # ...while its own route answers it (an unknown job of its own: 404).
+        status, refusal = answer(rig, "GET", "/api/v1/speech/sp-000000000000000000000000")
+        assert (status, refusal["error"]) == (404, "speech_not_found")
+    finally:
+        rig_.close()
 
 
 def test_a_caller_never_sees_another_callers_job(tmp_path: Path) -> None:

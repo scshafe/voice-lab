@@ -136,7 +136,9 @@ services:
       # aud = voice-lab-desktop) as `Authorization: Bearer`. The speech callers:
       # a client_credentials token whose aud is VOICE_LAB_SPEECH_AUDIENCE (not a
       # secret; read from one real token), admitted with its email taken from
-      # sub (header comment). issuer=audience pairs, comma-separated.
+      # sub (header comment). issuer=audience pairs, comma-separated. One speech
+      # audience: a second caller, or a caller with another audience, needs one
+      # more ${OIDC_ISSUER}=<audience> entry here (and its .env name).
       OAUTH2_PROXY_SKIP_JWT_BEARER_TOKENS: "true"
       OAUTH2_PROXY_EXTRA_JWT_ISSUERS: ${OIDC_ISSUER}=voice-lab-desktop,${OIDC_ISSUER}=${VOICE_LAB_SPEECH_AUDIENCE:?set VOICE_LAB_SPEECH_AUDIENCE (the speech caller's token audience) in .env}
       OAUTH2_PROXY_API_ROUTES: "^/api/"

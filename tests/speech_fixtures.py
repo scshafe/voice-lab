@@ -27,6 +27,9 @@ from test_pilot_v2_coverage import SUBJECT, released_pilot_v2
 
 from cole_voice_lab.api.auth import TokenVerifier
 from cole_voice_lab.api.contracts import ApiMeta
+from cole_voice_lab.api.corpus_routes import CorpusRoutes
+from cole_voice_lab.api.journey_intake import JourneyIntake
+from cole_voice_lab.api.routing import Route
 from cole_voice_lab.api.server import ApiServer
 from cole_voice_lab.api.staging import IntakeStaging
 from cole_voice_lab.canonical import write_new_private_file
@@ -47,6 +50,7 @@ from cole_voice_lab.speech.release import (
 )
 from cole_voice_lab.speech.routes import PREFIX, SpeechRoutes, caller_policy
 from cole_voice_lab.speech.runner import PassReport, SpeechRunner
+from cole_voice_lab.view.routes import ViewRoutes
 
 START = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
@@ -263,7 +267,10 @@ class SpeechRig:
         return int(self.server.server_address[1])
 
 
-def start_speech_rig(lab: Lab) -> Iterator[SpeechRig]:
+def start_speech_rig(lab: Lab, *, every_route: bool = False) -> Iterator[SpeechRig]:
+    """The API with the speech routes; ``every_route`` adds what the stack's API serves
+    beside them (``api.server.main``): the corpus routes, the web view and the journey
+    intake, all behind the desktop token check."""
     jwks_path = lab.root / "jwks.json"
     jwks_path.write_text(json.dumps(jwks()), encoding="utf-8")
     clock = [NOW]
@@ -273,13 +280,20 @@ def start_speech_rig(lab: Lab) -> Iterator[SpeechRig]:
         clock=lambda: clock[0],
     )
     staging_root = AssetLayout.initialize(lab.root / "server-lab")
+    verifier = TokenVerifier(desktop_policy(jwks_path))
+    others: tuple[Route, ...] = ()
+    intake: JourneyIntake | None = None
+    if every_route:
+        others = (CorpusRoutes(staging_root), ViewRoutes(None, verifier, log=lambda _: None))
+        intake = JourneyIntake(staging_root, verifier=verifier)
     server = ApiServer(
         ("127.0.0.1", 0),
         staging=IntakeStaging(staging_root, min_free_bytes=0),
-        verifier=TokenVerifier(desktop_policy(jwks_path)),
+        verifier=verifier,
         meta=ApiMeta(server_build="test-build", minimum_client_version="0.1.0"),
         log=False,
-        routes=(routes,),
+        journey_intake=intake,
+        routes=(routes, *others),
         self_authenticating=(PREFIX,),
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)

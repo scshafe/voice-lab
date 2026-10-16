@@ -5,10 +5,12 @@ in the stack:
 
 - `deploy/stack/compose.yaml` starts the API with `--speech-config
   /data/voice-lab/config/speech.json` and binds that directory read-only, and the door admits
-  the callers' machine tokens (`VOICE_LAB_SPEECH_AUDIENCE`). A merge deploys that, so steps 3,
-  4 and 6 come before the merge that brings it: the API does not start without a valid
-  configuration, and the deploy refuses a bind that infra's `host.conf` does not grant or a
-  missing `.env` name (and rolls back);
+  the callers' machine tokens (`VOICE_LAB_SPEECH_AUDIENCE`). A merge deploys that, so before
+  the merge that brings it come step 3 (the Pocket ID client), step 4 (the configuration) and
+  step 6's first part (the `.env` name and infra's grant): the API does not start without a
+  valid configuration, and the deploy refuses a bind that infra's `host.conf` does not grant
+  or a missing `.env` name (and rolls back). Step 6's check of the door runs after that
+  deploy;
 - the host units are in [`../host-manual/`](../host-manual/README.md), which the runner lane
   does not install.
 
@@ -23,9 +25,9 @@ retired, and Cole's standing decision permits his own voice for assistant speech
    spike S-2 ran it; its hash-locked lock is a follow-up). Until it exists every job fails
    `runtime_unavailable`; leaving `runtime` out of the configuration says so explicitly.
    `runtime.nfe_steps` stays 32 until Cole's 16-versus-32 listening check.
-2. **A voice release.** On the PC, as `voice-lab`, preview, then designate a finished run of
-   the pinned subject (`cole-self`, the configuration's `subject_id`; no other can be
-   designated):
+2. **A voice release.** After step 4 (`--config` reads the configuration). On the PC, as
+   `voice-lab`, preview, then designate a finished run of the pinned subject (`cole-self`, the
+   configuration's `subject_id`; no other can be designated):
 
    ```sh
    VL=/opt/voice-lab/current/bin/voice-lab
@@ -62,17 +64,22 @@ retired, and Cole's standing decision permits his own voice for assistant speech
    process, the API and the job runner included, can read a secret. They stay under `/etc`:
    only that host unit reads them, and no container binds them (never put them under
    `/data/voice-lab/config/`, which the API container sees).
-6. **The stack.** Before the deploy that brings the speech routes: add
+6. **The stack.** *Before* the deploy that brings the speech routes: add
    `VOICE_LAB_SPEECH_AUDIENCE` (the caller's token audience, its client id: `parley-relay`)
    to the stack's `.env` (`stack env-set`), and have infra's `stacks/voice-lab/host.conf`
    grant the read-only bind of `/data/voice-lab/config` (`HOST_BINDS` gains
-   `speech-config:/data/voice-lab/config:ro`). Then confirm with a caller's real token that
-   the door admits it: a request for `/api/v1/speech/sp-does-not-exist` answers `404` from
-   the API (the caller authenticated; the id is not its job), not `401` or a redirect from the
-   door. A client-credentials token has no `email` claim; oauth2-proxy (v7.15.3) then takes
-   the session's email from `sub`, which `EMAIL_DOMAINS: "*"` accepts (docs/SPEECH_API.md §5).
-   If the door still refuses it, look at the token's `aud` first; never skip the door for
-   `/api/v1/speech`.
+   `speech-config:/data/voice-lab/config:ro`). The door admits one speech audience: a second
+   caller, or a caller whose tokens carry another audience, needs one more
+   `${OIDC_ISSUER}=<audience>` entry in `OAUTH2_PROXY_EXTRA_JWT_ISSUERS`
+   (`deploy/stack/compose.yaml`) and its own `.env` name, in a reviewed change.
+
+   *After* that deploy, confirm with a caller's real token that the door admits it: a `GET`
+   of `/api/v1/speech/sp-000000000000000000000000` (a well-formed id that is no job) answers
+   `404 speech_not_found` from the API (the caller authenticated; there is no such job), not
+   `401` or a redirect from the door. A client-credentials token has no `email` claim;
+   oauth2-proxy (v7.15.3) then takes the session's email from `sub`, which `EMAIL_DOMAINS:
+   "*"` accepts (docs/SPEECH_API.md §5). If the door still refuses it, look at the token's
+   `aud` first; never skip the door for `/api/v1/speech`.
 7. **Host units.** The runner writes only the speech state, the GPU slot's lock and the
    render ledger, so the ledger's directory must exist first:
    `sudo -u voice-lab install -d -m 0700 /data/voice-lab/lab/provenance/speech-renders`.

@@ -215,7 +215,11 @@ OAUTH2_PROXY_EXTRA_JWT_ISSUERS: ${OIDC_ISSUER}=voice-lab-desktop,${OIDC_ISSUER}=
 
 with `VOICE_LAB_SPEECH_AUDIENCE` a required, non-secret `.env` value: the caller's client id,
 which Pocket ID puts in its client-credentials token's `aud` (`parley-relay` for Parley's
-relay, whose `sub` is `client-parley-relay`).
+relay, whose `sub` is `client-parley-relay`). The door admits exactly that one speech
+audience: a second caller, or a caller whose tokens carry another audience, needs one more
+`${OIDC_ISSUER}=<audience>` entry (and `.env` name) in the stack; the API's own check takes up
+to eight audiences from the configuration (§5, "The API's check"), so the door's list is the
+narrower one.
 
 A client-credentials token has no `email` claim, and that needs no change. For a token an
 extra JWT issuer verifies, oauth2-proxy (v7.15.3, `pkg/apis/middleware/session.go`,
