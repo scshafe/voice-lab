@@ -15,9 +15,12 @@ in the stack:
   does not install.
 
 Until the units run, nothing renders: the API accepts jobs and they wait in the queue.
-Every step is Cole's; an agent prepares and reviews, it never designates a release, creates a
+Every step is Cole's; an agent prepares and reviews, it never pins a release, creates a
 Pocket ID client or touches the running stack. There is no consent step: consent records are
 retired, and Cole's standing decision permits his own voice for assistant speech (D-050).
+There is no designation step either (D-055): the API speaks with the newest release, and
+with the base voice until a fine-tuned run of Cole's has been released; the runner releases
+each newer finished run by itself.
 
 1. **The runtime.** The F5-TTS runtime for the PC's GPU (design phase 5, spike S-2), with its
    pinned weights, at the `runtime.runtime_root` the configuration names (`model_family:
@@ -35,11 +38,32 @@ retired, and Cole's standing decision permits his own voice for assistant speech
    ```
 
    Until it exists every job fails `runtime_unavailable`; leaving `runtime` out of the
-   configuration says so explicitly.
+   configuration says so explicitly, and then, with no release, the API refuses speech
+   (`503 voice_release_unavailable`): the base voice's files are the runtime's.
    `runtime.nfe_steps` stays 32 until Cole's 16-versus-32 listening check.
-2. **A voice release.** After step 4 (`--config` reads the configuration). On the PC, as
-   `voice-lab`, preview, then designate a finished run of the pinned subject (`cole-self`, the
-   configuration's `subject_id`; no other can be designated):
+
+   The runtime is all the base voice needs (D-055): the pinned weights under
+   `pretrained/` and F5-TTS's public English reference clip, which the hash-locked F5-TTS
+   1.1.22 package installs at
+   `lib/python3.12/site-packages/f5_tts/infer/examples/basic/basic_ref_en.wav`. Both are
+   pinned by size and SHA-256 in code; nothing more is fetched. The API checks that they are
+   there at their pinned sizes (so `runtime_root` must be under a directory the API
+   container binds, as `/data/voice-lab/lab/…` is), and the runner hashes them before each
+   job. To see what speaks and whether the API would accept it:
+
+   ```sh
+   sudo -u voice-lab /opt/voice-lab/current/bin/voice-lab voice release show \
+     --asset-root /data/voice-lab/lab --config /data/voice-lab/config/speech.json
+   ```
+
+   (`"base": true` while no run has been released; `newer_runs` lists the finished runs the
+   runner releases at its next job; `unavailable` says why the API would refuse.)
+2. **A pinned release (optional).** The runner releases every newer finished run of the
+   pinned subject that passes its checks by itself. To pin one instead (for example to roll
+   back to an older run; the pin holds until a run that finished after it is released): after
+   step 4 (`--config` reads the configuration), on the PC, as `voice-lab`, preview, then
+   designate a finished run of the pinned subject (`cole-self`, the configuration's
+   `subject_id`; no other can be designated):
 
    ```sh
    VL=/opt/voice-lab/current/bin/voice-lab
@@ -92,9 +116,14 @@ retired, and Cole's standing decision permits his own voice for assistant speech
    oauth2-proxy (v7.15.3) then takes the session's email from `sub`, which `EMAIL_DOMAINS:
    "*"` accepts (docs/SPEECH_API.md §5). If the door still refuses it, look at the token's
    `aud` first; never skip the door for `/api/v1/speech`.
-7. **Host units.** The runner writes only the speech state, the GPU slot's lock and the
-   render ledger, so the ledger's directory must exist first:
-   `sudo -u voice-lab install -d -m 0700 /data/voice-lab/lab/provenance/speech-renders`.
+7. **Host units.** The runner writes only the speech state, the GPU slot's lock, the
+   render ledger and the voice releases (it releases newer runs, D-055), so their
+   directories must exist first:
+   `sudo -u voice-lab install -d -m 0700 /data/voice-lab/lab/provenance/speech-renders
+   /data/voice-lab/lab/provenance/voice-releases`. A unit installed before D-055 cannot
+   write the releases: install the unit file again (below), `daemon-reload` and restart it.
+   Until then a newer run is not released (the journal says "cannot be released") and the
+   current voice keeps speaking.
    Then install and enable the speech runner (long-running, with the resident model) and the
    webhook delivery ([`../host-manual/README.md`](../host-manual/README.md)). The resident
    model needs about 1.3–3 GiB of the card's 16 GB beside llama-swap's models.
@@ -190,5 +219,6 @@ on (logging "the text key changed on disk").
   ledger entry (only a kill leaves it `running`, and the next start then fails it and
   withdraws its sentences). Jobs still queued wait, and fail `queue_timeout` if the runner is
   not back within their queue time.
-- **A different voice:** designate another run; a render in progress stops before its next
-  sentence (`voice_release_changed`), and later jobs use the new release.
+- **A different voice:** designate (pin) another run; a render in progress stops before its
+  next sentence (`voice_release_changed`), and later jobs use the new release until a run that
+  finished after the pin is released.

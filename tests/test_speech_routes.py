@@ -27,17 +27,20 @@ from speech_fixtures import (
     FakeBackend,
     OnePass,
     SpeechRig,
+    base_voice_runtime,
     build_lab,
     caller,
     caller_token,
     designate_another_subject,
     start_speech_rig,
+    without_runs,
 )
 
 from cole_voice_lab.api.contracts import REFUSAL_CODES
 from cole_voice_lab.api.routing import RouteRefusal, RouteRequest
 from cole_voice_lab.canonical import sha256_file
 from cole_voice_lab.speech.contracts import GpuSlotHolder
+from cole_voice_lab.speech.f5 import BASE_REFERENCE_FILE
 from cole_voice_lab.speech.gpu import hold_slot
 from cole_voice_lab.speech.routes import (
     MAX_EVENT_STREAMS,
@@ -312,18 +315,39 @@ def test_a_long_job_in_the_gpu_slot_refuses_speech_at_once(rig: SpeechRig) -> No
     assert answer(rig, "POST", "/api/v1/speech", {"text": "Now?"})[0] == 202
 
 
-def test_without_a_release_speech_is_unavailable_and_no_consent_is_needed(
+def test_without_a_release_or_the_base_voices_files_speech_is_unavailable(
     tmp_path: Path,
 ) -> None:
+    # No release and no runtime configured: the base voice's files cannot be found.
     lab = build_lab(tmp_path, release=False)
     for rig in start_speech_rig(lab):
         status, refusal = answer(rig, "POST", "/api/v1/speech", {"text": "Hi."})
         assert (status, refusal["error"]) == (503, "voice_release_unavailable")
-        # Designating is all it takes: the lab holds no consent record (D-050).
+        # A release is all it takes: the lab holds no consent record (D-050).
         lab.designate()
         assert not (lab.layout.root / "provenance/consents").exists()
         status, job = answer(rig, "POST", "/api/v1/speech", {"text": "Hi."})
         assert (status, job["state"]) == (202, "queued")
+
+
+@pytest.mark.parametrize("damage", [None, "missing", "size"])
+def test_before_any_training_the_base_voice_is_accepted_while_its_files_are_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str | None
+) -> None:
+    runtime, _ = base_voice_runtime(tmp_path / "runtime", monkeypatch)
+    lab = without_runs(build_lab(tmp_path, release=False, runtime=runtime))
+    clip = Path(runtime.runtime_root) / BASE_REFERENCE_FILE
+    if damage == "missing":
+        clip.unlink()
+    elif damage == "size":
+        clip.write_bytes(clip.read_bytes()[:-2])
+    for rig in start_speech_rig(lab):
+        status, body = answer(rig, "POST", "/api/v1/speech", {"text": "Hi."})
+        if damage is None:
+            assert (status, body["state"]) == (202, "queued")
+        else:
+            assert (status, body["error"]) == (503, "voice_release_unavailable")
+            assert str(clip) not in body["detail"]
 
 
 def test_a_release_of_another_subject_is_unavailable(tmp_path: Path) -> None:

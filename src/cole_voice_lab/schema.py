@@ -89,7 +89,7 @@ from .registry import CandidateConfiguration, ModelSourcesLock
 from .runtime import LocalSourceManifest, RecordingPythonRuntimeReceipt, RuntimeInstallReceipt
 from .speech.config import SpeechConfig
 from .speech.contracts import SPEECH_SCHEMA_MODELS
-from .speech.release import VoiceRelease
+from .speech.release import BaseVoice, VoiceRelease
 from .storage_contracts import STORAGE_SCHEMA_MODELS
 
 # A ``**`` merge silently keeps the last value of a repeated name; tests/test_schema.py
@@ -99,6 +99,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     **SPEECH_SCHEMA_MODELS,
     "speech-config": SpeechConfig,
     "voice-release": VoiceRelease,
+    "base-voice": BaseVoice,
     "model-comparison": ModelComparison,
     **VAULT_SUPERVISOR_SCHEMA_MODELS,
     **NATIVE_RECORDING_APPLICATION_SCHEMA_MODELS,

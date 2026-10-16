@@ -231,5 +231,6 @@ a real cold/warm smoke. No release claim treats lock resolution as that smoke.
 - Install the verified application wheel non-editably under the content-addressed
   mini release root, seal its install receipt, and only then render/load intake.
 - Run candidate downloads/renders explicitly and sequentially.
-- Designate a voice release and register a speech caller (docs/SPEECH_API.md §11; no
-  consent record is needed since D-050).
+- Register a speech caller (docs/SPEECH_API.md §11; no consent record is needed since
+  D-050). No designation is needed (D-055): the base voice speaks until a finished run of
+  Cole's is released automatically.

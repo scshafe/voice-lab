@@ -7,6 +7,9 @@ today) with everything the speech path needs to know about it, behind ``ModelFam
   family's own section of the release record (``contracts.ReleaseModel``);
 - ``verify`` checks a release against the run's records again and gives the render its
   segment limit (the longest text the model takes in one pass) and whatever its backend needs;
+- ``base_voice`` is the family's base voice (D-055), what speaks while no release exists: its
+  pinned pretrained weights and public reference clip, files of the runtime; ``check_base``
+  gives the render its segment limit and backend state for it, as ``verify`` does for a release;
 - ``backend`` builds the family's ``SpeechBackend`` from the speech configuration;
 - ``native_sample_rate_hz`` and ``seeded`` say what the model renders at and whether it honours
   a seed. Whatever the native rate, a backend delivers the API's one format, 24 kHz mono 16-bit
@@ -20,7 +23,7 @@ backend and one entry in ``_registry`` (docs/MODEL_FAMILIES.md).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -32,7 +35,7 @@ from .contracts import RenderFingerprint
 
 if TYPE_CHECKING:
     from .config import SpeechConfig
-    from .release import DesignatedModel, FamilyCheck, VerifiedRelease, VoiceRelease
+    from .release import BaseVoice, DesignatedModel, FamilyCheck, VerifiedRelease, VoiceRelease
 
 
 class UnknownModelFamily(VoiceLabError):
@@ -72,6 +75,19 @@ class ModelFamily(Protocol):
         """Check ``release`` against its run's records (its files are already re-hashed).
 
         Raises: ``VoiceLabError`` or ``ValueError`` when it no longer matches.
+        """
+        ...
+
+    def base_voice(self) -> BaseVoice:
+        """The family's base voice: its files (relative to the runtime root) with their pinned
+        sizes and digests, and its section of the record."""
+        ...
+
+    def check_base(self, voice: BaseVoice, files: Mapping[str, Path]) -> FamilyCheck:
+        """What a render of the base voice needs (its files are already hashed; ``files`` are
+        their paths by role).
+
+        Raises: ``ValueError`` or ``OSError`` when a file cannot be used.
         """
         ...
 

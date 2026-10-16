@@ -14,7 +14,10 @@ first, and for each:
 
 1. ends it ``cancelled`` when a cancel arrived, and fails it ``queue_timeout`` when it waited
    longer than the configuration allows;
-2. re-reads the current voice release, refuses one of another subject and re-hashes what it
+2. releases the newest finished run of the pinned subject that passes its checks when it
+   finished after the newest release (``release.designate_newest``, D-055; a record it cannot
+   write is logged and the current voice speaks); then re-reads the current voice (the newest
+   release, else the base voice), refuses a release of another subject and re-hashes what it
    names (``voice_release_changed``); no consent record is read (D-050);
 3. holds the GPU slot (``gpu.GpuSlotLease``, kept across jobs while the model is resident;
    a cancel ends the wait) and has the backend load the release (``runtime_unavailable``
@@ -100,9 +103,9 @@ from .gpu import GpuSlotAbandoned, GpuSlotLease, GpuSlotTimeout, slot_wanted
 from .release import (
     VerifiedRelease,
     VoiceReleaseError,
-    current_release,
-    require_subject,
-    verify_release,
+    current_voice,
+    designate_newest,
+    verify_voice,
 )
 from .segments import job_seed, join_wavs, segment_seed, split_sentences
 from .store import AUDIO_NAME, LEDGER_DIRECTORY, Job, SpeechStore, log_to_stderr
@@ -242,6 +245,9 @@ class SpeechRunner:
         self.last_job = monotonic()
         self._last_sweep: float | None = None
         self._prepared: str | None = None
+        # What the last automatic release logged, so a run that keeps failing its checks (or a
+        # release directory the runner cannot write) is logged once per change.
+        self._release_logged: str | None = None
         # ``serve``'s stop: honoured between jobs, between sentences and while a job waits for
         # the GPU slot, so SIGTERM never waits for a whole job.
         self._stopping: Callable[[], bool] = lambda: False
@@ -470,16 +476,46 @@ class SpeechRunner:
                 self.log(f"{job.record.job_id}: could not be ended: {type(again).__name__}")
                 return job
 
-    def _verified(self) -> VerifiedRelease:
-        """The current release, of the pinned subject, re-hashed.
+    def _release_newest(self) -> None:
+        """Release the newest finished run when it is newer than the newest release (D-055).
 
-        Raises: ``VoiceReleaseError`` (any other error reading the release is
+        Never fails the job: a run that fails its checks, a run record that cannot be read or a
+        release that cannot be written is logged (once per change) and the current voice speaks.
+        """
+        refusals: list[str] = []
+        try:
+            written = designate_newest(
+                self.layout,
+                now=self.clock(),
+                digests=self.digests,
+                refused=lambda run_id, why: refusals.append(f"run {run_id} is not released: {why}"),
+            )
+        except Exception as error:  # noqa: BLE001 - the current voice speaks; the log says why
+            refusals.append(
+                f"the newest finished run cannot be released: {type(error).__name__}: {error}"
+            )
+            written = None
+        if written is not None:
+            release, _ = written
+            self.log(f"released run {release.run_id} automatically as {release.release_id}")
+        message = "; ".join(refusals) or None
+        if message is not None and message != self._release_logged:
+            self.log(message)
+        self._release_logged = message
+
+    def _verified(self) -> VerifiedRelease:
+        """The current voice re-hashed: the newest release (after releasing a newer finished
+        run, ``_release_newest``), of the pinned subject, or the base voice.
+
+        Raises: ``VoiceReleaseError`` (any other error reading the voice is
         ``release_changed``).
         """
+        self._release_newest()
         try:
-            release, digest = current_release(self.layout)
-            require_subject(release, self.config.subject_id)
-            verified = verify_release(self.layout, release, digest, digests=self.digests)
+            voice, digest = current_voice(self.layout, self.config)
+            verified = verify_voice(
+                self.layout, voice, digest, config=self.config, digests=self.digests
+            )
         except VoiceReleaseError:
             raise
         except (VoiceLabError, OSError, ValueError) as error:
@@ -494,7 +530,7 @@ class SpeechRunner:
         Raises: ``VoiceReleaseError``.
         """
         try:
-            release, digest = current_release(self.layout)
+            _, digest = current_voice(self.layout, self.config)
         except VoiceReleaseError:
             raise
         except (VoiceLabError, OSError, ValueError) as error:

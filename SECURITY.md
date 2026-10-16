@@ -154,12 +154,14 @@ hardening and deployment gates are in [deploy/vault/README.md](deploy/vault/READ
 
 The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these controls:
 
-- Only Cole's current voice release speaks (D-045), and only a release of the subject the
-  speech configuration pins (`subject_id`, `cole-self`): designation refuses another
-  subject's run (no caller can name another subject), and the API and the job runner refuse
-  another subject's release. A changed run or model file refuses the render until Cole
-  designates again; before each sentence the job runner checks that the release is still
-  current, so a new designation stops a render at its next sentence. No consent record is
+- Only the current voice speaks (D-045, D-055): the newest voice release, and only a
+  release of the subject the speech configuration pins (`subject_id`, `cole-self`), or,
+  while none exists, the base voice (the pinned base weights with F5-TTS's public reference
+  clip, each file pinned by size and SHA-256). Designation, the job runner's automatic one
+  or Cole's pin, refuses another subject's run (no caller can name another subject), and the
+  API and the job runner refuse another subject's release. A changed run, model file or base
+  voice file refuses the render; before each sentence the job runner checks that the voice is
+  still current, so a new release stops a render at its next sentence. No consent record is
   read (D-050).
 - Callers are listed in a root-owned caller registry with their token issuer, subject and
   audience, purposes, limits and webhook URL allowlist. A caller's machine token reaches

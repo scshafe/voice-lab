@@ -7,9 +7,10 @@ ledger entry (``speech-render``), the webhook outbox entry and delivery log, and
 slot's holder. Every one is frozen and refuses unknown fields.
 
 The model-family part of a release and of a render (D-048) is a discriminated union on
-``family``: ``ReleaseModel`` (what a release binds beyond its files) and ``RenderSettings``
-(the settings a render used, which also seed it). F5-TTS (``f5-tts``) is the only member; a
-new family adds one member to each union and leaves every common field as it is.
+``family``: ``ReleaseModel`` (what a release binds beyond its files), ``BaseVoiceModel`` (what
+the base voice is, D-055) and ``RenderSettings`` (the settings a render used, which also seed
+it). F5-TTS (``f5-tts``) is the only member; a new family adds one member to each union and
+leaves every common field as it is.
 """
 
 from __future__ import annotations
@@ -285,6 +286,14 @@ class ReleaseFile(ContractModel):
     sha256: Sha256
 
 
+class BaseVoiceFile(ReleaseFile):
+    """One file of the base voice (D-055): its path is relative to the runtime root, not the
+    asset root, and its size is pinned too, so the API can tell a missing or replaced file
+    without hashing it."""
+
+    size_bytes: int = Field(ge=1)
+
+
 class FileDigest(ContractModel):
     """A file a backend loaded, by role and digest (a render's fingerprint names no path)."""
 
@@ -311,6 +320,19 @@ class F5ReleaseModel(ContractModel):
     runtime: F5RuntimeRef
 
 
+class F5BaseVoiceModel(ContractModel):
+    """F5-TTS's part of the base voice (D-055): the pinned pretrained weights' source and
+    F5-TTS's public English reference clip with its exact transcript. Its files are
+    ``checkpoint`` (the runtime's ``pretrained/F5TTS_v1_Base/model_1250000.safetensors``)
+    and ``reference`` (``basic_ref_en.wav`` of the runtime's installed F5-TTS package)."""
+
+    family: Literal["f5-tts"] = F5_FAMILY
+    weights_repository: str = Field(min_length=1, max_length=128)
+    weights_revision: str = Field(min_length=1, max_length=64)
+    reference_source: str = Field(min_length=1, max_length=256)
+    reference_text: str = Field(min_length=1, max_length=500)
+
+
 class F5RenderSettings(ContractModel):
     """What an F5-TTS render was asked for: its flow steps (D-046)."""
 
@@ -321,6 +343,7 @@ class F5RenderSettings(ContractModel):
 # One member per family; a new family adds its own (D-048).
 type ReleaseModel = Annotated[F5ReleaseModel, Field(discriminator="family")]
 type RenderSettings = Annotated[F5RenderSettings, Field(discriminator="family")]
+type BaseVoiceModel = Annotated[F5BaseVoiceModel, Field(discriminator="family")]
 
 
 class RenderFingerprint(ContractModel):

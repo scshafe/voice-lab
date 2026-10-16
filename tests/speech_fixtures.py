@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import shutil
 import struct
 import threading
 import wave
@@ -20,11 +21,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
 from finetune_speech_runs import write_speech_run
+from finetune_stub_runtime import stub_finetune_runtime
 from home_host_fixtures import ISSUER, KID, jwks, mint
 from home_host_fixtures import policy as desktop_policy
 from test_pilot_v2_coverage import SUBJECT, released_pilot_v2
 
+from cole_voice_lab import finetune
 from cole_voice_lab.api.auth import TokenVerifier
 from cole_voice_lab.api.contracts import ApiMeta
 from cole_voice_lab.api.corpus_routes import CorpusRoutes
@@ -32,11 +36,12 @@ from cole_voice_lab.api.journey_intake import JourneyIntake
 from cole_voice_lab.api.routing import Route
 from cole_voice_lab.api.server import ApiServer
 from cole_voice_lab.api.staging import IntakeStaging
-from cole_voice_lab.canonical import write_new_private_file
-from cole_voice_lab.finetune import FineTuneDigestCache, FineTuneRun
+from cole_voice_lab.canonical import sha256_file, write_new_private_file
+from cole_voice_lab.finetune import FineTuneDigestCache, FineTunePretrainedPins, FineTuneRun
 from cole_voice_lab.paths import AssetLayout
+from cole_voice_lab.speech import f5
 from cole_voice_lab.speech.backend import PeakMemory, SpeechBackendError
-from cole_voice_lab.speech.config import SpeechCaller, SpeechConfig
+from cole_voice_lab.speech.config import F5SpeechRuntime, SpeechCaller, SpeechConfig
 from cole_voice_lab.speech.contracts import F5RenderSettings, FileDigest, RenderFingerprint
 from cole_voice_lab.speech.families import family_for, run_family
 from cole_voice_lab.speech.release import (
@@ -206,7 +211,8 @@ class Lab:
 
     def designate(self, **options: Any) -> None:
         options.setdefault("run_id", self.run.run_id)
-        designate(self.layout, designated_by="Cole", now=NOW, **options)
+        options.setdefault("now", NOW)
+        designate(self.layout, designated_by="Cole", **options)
 
 
 def forge_release(layout: AssetLayout, run_id: str) -> VoiceRelease:
@@ -230,6 +236,7 @@ def forge_release(layout: AssetLayout, run_id: str) -> VoiceRelease:
         model=designated.model,
         created_at=NOW,
         designated_by="someone else",
+        designation="owner",
     )
     directory = layout.root / "provenance" / "voice-releases"
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -243,6 +250,32 @@ def designate_another_subject(lab: Lab) -> None:
     it; ``forge_release``)."""
     finished_run(lab.layout, "finetune-other", subject_id="someone-else")
     forge_release(lab.layout, "finetune-other")
+
+
+def base_voice_runtime(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[F5SpeechRuntime, FineTunePretrainedPins]:
+    """A stub F5 runtime at ``root`` that holds the base voice's files (D-055), with the base
+    voice's pins set to them: the stub's few-byte weights and a synthetic clip where F5-TTS's
+    public reference clip is installed (the real pins are the 1.35 GB weights and that clip).
+    Returns the configuration's runtime and the stub's pretrained pins."""
+    runtime_root, pins = stub_finetune_runtime(root)
+    clip = runtime_root / f5.BASE_REFERENCE_FILE
+    clip.parent.mkdir(parents=True)
+    write_tone(clip, frames=4 * 24_000, period=37)
+    digest, size = sha256_file(clip)
+    monkeypatch.setattr(f5, "BASE_REFERENCE_SHA256", digest)
+    monkeypatch.setattr(f5, "BASE_REFERENCE_SIZE_BYTES", size)
+    monkeypatch.setattr(finetune, "FINETUNE_PRETRAINED_SHA256", pins.weights.sha256)
+    monkeypatch.setattr(finetune, "FINETUNE_PRETRAINED_SIZE_BYTES", pins.weights.size_bytes)
+    runtime = F5SpeechRuntime(runtime_root=str(runtime_root), device="cpu", nfe_steps=16)
+    return runtime, pins
+
+
+def without_runs(lab: Lab) -> Lab:
+    """``lab`` with its finished run removed: no training has happened yet."""
+    shutil.rmtree(lab.layout.root / "derived" / "finetune" / lab.run.run_id)
+    return lab
 
 
 def build_lab(tmp_path: Path, *, release: bool = True, **config: Any) -> Lab:

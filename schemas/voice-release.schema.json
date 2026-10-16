@@ -126,7 +126,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "One designation (docs/SPEECH_API.md \u00a73).",
+  "description": "One designation (docs/SPEECH_API.md \u00a73): automatic, or Cole's pin.",
   "properties": {
     "blind_review": {
       "anyOf": [
@@ -152,6 +152,14 @@
       "maxLength": 256,
       "minLength": 1,
       "title": "Designated By",
+      "type": "string"
+    },
+    "designation": {
+      "enum": [
+        "owner",
+        "auto"
+      ],
+      "title": "Designation",
       "type": "string"
     },
     "files": {
@@ -189,8 +197,11 @@
       "$ref": "#/$defs/Sha256"
     },
     "schema_version": {
-      "const": "cole-voice-lab.voice-release/v1",
-      "default": "cole-voice-lab.voice-release/v1",
+      "default": "cole-voice-lab.voice-release/v2",
+      "enum": [
+        "cole-voice-lab.voice-release/v1",
+        "cole-voice-lab.voice-release/v2"
+      ],
       "title": "Schema Version",
       "type": "string"
     },

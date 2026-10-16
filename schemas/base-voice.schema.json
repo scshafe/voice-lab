@@ -1,0 +1,139 @@
+{
+  "$defs": {
+    "BaseVoiceFile": {
+      "additionalProperties": false,
+      "description": "One file of the base voice (D-055): its path is relative to the runtime root, not the\nasset root, and its size is pinned too, so the API can tell a missing or replaced file\nwithout hashing it.",
+      "properties": {
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/StableId"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "minimum": 1,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "role",
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "BaseVoiceFile",
+      "type": "object"
+    },
+    "BaseVoiceModel": {
+      "discriminator": {
+        "mapping": {
+          "f5-tts": "#/$defs/F5BaseVoiceModel"
+        },
+        "propertyName": "family"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/F5BaseVoiceModel"
+        }
+      ]
+    },
+    "F5BaseVoiceModel": {
+      "additionalProperties": false,
+      "description": "F5-TTS's part of the base voice (D-055): the pinned pretrained weights' source and\nF5-TTS's public English reference clip with its exact transcript. Its files are\n``checkpoint`` (the runtime's ``pretrained/F5TTS_v1_Base/model_1250000.safetensors``)\nand ``reference`` (``basic_ref_en.wav`` of the runtime's installed F5-TTS package).",
+      "properties": {
+        "family": {
+          "const": "f5-tts",
+          "default": "f5-tts",
+          "title": "Family",
+          "type": "string"
+        },
+        "reference_source": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Reference Source",
+          "type": "string"
+        },
+        "reference_text": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Reference Text",
+          "type": "string"
+        },
+        "weights_repository": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Weights Repository",
+          "type": "string"
+        },
+        "weights_revision": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Weights Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "weights_repository",
+        "weights_revision",
+        "reference_source",
+        "reference_text"
+      ],
+      "title": "F5BaseVoiceModel",
+      "type": "object"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The voice while no release exists (D-055): built in code, never stored.\n\n``files`` are relative to the configured runtime's root and pinned by size and SHA-256;\n``model`` is the family's section (for F5-TTS the weights' source and the public reference\nclip's transcript).",
+  "properties": {
+    "files": {
+      "items": {
+        "$ref": "#/$defs/BaseVoiceFile"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "model": {
+      "$ref": "#/$defs/BaseVoiceModel"
+    },
+    "model_family": {
+      "$ref": "#/$defs/StableId"
+    },
+    "release_id": {
+      "const": "base",
+      "default": "base",
+      "title": "Release Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.base-voice/v1",
+      "default": "cole-voice-lab.base-voice/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "model_family",
+    "files",
+    "model"
+  ],
+  "title": "BaseVoice",
+  "type": "object"
+}

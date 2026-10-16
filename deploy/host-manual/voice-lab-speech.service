@@ -1,5 +1,6 @@
 # The speech job runner (docs/SPEECH_API.md §7, D-046), long-running. It looks for queued
-# jobs every quarter second; for each it re-checks the voice release (no consent record, D-050),
+# jobs every quarter second; for each it releases a newer finished run, then re-checks the
+# voice (the newest release, else the base voice, D-055; no consent record, D-050),
 # holds the GPU slot, renders the text sentence by sentence through the resident F5-TTS worker
 # (f5_resident.py in the runtime's python, its own process group), publishes each sentence as
 # it is done, writes the render ledger into the lab and queues the job's webhook event. The
@@ -24,8 +25,11 @@
 # sentence at the default segment_deadline_seconds (120 s): raise it with that setting, so a
 # stop never kills a render.
 #
-# It writes only the speech state, the GPU slot's lock and the render ledger: the ledger's
-# directory must exist before the unit starts (deploy/speech/README.md, step 7).
+# It writes only the speech state, the GPU slot's lock, the render ledger and the voice
+# releases (D-055: before each job it releases the newest finished run by itself). The ledger's
+# directory must exist before the unit starts; the releases' directory should (both
+# deploy/speech/README.md, step 7): while it is missing, a newer run is not released (the
+# journal says so) and the current voice, or the base voice, speaks.
 [Unit]
 Description=voice-lab speech job runner and resident model (no network, GPU)
 ConditionPathExists=/data/voice-lab/config/speech.json
@@ -47,7 +51,7 @@ PrivateNetwork=yes
 IPAddressDeny=any
 RestrictAddressFamilies=AF_UNIX
 ProtectSystem=strict
-ReadWritePaths=/data/voice-lab/state/speech -/data/voice-lab/state/jobs /data/voice-lab/lab/provenance/speech-renders
+ReadWritePaths=/data/voice-lab/state/speech -/data/voice-lab/state/jobs /data/voice-lab/lab/provenance/speech-renders -/data/voice-lab/lab/provenance/voice-releases
 ProtectHome=yes
 PrivateTmp=yes
 # The GPU (ROCm: /dev/kfd and the DRM render node), nothing else.

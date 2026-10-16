@@ -25,6 +25,11 @@ jobs with webhooks, to callers registered on the tailnet
 ([§3.6](#36-speech-for-registered-callers), [SPEECH_API.md](../SPEECH_API.md)). The sections
 below say so where they named the ChloeSpeech boundary or promotion.
 
+Amended 2026-10-16 (D-055): the speech API always uses the newest voice. The job runner
+releases each newer finished run of `cole-self` that passes its checks by itself; Cole may pin
+an older one, which holds until a newer run finishes; and while no run has been released the
+base voice speaks (the pinned base weights with F5-TTS's public reference clip).
+
 Contents:
 
 1. [Goals and non-goals](#1-goals-and-non-goals)
@@ -110,9 +115,11 @@ These are requirements of this design, not proposals:
 - **No multi-user product.** The platform has one subject and one operator. Pocket ID
   gates access; it is not a user-management system.
 - **No other speech engine.** ChloeSpeech is retired (D-044): voice-lab generates speech
-  itself, only with the voice release Cole designates (D-045).
-- **No automatic winner.** The lab never authors a listening verdict, and never
-  designates a voice release: designation is Cole's act, by a CLI command (D-045).
+  itself, only with the newest voice release, or the base voice while there is none (D-045,
+  D-055).
+- **No automatic winner.** The lab never authors a listening verdict. The newest finished
+  run speaks by itself, not because it won anything (D-055); Cole's pin, by a CLI command,
+  rolls back to another run (D-045).
 - **No rewrite of stored identifiers.** `cole-voice-lab.<record>/vN` schema ids and
   the `cole-voice-lab-common-v1` normalization id stay for ever, although the package
   and its variables are renamed in phase 6 ([§13](#13-owner-decisions-2026-10-06),
@@ -136,7 +143,7 @@ These are requirements of this design, not proposals:
 | Analysis | Node pipeline (`watchd`) + one Python feature extractor, in the laptop container | Python `journey` package; pipeline jobs on the PC |
 | Model bake-off and fine-tuning | MLX (Qwen3-TTS, Chatterbox) and MPS (F5-TTS, Seed-VC) on Apple silicon, one candidate at a time | PyTorch on ROCm on the PC's `gfx1030`, same worker contract; per-model spikes; Mac runtimes kept as a fallback |
 | Blind review | Static review pages and the CLI | Blind review screen in the desktop app (blinded indices only); the CLI stays |
-| Promotion | CLI validates a reviewed manifest and writes the handoff | Retired 2026-10-11 (D-044): Cole designates a voice release by CLI on the PC (D-045), and the speech API renders with it for registered callers (D-046) |
+| Promotion | CLI validates a reviewed manifest and writes the handoff | Retired 2026-10-11 (D-044): the newest finished run is released by itself, or Cole pins one by CLI on the PC (D-045, D-055), and the speech API renders with it for registered callers (D-046) |
 | UI | Swift app (about 24k lines with its tests), legacy Qt Widgets desktop, React SPA (four views) | One `scshafe-qt` app + a server-rendered read-only web view |
 | Auth | Capture client: Pocket ID PKCE; web: oauth2-proxy + Pocket ID | Same Pocket ID model for both, plus token checks in the API itself |
 | Production host | The laptop (voice-journey stack, runner lane); the Mini (intake design) | The PC: a new `pc` host role in the runner lane |
@@ -205,7 +212,7 @@ flowchart LR
 | **Datasets and references** | PC, job runner / CLI | Derived audio, references, fine-tune datasets; never in `raw/` | voice-lab `references`, `datasets`, `finetune` |
 | **Model workers** | PC, job runner subprocesses on ROCm | One isolated runtime per model stack, `worker-request/v1` in, `worker-result/v1` out | voice-lab `workers/` |
 | **Blind review** | Desktop app + API | Blinded listening packages, score sheets; the reveal stays server-side | voice-lab `blind` |
-| **Voice release and speech** | PC: CLI, API, job runner, delivery unit | The designated voice release (D-045); speech jobs for registered callers, their ledger and webhooks (D-046, §3.6) | Replaces voice-lab `promotion` (retired, D-044) |
+| **Voice release and speech** | PC: CLI, API, job runner, delivery unit | The newest voice release, or the base voice (D-045, D-055); speech jobs for registered callers, their ledger and webhooks (D-046, §3.6) | Replaces voice-lab `promotion` (retired, D-044) |
 | **Read-only web view** | PC, same container, `/view` | Phone-sized summaries, charts and tables; GET only | voice-journey SPA views, simplified |
 | **Vault copier** | PC, host unit | Seals generations and pushes them to the laptop vault (nightly) and the Air vault (weekly, resumable when the Air wakes) | voice-lab `library_*` + `storage_*` (D-020), re-pointed (D-023) |
 
@@ -347,7 +354,9 @@ replacement for the door.
 
 Added 2026-10-11 (D-044 to D-048); specified in [SPEECH_API.md](../SPEECH_API.md).
 voice-lab renders text as speech in Cole's voice for callers listed in a caller registry
-(Cole's own agent server, later). Only the voice release Cole designates speaks (D-045).
+(Cole's own agent server, later). The newest voice release speaks: the newest finished run,
+released by the job runner, or one Cole pins; the base voice speaks while there is none
+(D-045, D-055).
 `POST /api/v1/speech` answers `202` with a job. The job runner splits the text into
 sentences and publishes each as soon as it is rendered, so the caller can start playing after
 about one sentence's render; it lists them by polling `GET /api/v1/speech/{id}` or follows the
@@ -1173,11 +1182,12 @@ Three independently shippable steps:
   - fine-tuning and Speak run with no consent record (D-050), and a run of another subject
     than `cole-self` is never designated, served or benchmarked;
   - a blind review completes in the app;
-  - Cole designates a voice release from a finished PC run; a registered caller's speech
-    job renders with it, its webhook verifies with the Standard Webhooks algorithm, its
-    audio plays on Cole's phone through the caller, and the ledger names the job, the
-    release and the output digest; the API refuses the base weights, another run, a release
-    of another subject, a caller not registered and a callback URL not on the allowlist;
+  - before any run, a registered caller's speech job renders with the base voice; a finished
+    PC run is then released by itself and the next job renders with it, its webhook verifies
+    with the Standard Webhooks algorithm, its audio plays on Cole's phone through the caller,
+    and the ledger names the job, the release and the output digest; the API refuses a
+    release of another subject, a caller not registered and a callback URL not on the
+    allowlist;
   - synthesis time on `gfx1030` is recorded for short and maximum-length texts.
 - **Rollback:** the Air's MLX and MPS runtimes stay registered and runnable; nothing
   evicts them.

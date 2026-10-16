@@ -501,15 +501,20 @@ Promotion and the ChloeSpeech handoff were retired on 2026-10-11 (D-044); the
 `promotion` commands and their record schemas are gone. Blind review (section 6)
 stays the way to compare candidates and runs.
 
-The voice that speaks is a **voice release**: one finished fine-tuned run of
-Cole's own voice that Cole designates himself, on the PC, by CLI (D-045). Speech
-for registered callers uses only the current release (D-046). The commands, the
-caller registry and the owner's steps are specified in
-[SPEECH_API.md](SPEECH_API.md); deploying it is [deploy/speech/README.md](../deploy/speech/README.md).
+The voice that speaks is the newest **voice release**: one finished fine-tuned run of
+Cole's own voice (D-045, D-055). Speech for registered callers uses only the current voice
+(D-046): the newest release, else the base voice (the pinned base weights with F5-TTS's
+public reference clip) while no run has been released. Nothing has to be designated: before
+each job the speech job runner releases the newest finished run that passes its checks, when
+it finished after the newest release. The commands, the caller registry and the owner's steps
+are specified in [SPEECH_API.md](SPEECH_API.md); deploying it is
+[deploy/speech/README.md](../deploy/speech/README.md).
 
-Designate on the PC, as `voice-lab`; no consent record is needed (D-050). The first command
-previews; the second, which Cole runs, writes the next release (append-only; the history
-stays). Only a run of the pinned subject (`cole-self`) can be designated:
+To pin a run (for example to roll back to an older one), designate it on the PC, as
+`voice-lab`; no consent record is needed (D-050). The pin holds until a run that finished
+after it is released. The first command previews; the second, which Cole runs, writes the next
+release (append-only; the history stays). Only a run of the pinned subject (`cole-self`) can
+be designated; `show` prints what speaks now and the runs the runner will release next:
 
 ```bash
 voice-lab voice release designate --asset-root /data/voice-lab/lab \
@@ -518,14 +523,17 @@ voice-lab voice release designate --asset-root /data/voice-lab/lab \
 voice-lab voice release designate --asset-root /data/voice-lab/lab \
   --run <finished run id> \
   --config /data/voice-lab/config/speech.json --designated-by Cole --i-designate-this-run
-voice-lab voice release show --asset-root /data/voice-lab/lab
+voice-lab voice release show --asset-root /data/voice-lab/lab \
+  --config /data/voice-lab/config/speech.json
 voice-lab voice release history --asset-root /data/voice-lab/lab
 ```
 
 `--reference-prompt <prompt id>` chooses an F5-TTS release's reference clip (by default
 Speak's choice; D-048: a family without a reference clip has no use for it);
 `--blind-review <review id> --score-sheet-sha256 <digest>` attaches blind-review evidence.
-A render refuses once the release's checkpoint or reference clip changes: designate again.
+A render refuses once the release's checkpoint or reference clip changes (designate
+another run, or let a newer one finish), and once a base voice file is not its pin
+(provision the runtime again).
 
 ## 8. Conditional full corpus/fine-tuning
 

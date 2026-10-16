@@ -4,8 +4,8 @@
 
 Build a private, reproducible laboratory for recording Cole's voice, accepting
 recordings onto the Mac mini, comparing local voice-cloning systems, and
-speaking with the one voice release Cole designates, for callers he registers
-(D-044 to D-047).
+speaking with the newest voice release of Cole's own voice (the base voice until a
+fine-tuned run exists), for callers he registers (D-044 to D-047, D-055).
 
 ## Invariants
 
@@ -49,10 +49,12 @@ speaking with the one voice release Cole designates, for callers he registers
 - Blind listening is the primary decision signal. Automatic metrics are
   diagnostics, not a substitute for listening.
 - voice-lab is the speech engine; ChloeSpeech is retired (D-044). Speech outside
-  the lab's bake-off and listening tools uses only Cole's current voice release: a
-  checksum-bound record of one finished fine-tuned run of his own voice that Cole
-  designates by CLI (D-045). Never the base weights, a zero-shot reference, another
-  subject or an undesignated run.
+  the lab's bake-off and listening tools uses only the current voice (D-045, D-055): the
+  newest voice release, a checksum-bound record of one finished fine-tuned run of Cole's
+  own voice, which the job runner writes by itself for each newer finished run that passes
+  its checks or Cole pins by CLI; while none exists, the base voice (the pinned base weights
+  with F5-TTS's public reference clip, both pinned by SHA-256). Never another subject's run
+  or any other zero-shot reference.
 - Speech synthesis over the API is a queued job in the one GPU slot for registered
   tailnet callers, completed asynchronously (polling, a per-job event stream of finished
   sentence segments, or a signed terminal webhook); never an always-on synthesis endpoint,

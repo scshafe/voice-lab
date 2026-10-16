@@ -1,6 +1,7 @@
 # Speech API: Cole's voice for registered callers
 
-Status: **built, in the stack** (designed 2026-10-11, D-044 to D-048). The code is in
+Status: **built, in the stack** (designed 2026-10-11, D-044 to D-048; the voice since
+2026-10-16, D-055). The code is in
 `src/cole_voice_lab/speech/` (`voice-lab voice release …`, `voice-lab speech …`,
 `serve --speech-config`), and `deploy/stack/compose.yaml` serves it; nothing renders on the
 PC until the owner's steps in [deploy/speech/README.md](../deploy/speech/README.md) are done. It is part of the voice
@@ -31,8 +32,11 @@ Contents:
 - **Tailnet only.** The API is reached through `voice-lab.<tailnet>.ts.net` behind the
   Pocket ID door; Funnel stays off; there is no public endpoint. Free and on Cole's hardware
   (D-028).
-- **Cole's voice release only** (D-045). Never the base weights, a zero-shot reference,
-  another subject or an undesignated run.
+- **The newest voice, else the base voice** (D-045, D-055). The API always uses the newest
+  voice release: a finished fine-tuned run of Cole's own voice, released by the job runner as
+  soon as it passes its checks, or an older one Cole pins. While no release exists it uses the
+  base voice: the pinned base weights with F5-TTS's public English reference clip. Never
+  another subject's run, or any other zero-shot reference.
 - **Cole's own voice, by standing decision** (D-050). No consent record is required or read:
   Cole's standing decision permits his own voice for assistant speech on his own hardware, and
   the subject is pinned in code (`subject_id`, `cole-self`). Consent records written before
@@ -82,7 +86,11 @@ caller GET /api/v1/speech/{id}/audio  (Range): the whole reply, if it wants it
 
 ## 3. The voice release
 
-A `voice-release` record (`cole-voice-lab.voice-release/v1`) in
+What speaks is the **current voice**: the newest voice release, or the base voice while there
+is none (D-055).
+
+A `voice-release` record (`cole-voice-lab.voice-release/v2`; a `v1` record, written before
+D-055, still validates byte for byte and names no `designation`) in
 `provenance/voice-releases/<sequence>.json`, written once with mode 0400, never edited. Its
 fields are common to every model family (D-048) except `model`, the family's own section:
 
@@ -97,7 +105,8 @@ fields are common to every model family (D-048) except `model`, the family's own
 | `model` | the family's section, tagged by `family`; for F5-TTS the reference prompt id, the SHA-256 of its transcript, and the runtime the run trained with (F5-TTS and torch versions, pretrained weights digest) |
 | `consent_id`, `consent_sha256` | only in a release designated before D-050: the consent record it named, never read; a new release has neither |
 | `blind_review` | optional: a review id and the score sheet's digest |
-| `created_at`, `designated_by` | when, and the name Cole gives |
+| `created_at`, `designated_by` | when, and who: the name Cole gives, or `voice-lab: the newest finished run` |
+| `designation` | `auto` (the job runner released the newest finished run) or `owner` (Cole's pin); absent only in a `v1` record, which was Cole's |
 
 `voice-lab voice release designate --asset-root … --run <id> --designated-by <name>
 [--config <speech.json>] [--reference-prompt <id>] [--blind-review <id> --score-sheet-sha256
@@ -106,12 +115,45 @@ Speak seam, `finetune.resolve_speech_model`), checks the run (finished, not arch
 pinned subject, `cole-self`: neither the command nor the configuration can name another),
 hashes every file against the run's records, and prints the record it would write; with
 `--i-designate-this-run` it writes it. No consent record is named or read (D-050).
-`voice release show` prints the current one; `voice release history` lists them all. The
-newest record is current.
+`voice release show` prints the current voice (with `--config`, also why the API would
+refuse it) and the finished runs the runner will release next; `voice release history` lists
+every release. The newest record is current.
+
+**Automatic releases.** Before each job, the job runner releases the newest finished run of a
+registered family that finished after the newest release was written (every finished run
+counts while there is none), when it passes the same checks as a designation: finished, not
+archived, of the pinned subject, every file hashing to its records. The record is
+`designation: auto`, written under the history's lock, which checks again that no newer release
+was written meanwhile. A run that fails the checks is skipped and the next newer one tried;
+why goes to the runner's journal, once per change. So a run that sounds bad is live until a
+newer run is released or Cole pins another. A record the runner cannot write (its unit has no
+write access to `provenance/voice-releases/`, deploy/speech/README.md step 7) is logged the
+same way, and the current voice keeps speaking.
+
+**Cole's pin.** `designate … --i-designate-this-run` writes `designation: owner`, for example
+to roll back to an older run. Newest wins: the pin is current until a run that finished after
+it is released.
+
+**The base voice.** While no release exists, the base voice of the configuration's runtime
+family speaks: for F5-TTS the pinned pretrained weights the fine-tune pipeline pins
+(`pretrained/F5TTS_v1_Base/model_1250000.safetensors`, `SWivid/F5-TTS` at its pinned revision)
+and F5-TTS's public English reference clip with its exact transcript ("Some call me nature,
+others call me mother nature."), as spike S-2 rendered (§10). The clip is
+`lib/python3.12/site-packages/f5_tts/infer/examples/basic/basic_ref_en.wav` of the runtime's
+F5-TTS 1.1.22 package, from the hash-locked wheel (256,018 bytes, SHA-256
+`b0e22048e72414fcc1e6b6342e47a774d748a195ed34e4a5b3fcf416707f2b71`). Both files are the
+runtime's, pinned in code by size and SHA-256; nothing is fetched for them. The base voice is
+built in code, never written: a `base-voice` record (`cole-voice-lab.base-voice/v1`) with id
+`base`, its files by role (paths relative to the runtime root, size and digest) and the
+family's section (`model`: the weights' repository and revision, the clip's source and
+transcript). Its digest is that of its canonical bytes; the ledger names it as it names a
+release's, and the job's seeds derive from it. It is not the pinned subject's voice: it is the
+one voice that is not a fine-tuned run of `cole-self`, and no configuration can make another
+subject's run speak.
 
 A render refuses when the current release is of another subject than the configuration
-pins, or its run or a file no longer hashes to what the release names
-(`voice_release_changed`).
+pins, its run or a file no longer hashes to what the release names, or a base voice file is
+missing or not its pin (`voice_release_changed`).
 
 ## 4. Callers and the configuration
 
@@ -280,10 +322,12 @@ one whose signature, lifetime, issuer, subject or audience is not a registered c
 the caller (`403 caller_not_registered` when the claims match no single caller); the caller
 may invoke `private-assistant-speech` (`403 purpose_not_allowed`); the body (`413`,
 `422 invalid_request`, `422 unsupported_format`, `422 callback_not_allowed`); idempotency
-(`200` replay, `409 idempotency_conflict` or `409 idempotency_key_unverifiable`); a current
-voice release (`503 voice_release_unavailable`; its files
-are re-hashed by the job runner before every render, not by the API; a release of another
-subject than the configuration pins is unavailable too); a long job holding the GPU slot
+(`200` replay, `409 idempotency_conflict` or `409 idempotency_key_unverifiable`); a usable
+current voice (`503 voice_release_unavailable` only when no release exists and the base
+voice's files are missing, not regular files or not their pinned sizes (or no runtime is
+configured, which holds them), when the current release is of another subject than the
+configuration pins, or when the release history is damaged; files are re-hashed by the job
+runner before every render, not by the API); a long job holding the GPU slot
 (`503 gpu_busy`, with `Retry-After`); the caller's queued jobs (`429 too_many_jobs`), its daily characters (UTC day,
 `429 daily_budget_exhausted`), and the queue in all (`503 queue_full`).
 
@@ -411,10 +455,12 @@ text with the same release and steps is byte-identical, sentence by sentence.
 `PrivateNetwork=yes` and only the GPU's devices (`/dev/kfd` and the DRM nodes, groups
 `render` and `video`), writing only the speech state, the GPU slot's lock and the ledger's
 directory. It looks for queued jobs every quarter second. For each, oldest first, it claims
-the job; re-reads the release, refuses one of another subject and re-hashes what it names;
+the job; releases a newer finished run (§3, "Automatic releases"); re-reads the current
+voice, refuses a release of another subject and re-hashes what it names (or the base voice's
+files against their pins);
 holds the GPU slot; splits the text; renders each sentence through the narrow `SpeechBackend`
-port, checking before each one that the release is still the current one (so a new
-designation stops a render at its next sentence); checks each WAV (24 kHz, mono, 16-bit, complete) and publishes it
+port, checking before each one that the voice is still the current one (so a new
+release stops a render at its next sentence); checks each WAV (24 kHz, mono, 16-bit, complete) and publishes it
 (`status.json` lists it); joins them; writes the ledger entry, the final status and the outbox
 event. The text is deleted on every ending, first. It sweeps retention every few minutes. A
 cancel is honoured between sentences, and ends a wait for the GPU slot at once.
@@ -568,7 +614,8 @@ time, status code or error class, duration; never the secret, the signature or t
 written once by the job runner for every job it started rendering: job id, caller id, the
 text's keyed digest (HMAC-SHA256 under the install's `text-digest.key`, so a short reply cannot
 be found by hashing guesses; a text can be checked against it on the PC) and its length in
-code points, release id and its record's digest, the model family (an entry written before
+code points, release id and its record's digest (`base` and the base voice's digest for a
+render of the base voice), the model family (an entry written before
 D-050 also names a consent record's id and digest; none does now), the model and runtime
 fingerprint (the family, each loaded file's role and digest, the runtime
 identity, the device, the family's native sample rate, whether it is seeded, the family's
@@ -600,6 +647,7 @@ the evidence digests are in D-046:
 - upstream's threaded chunking is not reproducible and peaks at 7.3 GiB; sequential,
   per-sentence seeds are byte-identical on rerun and peak near 1.6 GiB.
 
+The base voice (§3) is that same pinned weights and clip, so these figures are its own.
 Unknown: the same figures for a release of Cole's own voice. They scale with the reference
 clip's length and the speaking rate, so they are measured again once a release exists, and
 Cole's 16-versus-32-step listening check decides the default steps (32 until then).
@@ -617,9 +665,11 @@ speech routes to the stack: the API does not start without a valid configuration
    `requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2.txt`, with `voice-lab finetune
    provision-runtime --target linux-rocm` (docs/FINETUNE.md, "The runtime"). Until then every
    job fails `runtime_unavailable`.
-2. **The voice release.** `voice-lab voice release designate --run <id> --config
-   /data/voice-lab/config/speech.json` on the PC. Only Cole; no consent record is needed
-   (D-050).
+2. **The voice.** Nothing to do (D-055): the base voice speaks until a finished run of
+   Cole's is released, which the runner does by itself; `voice-lab voice release show
+   --config /data/voice-lab/config/speech.json` says what speaks. Cole may pin a run with
+   `voice-lab voice release designate --run <id> --config /data/voice-lab/config/speech.json`
+   on the PC (for example to roll back); no consent record is needed (D-050).
 3. **Pocket ID.** Create the caller's confidential client with `client_credentials`; read one
    token's claims locally to fill `subject` and `audiences`.
 4. **The configuration and secrets.** Write `/data/voice-lab/config/speech.json`; create each
@@ -629,7 +679,7 @@ speech routes to the stack: the API does not start without a valid configuration
    infra's `host.conf` granting the read-only bind of `/data/voice-lab/config/` into the API
    container (`HOST_BINDS` … `speech-config:/data/voice-lab/config:ro`); the compose file
    already has the `EXTRA_JWT_ISSUERS` entry, `--speech-config` and the bind.
-6. **Host units.** Create the ledger's directory, then install and enable
+6. **Host units.** Create the ledger's and the releases' directories, then install and enable
    `voice-lab-speech.service` (long-running, with the resident worker) and
    `voice-lab-speech-webhooks.{path,service,timer}` by hand; through the runner lane's
    host-unit install once infra's validator accepts GPU devices and `LoadCredential=` (which
@@ -642,7 +692,7 @@ speech routes to the stack: the API does not start without a valid configuration
 - Audio streamed while it is being synthesized: only finished sentences are published.
 - Ogg Opus (reserved; needs ffmpeg in the job runner's path).
 - Any caller outside the tailnet, any audio leaving Cole's own devices, any voice but the
-  release, and a watermark (D-046: revisited before audio could reach anyone else).
+  newest release or the base voice, and a watermark (D-046: revisited before audio could reach anyone else).
 - Fine-tuning, auditions and Speak through `/api/v1/jobs` (phase 5); they will share the GPU
   slot defined here.
 - A second model family. The release, the backend port, the ledger and the configuration's

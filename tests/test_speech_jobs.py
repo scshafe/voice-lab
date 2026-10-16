@@ -20,9 +20,12 @@ from speech_fixtures import (
     FakeBackend,
     Lab,
     OnePass,
+    base_voice_runtime,
     build_lab,
     caller,
     designate_another_subject,
+    finished_run,
+    without_runs,
     write_tone,
 )
 
@@ -53,7 +56,14 @@ from cole_voice_lab.speech.gpu import (
     want_slot,
     withdraw_want,
 )
-from cole_voice_lab.speech.release import current_release
+from cole_voice_lab.speech.release import (
+    AUTO_DESIGNATED_BY,
+    BaseVoice,
+    base_voice,
+    current_release,
+    history,
+    voice_digest,
+)
 from cole_voice_lab.speech.runner import (
     CodeProblem,
     RunnerBusy,
@@ -83,9 +93,9 @@ def store_for(lab: Lab) -> SpeechStore:
     return store
 
 
-def submit(lab: Lab, text: str = "Hello there.", **fields: Any) -> Job:
+def submit(lab: Lab, text: str = "Hello there.", *, at: Any = NOW, **fields: Any) -> Job:
     job, created = store_for(lab).submit(
-        lab.config.callers[0], SpeechRequest(text=text, **fields), now=NOW
+        lab.config.callers[0], SpeechRequest(text=text, **fields), now=at
     )
     assert created
     return job
@@ -389,14 +399,16 @@ def test_another_callers_job_is_not_found(lab: Lab) -> None:
     assert store.load("sp-" + "0" * 24) is None
 
 
-@pytest.mark.parametrize("damage", ["release", "none"])
+@pytest.mark.parametrize("damage", ["release", "no-base-voice"])
 def test_the_runner_rechecks_the_release(tmp_path: Path, damage: str) -> None:
     code = "voice_release_changed"
-    lab = build_lab(tmp_path, release=damage != "none")
+    lab = build_lab(tmp_path, release=damage == "release")
     job = submit(lab)
     if damage == "release":
         release, _ = current_release(lab.layout)
         (lab.layout.root / release.file("checkpoint").path).write_bytes(b"retrained")
+    else:
+        without_runs(lab)  # and no runtime is configured, so the base voice has no files
     backend = FakeBackend()
     runner(lab, backend).run_pending()
     ended = store_for(lab).load(job.record.job_id)
@@ -1349,3 +1361,146 @@ def test_serve_says_once_that_it_waits_for_a_pass_by_hand(lab: Lab) -> None:
     finally:
         os.close(held)
     assert logged == ["waiting for a pass by hand (speech run --once) to end"]
+
+
+# -- D-055: the newest voice speaks; the base voice while there is none ------------------------
+
+
+def test_without_any_run_the_base_voice_renders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, _ = base_voice_runtime(tmp_path / "runtime", monkeypatch)
+    lab = without_runs(build_lab(tmp_path, release=False, runtime=runtime))
+    job = submit(lab, THREE)
+    backend = FakeBackend()
+    runner(lab, backend).run_pending()
+    ended = store_for(lab).load(job.record.job_id)
+    assert ended is not None and ended.state.state == "succeeded"
+    (prepared,) = backend.prepared
+    assert isinstance(prepared.release, BaseVoice)
+    root = Path(runtime.runtime_root)
+    assert (
+        prepared.files["checkpoint"] == root / "pretrained/F5TTS_v1_Base/model_1250000.safetensors"
+    )
+    assert prepared.files["reference"].is_relative_to(root)
+    ledger = SpeechRenderRecord.model_validate_json(
+        ledger_path(lab.layout, job.record.job_id).read_bytes()
+    )
+    base = base_voice("f5-tts")
+    assert (ledger.release.release_id, ledger.release.release_sha256) == (
+        "base",
+        voice_digest(base),
+    )
+    assert ledger.model_family == "f5-tts" and ledger.outcome == "succeeded"
+    assert history(lab.layout) == []  # nothing was released
+
+
+def test_a_base_voice_that_changed_fails_the_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, _ = base_voice_runtime(tmp_path / "runtime", monkeypatch)
+    lab = without_runs(build_lab(tmp_path, release=False, runtime=runtime))
+    job = submit(lab)
+    weights = Path(runtime.runtime_root) / "pretrained/F5TTS_v1_Base/model_1250000.safetensors"
+    weights.write_bytes(bytes(255 - byte for byte in weights.read_bytes()))  # same size
+    backend = FakeBackend()
+    runner(lab, backend).run_pending()
+    ended = store_for(lab).load(job.record.job_id)
+    assert ended is not None and ended.state.error is not None
+    assert ended.state.error.code == "voice_release_changed" and backend.calls == []
+
+
+def test_a_finished_run_speaks_at_the_next_job_with_no_designation(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path, release=False)
+    logged: list[str] = []
+    job = submit(lab)
+    backend = FakeBackend()
+    OnePass(
+        lab.config, backend, clock=lambda: NOW, slot_poll_seconds=0.01, log=logged.append
+    ).run_pending()
+    ended = store_for(lab).load(job.record.job_id)
+    assert ended is not None and ended.state.state == "succeeded"
+    ((release, digest),) = history(lab.layout)
+    assert (release.run_id, release.designation, release.designated_by) == (
+        "finetune-a",
+        "auto",
+        AUTO_DESIGNATED_BY,
+    )
+    assert backend.prepared[0].release == release
+    ledger = SpeechRenderRecord.model_validate_json(
+        ledger_path(lab.layout, job.record.job_id).read_bytes()
+    )
+    assert (ledger.release.release_id, ledger.release.release_sha256) == ("vr-0001", digest)
+    assert logged == ["released run finetune-a automatically as vr-0001"]
+    # A newer run speaks from the next job on; an older pin of Cole's then holds until a newer
+    # run finishes.
+    finished_run(lab.layout, "finetune-b", finished_at=NOW + timedelta(hours=1))
+    later = NOW + timedelta(hours=2)
+    second = submit(lab, "Again.", at=later)
+    runner(lab, backend, at=later).run_pending()
+    assert [item.run_id for item, _ in history(lab.layout)] == ["finetune-a", "finetune-b"]
+    lab.designate(now=later + timedelta(minutes=1))  # Cole pins finetune-a
+    third = submit(lab, "Once more.", at=later)
+    runner(lab, backend, at=later + timedelta(minutes=2)).run_pending()
+    assert [item.run_id for item, _ in history(lab.layout)] == [
+        "finetune-a",
+        "finetune-b",
+        "finetune-a",
+    ]
+    assert [prepared.release.release_id for prepared in backend.prepared] == [
+        "vr-0001",
+        "vr-0002",
+        "vr-0003",
+    ]
+    for each in (second, third):
+        done = store_for(lab).load(each.record.job_id)
+        assert done is not None and done.state.state == "succeeded"
+
+
+def test_another_subjects_newer_run_is_logged_once_and_never_speaks(tmp_path: Path) -> None:
+    lab = build_lab(tmp_path)  # Cole's run, released
+    finished_run(
+        lab.layout,
+        "finetune-other",
+        subject_id="someone-else",
+        finished_at=NOW + timedelta(hours=1),
+    )
+    logged: list[str] = []
+    backend = FakeBackend()
+    at = NOW + timedelta(hours=2)
+    for text in ("One.", "Two."):
+        job = submit(lab, text, at=at)
+        OnePass(
+            lab.config, backend, clock=lambda: at, slot_poll_seconds=0.01, log=logged.append
+        ).run_pending()
+        ended = store_for(lab).load(job.record.job_id)
+        assert ended is not None and ended.state.state == "succeeded"
+    assert [prepared.release.run_id for prepared in backend.prepared] == ["finetune-a"] * 2  # type: ignore[union-attr]
+    assert len(history(lab.layout)) == 1
+    assert len(logged) == 2  # one runner per job here, each logs it once
+    assert all("finetune-other" in line and "pinned subject" in line for line in logged)
+
+
+def test_a_release_the_runner_cannot_write_leaves_the_current_voice_speaking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, _ = base_voice_runtime(tmp_path / "runtime", monkeypatch)
+    lab = build_lab(tmp_path, release=False, runtime=runtime)
+    # As in the runner's unit before the owner made provenance/voice-releases/ writable.
+    provenance = lab.layout.root / "provenance"
+    (provenance / "speech-renders").mkdir(mode=0o700)
+    provenance.chmod(0o500)
+    logged: list[str] = []
+    backend = FakeBackend()
+    one = OnePass(lab.config, backend, clock=lambda: NOW, slot_poll_seconds=0.01, log=logged.append)
+    try:
+        for text in ("One.", "Two."):
+            job = submit(lab, text)
+            one.run_pending()
+            ended = store_for(lab).load(job.record.job_id)
+            assert ended is not None and ended.state.state == "succeeded"
+    finally:
+        provenance.chmod(0o700)
+    assert all(isinstance(prepared.release, BaseVoice) for prepared in backend.prepared)
+    assert len(logged) == 1 and "cannot be released" in logged[0]
+    assert history(lab.layout) == []

@@ -7,15 +7,15 @@ Private, local-first infrastructure for:
 3. building reference clips and versioned datasets without modifying raw audio;
 4. running a reproducible, blind comparison of Qwen3-TTS, Chatterbox Turbo,
    Chatterbox multilingual V3, F5-TTS, and Seed-VC; and
-5. speaking with the voice release Cole designates, for callers he registers on
-   the tailnet (D-044 to D-047; [docs/SPEECH_API.md](docs/SPEECH_API.md), designed,
-   not yet built).
+5. speaking with the newest voice release of Cole's voice (the base voice until a
+   fine-tuned run exists), for callers he registers on the tailnet (D-044 to D-047,
+   D-055; [docs/SPEECH_API.md](docs/SPEECH_API.md)).
 
 ```text
 MacBook capture -> checksum-bound READY package -> Tailnet landing zone
     -> verified immutable raw store -> references/derived datasets
     -> isolated candidate workers -> normalized outputs + metrics
-    -> blind review -> fine-tune -> voice release (Cole) -> speech jobs
+    -> blind review -> fine-tune -> voice release (newest run, or Cole's pin) -> speech jobs
 ```
 
 The next shape of the project, with voice-journey merged in, the backend on the PC,
@@ -35,7 +35,9 @@ Only Cole's own voice is synthesized. His standing decision (D-050) permits it f
 fine-tuning, listening, assistant speech and benchmarks on his own hardware, so no
 consent record is approved or checked. The subject is pinned in code to `cole-self`:
 voice release designation, the speech API, the model benchmark and the zero-shot
-bake-off (references, datasets, workers) refuse any other.
+bake-off (references, datasets, workers) refuse any other. The one other voice the
+speech API uses is the base voice, F5-TTS's public reference clip on the pinned base
+weights, while no fine-tuned run exists (D-055).
 
 ## Development bootstrap
 
