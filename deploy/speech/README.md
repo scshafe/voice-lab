@@ -119,9 +119,12 @@ each newer finished run by itself.
 7. **Host units.** The runner writes only the speech state, the GPU slot's lock, the
    render ledger and the voice releases (it releases newer runs, D-055), so their
    directories must exist first:
-   `sudo -u voice-lab install -d -m 0700 /data/voice-lab/lab/provenance/speech-renders
-   /data/voice-lab/lab/provenance/voice-releases`. A unit installed before D-055 cannot
-   write the releases: install the unit file again (below), `daemon-reload` and restart it.
+   `sudo -u voice-lab install -d -m 0700 /data/voice-lab/state/jobs
+   /data/voice-lab/lab/provenance/speech-renders /data/voice-lab/lab/provenance/voice-releases`.
+   `state/jobs` holds the GPU slot: while it is missing the unit still starts, with it
+   read-only, and every job fails `internal_error` ("Read-only file system"). A unit
+   installed before D-055 cannot write the releases: install the unit file again (below),
+   `daemon-reload` and restart it.
    Until then a newer run is not released (the journal says "cannot be released") and the
    current voice keeps speaking.
    Then install and enable the speech runner (long-running, with the resident model) and the
