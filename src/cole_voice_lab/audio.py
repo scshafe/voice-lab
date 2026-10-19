@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import struct
+import sys
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -38,6 +40,7 @@ _CONTINUITY_LOCAL_RATIO = 8
 _CONTINUITY_IMMEDIATE_RATIO = 4
 _CONTINUITY_MINIMUM_COUNT = 4
 _CONTINUITY_CONTROL_RATIO = 4
+_ITEM_SIZES = {code: struct.calcsize(code) for code in ("h", "i")}
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +68,9 @@ class WavInspection:
     boundary_discontinuity_count: int = 0
     interior_discontinuity_count: int = 0
     short_zero_run_count: int = 0
+    #: The one channel (1-based) these measurements are of; ``None`` when they are of every
+    #: interleaved sample (``inspect_pcm_wav``'s ``channel``).
+    channel: int | None = None
 
     def qc_metrics(
         self,
@@ -127,6 +133,26 @@ def _sample_values(payload: bytes, sample_width: int) -> list[int]:
             int.from_bytes(payload[offset : offset + sample_width], "little", signed=True)
         )
     return values
+
+
+def _channel_values(payload: bytes, sample_width: int, channels: int, channel: int) -> list[int]:
+    """The samples of one channel (1-based) of interleaved little-endian PCM frames."""
+    frame_bytes = channels * sample_width
+    if len(payload) % frame_bytes:
+        raise ContractError("PCM payload is not aligned to its frames")
+    native: Literal["h", "i"] = "h" if sample_width == 2 else "i"
+    if sample_width in {2, 4} and sys.byteorder == "little" and _ITEM_SIZES[native] == sample_width:
+        # Interleaved samples are native integers here: one strided slice of a view.
+        samples: memoryview[int] = memoryview(payload).cast(native)
+        return list(samples[channel - 1 :: channels])
+    offset = (channel - 1) * sample_width
+    return _sample_values(
+        b"".join(
+            payload[start : start + sample_width]
+            for start in range(offset, len(payload), frame_bytes)
+        ),
+        sample_width,
+    )
 
 
 class _BoundaryContinuityScan:
@@ -252,13 +278,17 @@ def _identify_open_wav(stream: BinaryIO) -> AudioSpec:
 
 
 def _inspect_open_wav(
-    stream: BinaryIO, *, require_canonical: bool
+    stream: BinaryIO, *, require_canonical: bool, channel: int | None = None
 ) -> tuple[AudioSpec, dict[str, float | int]]:
     try:
         with wave.open(stream, "rb") as reader:
             channels, sample_rate, sample_width, frames = _checked_format(
                 reader, require_canonical=require_canonical
             )
+            if channel is not None and not 1 <= channel <= channels:
+                raise ContractError(f"the WAV has {channels} channels, not a channel {channel}")
+            # The samples measured: one channel's, or every interleaved sample.
+            measured_channels = 1 if channel is not None else channels
 
             count = 0
             total = 0
@@ -283,7 +313,11 @@ def _inspect_open_wav(
             while payload := reader.readframes(_READ_FRAMES):
                 if len(payload) % (channels * sample_width):
                     raise ContractError("WAV data chunk ends inside a PCM frame")
-                values = _sample_values(payload, sample_width)
+                values = (
+                    _channel_values(payload, sample_width, channels, channel)
+                    if channel is not None
+                    else _sample_values(payload, sample_width)
+                )
                 if continuity is not None:
                     continuity.add(values)
                 for value in values:
@@ -314,7 +348,7 @@ def _inspect_open_wav(
                         current_zero_run = 0
                     previous_value = value
 
-            expected_samples = frames * channels
+            expected_samples = frames * measured_channels
             if count != expected_samples:
                 raise ContractError(
                     f"WAV data length disagrees with header: {count} != {expected_samples} samples"
@@ -330,7 +364,7 @@ def _inspect_open_wav(
         "rms_dbfs": _dbfs(rms / full_scale),
         "dc_offset": max(-1.0, min(1.0, (total / count) / full_scale)),
         "clipped_samples": clipped,
-        "longest_zero_run_ms": longest_zero_run / (sample_rate * channels) * 1_000.0,
+        "longest_zero_run_ms": longest_zero_run / (sample_rate * measured_channels) * 1_000.0,
         "boundary_discontinuity_count": continuity.boundary_count if continuity else 0,
         "interior_discontinuity_count": continuity.interior_count if continuity else 0,
         "short_zero_run_count": short_zero_run_count,
@@ -368,15 +402,24 @@ def _read_stable[ResultT](
     return digest.hexdigest(), size, result
 
 
-def inspect_pcm_wav(path: Path, *, require_canonical: bool = False) -> WavInspection:
+def inspect_pcm_wav(
+    path: Path, *, require_canonical: bool = False, channel: int | None = None
+) -> WavInspection:
     """Hash and inspect a WAV through one no-follow descriptor.
 
     The before/after descriptor metadata check makes a concurrent replacement or
     mutation a hard failure instead of accepting evidence about mixed file states.
+    ``channel`` (1-based) measures that channel alone, as a v2 take is judged by its primary
+    channel (D-056); by default every interleaved sample is measured. The buffer-boundary and
+    short-zero heuristics are tuned to the canonical format and run only on it.
+    Raises: ``SecurityError``, ``ContractError`` (also for a channel the WAV does not have).
     """
 
     sha256, size, (audio, values) = _read_stable(
-        path, lambda stream: _inspect_open_wav(stream, require_canonical=require_canonical)
+        path,
+        lambda stream: _inspect_open_wav(
+            stream, require_canonical=require_canonical, channel=channel
+        ),
     )
     return WavInspection(
         sha256=sha256,
@@ -390,6 +433,7 @@ def inspect_pcm_wav(path: Path, *, require_canonical: bool = False) -> WavInspec
         boundary_discontinuity_count=int(values["boundary_discontinuity_count"]),
         interior_discontinuity_count=int(values["interior_discontinuity_count"]),
         short_zero_run_count=int(values["short_zero_run_count"]),
+        channel=channel,
     )
 
 

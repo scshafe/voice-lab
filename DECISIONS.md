@@ -2050,3 +2050,8 @@ records exactly as before.
 - **Amends** D-021, D-039, D-052 and D-053 (dated notes) and AGENTS.md's mission. It is built in
   four steps after this record, one PR each: the v2 contract, the per-profile views, the panel's
   audience, and the bundle with its fixture.
+
+Amended 2026-10-19: the v2 contract (step 2) lands in two PRs, the contracts and then the
+validator, admission and dispatch. The ALSA rule and its bounds are fixed with the contracts:
+each period is judged against the one before it, in integer nanoseconds, within at most 4 ms,
+in periods of at least 16 ms (docs/design/HOUSE-PANEL.md §2).
