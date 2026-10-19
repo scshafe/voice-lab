@@ -1175,7 +1175,8 @@ Three independently shippable steps:
   Amended 2026-10-19 (D-057): the Mac's bake-off (its registry, configuration, workers,
   runtime locks and `models`/`audition` commands) is retired. A bake-off on the PC is new
   work, with its own locks, registry and workers; blind review keeps reading the audition
-  runs already on disk.
+  runs already on disk. The Mac's fine-tune runtime (`f5-tts-finetune-1.1.22-mps`, the Swift
+  app's Fine-tune and Speak) stays until this phase lands, and is retired with it.
 - **Acceptance:**
   - each candidate passes the automated smoke gate on `gfx1030` with evidence
     (code revision, weight revision, environment fingerprint, reference digest,

@@ -2116,13 +2116,16 @@ urllib3, protobuf, python-dotenv and multidict), in runtimes nothing on the PC u
   `runtimes`, `models` and `experiments` rules (Mac-only, never copied), so a pass never meets a
   file it cannot classify. D-050's promise that an unfinished plan written before it "can still
   finish its remaining trials" lapses: no plan can run.
-- **Not decided here: the Mac's fine-tune runtime.** `f5-tts-finetune-1.1.22-mps` stays: the
-  Swift app's Fine-tune button and Speak page run on it (D-016 to D-019). Retiring it too is
-  with the owner. Until phase 5 the PC's runtime does not do the same job:
-  - the PC's corpus selection reads a recording library, which only the Mac has, so the PC
-    cannot train on Cole's takes;
-  - the PC has no fine-tune job;
-  - the PC has no interactive Speak.
+- **Kept until phase 5: the Mac's fine-tune runtime.** The owner decided the same day that
+  `f5-tts-finetune-1.1.22-mps` stays; the Swift app's Fine-tune button and Speak page run on it
+  (D-016 to D-019). It is retired when phase 5 lands, not now: that is when the PC fine-tunes on
+  the takes of its own corpus and offers Speak. Today the PC does not do the same job:
+  - its corpus selection reads a recording library, which only the Mac has, so the PC cannot
+    train on Cole's takes;
+  - it has no fine-tune job;
+  - it has no interactive Speak.
+
+  Its lock takes multidict 6.9.1 (GHSA-54p9-h82j-f925), as the PC's lock did in #96.
 - **Amends** D-005, D-007, D-008 and D-026 (the bake-off and its Apple fallback), D-044 (the
   bake-off is no longer kept, blind review is) and D-050 (the unfinished-plan promise), with dated
   notes. Also amended: the design (docs/design/VOICE-PLATFORM.md §2, §4, §7, phase 5, §10 and
