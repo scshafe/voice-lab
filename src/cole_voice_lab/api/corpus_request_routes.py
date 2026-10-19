@@ -64,6 +64,7 @@ from ..corpus_takes import TAKE_ID_PATTERN
 from ..errors import ContractError, SecurityError
 from ..models import COLE_SUBJECT, utc_now
 from ..paths import AssetLayout
+from .client_scope import CLIENT_PROFILE
 from .corpus_contracts import CorpusRequestStatus, TakeDecisionRequest, TakeTrimRequest
 from .routing import RouteRefusal, RouteRequest, RouteResponse
 
@@ -136,6 +137,8 @@ class CorpusRequestRoutes:
         if (match := _DECISION_PATH.fullmatch(request.path)) is not None:
             _only(request, "POST")
             _take_id(match["take_id"])
+            if request.scope == "corpus-client":
+                self._require_client_take(match["take_id"])
             body = self._body(request, TakeDecisionRequest)
             return self._submit(match["take_id"], body.request_id, body.change())
         if (match := _TRIM_PATH.fullmatch(request.path)) is not None:
@@ -203,6 +206,24 @@ class CorpusRequestRoutes:
             body=canonical_json_bytes(view) + b"\n",
             headers=(("Location", f"{REQUESTS_PATH}/{view.request_id}"),),
         )
+
+    def _require_client_take(self, take_id: str) -> None:
+        """A corpus client decides only a published take of its own capture profile (D-056):
+        never a desktop's take, nor one whose record is not written yet (it asks again once
+        intake has published it).
+
+        Raises: ``RouteRefusal`` 404 ``take_not_found``, 403 ``client_scope``, 500
+        ``take_invalid``."""
+        try:
+            state = read_take_state(self.layout, take_id)
+        except (ContractError, SecurityError, OSError) as error:
+            raise RouteRefusal(500, "take_invalid", f"the take's record: {error}") from error
+        if state is None or state.subject_id != self.subject_id:
+            raise RouteRefusal(404, "take_not_found", "this server has no record of the take (yet)")
+        if state.capture_profile is None or state.capture_profile.profile != CLIENT_PROFILE:
+            raise RouteRefusal(
+                403, "client_scope", f"this client decides only takes of profile {CLIENT_PROFILE}"
+            )
 
     def _frames(self, take_id: str) -> int | None:
         """The take's frame count from its record, or ``None`` for a take on its way.

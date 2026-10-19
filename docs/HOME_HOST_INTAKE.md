@@ -25,6 +25,12 @@ public client `voice-lab-desktop` (its JWT access token, else its ID token). The
 it, and the API checks it again (`api/auth.py`: RS256 signature against the provider's
 JWKS, issuer, audience `voice-lab-desktop`, lifetime, and a one-subject allow-list).
 
+The house panel's tokens (public client `voice-lab-panel`, D-056) are a corpus client's: the
+API takes them only on the panel's allow-list (`api/client_scope.py`; SECURITY.md, "The house
+panel's token") and answers 403 `client_scope` on every other route. Finalize takes only a v2
+take of the panel's profile from them (422 `take_profile_not_allowed`), and a decision only a
+take of that profile.
+
 | Route | Does |
 | --- | --- |
 | `GET /healthz` | `{"status":"ok"}`, no token (the stack's health check) |

@@ -23,6 +23,7 @@ refusal under ``provenance/intake/refusals/``.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -43,8 +44,9 @@ from ..canonical import (
     rename_no_replace,
     write_new_private_file,
 )
+from ..capture import MANIFEST_NAME
 from ..errors import SecurityError
-from ..intake import MIN_FREE_BYTES, RECEIPT_NAME, IntakeReceipt
+from ..intake import MAX_CONTROL_FILE_BYTES, MIN_FREE_BYTES, RECEIPT_NAME, IntakeReceipt
 from ..intake_publisher import read_refusal
 from ..paths import AssetLayout
 from .contracts import (
@@ -113,6 +115,30 @@ def _regular_size(path: Path) -> int | None:
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
         raise SecurityError(f"upload staging holds something that is not a plain file: {path}")
     return metadata.st_size
+
+
+def _require_profile_take(package: Path, profile: str) -> None:
+    """The finalized package is a v2 take of ``profile`` (its manifest says so).
+
+    Raises: ``StagingError`` 422 ``take_profile_not_allowed``."""
+    from ..corpus_takes import TAKE_V2_SCHEMA, manifest_schema
+
+    refusal = StagingError(
+        422,
+        "take_profile_not_allowed",
+        f"this client sends only takes of capture profile {profile} "
+        "(cole-voice-lab.corpus-take/v2)",
+    )
+    try:
+        with open_regular_no_follow(package / MANIFEST_NAME, nonblocking=True) as stream:
+            payload = stream.read(MAX_CONTROL_FILE_BYTES + 1)
+    except (SecurityError, OSError) as error:
+        raise refusal from error
+    if len(payload) > MAX_CONTROL_FILE_BYTES or manifest_schema(payload) != TAKE_V2_SCHEMA:
+        raise refusal
+    captured = json.loads(payload).get("capture_profile")
+    if not isinstance(captured, dict) or captured.get("profile") != profile:
+        raise refusal
 
 
 class IntakeStaging:
@@ -422,12 +448,16 @@ class IntakeStaging:
 
     # -- finalize ---------------------------------------------------------------------------
 
-    def finalize(self, session_id: str) -> IntakeSessionStatus:
+    def finalize(self, session_id: str, *, profile: str | None = None) -> IntakeSessionStatus:
         """Check every file again and hand the package to the publisher.
 
         Idempotent: a finalized session returns its status. Raises ``incomplete`` (409)
         while a file is missing, and ``checksum_mismatch`` (422) when a stored file no
         longer hashes to its declaration (that file is discarded, so it can be sent again).
+        ``profile`` is a corpus client's (D-056): its package must then be a v2 take of that
+        capture profile, read from the checked manifest, or finalize raises
+        ``take_profile_not_allowed`` (422), so a client's token never adds to another
+        profile's corpus. The publisher still validates the whole package.
         """
         with self._session_lock(session_id):
             request = self._read_request(session_id)
@@ -451,6 +481,8 @@ class IntakeStaging:
                     )
             package = directory / PACKAGE_NAME
             self._require_exact_package(package, request)
+            if profile is not None:
+                _require_profile_take(package, profile)
             target = self.incoming / session_id
             try:
                 rename_no_replace(package, target)

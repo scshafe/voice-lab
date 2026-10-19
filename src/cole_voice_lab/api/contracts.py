@@ -104,6 +104,9 @@ type ApiErrorCode = Literal[
     "request_conflict",
     "request_not_found",
     "request_queue_full",
+    # a corpus client's scope (api/client_scope.py, D-056)
+    "client_scope",
+    "take_profile_not_allowed",
     "internal_error",
 ]
 REFUSAL_CODES: Final[frozenset[str]] = frozenset(get_args(ApiErrorCode.__value__))
