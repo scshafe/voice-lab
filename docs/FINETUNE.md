@@ -110,18 +110,20 @@ Training and synthesis run out of process in a pinned F5-TTS environment, one pe
 | Target | Lock | Interpreter (default `--python`) |
 | --- | --- | --- |
 | `macos-mps` (the Mac) | `requirements/runtimes/f5-tts-finetune-1.1.22-mps.txt`: torch 2.14 with MPS, f5-tts 1.1.22; versions pinned, not yet hashed | Homebrew `python@3.12` |
-| `linux-rocm` (the PC, RX 6900 XT) | `requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2.txt`: spike S-2's stack (D-046), torch 2.14.0+rocm7.2, torchaudio 2.11.0+rocm7.2, torchcodec 0.16.0+cpu, f5-tts 1.1.22, every other package at the Mac's version; every file hash-bound | infra's host Python, `/opt/voice-lab/python/cpython-3.12.14-linux-x86_64-gnu/bin/python3.12` |
+| `linux-rocm` (the PC, RX 6900 XT) | `requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2.txt`: spike S-2's stack (D-046), torch 2.14.0+rocm7.2, torchaudio 2.11.0+rocm7.2, torchcodec 0.16.0+cpu, f5-tts 1.1.22, every other package at its constraints' version; every file hash-bound | infra's host Python, `/opt/voice-lab/python/cpython-3.12.14-linux-x86_64-gnu/bin/python3.12` |
 
 The ROCm lock is compiled by uv from
 `requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2/pyproject.toml` (which routes only the
-torch family to PyTorch's `rocm7.2` and `cpu` indexes) with the Mac's lock as constraints;
+torch family to PyTorch's `rocm7.2` and `cpu` indexes) with the versions of every other package
+as constraints (`requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2/constraints.txt`: spike
+S-2's, which were the Mac lock's until 2026-10-19, with multidict at 6.9.1 since);
 its header has the exact command, and its body is that command's unchanged output. It
 installs in two steps, both `--require-hashes`: the hash-locked build tools
 (`requirements/development-build.txt`, `--build-requirements`), then the lock without build
 isolation and wheels only, except the three packages that publish none
 (`antlr4-python3-runtime`, `encodec`, `transformers-stream-generator`), which build from their
-hash-bound sdists with those tools (the lock's own setuptools 84.0.0, a dependency of torch,
-then replaces the tools' 80.9.0, after the builds). Both runs are `--isolated` (no `PIP_*`
+hash-bound sdists with those tools (their setuptools is the lock's own 84.0.0, a dependency of
+torch, so the lock's run keeps it). Both runs are `--isolated` (no `PIP_*`
 variables, no `pip.conf`) and `--no-cache-dir`. The lock names its own indexes in its
 header, PyPI first, then PyTorch's two: pip replaces the index list of its command line with a
 requirements file's `--index-url`, so indexes given on the command line would be dropped (and

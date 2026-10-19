@@ -1,13 +1,12 @@
-# The input of the PC's F5-TTS runtime lock, ../f5-tts-finetune-1.1.22-rocm7.2.txt, and nothing
-# else: a project file only because uv routes a package to one index only from a project's
-# [tool.uv.sources]. Nothing builds or installs this project; the lock's header has the
-# command that compiles it.
+# The input of the PC's F5-TTS runtime lock, ../f5-tts-finetune-1.1.22-rocm7.2.txt, with
+# ./constraints.txt, and nothing else: a project file only because uv routes a package to one
+# index only from a project's [tool.uv.sources]. Nothing builds or installs this project; the
+# lock's header has the command that compiles it.
 #
 # The PyTorch stack that spike S-2 ran on the PC (RX 6900 XT, gfx1030; D-046): torch
 # 2.14.0+rocm7.2 with its torchaudio and triton from PyTorch's rocm7.2 index, and torchcodec's
 # CPU build (PyPI's x86_64 torchcodec 0.16.0 needs CUDA 13). The indexes are explicit, so
-# every other package comes from PyPI, at the versions of the Mac's fine-tune runtime
-# (../f5-tts-finetune-1.1.22-mps.txt, passed as constraints).
+# every other package comes from PyPI, at the versions of ./constraints.txt.
 [project]
 name = "voice-lab-f5-tts-runtime-rocm"
 version = "0"
