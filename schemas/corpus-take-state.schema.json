@@ -105,6 +105,37 @@
       "minimum": 1,
       "type": "integer"
     },
+    "ProfileTakeAudio": {
+      "additionalProperties": false,
+      "description": "A v2 take's one recording, in a format its capture profile allows.",
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioSpec"
+        },
+        "path": {
+          "const": "original.wav",
+          "default": "original.wav",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 44,
+          "maximum": 253440044,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size_bytes",
+        "audio"
+      ],
+      "title": "ProfileTakeAudio",
+      "type": "object"
+    },
     "Prompt": {
       "additionalProperties": false,
       "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
@@ -205,6 +236,12 @@
     "RelativePath": {
       "maxLength": 1024,
       "minLength": 1,
+      "type": "string"
+    },
+    "RoomSlug": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
       "type": "string"
     },
     "Sha256": {
@@ -324,6 +361,55 @@
       "title": "TakeOrigin",
       "type": "object"
     },
+    "TakeProfileSummary": {
+      "additionalProperties": false,
+      "description": "A v2 take's capture profile, as its record shows it (D-056): enough to tell the takes\nof one device and room from another's without opening ``raw/``.",
+      "properties": {
+        "device_model": {
+          "$ref": "#/$defs/_Text"
+        },
+        "firmware_version": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/_Byte"
+            },
+            {
+              "$ref": "#/$defs/_Byte"
+            },
+            {
+              "$ref": "#/$defs/_Byte"
+            }
+          ],
+          "title": "Firmware Version",
+          "type": "array"
+        },
+        "primary_channel": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Primary Channel",
+          "type": "integer"
+        },
+        "profile": {
+          "const": "xvf3800-linear-4",
+          "title": "Profile",
+          "type": "string"
+        },
+        "room": {
+          "$ref": "#/$defs/RoomSlug"
+        }
+      },
+      "required": [
+        "profile",
+        "room",
+        "device_model",
+        "firmware_version",
+        "primary_channel"
+      ],
+      "title": "TakeProfileSummary",
+      "type": "object"
+    },
     "TakeTrim": {
       "additionalProperties": false,
       "description": "The frames a take keeps, ``[start_frame, end_frame)``, or all of them (both ``None``),\nat which revision (0: never trimmed).",
@@ -366,6 +452,11 @@
       "title": "TakeTrim",
       "type": "object"
     },
+    "_Byte": {
+      "maximum": 255,
+      "minimum": 0,
+      "type": "integer"
+    },
     "_Finding": {
       "maxLength": 120,
       "minLength": 1,
@@ -378,7 +469,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "One take on the PC: what it is, and its current decision and trim.\n\n``origin`` is absent for a take a recording client uploaded (every record written before\nD-053 included, byte for byte), and says ``imported`` for a Swift take.",
+  "description": "One take on the PC: what it is, and its current decision and trim.\n\n``origin`` is absent for a take a recording client uploaded (every record written before\nD-053 included, byte for byte), and says ``imported`` for a Swift take.\n``capture_profile`` is absent for a take of profile ``umik-1`` (every v1 and imported\ntake, and so every record written before D-056, byte for byte), whose audio is the\ncanonical format; a v2 take's record names its profile, and its audio is the profile's\n(``ProfileTakeAudio``).",
   "properties": {
     "accepted_at": {
       "format": "date-time",
@@ -386,10 +477,29 @@
       "type": "string"
     },
     "audio": {
-      "$ref": "#/$defs/TakeAudio"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TakeAudio"
+        },
+        {
+          "$ref": "#/$defs/ProfileTakeAudio"
+        }
+      ],
+      "title": "Audio"
     },
     "capture_host": {
       "$ref": "#/$defs/_Text"
+    },
+    "capture_profile": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TakeProfileSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "catalog": {
       "$ref": "#/$defs/CatalogReference"

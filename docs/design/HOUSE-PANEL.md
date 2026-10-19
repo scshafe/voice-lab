@@ -419,7 +419,8 @@ watched.
    (2026-10-19): first the contracts, the ALSA rule and the channel-selecting inspection, which
    nothing dispatches to (a v2 package is still refused as an unknown capture package, so none
    reaches `raw/`); then the validator, admission, the dispatch at every point, the record's
-   profile and the vault.
+   profile and the vault. Until step 3, the library's default view counts a published v2 take
+   as it counts any take; no client writes one until the panel can sign in (step 4).
 3. **Per-profile library views**: the read-model files, `?profile=` and their classification.
    The default answer stays byte-identical.
 4. **The panel's audience**:

@@ -10,7 +10,8 @@ each with its own revision.
 Writer: the intake publisher only (the PC's one lab writer). ``record_takes`` runs on every
 pass and writes the first record of every take package in ``raw/`` that has none: of each
 take the pass accepted, and of any take an interrupted pass left without one. A take's first
-record is an undecided, untrimmed draft at revision 0 (``initial_state``). An imported Swift
+record is an undecided, untrimmed draft at revision 0 (``initial_state``); a v2 take's (D-056)
+also summarizes its capture profile (``capture_profile``). An imported Swift
 take's (``corpus_take_imports``, D-053) carries the Mac's decision and trim instead, each at
 revision 1 when it is not the draft or the whole take, and says where it came from
 (``origin``; ``imported_state``). Either is built from the raw package alone, so the store's
@@ -31,16 +32,21 @@ from typing import Annotated, Final, Literal
 from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from .canonical import read_canonical_model, write_canonical_json
+from .capture_profiles import XVF3800_SAMPLE_RATE_HZ, RoomSlug
 from .corpus_take_imports import ValidatedTakeImport, validate_take_import_package
 from .corpus_takes import (
     TAKE_ID_PATTERN,
     TAKE_IMPORT_SCHEMA,
     TAKE_SCHEMA,
+    TAKE_V2_SCHEMA,
+    ProfileTakeAudio,
     TakeAudio,
     TakeId,
+    ValidatedProfileTake,
     ValidatedTake,
     package_schema,
     take_id_for,
+    validate_profile_take_package,
     validate_take_package,
 )
 from .errors import ContractError, SecurityError
@@ -56,6 +62,7 @@ MAX_STATE_BYTES: Final = 64 * 1024
 type TakeDecisionName = Literal["draft", "kept", "rejected", "removed"]
 type _Text = Annotated[str, StringConstraints(min_length=1, max_length=500)]
 type _Finding = Annotated[str, StringConstraints(min_length=1, max_length=120)]
+type _Byte = Annotated[int, Field(ge=0, le=255)]
 
 
 def _utc(value: datetime, what: str) -> datetime:
@@ -124,11 +131,28 @@ class TakeOrigin(ContractModel):
     source_take_id: TakeId
 
 
+class TakeProfileSummary(ContractModel):
+    """A v2 take's capture profile, as its record shows it (D-056): enough to tell the takes
+    of one device and room from another's without opening ``raw/``."""
+
+    profile: Literal["xvf3800-linear-4"]
+    room: RoomSlug
+    device_model: _Text
+    #: The firmware's ``VERSION`` (three bytes).
+    firmware_version: tuple[_Byte, _Byte, _Byte]
+    #: The WAV channel (1-based) the take is judged by and derived from.
+    primary_channel: int = Field(ge=1, le=32)
+
+
 class CorpusTakeState(ContractModel):
     """One take on the PC: what it is, and its current decision and trim.
 
     ``origin`` is absent for a take a recording client uploaded (every record written before
-    D-053 included, byte for byte), and says ``imported`` for a Swift take."""
+    D-053 included, byte for byte), and says ``imported`` for a Swift take.
+    ``capture_profile`` is absent for a take of profile ``umik-1`` (every v1 and imported
+    take, and so every record written before D-056, byte for byte), whose audio is the
+    canonical format; a v2 take's record names its profile, and its audio is the profile's
+    (``ProfileTakeAudio``)."""
 
     schema_version: Literal["cole-voice-lab.corpus-take-state/v1"] = STATE_SCHEMA
     take_id: TakeId
@@ -140,7 +164,7 @@ class CorpusTakeState(ContractModel):
     manifest_sha256: Sha256
     #: The published package: ``raw/<manifest_sha256>``.
     raw_path: str
-    audio: TakeAudio
+    audio: TakeAudio | ProfileTakeAudio
     requested_at: datetime
     accepted_at: datetime
     capture_host: _Text
@@ -152,6 +176,9 @@ class CorpusTakeState(ContractModel):
     decision: TakeDecision
     trim: TakeTrim
     origin: TakeOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
+    capture_profile: TakeProfileSummary | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator("requested_at", "accepted_at")
     @classmethod
@@ -166,6 +193,17 @@ class CorpusTakeState(ContractModel):
             raise ValueError("a take's raw package is raw/<its manifest digest>")
         if self.trim.end_frame is not None and self.trim.end_frame > self.audio.audio.frames:
             raise ValueError("a trim ends within the take")
+        spec = self.audio.audio
+        if self.capture_profile is None:
+            if not isinstance(self.audio, TakeAudio):
+                raise ValueError("a take without a capture profile is in the canonical format")
+        elif self.origin is not None:
+            raise ValueError("an imported take is a umik-1 take, which names no profile")
+        elif (
+            spec.sample_rate_hz != XVF3800_SAMPLE_RATE_HZ
+            or self.capture_profile.primary_channel > spec.channels
+        ):
+            raise ValueError("a take's audio is in its capture profile's format")
         return self
 
 
@@ -222,7 +260,7 @@ _UNTRIMMED: Final = TakeTrim(revision=0, start_frame=None, end_frame=None)
 
 
 def _state(
-    take: ValidatedTake | ValidatedTakeImport,
+    take: ValidatedTake | ValidatedProfileTake | ValidatedTakeImport,
     receipt: IntakeReceipt,
     *,
     decision: TakeDecision,
@@ -231,6 +269,19 @@ def _state(
 ) -> CorpusTakeState:
     manifest = take.manifest
     findings = sorted({finding for metric in take.qc_report.metrics for finding in metric.findings})
+    profile: TakeProfileSummary | None = None
+    if isinstance(take, ValidatedProfileTake):
+        captured = take.manifest.capture_profile
+        device = captured.device.model
+        profile = TakeProfileSummary(
+            profile=captured.profile,
+            room=captured.room,
+            device_model=captured.device.model,
+            firmware_version=captured.device.firmware.version,
+            primary_channel=captured.primary_channel,
+        )
+    else:
+        device = take.manifest.capture_device.display_name
     return CorpusTakeState(
         take_id=manifest.take_id,
         subject_id=manifest.subject_id,
@@ -243,17 +294,21 @@ def _state(
         requested_at=manifest.requested_at,
         accepted_at=receipt.accepted_at,
         capture_host=manifest.capture_host,
-        device=manifest.capture_device.display_name,
+        device=device,
         qc_status=take.qc_report.status,
         qc_findings=tuple(findings),
         decision=decision,
         trim=trim,
         origin=origin,
+        capture_profile=profile,
     )
 
 
-def initial_state(take: ValidatedTake, receipt: IntakeReceipt) -> CorpusTakeState:
-    """A published take's revision-0 record: an undecided, untrimmed draft."""
+def initial_state(
+    take: ValidatedTake | ValidatedProfileTake, receipt: IntakeReceipt
+) -> CorpusTakeState:
+    """A published take's revision-0 record (of either version): an undecided, untrimmed
+    draft."""
     return _state(take, receipt, decision=_UNDECIDED, trim=_UNTRIMMED, origin=None)
 
 
@@ -309,9 +364,11 @@ def record_takes(layout: AssetLayout) -> tuple[tuple[CorpusTakeState, ...], tupl
         if name in published or name.startswith("."):
             continue
         schema = package_schema(package)
-        take: ValidatedTake | ValidatedTakeImport
+        take: ValidatedTake | ValidatedProfileTake | ValidatedTakeImport
         if schema == TAKE_SCHEMA:
             take = validate_take_package(package, allow_intake_receipt=True)
+        elif schema == TAKE_V2_SCHEMA:
+            take = validate_profile_take_package(package, allow_intake_receipt=True)
         elif schema == TAKE_IMPORT_SCHEMA:
             take = validate_take_import_package(package, allow_intake_receipt=True)
         else:
@@ -328,9 +385,9 @@ def record_takes(layout: AssetLayout) -> tuple[tuple[CorpusTakeState, ...], tupl
             package / RECEIPT_NAME, IntakeReceipt, max_bytes=MAX_CONTROL_FILE_BYTES
         )
         state = (
-            initial_state(take, receipt)
-            if isinstance(take, ValidatedTake)
-            else imported_state(take, receipt)
+            imported_state(take, receipt)
+            if isinstance(take, ValidatedTakeImport)
+            else initial_state(take, receipt)
         )
         write_canonical_json(state_path(layout, state.take_id), state)
         states[state.take_id] = state

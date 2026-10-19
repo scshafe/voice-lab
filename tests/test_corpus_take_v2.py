@@ -1,29 +1,20 @@
-"""``cole-voice-lab.corpus-take/v2`` and its capture profile ``xvf3800-linear-4`` (D-056).
-
-The contracts alone: the package validator, admission and the intake dispatch come next, so
-nothing on the PC accepts a v2 package yet.
-"""
+"""``cole-voice-lab.corpus-take/v2`` and its capture profile ``xvf3800-linear-4`` (D-056): the
+contracts alone (the package, its validator and intake: ``test_corpus_take_v2_intake``)."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
 from panel_take_fixtures import (
-    PERIOD_FRAMES,
     PROCESSED,
-    evidence,
-    frame_bytes,
     manifest,
     profile,
-    validated,
     validated_manifest,
-    write_wav,
 )
 from pydantic import ValidationError
 
-from cole_voice_lab.canonical import canonical_json_bytes, sha256_file, write_canonical_json
+from cole_voice_lab.canonical import canonical_json_bytes
 from cole_voice_lab.capture_profiles import XVF3800_PARAMETERS, Xvf3800Linear4Profile
 from cole_voice_lab.corpus_takes import (
     CORPUS_TAKE_SCHEMAS,
@@ -31,10 +22,7 @@ from cole_voice_lab.corpus_takes import (
     TAKE_V2_SCHEMA,
     CorpusTakeManifest,
     CorpusTakeManifestV2,
-    is_corpus_take_package,
 )
-from cole_voice_lab.errors import ContractError
-from cole_voice_lab.intake import validate_package
 from cole_voice_lab.models import AudioSpec
 
 
@@ -45,10 +33,10 @@ def test_a_v2_manifest_validates_and_is_canonical() -> None:
     assert record.capture_profile.primary_channel == 3
     assert record.capture_profile.channels[2].mic == 1
     assert CorpusTakeManifestV2.model_validate_json(canonical_json_bytes(record)) == record
-    # A v2 manifest is not a v1 one, and the PC's corpus does not take v2 packages yet.
+    # A v2 manifest is not a v1 one; both are takes of the PC's corpus.
     with pytest.raises(ValidationError):
         CorpusTakeManifest.model_validate_json(canonical_json_bytes(record))
-    assert TAKE_V2_SCHEMA not in CORPUS_TAKE_SCHEMAS
+    assert TAKE_V2_SCHEMA in CORPUS_TAKE_SCHEMAS
 
 
 @pytest.mark.parametrize("alsa_format", ["S16_LE", "S24_3LE", "S32_LE"])
@@ -223,31 +211,3 @@ def test_the_profile_allows_its_own_formats_only() -> None:
     assert not record.allows(spec(48_000, 6))
     assert not record.allows(spec(16_000, 2))
     assert isinstance(record, Xvf3800Linear4Profile)
-
-
-def test_nothing_admits_a_v2_package_yet(tmp_path: Path) -> None:
-    # Until the validator and every dispatch point know v2, intake refuses a v2 package as a
-    # capture package it cannot read, so none reaches raw/ (docs/design/HOUSE-PANEL.md §6).
-    package = tmp_path / "take"
-    package.mkdir()
-    audio_sha256 = write_wav(
-        package / "original.wav",
-        frame_bytes(2 * PERIOD_FRAMES, 6, "S32_LE"),
-        channels=6,
-        alsa_format="S32_LE",
-    )
-    continuity = validated(evidence(period_count=2, wav_sha256=audio_sha256))
-    continuity_sha256 = write_canonical_json(package / "continuity.json", continuity)
-    document = manifest(period_count=2, audio_sha256=audio_sha256)
-    document["continuity"] = {
-        **document["continuity"],
-        "sha256": continuity_sha256,
-        "size_bytes": sha256_file(package / "continuity.json")[1],
-        "max_abs_deviation_ns": continuity.max_abs_deviation_ns,
-    }
-    write_canonical_json(package / "manifest.json", validated_manifest(document))
-    write_canonical_json(package / "qc.json", {})
-    write_canonical_json(package / "READY", {})
-    assert not is_corpus_take_package(package)
-    with pytest.raises((ContractError, ValidationError)):
-        validate_package(package)
