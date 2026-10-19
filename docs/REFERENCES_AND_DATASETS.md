@@ -181,7 +181,7 @@ The intended order remains:
 
 1. five-minute capture pilot;
 2. source QC plus human headphone review;
-3. zero-shot candidate bake-off;
+3. zero-shot candidate bake-off (retired on 2026-10-19, D-057);
 4. explicit pilot-gate decision; then
 5. conditional full-corpus capture and dataset assembly.
 

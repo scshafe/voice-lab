@@ -1,6 +1,0 @@
-# Reviewed roots for the CPython 3.12 / macOS arm64 MLX runtime lock.
-# This file is resolver input and is never passed to an installer. The tts extra
-# is intentional: its SentencePiece and Mistral audio dependencies are required
-# by the three text-to-speech worker families.
-mlx-audio[tts]==0.5.0
-pydantic==2.13.4

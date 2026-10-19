@@ -10,7 +10,6 @@ import json
 import os
 import platform
 import plistlib
-import runpy
 import shlex
 import stat
 import subprocess
@@ -22,9 +21,6 @@ from pathlib import Path
 
 import macos_only
 import pytest
-
-from cole_voice_lab.errors import VoiceLabError
-from cole_voice_lab.registry import ReviewedBuildToolchainLock, ReviewedBuildToolWheelLock
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 
@@ -235,65 +231,7 @@ def test_shell_scripts_parse_and_capture_builder_is_offline_by_default(tmp_path:
     assert r"%%s  %%s\\\\n" in builder
 
 
-def test_reviewed_wheel_builder_is_executable_and_toolchain_tamper_fails(
-    tmp_path: Path,
-) -> None:
-    script = REPOSITORY / "scripts/build-reviewed-wheelhouse"
-    assert stat.S_IMODE(script.stat().st_mode) == 0o755
-    assert script.read_bytes().startswith(b"#!/bin/sh\n")
-    help_result = _run(str(script), "--help")
-    assert help_result.returncode == 0, help_result.stderr
-
-    namespace = runpy.run_path(str(script))
-    verify_wheelhouse = namespace["_verify_toolchain_wheelhouse"]
-    verify_python = namespace["_verify_build_python"]
-    payloads = {
-        "packaging": b"packaging tool wheel",
-        "setuptools": b"setuptools tool wheel",
-        "wheel": b"wheel build tool",
-    }
-    locks = tuple(
-        ReviewedBuildToolWheelLock(
-            package=package,
-            version="1.0",
-            source_url=f"https://files.pythonhosted.org/packages/{package}.whl",
-            filename=f"{package}-1.0-py3-none-any.whl",
-            size_bytes=len(payload),
-            sha256=hashlib.sha256(payload).hexdigest(),
-        )
-        for package, payload in payloads.items()
-    )
-    python = tmp_path / "python3.12"
-    python.write_bytes(b"reviewed python executable")
-    python.chmod(0o700)
-    toolchain = ReviewedBuildToolchainLock(
-        build_python="CPython 3.12.12",
-        build_python_sha256=_sha256(python),
-        tool_wheels=locks,
-    )
-    verify_python.__globals__["_python_identity"] = lambda _path: "CPython 3.12.12"
-    assert verify_python(python, toolchain) == python
-    python.write_bytes(b"tampered python executable")
-    with pytest.raises(VoiceLabError, match="does not match"):
-        verify_python(python, toolchain)
-
-    wheelhouse = tmp_path / "toolchain"
-    wheelhouse.mkdir()
-    with pytest.raises(VoiceLabError, match="membership mismatch"):
-        verify_wheelhouse(wheelhouse, toolchain)
-    for lock in locks:
-        (wheelhouse / lock.filename).write_bytes(payloads[lock.package])
-    assert verify_wheelhouse(wheelhouse, toolchain) == wheelhouse
-    extra = wheelhouse / "extra.whl"
-    extra.write_bytes(b"extra")
-    with pytest.raises(VoiceLabError, match="membership mismatch"):
-        verify_wheelhouse(wheelhouse, toolchain)
-    extra.unlink()
-    first = wheelhouse / locks[0].filename
-    first.write_bytes(b"rebound packaging tool")
-    with pytest.raises(VoiceLabError, match="bytes do not match"):
-        verify_wheelhouse(wheelhouse, toolchain)
-
+def test_capture_kit_builder_installs_its_build_tools_hash_locked_and_offline() -> None:
     builder = (REPOSITORY / "scripts/build-capture-kit").read_text()
     assert "capture-kit-build.artifacts.txt" in builder
     assert "capture-kit-runtime.artifacts.txt" in builder

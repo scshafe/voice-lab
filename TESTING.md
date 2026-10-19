@@ -61,10 +61,9 @@ final WAV frames before publication. UI tests cover immediate startup/stop cues,
 frozen clocks during slow stop/abort, safe error recovery, and preserved prompt
 locks. The independent abandoned-take watchdog remains wall-clock based.
 
-Runtime integrity unit tests use temporary interpreter/formula files and mocked
-OS probes. The production lock verifier still checks their complete bytes and
-rejects changed interpreter, dependency, import-path, and OS evidence. Running
-these tests does not require the mini's exact installed Homebrew Python.
+The runtime record tests (`tests/test_runtime_integrity_edges.py`) check the receipts the
+retired bake-off copied into its audition runs and the tree and Mach-O helpers the
+recording service's runtime receipt is made with, on temporary files and mocked probes.
 
 `scripts/verify` is the authoritative local gate. It runs:
 
@@ -122,11 +121,11 @@ tests do not open a real browser, request microphone permission, invoke capture
 hardware, or touch the machine's private asset root. Safari/Chrome playback and
 the physical UMIK-1 path remain the unchecked runbook acceptance gate.
 
-The synthetic audition suite verifies all five candidate routes without loading
-weights: immutable input/source hashes, path confinement, fresh-process worker
-invocations, structured failures, normalization evidence, and exact-digest
-resume. Real smoke results are a separate operator gate, never a unit-test side
-effect.
+The audition record tests (`tests/test_audition.py`) write a stored audition run by hand
+(`tests/audition_fixtures.py`, which blind review's tests use too) and check that it
+validates without a registry and that every digest-coherent rewrite of its evidence is
+refused. The bake-off that wrote such runs is retired (D-057). Real smoke results are a
+separate operator gate, never a unit-test side effect.
 
 Library-vault tests cover the storage contracts and their error table
 (`tests/test_storage_contracts.py`), the local store's root refusals, locks and

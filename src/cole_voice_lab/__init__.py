@@ -3,7 +3,6 @@
 from .models import (
     AudioFileEvidence,
     AudioSpec,
-    CandidateSpec,
     CaptureManifest,
     ExperimentRequest,
     ExperimentResult,
@@ -15,7 +14,6 @@ from .models import (
 __all__ = [
     "AudioFileEvidence",
     "AudioSpec",
-    "CandidateSpec",
     "CaptureManifest",
     "ExperimentRequest",
     "ExperimentResult",

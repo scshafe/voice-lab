@@ -27,10 +27,10 @@ private asset root (mode 0700)
                   library identity, binding, destination approvals, generation
                   state, ledger, manifest copies and request log (never copied
                   to a vault, never restored from one)
-  experiments/    plans, raw renders, normalized renders, run evidence
+  experiments/    the retired bake-off's audition runs (D-057), read by blind review
   evaluations/    blinded indices, listening scores, reveals, verdicts
-  models/         shared model cache and immutable lock evidence
-  runtimes/       isolated Python environments/source checkouts
+  models/         the retired bake-off's model snapshots (D-057)
+  runtimes/       the retired bake-off's Python environments (D-057)
   tmp/            same-filesystem atomic staging
 ```
 
@@ -52,14 +52,11 @@ CaptureSession ── finalize/QC ──> CaptureManifest + manifest digest
                          reference/dataset derivations
                                        │
                                        ▼
-ExperimentPlan ──> isolated WorkerRequest/WorkerResult ──> normalization
+                         fine-tune ──> run ──> benchmark (D-049)
                                        │
-                                       ├── automatic diagnostics
-                                       └── blinded listening package
-                                                  │
-                                                  ▼
-                                Verdict (Cole); the newest finished run is the voice release,
-                                unless he pins another (D-055)
+                                       ▼
+                                the newest finished run is the voice release,
+                                unless Cole pins another (D-055)
 ```
 
 ## Storage and vault
@@ -121,16 +118,9 @@ bound and no vault host has been started.
 - Capture hosts are not trusted to declare correctness; the mini re-hashes and
   re-inspects every accepted file.
 - Transport encryption does not replace the content manifest.
-- Worker processes are dependency isolation boundaries, not security sandboxes.
-- The audition orchestrator persists a prompt-suite-bound immutable matrix,
-  runs one isolated installed worker subprocess at a time, and resumes only
-  after rehashing the full result/evidence chain.
-- A model cache is untrusted until its resolved revision and relevant artifact
-  hashes have been captured.
-- Seed-VC source performances are path-, byte-count-, and SHA-256-bound in the
-  worker request and rechecked before and after inference.
-- Model eviction is an explicit, digest-confirmed deletion of one verified
-  source-ID directory and is serialized against active workers.
+- Model worker processes are dependency isolation boundaries, not security sandboxes.
+- Blind review rehashes a stored audition run's full result/evidence chain before it
+  builds, verifies or aggregates from it.
 - Static review pages receive blinded audio indices, never the reveal mapping.
 - A vault host is not trusted with plaintext: every blob is sealed on the Mac
   under a key never sent to the vault. Sealing hides content, not sizes or times.
