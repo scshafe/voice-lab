@@ -13,5 +13,6 @@ Before using any documented SSH value, verify the mini's host-key fingerprint
 out of band. Keep private keys and credentials outside this repository.
 
 There is no consent template or consent command any more (D-050): Cole's standing
-decision permits his own voice for the bake-off, and only references of the pinned
-subject (`cole-self`) can be published.
+decision permits his own voice for evaluation, and only references of the pinned
+subject (`cole-self`) can be published. The bake-off's candidate registry and model-source
+lock (`candidates.toml`, `model-sources.lock.json`) were retired with its runtimes (D-057).

@@ -16,10 +16,12 @@ D-044.)
 - Permission-restricted asset layout, consent/provenance records, immutable raw
   storage, reference selection, and derived-dataset boundaries.
 - Isolated workers for Qwen3-TTS 1.7B Base, Chatterbox Turbo, Chatterbox
-  multilingual V3, F5-TTS, and Seed-VC.
+  multilingual V3, F5-TTS, and Seed-VC (retired with the Mac's bake-off on 2026-10-19,
+  D-057).
 - Reproducible experiment plans, identical direct-TTS trials, separate
   voice-conversion trials, audio normalization, optional ASR/speaker metrics,
-  static blind review, and a machine-readable verdict.
+  static blind review, and a machine-readable verdict (the bake-off's, retired by D-057;
+  blind review stays for the audition runs it left).
 - A checksum-bound voice release, released automatically for the newest finished run or
   pinned by Cole, the base voice until one exists, and speech for registered tailnet callers
   (D-045, D-046, D-055; docs/SPEECH_API.md).
@@ -43,10 +45,11 @@ D-044.)
 3. Transfer remains a dry run by default and addresses an explicit Tailnet host
    and explicit landing path.
 4. Every candidate passes a dependency/readiness probe before generation; every
-   real render records immutable model and environment identity.
+   real render records immutable model and environment identity (the bake-off's gate,
+   retired with it by D-057).
 5. A bake-off cannot start without checksum-valid references of the pinned subject
    (`cole-self`; consent records are retired, D-050), held-out prompts, and enough
-   free disk for the selected candidate.
+   free disk for the selected candidate (retired with the bake-off, D-057).
 6. Blind ordering is deterministic but hides candidate identity; reveal and
    aggregation are reproducible from saved scoring evidence.
 7. A render uses only the current voice, the newest voice release of the pinned subject
@@ -58,4 +61,5 @@ D-044.)
 
 Do not record the full corpus until the five-minute pilot passes both automated
 QC and a headphone review. Do not fine-tune until the zero-shot bake-off shows a
-material, repeatable identity or stability gap.
+material, repeatable identity or stability gap. (Retired with the bake-off on 2026-10-19,
+D-057: fine-tuning had already run on the Mac.)

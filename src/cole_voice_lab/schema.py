@@ -52,12 +52,10 @@ from .intake_publisher import IntakeAcceptanceRecord, IntakeRefusalRecord
 from .library_replication_service import VAULT_SUPERVISOR_SCHEMA_MODELS
 from .model_comparison import ModelComparison
 from .models import (
-    CandidateSpec,
     CaptureManifest,
     ExecutedCodeEvidence,
     ExperimentRequest,
     ExperimentResult,
-    ModelLockEntry,
     PromptSuite,
     QcReport,
     WorkerModelEvidence,
@@ -85,7 +83,6 @@ from .recording_packages import RECORDING_PACKAGE_SCHEMA_MODELS
 from .recording_recovery import RecordingLegacyContinuation
 from .recording_takes import RECORDING_TAKE_SCHEMA_MODELS
 from .references import HeadphoneReviewEvidence, ReferenceManifest
-from .registry import CandidateConfiguration, ModelSourcesLock
 from .runtime import LocalSourceManifest, RecordingPythonRuntimeReceipt, RuntimeInstallReceipt
 from .speech.config import SpeechConfig
 from .speech.contracts import SPEECH_SCHEMA_MODELS
@@ -141,8 +138,6 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "blind-review-public-package": PublicReviewManifest,
     "blind-reveal-map": RevealMap,
     "blind-score-sheet": ScoreSheet,
-    "candidate-configuration": CandidateConfiguration,
-    "candidate-spec": CandidateSpec,
     "capture-manifest": CaptureManifest,
     "capture-continuity": CaptureContinuityEvidence,
     "capture-ready": ReadyMarker,
@@ -171,8 +166,6 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "hosted-transfer-approval": HostedTransferApproval,
     "intake-receipt": IntakeReceipt,
     "local-source-manifest": LocalSourceManifest,
-    "model-lock-entry": ModelLockEntry,
-    "model-sources-lock": ModelSourcesLock,
     "pilot-gate": PilotGateApproval,
     "portaudio-continuity": PortAudioContinuityEvidence,
     "prompt-suite": PromptSuite,

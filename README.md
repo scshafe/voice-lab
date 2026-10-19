@@ -5,8 +5,9 @@ Private, local-first infrastructure for:
 1. capturing a checksum-manifested voice corpus on a MacBook;
 2. transferring it over the Tailnet into a fail-closed Mac mini intake;
 3. building reference clips and versioned datasets without modifying raw audio;
-4. running a reproducible, blind comparison of Qwen3-TTS, Chatterbox Turbo,
-   Chatterbox multilingual V3, F5-TTS, and Seed-VC; and
+4. comparing fine-tuned model families by training cost, inference benchmarks and blind
+   listening (D-049; the Mac's zero-shot bake-off of five candidates was retired on
+   2026-10-19, D-057); and
 5. speaking with the newest voice release of Cole's voice (the base voice until a
    fine-tuned run exists), for callers he registers on the tailnet (D-044 to D-047,
    D-055; [docs/SPEECH_API.md](docs/SPEECH_API.md)).
@@ -14,8 +15,7 @@ Private, local-first infrastructure for:
 ```text
 MacBook capture -> checksum-bound READY package -> Tailnet landing zone
     -> verified immutable raw store -> references/derived datasets
-    -> isolated candidate workers -> normalized outputs + metrics
-    -> blind review -> fine-tune -> voice release (newest run, or Cole's pin) -> speech jobs
+    -> fine-tune -> voice release (newest run, or Cole's pin) -> speech jobs
 ```
 
 The next shape of the project, with voice-journey merged in, the backend on the PC,
@@ -34,8 +34,8 @@ repository guard.
 Only Cole's own voice is synthesized. His standing decision (D-050) permits it for
 fine-tuning, listening, assistant speech and benchmarks on his own hardware, so no
 consent record is approved or checked. The subject is pinned in code to `cole-self`:
-voice release designation, the speech API, the model benchmark and the zero-shot
-bake-off (references, datasets, workers) refuse any other. The one other voice the
+voice release designation, the speech API, the model benchmark, reference publication
+and datasets refuse any other. The one other voice the
 speech API uses is the base voice, F5-TTS's public reference clip on the pinned base
 weights, while no fine-tuned run exists (D-055).
 
@@ -99,9 +99,6 @@ voice-lab intake validate <mini-private-root>/incoming/cole-pilot-001
 voice-lab intake accept --asset-root <mini-private-root> \
   --session-id cole-pilot-001
 voice-lab reference --help
-voice-lab models list
-voice-lab models verify-registry
-voice-lab audition --help
 voice-lab blind --help
 ```
 
@@ -135,15 +132,9 @@ with one command each. See [docs/CORPUS_STORE.md](docs/CORPUS_STORE.md).
 preview, copy/paste approval of its exact `plan_sha256`, and all execution gates:
 `--live-plan --execute --allow-network --approved-plan-sha256 <digest>`. The
 destination is restricted to the primary mini Tailnet IP or its single reviewed
-alias; arbitrary public hosts are not configurable. Model provisioning is
-likewise a plan unless both `--execute --allow-downloads` are supplied.
-Audition execution is offline, resumable, and requires its own `--execute`;
-each selected runtime also requires the exact reviewed
-`--runtime-receipt RUNTIME_ID=SHA256` binding printed by preparation. Completed
-trials retain their runtime receipt and source-integrity preimages under the
-experiment so status and blind review remain verifiable after cache eviction.
-candidate snapshots can only be evicted with an exact manifest digest and two
-destructive confirmation flags.
+alias; arbitrary public hosts are not configurable. Runtime provisioning
+(`finetune provision-runtime`) is likewise a plan unless both
+`--execute --allow-downloads` are supplied.
 
 The CLI authors intake, reference-review and blind-review evidence. It does
 **not** choose a winner. ChloeSpeech, the promotion manifest and its handoff were

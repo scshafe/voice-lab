@@ -27,7 +27,6 @@ from cole_voice_lab.models import (
     ExperimentRequest,
     ExperimentResult,
     FileByteEvidence,
-    ModelLockEntry,
     Prompt,
     PromptSuite,
     QcReport,
@@ -362,25 +361,7 @@ def test_qc_evidence_is_finite_unique_and_status_consistent() -> None:
         )
 
 
-def test_model_lock_and_worker_paths_have_explicit_semantics() -> None:
-    with pytest.raises(ValidationError, match="timezone"):
-        ModelLockEntry(
-            candidate_id="qwen-base-bf16",
-            model_id="model/repo",
-            model_revision="a" * 40,
-            code_revision="b" * 40,
-            resolved_at=datetime(2026, 8, 17),
-            files={"model.safetensors": "c" * 64},
-        )
-    with pytest.raises(ValidationError, match="parent"):
-        ModelLockEntry(
-            candidate_id="qwen-base-bf16",
-            model_id="model/repo",
-            model_revision="a" * 40,
-            code_revision="b" * 40,
-            resolved_at=datetime(2026, 8, 17, tzinfo=UTC),
-            files={"../model.safetensors": "c" * 64},
-        )
+def test_worker_paths_have_explicit_semantics() -> None:
     with pytest.raises(ValidationError, match="absolute"):
         ReferenceEvidence(
             path="references/ref.wav",

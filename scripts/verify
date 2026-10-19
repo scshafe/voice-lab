@@ -1,8 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Verification must not mutate the Homebrew Python prefix whose complete tree
-# is checked against the immutable runtime lock by the test suite.
+# Verification writes no bytecode beside the sources and runtimes it checks.
 export PYTHONDONTWRITEBYTECODE=1
 # Exercise real native widgets without opening operator windows or audio devices.
 export QT_QPA_PLATFORM=offscreen

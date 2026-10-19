@@ -167,15 +167,12 @@ and out-of-order recording through required room tones to finalized READY.
 Native AVAudioPlayer loaded and sought synthetic 24-bit PCM without calling play.
 Those earlier synthetic acceptance checks did not open a microphone or play audio.
 
-The pilot-to-bake-off code path is implemented and verified with synthetic
-fixtures: capture, transfer planning, intake, consent, references, datasets,
-candidate/source locks, isolated workers, normalization and blinded review. The
-CLI persists and resumes the all-candidate audition matrix, runs one candidate at
-a time, and provides digest-confirmed model-cache eviction for the constrained
-mini. It does not author the human listening verdict. Real voice trials begin
-only after Cole records and personally approves the pilot scope. (Promotion and
-the ChloeSpeech handoff were removed on 2026-10-11, D-044; the voice release and
-the speech API replace them, D-045 and D-046.)
+The Mac's zero-shot bake-off (its candidate registry and locks, isolated workers,
+normalization, and the `models` and `audition` commands) was retired on 2026-10-19 with its
+MLX and MPS runtimes (D-057). Blind review stays, and still reads any audition run the
+bake-off left on disk. (Promotion and the ChloeSpeech
+handoff were removed on 2026-10-11, D-044; the voice release and the speech API replace
+them, D-045 and D-046.)
 
 The capture-console increment is implemented and synthetic-tested end to end.
 `voice-lab capture console` wraps the resumable native-FFmpeg take engine with
@@ -185,35 +182,10 @@ explicit retake forensics outside the session, final summary, and the existing
 `capture run` remains available. No real microphone, browser, capture host, or
 private asset root was used to make this implementation claim.
 
-Integrity hardening now binds the held-out prompt suite and equal candidate
-matrices on every load, launches installed workers without inherited import
-paths, hash-locks every runtime artifact (including transitive distributions),
-records before/after executable byte evidence, requires a completely clean
-pinned Seed checkout, seals each installed runtime tree and exact Homebrew
-CPython/formula/macOS closure, and rehashes the complete
-result/evidence/receipt chain before resume or status reports completion.
-Every new trial requires an externally retained resident-receipt digest and
-copies its source-manifest/Git-integrity preimages so historical validation
-remains complete after deliberate cache eviction.
-
-## Candidate matrix
-
-- Qwen3-TTS 1.7B Base through MLX-Audio
-- Chatterbox Turbo
-- Chatterbox multilingual V3 through MLX-Audio
-- F5-TTS v1 Base (non-commercial pretrained-weight caveat)
-- Seed-VC (separate voice-conversion track)
-
 ## Known host constraint
 
 The Mac mini currently has limited free disk. Runtime planning must reserve
-operating-system headroom and may require sequential model caching or a separate
-approved runner before all weight sets can coexist.
-
-All five candidates use the installed CPython 3.12 base. Seed-VC's dependency
-graph now resolves as a complete macOS-arm64 binary lock on 3.12, but this is a
-compatibility hypothesis until its pinned checkout, weights, and MPS path pass
-a real cold/warm smoke. No release claim treats lock resolution as that smoke.
+operating-system headroom.
 
 ## Deployment gates still human/external
 
@@ -230,7 +202,6 @@ a real cold/warm smoke. No release claim treats lock resolution as that smoke.
 - Install and denial-test the pinned write-only `rrsync` receiver/key lane.
 - Install the verified application wheel non-editably under the content-addressed
   mini release root, seal its install receipt, and only then render/load intake.
-- Run candidate downloads/renders explicitly and sequentially.
 - Register a speech caller (docs/SPEECH_API.md §11; no consent record is needed since
   D-050). No designation is needed (D-055): the base voice speaks until a finished run of
   Cole's is released automatically.

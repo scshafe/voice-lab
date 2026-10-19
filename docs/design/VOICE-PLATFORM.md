@@ -141,7 +141,7 @@ These are requirements of this design, not proposals:
 | Raw store | Asset root on the Air (working library) and the Mini (intake root) | `/data/voice-lab/lab/raw/` on the PC: content-addressed, read-only, its own btrfs subvolume |
 | Voice Memos corpus | Mirror sender on the Mac mini (launchd, Full Disk Access) → `rrsync` drop on the laptop | Sender on the Air → `rrsync` drop on the PC |
 | Analysis | Node pipeline (`watchd`) + one Python feature extractor, in the laptop container | Python `journey` package; pipeline jobs on the PC |
-| Model bake-off and fine-tuning | MLX (Qwen3-TTS, Chatterbox) and MPS (F5-TTS, Seed-VC) on Apple silicon, one candidate at a time | PyTorch on ROCm on the PC's `gfx1030`, same worker contract; per-model spikes; Mac runtimes kept as a fallback |
+| Model bake-off and fine-tuning | MLX (Qwen3-TTS, Chatterbox) and MPS (F5-TTS, Seed-VC) on Apple silicon, one candidate at a time | PyTorch on ROCm on the PC's `gfx1030`, same worker contract; per-model spikes; the Mac runtimes retired on 2026-10-19 (D-057) |
 | Blind review | Static review pages and the CLI | Blind review screen in the desktop app (blinded indices only); the CLI stays |
 | Promotion | CLI validates a reviewed manifest and writes the handoff | Retired 2026-10-11 (D-044): the newest finished run is released by itself, or Cole pins one by CLI on the PC (D-045, D-055), and the speech API renders with it for registered callers (D-046) |
 | UI | Swift app (about 24k lines with its tests), legacy Qt Widgets desktop, React SPA (four views) | One `scshafe-qt` app + a server-rendered read-only web view |
@@ -472,9 +472,8 @@ record the design as it was, and D-050's standing decision replaces them.
   - the app re-checks the node identity before each upload session, as the vault
     client does, and writes a chained ledger entry naming the session's manifest
     digest before the first byte;
-  - it covers only Cole's own PC. Any other destination of Cole's own, such as the
-    Air fallback of [§7.3](#73-what-changes-in-the-matrix), still needs the separate
-    per-payload approval. No hosted GPU or other cloud destination is part of this
+  - it covers only Cole's own PC. Any other destination of Cole's own still needs the
+    separate per-payload approval. No hosted GPU or other cloud destination is part of this
     design at all (D-028).
 - **Between Cole's hosts.** Moving voice-journey's data from the laptop to the PC
   (phase 3) is a one-off transfer under the existing rule: one approval naming the
@@ -923,7 +922,8 @@ Facts, accessed 2026-10-06:
 
 **No model has a reported gfx1030 run.** Each gets a spike (S-2 to S-5): install the
 pinned torch ROCm wheel in an isolated runtime, SDPA only, fp16 then fp32 if bf16
-hangs, run the existing automated smoke gate (`docs/MODEL_MATRIX.md`), and record
+hangs, run an automated smoke gate (the Mac bake-off's, `docs/MODEL_MATRIX.md`, was retired
+with it on 2026-10-19, D-057), and record
 real-time factor and peak VRAM in the worker evidence.
 
 ### 7.3 What changes in the matrix
@@ -948,6 +948,9 @@ real-time factor and peak VRAM in the worker evidence.
      another host, so each run needs a transfer approval naming the Air and the
      payload digest, under the existing rule;
   4. otherwise the candidate is dropped from the matrix, with the reason recorded.
+
+  Amended 2026-10-19 (D-057): the Air's MLX and MPS runtimes are retired, so the third
+  fallback is gone; a candidate that fails on the GPU and on the PC's CPU is dropped.
 
   **No hosted GPU**, rented or free (D-028): a candidate that would need one is
   dropped instead. Results from different hosts are never ranked in one bake-off.
@@ -1169,6 +1172,11 @@ Three independently shippable steps:
   this phase; they render nothing until the ROCm runtime (S-2) and a voice release exist.
   Amended 2026-10-12 (D-050): consent records, their purposes and the `home-host` boundary
   are retired; nothing in this phase builds or checks them.
+  Amended 2026-10-19 (D-057): the Mac's bake-off (its registry, configuration, workers,
+  runtime locks and `models`/`audition` commands) is retired. A bake-off on the PC is new
+  work, with its own locks, registry and workers; blind review keeps reading the audition
+  runs already on disk. The Mac's fine-tune runtime (`f5-tts-finetune-1.1.22-mps`, the Swift
+  app's Fine-tune and Speak) stays until this phase lands, and is retired with it.
 - **Acceptance:**
   - each candidate passes the automated smoke gate on `gfx1030` with evidence
     (code revision, weight revision, environment fingerprint, reference digest,
@@ -1190,7 +1198,7 @@ Three independently shippable steps:
     allowlist;
   - synthesis time on `gfx1030` is recorded for short and maximum-length texts.
 - **Rollback:** the Air's MLX and MPS runtimes stay registered and runnable; nothing
-  evicts them.
+  evicts them. Amended 2026-10-19 (D-057): they are retired, so phase 5 has no Mac rollback.
 
 ### Phase 6 — publish and retire
 
@@ -1217,7 +1225,7 @@ home being written, one kept away from the house, swapped on his schedule (§4.3
 
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
-| A model does not run on gfx1030 (unsupported consumer card, Arch not an official OS) | Medium | A candidate leaves the GPU path | Spikes before phase 5 work; fp32 → CPU → Air fallbacks, never a hosted GPU; the matrix records why |
+| A model does not run on gfx1030 (unsupported consumer card, Arch not an official OS) | Medium | A candidate leaves the GPU path | Spikes before phase 5 work; fp32 → CPU fallbacks (the Air's too until D-057), never a hosted GPU; the matrix records why |
 | PortAudio cannot give D-015-grade continuity evidence | Medium | Prompted capture stays on the Swift app on macOS | Spike S-1 first; the Swift app stays until the acceptance matrix passes |
 | The PC is a workstation: reboots, desktop use, GPU contention | High | Delayed intake and jobs | The app's spool makes the PC being off a delay, not a loss; one GPU slot; jobs never start during a capture session |
 | Single HDD holds the working copy and the fleet's backups | Medium | Loss of the disk | Sealed vault copy on the laptop in phase 2, before the Mini path is retired; the Air's offsite copy in phase 3 |
@@ -1293,6 +1301,7 @@ record the other answers.
   historical. Fallbacks: fp32 on the GPU, the PC's CPU, the Air's Apple runtimes with
   a transfer approval, else dropped with the reason. No hosted GPU. Amends D-007 (the
   official Chatterbox runtime is now the evaluated one) and D-008 (VRAM, not Metal).
+  Amended by D-057 (2026-10-19): the Apple runtimes are retired, so there is no Air fallback.
 - **D-027 — MIT licence** (decisions 1 and 4): copyright "2026 voice-lab
   contributors"; voice-journey's code becomes MIT on import and stays in the public
   repository.

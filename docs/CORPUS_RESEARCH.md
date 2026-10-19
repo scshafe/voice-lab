@@ -150,7 +150,8 @@ The documented hardware is a 24 GB M4 MacBook Air and a separate 16 GiB Apple
 Silicon Mac mini inference target. Local inference support does not establish
 training feasibility, memory fit, speed, or quality. The repository has an
 inference/bake-off shortlist and dataset contracts, not a validated Mac
-fine-tuning runner. [Current matrix](MODEL_MATRIX.md).
+fine-tuning runner. (The bake-off's matrix, `docs/MODEL_MATRIX.md`, was retired with it on
+2026-10-19, D-057; git history keeps it.)
 
 - Qwen3-TTS Base 1.7B, with 0.6B as a resource fallback, is a promising candidate
   to investigate. Official single-speaker SFT exists and recommends a consistent

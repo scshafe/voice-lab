@@ -34,6 +34,9 @@ Qwen3-TTS, Chatterbox, and F5-TTS participate in the direct-TTS track. Seed-VC
 participates in a performed-source voice-conversion track and is not silently
 ranked as if it generated prosody from text.
 
+Amended 2026-10-19 (D-057): the Mac's bake-off and its five candidates' runtimes are retired.
+The rule stands for any later bake-off, and for blind review of the audition runs on disk.
+
 ## D-006 — Pilot gate before corpus
 
 The first artifact is a roughly five-minute pilot. The full 90-minute training
@@ -56,6 +59,9 @@ Amended 2026-10-11 (D-044, D-045): ChloeSpeech, its adapters and promotion are r
 the provider-identity part of this decision no longer applies. The rule that the lab never
 relabels an engine's output or fabricates watermark evidence stands for bake-off evidence.
 
+Amended 2026-10-19 (D-057): the MLX runtimes are retired with the Mac's bake-off; their results
+remain historical evidence.
+
 ## D-008 — Sequential candidate residency
 
 The 16 GiB mini runs one candidate in one fresh subprocess at a time. Model
@@ -67,6 +73,9 @@ Amended 2026-10-06 (D-026): when the model workers move to the PC, the rule stay
 its reason changes: one candidate at a time within the RX 6900 XT's 16 GB of VRAM and a
 single GPU slot shared with fine-tuning and Speak. Process exit remains the release
 boundary.
+
+Amended 2026-10-19 (D-057): the mini's candidates are retired with the Mac's bake-off; the rule
+stands for the PC's GPU slot.
 
 ## D-009 — Loopback capture control and fail-closed resume
 
@@ -755,6 +764,10 @@ reason recorded. No hosted GPU is used (D-028).
 Amends D-007 (the official Chatterbox runtime is now the evaluated one) and D-008 (VRAM,
 not Metal, is the residency constraint).
 
+Amended 2026-10-19 (D-057): the Air's Apple runtimes are retired, so the third fallback is gone;
+a candidate that fails on the GPU and on the PC's CPU is dropped. A bake-off on the PC is new
+work, with its own locks, registry and workers.
+
 ## D-027 — MIT licence
 
 Cole decided on 2026-10-06 (design §13, decisions 1 and 4) that voice-lab is released
@@ -1310,6 +1323,9 @@ renderer. It generates speech itself, with Cole's own voice (D-045), for callers
 Amended 2026-10-12 (D-050): consent records are retired; no consent purpose is read, granted or
 required, so the retired purpose's readability no longer matters.
 
+Amended 2026-10-19 (D-057): the bake-off itself is retired (its registry, workers, runtimes and
+the `models` and `audition` commands). Blind review stays, with the audition records it reads.
+
 ## D-045 — The voice is Cole's own clone, designated as a voice release
 
 Cole decided on 2026-10-11: "The speech generation should explicitly use my personal voice
@@ -1687,6 +1703,10 @@ processes can just be handled more smoothly?" After the options were laid out, h
 Amended 2026-10-16 (D-055): the pinned subject remains the safeguard for fine-tuned runs, and
 the newest release speaks without a designation step; the base voice speaks while none exists.
 
+Amended 2026-10-19 (D-057): the bake-off is retired, so an unfinished audition plan written
+before D-050 can no longer finish its remaining trials; its records and those of every finished
+trial still validate, and blind review still reads them.
+
 ## D-051 — Recording v1: the owner's decisions
 
 Recorded 2026-10-12. The owner's answers to "what is this application", and the plan they set
@@ -2050,3 +2070,63 @@ records exactly as before.
 - **Amends** D-021, D-039, D-052 and D-053 (dated notes) and AGENTS.md's mission. It is built in
   four steps after this record, one PR each: the v2 contract, the per-profile views, the panel's
   audience, and the bundle with its fixture.
+
+## D-057 — The Mac's zero-shot bake-off is retired
+
+Recorded 2026-10-19, from the owner's decision of that day, relayed by the owner session: the
+Mac's zero-shot bake-off runtimes (`f5-tts-1.1.22-mps`, `mlx-audio-0.5.0` and
+`seed-vc-51383efd-mps`) are retired with their locks, registry entries, code paths, tests and
+docs. Their six lock files carried about 140 of the repository's open Dependabot alerts (140 by
+GitHub's advisory database on the day: transformers 4.46.3, torch, hydra-core, accelerate, pip,
+urllib3, protobuf, python-dotenv and multidict), in runtimes nothing on the PC uses.
+
+- **Nothing on the PC or in the desktop app depends on them.** This was checked on the day:
+  - The PC's speech API, job runner and benchmark run the ROCm runtime
+    (`f5-tts-finetune-1.1.22-rocm7.2`), which `deploy/` provisions with `--target linux-rocm`.
+  - No module the PC deploys, and nothing in the desktop capture app (voice-lab-desktop),
+    imports the registry, the workers, the planner, normalization or the bake-off's runtime
+    provisioning.
+  - No Swift code names the bake-off.
+- **Retired: the zero-shot bake-off** (D-005, D-006). Git history keeps all of it:
+  - the candidate registry (`registry.py`, `config/candidates.toml`,
+    `config/model-sources.lock.json`) and its four schemas (`candidate-configuration`,
+    `candidate-spec`, `model-lock-entry`, `model-sources-lock`);
+  - the six lock files, two per runtime (`<runtime>.txt` and `<runtime>.artifacts.txt`);
+  - the workers for Qwen3-TTS 1.7B Base, Chatterbox Turbo, Chatterbox multilingual V3, F5-TTS and
+    Seed-VC;
+  - from `runtime.py`, the bake-off's provisioning, sealing, eviction and worker launch; the
+    planner (`experiments.py`), normalization and the diagnostic metrics;
+  - the `voice-lab models` and `voice-lab audition` commands, `scripts/build-reviewed-wheelhouse`
+    and `docs/MODEL_MATRIX.md`.
+- **What is lost: the Mac's bake-off comparisons.** The five-candidate comparison can no longer
+  be planned, prepared or run. That comparison was Qwen3-TTS, Chatterbox Turbo and Chatterbox V3
+  through MLX, F5-TTS on MPS, and Seed-VC's voice-conversion track. Also gone:
+  - D-026's third fallback, the Air's Apple runtimes for a candidate that fails on the PC's GPU;
+  - the design's phase 5 rollback to those runtimes.
+
+  A bake-off on the PC (D-026, spikes S-3 to S-5) is new work, with its own locks, registry and
+  workers. The GPU slot keeps its `audition` kind for it.
+- **Kept: blind review, and the audition records it reads.** Blind review builds, verifies and
+  aggregates only from an audition run. So a run already on disk still validates byte for byte,
+  and without a registry. That covers its plan, trial results, run manifest, worker request and
+  result, model and executed-code evidence, and the runtime receipts and source manifests it
+  copied, with their schemas. `families record --review` (D-049) still links such a review.
+  Nothing writes an audition run any more, so blind review has no new input until a PC bake-off,
+  or a blind review of fine-tuned runs, is built. The vault's classification keeps its
+  `runtimes`, `models` and `experiments` rules (Mac-only, never copied), so a pass never meets a
+  file it cannot classify. D-050's promise that an unfinished plan written before it "can still
+  finish its remaining trials" lapses: no plan can run.
+- **Kept until phase 5: the Mac's fine-tune runtime.** The owner decided the same day that
+  `f5-tts-finetune-1.1.22-mps` stays; the Swift app's Fine-tune button and Speak page run on it
+  (D-016 to D-019). It is retired when phase 5 lands, not now: that is when the PC fine-tunes on
+  the takes of its own corpus and offers Speak. Today the PC does not do the same job:
+  - its corpus selection reads a recording library, which only the Mac has, so the PC cannot
+    train on Cole's takes;
+  - it has no fine-tune job;
+  - it has no interactive Speak.
+
+  Its lock takes multidict 6.9.1 (GHSA-54p9-h82j-f925), as the PC's lock did in #96.
+- **Amends** D-005, D-007, D-008 and D-026 (the bake-off and its Apple fallback), D-044 (the
+  bake-off is no longer kept, blind review is) and D-050 (the unfinished-plan promise), with dated
+  notes. Also amended: the design (docs/design/VOICE-PLATFORM.md §2, §4, §7, phase 5, §10 and
+  §12), README, CURRENT.md, ARCHITECTURE.md, TESTING.md, PROGRESS_CONTRACT.md and RUNBOOK §6.
