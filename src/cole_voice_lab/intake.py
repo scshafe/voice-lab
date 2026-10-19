@@ -43,7 +43,7 @@ from .paths import AssetLayout, confined_path, validate_relative_path
 
 if TYPE_CHECKING:
     from .corpus_take_imports import ValidatedTakeImport
-    from .corpus_takes import ValidatedTake
+    from .corpus_takes import ValidatedProfileTake, ValidatedTake
 
 MIN_FREE_BYTES = 10 * 1024**3
 MAX_CONTROL_FILE_BYTES = 1024 * 1024
@@ -413,13 +413,13 @@ def validate_capture_package(
 
 def validate_package(
     package: Path, *, allow_intake_receipt: bool = False
-) -> ValidatedPackage | ValidatedTake | ValidatedTakeImport:
-    """A capture package, a take package (D-052) or an imported Swift take (D-053), as its
-    manifest's ``schema_version`` declares.
+) -> ValidatedPackage | ValidatedTake | ValidatedProfileTake | ValidatedTakeImport:
+    """A capture package, a take package (D-052), a v2 take package (D-056) or an imported
+    Swift take (D-053), as its manifest's ``schema_version`` declares.
 
     Params and raises: as ``validate_capture_package``,
-    ``corpus_takes.validate_take_package`` and
-    ``corpus_take_imports.validate_take_import_package``, whichever the manifest's
+    ``corpus_takes.validate_take_package``, ``corpus_takes.validate_profile_take_package``
+    and ``corpus_take_imports.validate_take_import_package``, whichever the manifest's
     ``schema_version`` selects; a manifest that cannot be read is the capture validator's to
     refuse.
     """
@@ -428,13 +428,17 @@ def validate_package(
     from .corpus_takes import (
         TAKE_IMPORT_SCHEMA,
         TAKE_SCHEMA,
+        TAKE_V2_SCHEMA,
         package_schema,
+        validate_profile_take_package,
         validate_take_package,
     )
 
     schema = package_schema(package)
     if schema == TAKE_SCHEMA:
         return validate_take_package(package, allow_intake_receipt=allow_intake_receipt)
+    if schema == TAKE_V2_SCHEMA:
+        return validate_profile_take_package(package, allow_intake_receipt=allow_intake_receipt)
     if schema == TAKE_IMPORT_SCHEMA:
         return validate_take_import_package(package, allow_intake_receipt=allow_intake_receipt)
     return validate_capture_package(package, allow_intake_receipt=allow_intake_receipt)
@@ -462,13 +466,16 @@ def _existing_session_digest(raw_directory: Path, session_id: str) -> str | None
 
 def _raw_session_id(raw_package: Path) -> str:
     """The session id of a published package: a capture session's, or a take's id (of a take
-    or an imported take: one audio digest, one take id, whichever kind published it)."""
+    of either version or an imported take: one audio digest, one take id, whichever kind
+    published it)."""
     # Both import this module.
     from .corpus_take_imports import CorpusTakeImportManifest
     from .corpus_takes import (
         TAKE_IMPORT_SCHEMA,
         TAKE_SCHEMA,
+        TAKE_V2_SCHEMA,
         CorpusTakeManifest,
+        CorpusTakeManifestV2,
         package_schema,
     )
 
@@ -476,6 +483,8 @@ def _raw_session_id(raw_package: Path) -> str:
     schema = package_schema(raw_package)
     if schema == TAKE_SCHEMA:
         return _read_canonical_model(manifest_path, CorpusTakeManifest).take_id
+    if schema == TAKE_V2_SCHEMA:
+        return _read_canonical_model(manifest_path, CorpusTakeManifestV2).take_id
     if schema == TAKE_IMPORT_SCHEMA:
         return _read_canonical_model(manifest_path, CorpusTakeImportManifest).take_id
     return _read_canonical_model(manifest_path, CaptureManifest).session_id
@@ -606,10 +615,11 @@ def _discard_verified_duplicate(stage: Path, tmp_root: Path) -> None:
 
 
 def _admit(
-    layout: AssetLayout, package: ValidatedPackage | ValidatedTake | ValidatedTakeImport
+    layout: AssetLayout,
+    package: ValidatedPackage | ValidatedTake | ValidatedProfileTake | ValidatedTakeImport,
 ) -> None:
-    """The asset root's own rules: guard #5 for a capture package, ``admit_take`` for a take,
-    ``admit_take_import`` for an imported take."""
+    """The asset root's own rules: guard #5 for a capture package, ``admit_take`` for a take
+    of either version, ``admit_take_import`` for an imported take."""
     if isinstance(package, ValidatedPackage):
         _require_intake_root(layout, package.manifest)
         return
@@ -620,6 +630,7 @@ def _admit(
     if isinstance(package, ValidatedTakeImport):
         admit_take_import(layout, package)
         return
+    # The two take versions (a new kind is a type error here, never a silent fall-through).
     admit_take(layout, package)
 
 

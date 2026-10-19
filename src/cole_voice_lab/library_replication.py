@@ -1151,15 +1151,18 @@ def _package_items(
 
     For an accepted raw session the intake receipt and the intake QC report it names are
     bound too, and the directory must be named by the manifest digest. A raw take package
-    (``corpus_takes``, D-052) binds its two files, the WAV and the continuity evidence; a raw
-    imported take (``corpus_take_imports``, D-053) binds the WAV and its four records.
+    of either version (``corpus_takes``, D-052, D-056) binds its two files, the WAV and the
+    continuity evidence; a raw imported take (``corpus_take_imports``, D-053) binds the WAV and
+    its four records.
     """
     from .capture import ReadyMarker
     from .corpus_take_imports import CorpusTakeImportManifest
     from .corpus_takes import (
         TAKE_IMPORT_SCHEMA,
         TAKE_SCHEMA,
+        TAKE_V2_SCHEMA,
         CorpusTakeManifest,
+        CorpusTakeManifestV2,
         manifest_schema,
     )
 
@@ -1178,8 +1181,12 @@ def _package_items(
         raise SourceChangedError(directory, "invalid", "is not named for the package it holds")
     expected: dict[str, tuple[str | None, int | None]]
     schema = manifest_schema(manifest_bytes) if raw else None
-    if schema == TAKE_SCHEMA:
-        take = _parse(CorpusTakeManifest, manifest_bytes, manifest_path)
+    if schema in {TAKE_SCHEMA, TAKE_V2_SCHEMA}:
+        take: CorpusTakeManifest | CorpusTakeManifestV2 = (
+            _parse(CorpusTakeManifest, manifest_bytes, manifest_path)
+            if schema == TAKE_SCHEMA
+            else _parse(CorpusTakeManifestV2, manifest_bytes, manifest_path)
+        )
         expected = {
             f"{directory}/{take.audio.path}": (take.audio.sha256, take.audio.size_bytes),
             f"{directory}/{take.continuity.path}": (

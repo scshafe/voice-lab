@@ -29,10 +29,14 @@ validates it with the same validator.
 
 ``CorpusTakeManifestV2`` is ``cole-voice-lab.corpus-take/v2`` (D-056): a take that declares its
 capture profile (``capture_profiles``) and carries its backend's evidence (``alsa_evidence``),
-in the same five files. Its WAV is what the device gave (the house panel's: 16 kHz, 2 or 6
-channels), not the canonical format. The contracts come first; until the v2 validator and
-admission join every dispatch point, intake refuses a v2 package as a capture package it
-cannot read.
+in the same five files, so the upload, the staging and the publisher carry it unchanged. Its
+WAV is what the device gave (the house panel's: 16 kHz, 2 or 6 channels, a plain 44-byte
+header), not the canonical format. ``validate_profile_take_package`` is as strict as v1's
+validator, recomputes the evidence's continuity rule, and judges the take (QC) by its
+profile's primary channel; ``admit_take`` applies the same rules to both versions. Every
+dispatch point knows v2: ``intake.validate_package``, ``_raw_session_id`` and ``_admit``,
+``corpus_take_store.record_takes``, the vault's raw source and ``recording_library`` (through
+``CORPUS_TAKE_SCHEMAS``).
 """
 
 from __future__ import annotations
@@ -51,8 +55,13 @@ from typing import Annotated, Final, Literal
 
 from pydantic import Field, StringConstraints, ValidationError, field_validator, model_validator
 
+from .alsa_evidence import (
+    ALSA_FORMAT_ENCODINGS,
+    MAX_TAKE_SECONDS,
+    MAX_TOLERANCE_NS,
+    AlsaContinuityEvidence,
+)
 from .alsa_evidence import MAX_EVIDENCE_BYTES as MAX_ALSA_EVIDENCE_BYTES
-from .alsa_evidence import MAX_TAKE_SECONDS, MAX_TOLERANCE_NS
 from .audio import (
     CANONICAL_CHANNELS,
     CANONICAL_ENCODING,
@@ -60,6 +69,7 @@ from .audio import (
     CANONICAL_SAMPLE_WIDTH_BYTES,
     WavInspection,
     inspect_canonical_wav,
+    inspect_pcm_wav,
 )
 from .canonical import (
     canonical_json_bytes,
@@ -104,7 +114,7 @@ TAKE_V2_SCHEMA: Final = "cole-voice-lab.corpus-take/v2"
 #: The Swift app's takes as the PC imports them (``corpus_take_imports``, D-053).
 TAKE_IMPORT_SCHEMA: Final = "cole-voice-lab.corpus-take-import/v1"
 #: Every package schema of the PC's corpus: its own takes, and the takes it imported.
-CORPUS_TAKE_SCHEMAS: Final = frozenset({TAKE_SCHEMA, TAKE_IMPORT_SCHEMA})
+CORPUS_TAKE_SCHEMAS: Final = frozenset({TAKE_SCHEMA, TAKE_V2_SCHEMA, TAKE_IMPORT_SCHEMA})
 AUDIO_NAME: Final = "original.wav"
 CONTINUITY_NAME: Final = "continuity.json"
 TAKE_FILES: Final = frozenset(
@@ -371,6 +381,28 @@ class ValidatedTake:
         return self.manifest.take_id
 
 
+@dataclass(frozen=True, slots=True)
+class ValidatedProfileTake:
+    """A v2 take package that passed ``validate_profile_take_package``, and what it showed."""
+
+    manifest: CorpusTakeManifestV2
+    manifest_sha256: str
+    source_qc_report: QcReport
+    source_qc_report_sha256: str
+    #: Intake's own QC of the WAV's primary channel (the persisted ``intake-qc.json`` of a
+    #: published package).
+    qc_report: QcReport
+    qc_report_sha256: str
+    ready: ReadyMarker
+    evidence: AlsaContinuityEvidence
+    _snapshot: PackageSnapshot
+
+    @property
+    def session_id(self) -> str:
+        """The id the intake protocol knows the package by: the take id."""
+        return self.manifest.take_id
+
+
 def package_schema(package: Path) -> str | None:
     """The ``schema_version`` that ``package/manifest.json`` declares, or ``None``.
 
@@ -519,26 +551,22 @@ def _require_bound_evidence(
         raise ContractError("the manifest's continuity summary disagrees with the evidence")
 
 
-def validate_take_package(package: Path, *, allow_intake_receipt: bool = False) -> ValidatedTake:
-    """Independently verify every byte and contract of a complete take package.
+def _take_controls[ManifestT: (CorpusTakeManifest, CorpusTakeManifestV2)](
+    package: Path, manifest_model: type[ManifestT], *, allow_intake_receipt: bool
+) -> tuple[PackageSnapshot, ReadyMarker, ManifestT, QcReport, str, str]:
+    """A take package's exact file set and its three control files, bound to each other.
 
-    ``allow_intake_receipt`` is for re-validating a published package in ``raw/``, which also
-    holds intake's ``intake-qc.json`` and ``intake-receipt.json``; an incoming package that
-    supplies them itself fails closed.
-    Returns: the validated take.
-    Raises: ``SecurityError`` for links, hard links, a file set other than the take's, a
-    digest or byte count that disagrees, or a package that changed while it was read;
-    ``ContractError`` for a missing READY, a contract or canonical-form failure, a WAV that is
-    not canonical, or evidence that is unsuccessful or summarized wrongly.
-    """
-    snapshot_before = _snapshot_package(package)
-    files = set(snapshot_before.files)
+    Returns: the package's snapshot, its READY marker, manifest and QC report, and the
+    manifest's and the report's digests.
+    Raises: as ``validate_take_package``."""
+    snapshot = _snapshot_package(package)
+    files = set(snapshot.files)
     if READY_NAME not in files:
         raise ContractError(f"partial take has no {READY_NAME} marker: {package}")
     expected = set(TAKE_FILES)
     if allow_intake_receipt:
         expected.update({INTAKE_QC_REPORT_NAME, RECEIPT_NAME})
-    directories = sorted(set(snapshot_before.directories) - {"."})
+    directories = sorted(set(snapshot.directories) - {"."})
     if files != expected or directories:
         raise SecurityError(
             f"take package files differ from a take's; missing={sorted(expected - files)}, "
@@ -549,7 +577,7 @@ def validate_take_package(package: Path, *, allow_intake_receipt: bool = False) 
         package / READY_NAME, ReadyMarker, max_bytes=MAX_CONTROL_FILE_BYTES
     )
     manifest = read_canonical_model(
-        package / MANIFEST_NAME, CorpusTakeManifest, max_bytes=MAX_CONTROL_FILE_BYTES
+        package / MANIFEST_NAME, manifest_model, max_bytes=MAX_CONTROL_FILE_BYTES
     )
     source_report = read_canonical_model(
         package / QC_REPORT_NAME, QcReport, max_bytes=MAX_CONTROL_FILE_BYTES
@@ -564,10 +592,33 @@ def validate_take_package(package: Path, *, allow_intake_receipt: bool = False) 
         raise ContractError("take IDs disagree across the take's evidence")
     if source_report.manifest_sha256 != manifest_sha256:
         raise SecurityError("QC report is not bound to the take's manifest")
-    if "umik-1" not in manifest.capture_device.display_name.casefold():
-        raise ContractError("take manifest does not identify the required UMIK-1 microphone")
     if [metric.path for metric in source_report.metrics] != [AUDIO_NAME]:
         raise ContractError(f"QC metrics must cover {AUDIO_NAME} exactly once")
+    return snapshot, marker, manifest, source_report, manifest_sha256, source_report_sha256
+
+
+def validate_take_package(package: Path, *, allow_intake_receipt: bool = False) -> ValidatedTake:
+    """Independently verify every byte and contract of a complete take package.
+
+    ``allow_intake_receipt`` is for re-validating a published package in ``raw/``, which also
+    holds intake's ``intake-qc.json`` and ``intake-receipt.json``; an incoming package that
+    supplies them itself fails closed.
+    Returns: the validated take.
+    Raises: ``SecurityError`` for links, hard links, a file set other than the take's, a
+    digest or byte count that disagrees, or a package that changed while it was read;
+    ``ContractError`` for a missing READY, a contract or canonical-form failure, a WAV that is
+    not canonical, or evidence that is unsuccessful or summarized wrongly.
+    """
+    (
+        snapshot_before,
+        marker,
+        manifest,
+        source_report,
+        manifest_sha256,
+        source_report_sha256,
+    ) = _take_controls(package, CorpusTakeManifest, allow_intake_receipt=allow_intake_receipt)
+    if "umik-1" not in manifest.capture_device.display_name.casefold():
+        raise ContractError("take manifest does not identify the required UMIK-1 microphone")
 
     inspection = inspect_canonical_wav(package / AUDIO_NAME)
     if (
@@ -621,8 +672,111 @@ def validate_take_package(package: Path, *, allow_intake_receipt: bool = False) 
     )
 
 
-def admit_take(layout: AssetLayout, take: ValidatedTake) -> Prompt:
-    """The PC's rules for a valid take, checked before intake publishes it.
+def _require_bound_alsa_evidence(
+    manifest: CorpusTakeManifestV2, evidence: AlsaContinuityEvidence
+) -> None:
+    if not evidence.success:
+        raise ContractError(f"the capture client did not succeed: {evidence.error or 'no reason'}")
+    audio = manifest.audio
+    spec = audio.audio
+    if (
+        evidence.wav is None
+        or evidence.wav.sha256 != audio.sha256
+        or evidence.wav.size_bytes != audio.size_bytes
+        or evidence.frames != spec.frames
+    ):
+        raise SecurityError("the continuity evidence describes other audio than original.wav")
+    if (
+        evidence.rate != spec.sample_rate_hz
+        or evidence.channels != spec.channels
+        or ALSA_FORMAT_ENCODINGS[evidence.format] != spec.encoding
+    ):
+        raise ContractError("original.wav is not in the format the PCM was opened with")
+    summary = manifest.continuity
+    if (
+        summary.pcm != evidence.pcm
+        or summary.simulated != evidence.simulated
+        or summary.started_at != evidence.started_at
+        or summary.stop_reason != evidence.stop_reason
+        or summary.tolerance_ns != evidence.tolerance_ns
+        or summary.max_abs_deviation_ns != evidence.max_abs_deviation_ns
+    ):
+        raise ContractError("the manifest's continuity summary disagrees with the evidence")
+
+
+def validate_profile_take_package(
+    package: Path, *, allow_intake_receipt: bool = False
+) -> ValidatedProfileTake:
+    """Independently verify every byte and contract of a complete v2 take package (D-056).
+
+    As strict as ``validate_take_package``: the exact file set, no links or directories,
+    canonical JSON, and every digest and byte count. The WAV is the one the manifest
+    describes, in a format its capture profile allows (the manifest's own rules), with a plain
+    44-byte header. The ALSA evidence succeeded, describes exactly this WAV and its format,
+    and passes the continuity rule the PC recomputes (``alsa_evidence``). Intake's QC is of
+    the profile's primary channel, with a desktop take's thresholds.
+    Params and returns: as ``validate_take_package``, for a v2 take.
+    Raises: ``SecurityError``, ``ContractError``: as ``validate_take_package``.
+    """
+    (
+        snapshot_before,
+        marker,
+        manifest,
+        source_report,
+        manifest_sha256,
+        source_report_sha256,
+    ) = _take_controls(package, CorpusTakeManifestV2, allow_intake_receipt=allow_intake_receipt)
+
+    inspection = inspect_pcm_wav(
+        package / AUDIO_NAME, channel=manifest.capture_profile.primary_channel
+    )
+    if (
+        inspection.sha256 != manifest.audio.sha256
+        or inspection.size_bytes != manifest.audio.size_bytes
+    ):
+        raise SecurityError(f"recording hash or byte count was tampered: {AUDIO_NAME}")
+    if inspection.audio != manifest.audio.audio:
+        raise ContractError(f"recording format evidence disagrees: {AUDIO_NAME}")
+
+    evidence = read_canonical_model(
+        package / CONTINUITY_NAME, AlsaContinuityEvidence, max_bytes=MAX_ALSA_EVIDENCE_BYTES
+    )
+    evidence_digest = sha256_file(package / CONTINUITY_NAME)
+    if evidence_digest != (manifest.continuity.sha256, manifest.continuity.size_bytes):
+        raise SecurityError(
+            f"continuity evidence hash or byte count was tampered: {CONTINUITY_NAME}"
+        )
+    _require_bound_alsa_evidence(manifest, evidence)
+
+    report, report_sha256 = take_intake_qc(
+        package,
+        take_id=manifest.take_id,
+        prompt=manifest.prompt,
+        manifest_sha256=manifest_sha256,
+        source_report_sha256=source_report_sha256,
+        inspection=inspection,
+        ready=marker,
+        published=allow_intake_receipt,
+    )
+
+    snapshot_after = _snapshot_package(package)
+    if snapshot_after != snapshot_before:
+        raise SecurityError("take package identities or bytes changed while being validated")
+    return ValidatedProfileTake(
+        manifest=manifest,
+        manifest_sha256=manifest_sha256,
+        source_qc_report=source_report,
+        source_qc_report_sha256=source_report_sha256,
+        qc_report=report,
+        qc_report_sha256=report_sha256,
+        ready=marker,
+        evidence=evidence,
+        _snapshot=snapshot_after,
+    )
+
+
+def admit_take(layout: AssetLayout, take: ValidatedTake | ValidatedProfileTake) -> Prompt:
+    """The PC's rules for a valid take of either version, checked before intake publishes it.
 
     The take's audio is real (not the simulated device's), the asset root is not a
     diagnostic root, the catalog version the take names is the one this server's store

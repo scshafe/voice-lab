@@ -42,7 +42,7 @@ from .api.contracts import (
 )
 from .canonical import canonical_json_bytes, open_regular_no_follow
 from .corpus_take_imports import ValidatedTakeImport
-from .corpus_takes import ValidatedTake
+from .corpus_takes import ValidatedProfileTake, ValidatedTake
 from .errors import SecurityError, VoiceLabError
 from .home_host import (
     HomeHostApproval,
@@ -248,7 +248,7 @@ def _fail(answer: Answer) -> VoiceLabError:
     return UploadRefused(code, detail)
 
 
-type AnyPackage = ValidatedPackage | ValidatedTake | ValidatedTakeImport
+type AnyPackage = ValidatedPackage | ValidatedTake | ValidatedProfileTake | ValidatedTakeImport
 
 
 def session_request(package: AnyPackage) -> IntakeSessionRequest:
