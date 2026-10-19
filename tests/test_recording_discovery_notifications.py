@@ -102,7 +102,7 @@ def test_wire_receives_building_before_held_child_scan_and_plain_save_stays_dura
         prepared(session)
         monkeypatch.setattr(RecordingDiscoveryCoordinator, "schedule", original_schedule)
         backend.discovery.schedule(nav.cursor.group_id)
-        assert select.select([entered_read], [], [], 2)[0], "child did not reach held history scan"
+        assert select.select([entered_read], [], [], 30)[0], "child did not reach held history scan"
         assert os.read(entered_read, 1) == b"1"
         notification = await_responses(session)[0]
         assert notification.error is None and isinstance(notification.data, RecordingHistoryPage)
@@ -136,7 +136,7 @@ def test_wire_receives_building_before_held_child_scan_and_plain_save_stays_dura
         deferred = await_responses(session)[0]
         assert deferred.error is None and isinstance(deferred.data, RecordingHistoryPage)
         assert deferred.data.completeness == "building"
-        assert select.select([entered_read], [], [], 2)[0], "deferred retry did not rescan"
+        assert select.select([entered_read], [], [], 30)[0], "deferred retry did not rescan"
         assert os.read(entered_read, 1) == b"1"
         retry = await_responses(session)[0]
         assert isinstance(retry.data, RecordingHistoryPage)

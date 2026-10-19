@@ -48,6 +48,12 @@ jobs:
           sudo apt-get install -y -q --no-install-recommends \
             libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 \
             fontconfig fonts-noto-core fonts-noto-mono
+          mkdir -p ~/.config/fontconfig
+          printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
+            '<fontconfig>' \
+            '<alias><family>sans-serif</family><prefer><family>Noto Sans</family></prefer></alias>' \
+            '<alias><family>monospace</family><prefer><family>Noto Sans Mono</family></prefer></alias>' \
+            '</fontconfig>' > ~/.config/fontconfig/fonts.conf
           fc-match sans-serif
           fc-match monospace
           python -m venv .venv
