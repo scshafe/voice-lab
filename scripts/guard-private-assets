@@ -112,10 +112,7 @@ VOICE_JOURNEY_PRIVATE_BASENAMES = {
     "latest.json",
 }
 VOICE_JOURNEY_PUBLIC_SCHEMAS = {"voice-journey.chains.v1"}
-PUBLIC_INSTANCE_SCHEMA_PREFIXES = (
-    "cole-voice-lab.model-sources-lock/",
-    "cole-voice-lab.prompt-suite/",
-)
+PUBLIC_INSTANCE_SCHEMA_PREFIXES = ("cole-voice-lab.prompt-suite/",)
 SENSITIVE_JSON_KEYS = {
     "accepted_audio_sha256",
     "consent_evidence_sha256",

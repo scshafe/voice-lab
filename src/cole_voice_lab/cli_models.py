@@ -187,7 +187,7 @@ def _compare(options: argparse.Namespace) -> int:
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Add ``families`` to ``commands`` (``models`` is the candidate registry's)."""
+    """Add ``families`` to ``commands``."""
     families = commands.add_parser("families", help="compare fine-tuned model families (D-049)")
     model_commands = families.add_subparsers(dest="families_command", required=True)
     record = model_commands.add_parser(

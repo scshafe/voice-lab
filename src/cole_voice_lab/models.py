@@ -488,48 +488,6 @@ class QcReport(ContractModel):
         return self
 
 
-class CandidateSpec(ContractModel):
-    candidate_id: CandidateId
-    display_name: str = Field(min_length=1, max_length=120)
-    track: Literal["direct-tts", "voice-conversion"]
-    engine: Literal["mlx-audio", "chatterbox", "f5-tts", "seed-vc"]
-    runtime_id: StableId
-    worker_module: str = Field(pattern=r"^[a-zA-Z_][a-zA-Z0-9_.]+$")
-    model_id: str = Field(min_length=1, max_length=500)
-    model_source: Literal["huggingface", "git"]
-    code_license: str = Field(min_length=1, max_length=200)
-    weight_license: str = Field(min_length=1, max_length=200)
-    commercial_use_allowed: bool
-    requires_reference_text: bool
-    supports_seed: bool
-    default_settings: dict[str, JsonValue] = Field(default_factory=dict)
-    estimated_disk_gib: float = Field(gt=0.0, allow_inf_nan=False)
-    enabled: bool = True
-
-
-class ModelLockEntry(ContractModel):
-    candidate_id: CandidateId
-    model_id: str = Field(min_length=1, max_length=500)
-    model_revision: Sha256 | Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
-    code_revision: Sha256 | Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
-    resolved_at: datetime
-    files: dict[str, Sha256] = Field(default_factory=dict)
-
-    @field_validator("resolved_at")
-    @classmethod
-    def _aware_resolution(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("model resolution timestamp requires an explicit timezone")
-        return value.astimezone(UTC)
-
-    @field_validator("files")
-    @classmethod
-    def _portable_artifact_paths(cls, value: dict[str, Sha256]) -> dict[str, Sha256]:
-        for path in value:
-            validate_relative_path(path)
-        return value
-
-
 class ReferenceEvidence(ContractModel):
     path: str = Field(min_length=1, max_length=1_024)
     sha256: Sha256

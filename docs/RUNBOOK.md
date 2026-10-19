@@ -8,8 +8,7 @@ scripts/verify
 .venv/bin/voice-lab doctor
 ```
 
-The mini must retain at least 10 GiB of free space. Candidate setup uses a
-stricter per-runtime estimate and never downloads models implicitly.
+The mini must retain at least 10 GiB of free space.
 
 ## 1. Mini private root
 
@@ -309,7 +308,11 @@ Stop before a full corpus if any of these remain unresolved:
 Room treatment or a directional vocal microphone is a higher-value change than
 recording more compromised audio.
 
-## 6. Zero-shot bake-off
+## 6. References and blind review
+
+The Mac's zero-shot bake-off (its `models` and `audition` commands, its five candidates and
+their MLX and MPS runtimes) was retired on 2026-10-19 (D-057); git history keeps its steps.
+References and blind review stay.
 
 1. Review and publish three checksum-bound reference candidates. Use a distinct
    reviewed prompt and IDs for each candidate; copy every printed digest into
@@ -334,160 +337,38 @@ recording more compromised audio.
    voice-lab reference validate --asset-root <mini-private-root> \
      --reference-id cole-reference-01
    ```
-2. Inspect `voice-lab models list` and run `voice-lab models verify-registry`.
-3. Preview one candidate at a time with:
+2. Blind review reads an audition run the bake-off left on disk. Build the
+   candidate-blind package only from that run's exact persisted plan/run/result
+   digests. Package construction derives every candidate, prompt, seed, track,
+   and normalized-audio label from that evidence, requires every planned
+   candidate and a balanced failure-free matrix, and rejects caller-supplied
+   labels. Serve **only** its `public/` directory on loopback,
+   for example `python -m http.server --bind 127.0.0.1 --directory public`.
+   The page verifies the reviewer-safe public manifest and every WAV before it
+   enables scoring. Score every dimension deliberately on headphones and save
+   the public-manifest-bound score JSON.
 
    ```bash
-   voice-lab models prepare --asset-root <mini-private-root> \
-     --profile smoke <candidate-id>
+   voice-lab blind build --asset-root <mini-private-root> \
+     --experiment-id zero-shot-smoke-001 --review-id zero-shot-smoke-review-001
+
+   voice-lab blind verify --asset-root <mini-private-root> \
+     --review-id zero-shot-smoke-review-001
+
+   cd <mini-private-root>/evaluations/blind-reviews/zero-shot-smoke-review-001/public
+   python -m http.server --bind 127.0.0.1 8000
    ```
 
-   Build the application wheel once and retain its SHA-256. For F5 or Seed,
-   first populate a private toolchain directory with the exact
-   `packaging==26.0`, `setuptools==80.9.0`, and `wheel==0.46.3` wheels. The
-   builder independently checks every byte against the registry before use.
-   It is preview/offline by default; `--execute` performs a fresh deterministic
-   build, and `--allow-network` permits only the individually hash-bound source
-   sdist downloads:
+   Open `http://127.0.0.1:8000/`, complete every score deliberately, and save
+   the exported JSON outside the served directory. Stop the loopback server,
+   then verify and aggregate that exact score sheet:
 
    ```bash
-   scripts/build-reviewed-wheelhouse f5-tts-1.1.22-mps \
-     --output <private-build-root>/f5-reviewed \
-     --sdist-dir <private-build-root>/sdists \
-     --build-python /opt/homebrew/bin/python3.12 \
-     --toolchain-wheelhouse <private-build-root>/build-tools
-
-   scripts/build-reviewed-wheelhouse f5-tts-1.1.22-mps \
-     --output <private-build-root>/f5-reviewed \
-     --sdist-dir <private-build-root>/sdists \
-     --build-python /opt/homebrew/bin/python3.12 \
-     --toolchain-wheelhouse <private-build-root>/build-tools \
-     --execute --allow-network
+   voice-lab blind aggregate --asset-root <mini-private-root> \
+     --score-sheet /private/path/to/listening-scores.json
    ```
 
-   Repeat with runtime ID `seed-vc-51383efd-mps`. Retain each printed
-   `manifest_sha256`; `--verify-existing` replays the byte/toolchain checks.
-   Provision only after reviewing the argv, adding the reviewed lab wheel and
-   digest, the runtime wheelhouse for F5/Seed, and both execution flags:
-
-   ```bash
-   voice-lab models prepare --asset-root <mini-private-root> \
-     --profile smoke <candidate-id> \
-     --lab-wheel <cole-voice-lab.whl> --lab-wheel-sha256 <sha256> \
-     --reviewed-wheelhouse <reviewed-output>/artifacts \
-     --execute --allow-downloads
-   ```
-
-   The successful command prints the sealed runtime receipt path and SHA-256;
-   retain both. Reusing the shared MLX runtime requires
-   `--expected-runtime-receipt-sha256 <sha256>` and rehashes the full tree.
-   Do not provision candidates concurrently. All candidates use Python 3.12;
-   Seed-VC remains a no-go until a real pinned-checkout MPS smoke validates its
-   3.12 compatibility.
-   F5/Seed preparation also verifies and removes only the exact lock-declared
-   executable setuptools `.pth` preimage before any subsequent runtime import;
-   a missing/rebound preimage or any additional executable/external `.pth`
-   aborts preparation and removes the incomplete environment.
-4. Put one performed source WAV per selected held-out prompt beneath the private
-   asset root. Seed-VC consumes these checksum-bound source performances while
-   the same reviewed target reference is used by every candidate.
-5. Persist the all-candidate smoke matrix. For example, one held-out prompt,
-   one reference, and one seed produces cold/warm cells for all four direct-TTS
-   candidates plus one separately labeled Seed-VC cell:
-
-   ```bash
-   voice-lab audition plan --asset-root <mini-private-root> \
-     --experiment-id zero-shot-smoke-001 \
-     --prompt-id eval-short-neutral \
-     --reference-id cole-reference-01 \
-     --seed 17 \
-     --source-audio \
-       eval-short-neutral=<mini-private-root>/derived/performed/eval-short-neutral.wav \
-     --profile smoke
-   ```
-
-6. Preview, then explicitly run **one candidate at a time**. The run path is
-   offline and never provisions missing dependencies:
-
-   ```bash
-   voice-lab audition run --asset-root <mini-private-root> \
-     --experiment-id zero-shot-smoke-001 --candidate qwen3-tts-base
-
-   voice-lab audition run --asset-root <mini-private-root> \
-     --experiment-id zero-shot-smoke-001 --candidate qwen3-tts-base \
-     --runtime-receipt mlx-audio-0.5.0=<approved-receipt-sha256> --execute
-   ```
-
-   Repeat for `chatterbox-turbo`, `chatterbox-v3`, `f5-tts`, and `seed-vc`.
-   Use the receipt digest printed and retained by that runtime's successful
-   `models prepare`; execution rejects a missing, extra, or rebound runtime-ID
-   binding. Rebuilt runtimes require review of their new receipt digest. Status
-   and resume validate copied receipt and source-manifest/integrity preimages,
-   so evicting a completed trial's caches—or later installing different bytes
-   at the same runtime ID—does not invalidate its historical evidence.
-   Read the resumable run manifest with:
-
-   ```bash
-   voice-lab audition status --asset-root <mini-private-root> \
-     --experiment-id zero-shot-smoke-001
-   ```
-7. If the 10 GiB disk floor prevents the next snapshot from being prepared,
-   preview an exact source eviction. Only the digest copied from that preview,
-   plus both destructive flags, can delete it:
-
-   ```bash
-   voice-lab models evict --asset-root <mini-private-root> <source-id>
-   voice-lab models evict --asset-root <mini-private-root> <source-id> \
-     --expected-manifest-sha256 <previewed-sha256> --execute --confirm-evict
-   ```
-
-   Eviction is irreversible and serialized against audition workers. Retain
-   run/model evidence before removing any snapshot.
-
-   Runtime environments may also be rotated without touching model snapshots,
-   results, or copied trial receipts. Preview the exact sealed tree first, then
-   supply its receipt digest and both destructive flags:
-
-   ```bash
-   voice-lab models evict-runtime --asset-root <mini-private-root> <runtime-id>
-   voice-lab models evict-runtime --asset-root <mini-private-root> <runtime-id> \
-     --expected-receipt-sha256 <previewed-sha256> --execute --confirm-evict
-   ```
-8. Run the quality matrix with repeated seeds after smoke results are healthy.
-   Normalization retains engine-native audio and writes a common 24 kHz,
-   PCM-16, -18 LUFS/-1.5 dBTP comparison copy.
-9. Compute diagnostic ASR/speaker/format metrics.
-10. Build the candidate-blind package only from the exact persisted audition
-    plan/run/result digests. Package construction derives every candidate,
-    prompt, seed, track, and normalized-audio label from that evidence, requires
-    every planned candidate and a balanced failure-free matrix, and rejects
-    caller-supplied labels. Serve **only** its `public/` directory on loopback,
-    for example `python -m http.server --bind 127.0.0.1 --directory public`.
-    The page verifies the reviewer-safe public manifest and every WAV before it
-    enables scoring. Score every dimension deliberately on headphones and save
-    the public-manifest-bound score JSON.
-
-    ```bash
-    voice-lab blind build --asset-root <mini-private-root> \
-      --experiment-id zero-shot-smoke-001 --review-id zero-shot-smoke-review-001
-
-    voice-lab blind verify --asset-root <mini-private-root> \
-      --review-id zero-shot-smoke-review-001
-
-    cd <mini-private-root>/evaluations/blind-reviews/zero-shot-smoke-review-001/public
-    python -m http.server --bind 127.0.0.1 8000
-    ```
-
-    Open `http://127.0.0.1:8000/`, complete every score deliberately, and save
-    the exported JSON outside the served directory. Stop the loopback server,
-    then verify and aggregate that exact score sheet:
-
-    ```bash
-    voice-lab blind aggregate --asset-root <mini-private-root> \
-      --score-sheet /private/path/to/listening-scores.json
-    ```
-
-11. Reveal identities only after score evidence is saved.
+3. Reveal identities only after score evidence is saved.
 
 The directory named `public/` inside a blind-review package means “safe for the
 reviewer without candidate labels.” It is independently self-contained and does
