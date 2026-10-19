@@ -2071,6 +2071,11 @@ records exactly as before.
   four steps after this record, one PR each: the v2 contract, the per-profile views, the panel's
   audience, and the bundle with its fixture.
 
+Amended 2026-10-19: the v2 contract (step 2) lands in two PRs, the contracts and then the
+validator, admission and dispatch. The ALSA rule and its bounds are fixed with the contracts:
+each period is judged against the one before it, in integer nanoseconds, within at most 4 ms,
+in periods of at least 16 ms (docs/design/HOUSE-PANEL.md §2).
+
 ## D-057 — The Mac's zero-shot bake-off is retired
 
 Recorded 2026-10-19, from the owner's decision of that day, relayed by the owner session: the

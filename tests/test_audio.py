@@ -452,3 +452,78 @@ def test_continuity_grid_heuristic_does_not_claim_unsupported_formats(tmp_path: 
     assert inspection.boundary_discontinuity_count == 0
     assert inspection.interior_discontinuity_count == 0
     assert inspection.short_zero_run_count == 0
+
+
+def _write_columns(path: Path, columns: list[list[int]], *, sample_width: int) -> None:
+    """A 16 kHz WAV whose channel ``c`` is ``columns[c]``, interleaved."""
+    frames = len(columns[0])
+    _write_wav(
+        path,
+        [column[frame] for frame in range(frames) for column in columns],
+        sample_rate=16_000,
+        sample_width=sample_width,
+        channels=len(columns),
+    )
+
+
+@pytest.mark.parametrize("sample_width", [2, 3, 4])
+def test_one_channel_of_an_interleaved_wav_is_measured_alone(
+    tmp_path: Path, sample_width: int
+) -> None:
+    # A v2 take is judged by its primary channel (D-056): each channel's figures are its own.
+    full = (1 << (sample_width * 8 - 1)) - 1
+    frames = 6_400
+    loud = [full // 2 * (1 if frame % 2 else -1) for frame in range(frames)]
+    quiet = [full // 1_000 * (1 if frame % 2 else -1) for frame in range(frames)]
+    silent = [0] * frames
+    clipped = [full] * 10 + loud[10:]
+    audio = tmp_path / "panel.wav"
+    _write_columns(audio, [loud, quiet, silent, clipped, loud, quiet], sample_width=sample_width)
+
+    whole = inspect_pcm_wav(audio)
+    first, second, third, fourth = (inspect_pcm_wav(audio, channel=n) for n in (1, 2, 3, 4))
+    assert whole.channel is None and first.channel == 1
+    assert first.audio == whole.audio and first.audio.channels == 6
+    assert first.sha256 == whole.sha256
+    assert -6.1 < first.peak_dbfs < -6.0
+    assert -60.5 < second.peak_dbfs < -59.9
+    assert third.peak_dbfs == -300.0 and third.longest_zero_run_ms == 400.0
+    assert fourth.clipped_samples == 10 and first.clipped_samples == 0
+    # Interleaved with louder channels, the silent one's zeros never make a long run.
+    assert whole.longest_zero_run_ms < 1.0
+    assert "peak-too-quiet" in second.qc_metrics("original.wav").findings
+    assert "digital-silence-or-dropout" in third.qc_metrics("original.wav").findings
+    assert first.qc_metrics("original.wav").passed
+    # The canonical format's heuristics do not run on a multichannel take.
+    for inspection in (whole, first, second, third, fourth):
+        assert inspection.boundary_discontinuity_count == 0
+        assert inspection.short_zero_run_count == 0
+
+
+@pytest.mark.parametrize("channel", [0, 3])
+def test_a_channel_the_wav_does_not_have_is_refused(tmp_path: Path, channel: int) -> None:
+    audio = tmp_path / "stereo.wav"
+    _write_columns(audio, [[1, 2, 3], [4, 5, 6]], sample_width=2)
+    with pytest.raises(ContractError, match=f"not a channel {channel}"):
+        inspect_pcm_wav(audio, channel=channel)
+
+
+@pytest.mark.parametrize("sample_width", [2, 4])
+def test_the_native_slice_reads_what_the_generic_decoder_reads(
+    sample_width: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    columns = [
+        [(frame * 37 + channel * 1_009) % 30_000 - 15_000 for frame in range(97)]
+        for channel in range(6)
+    ]
+    payload = b"".join(
+        columns[channel][frame].to_bytes(sample_width, "little", signed=True)
+        for frame in range(97)
+        for channel in range(6)
+    )
+    native = [audio_module._channel_values(payload, sample_width, 6, n) for n in range(1, 7)]
+    monkeypatch.setattr(audio_module, "_ITEM_SIZES", {"h": 0, "i": 0})
+    generic = [audio_module._channel_values(payload, sample_width, 6, n) for n in range(1, 7)]
+    assert native == generic == columns
+    with pytest.raises(ContractError, match="aligned to its frames"):
+        audio_module._channel_values(payload[:-1], sample_width, 6, 1)

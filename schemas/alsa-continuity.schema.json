@@ -1,0 +1,239 @@
+{
+  "$defs": {
+    "AlsaFormat": {
+      "enum": [
+        "S16_LE",
+        "S24_3LE",
+        "S32_LE"
+      ],
+      "type": "string"
+    },
+    "AlsaWav": {
+      "additionalProperties": false,
+      "description": "The WAV the evidence describes: the take's ``original.wav``.",
+      "properties": {
+        "name": {
+          "const": "original.wav",
+          "default": "original.wav",
+          "title": "Name",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 44,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "AlsaWav",
+      "type": "object"
+    },
+    "Position": {
+      "maximum": 1099511627775,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Text": {
+      "maxLength": 500,
+      "minLength": 1,
+      "type": "string"
+    },
+    "TimestampNs": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false,
+  "description": "What the capture client knows about one take read from an ALSA PCM.",
+  "properties": {
+    "access": {
+      "enum": [
+        "rw_interleaved",
+        "mmap_interleaved"
+      ],
+      "title": "Access",
+      "type": "string"
+    },
+    "buffer_frames": {
+      "maximum": 1048576,
+      "title": "Buffer Frames",
+      "type": "integer"
+    },
+    "channels": {
+      "maximum": 32,
+      "minimum": 1,
+      "title": "Channels",
+      "type": "integer"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error"
+    },
+    "format": {
+      "$ref": "#/$defs/AlsaFormat"
+    },
+    "frames": {
+      "minimum": 0,
+      "title": "Frames",
+      "type": "integer"
+    },
+    "max_abs_deviation_ns": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Max Abs Deviation Ns"
+    },
+    "pcm": {
+      "$ref": "#/$defs/Text"
+    },
+    "period_frames": {
+      "maximum": 16384,
+      "minimum": 256,
+      "title": "Period Frames",
+      "type": "integer"
+    },
+    "periods": {
+      "items": {
+        "maxItems": 2,
+        "minItems": 2,
+        "prefixItems": [
+          {
+            "$ref": "#/$defs/Position"
+          },
+          {
+            "$ref": "#/$defs/TimestampNs"
+          }
+        ],
+        "type": "array"
+      },
+      "maxItems": 41250,
+      "title": "Periods",
+      "type": "array"
+    },
+    "rate": {
+      "maximum": 384000,
+      "minimum": 8000,
+      "title": "Rate",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.alsa-continuity/v1",
+      "default": "cole-voice-lab.alsa-continuity/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Started At"
+    },
+    "stop_reason": {
+      "anyOf": [
+        {
+          "enum": [
+            "requested",
+            "maximum-duration"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Stop Reason"
+    },
+    "success": {
+      "title": "Success",
+      "type": "boolean"
+    },
+    "tolerance_ns": {
+      "maximum": 4000000,
+      "minimum": 1,
+      "title": "Tolerance Ns",
+      "type": "integer"
+    },
+    "tstamp_type": {
+      "enum": [
+        "monotonic_raw",
+        "monotonic"
+      ],
+      "title": "Tstamp Type",
+      "type": "string"
+    },
+    "wav": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AlsaWav"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "xruns": {
+      "minimum": 0,
+      "title": "Xruns",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "simulated",
+    "pcm",
+    "access",
+    "format",
+    "rate",
+    "channels",
+    "period_frames",
+    "buffer_frames",
+    "tstamp_type",
+    "xruns",
+    "periods",
+    "tolerance_ns",
+    "max_abs_deviation_ns",
+    "frames",
+    "wav",
+    "started_at",
+    "stop_reason",
+    "success",
+    "error"
+  ],
+  "title": "AlsaContinuityEvidence",
+  "type": "object"
+}

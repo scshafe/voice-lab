@@ -26,6 +26,13 @@ this server, digest-checked) counts.
 
 ``build_take_package`` is the client's side: it copies a finished take into a new package and
 validates it with the same validator.
+
+``CorpusTakeManifestV2`` is ``cole-voice-lab.corpus-take/v2`` (D-056): a take that declares its
+capture profile (``capture_profiles``) and carries its backend's evidence (``alsa_evidence``),
+in the same five files. Its WAV is what the device gave (the house panel's: 16 kHz, 2 or 6
+channels), not the canonical format. The contracts come first; until the v2 validator and
+admission join every dispatch point, intake refuses a v2 package as a capture package it
+cannot read.
 """
 
 from __future__ import annotations
@@ -44,6 +51,8 @@ from typing import Annotated, Final, Literal
 
 from pydantic import Field, StringConstraints, ValidationError, field_validator, model_validator
 
+from .alsa_evidence import MAX_EVIDENCE_BYTES as MAX_ALSA_EVIDENCE_BYTES
+from .alsa_evidence import MAX_TAKE_SECONDS, MAX_TOLERANCE_NS
 from .audio import (
     CANONICAL_CHANNELS,
     CANONICAL_ENCODING,
@@ -62,6 +71,7 @@ from .canonical import (
     write_canonical_json,
 )
 from .capture import MANIFEST_NAME, QC_REPORT_NAME, READY_NAME, ReadyMarker
+from .capture_profiles import XVF3800_SAMPLE_RATE_HZ, CaptureProfile
 from .catalog_ports import CorpusStoreError
 from .diagnostic_roots import read_diagnostic_root_marker
 from .errors import ContractError, SecurityError, VoiceLabError
@@ -89,6 +99,8 @@ from .portaudio_evidence import MAX_EVIDENCE_BYTES, WAV_HEADER_BYTES, PortAudioC
 from .recording_contracts import CatalogReference
 
 TAKE_SCHEMA: Final = "cole-voice-lab.corpus-take/v1"
+#: A take that declares its capture profile and carries its backend's evidence (D-056).
+TAKE_V2_SCHEMA: Final = "cole-voice-lab.corpus-take/v2"
 #: The Swift app's takes as the PC imports them (``corpus_take_imports``, D-053).
 TAKE_IMPORT_SCHEMA: Final = "cole-voice-lab.corpus-take-import/v1"
 #: Every package schema of the PC's corpus: its own takes, and the takes it imported.
@@ -102,6 +114,10 @@ TAKE_FILES: Final = frozenset(
 #: ten).
 MAX_TAKE_FRAMES: Final = CANONICAL_SAMPLE_RATE_HZ * 660
 MAX_TAKE_AUDIO_BYTES: Final = WAV_HEADER_BYTES + MAX_TAKE_FRAMES * CANONICAL_SAMPLE_WIDTH_BYTES
+#: The largest v2 take: 660 s of the 6-channel image at 16 kHz in s32le, with its header.
+MAX_PROFILE_TAKE_AUDIO_BYTES: Final = (
+    WAV_HEADER_BYTES + XVF3800_SAMPLE_RATE_HZ * MAX_TAKE_SECONDS * 6 * 4
+)
 TAKE_ID_PATTERN: Final = r"^take-[0-9a-f]{64}$"
 #: A UMIK-1 by the name its driver gives PortAudio: voice-lab-desktop's rule
 #: (``measurement.chain.is_umik1``), so the PC admits what the app records with.
@@ -234,16 +250,103 @@ class CorpusTakeManifest(ContractModel):
 
     @model_validator(mode="after")
     def _bound(self) -> CorpusTakeManifest:
-        if self.take_id != take_id_for(self.audio.sha256):
-            raise ValueError("the take id is take-<the SHA-256 of original.wav>")
-        if self.subject_id != COLE_SUBJECT:
-            raise ValueError(f"a take is of {COLE_SUBJECT} (D-050)")
-        if self.prompt_sha256 != canonical_sha256(self.prompt):
-            raise ValueError("prompt_sha256 is not the canonical digest of the prompt")
+        _check_take(self)
         if self.capture_device.backend != "portaudio":
             raise ValueError("a take is recorded by the PortAudio capture worker (D-039)")
         if self.catalog.purpose == "physical-test":
             raise ValueError("a take is never recorded against a physical-test catalog")
+        return self
+
+
+def _check_take(manifest: CorpusTakeManifest | CorpusTakeManifestV2) -> None:
+    """The bindings every take's manifest has, whatever its version.
+
+    Raises: ``ValueError``."""
+    if manifest.take_id != take_id_for(manifest.audio.sha256):
+        raise ValueError("the take id is take-<the SHA-256 of original.wav>")
+    if manifest.subject_id != COLE_SUBJECT:
+        raise ValueError(f"a take is of {COLE_SUBJECT} (D-050)")
+    if manifest.prompt_sha256 != canonical_sha256(manifest.prompt):
+        raise ValueError("prompt_sha256 is not the canonical digest of the prompt")
+
+
+class ProfileTakeAudio(ContractModel):
+    """A v2 take's one recording, in a format its capture profile allows."""
+
+    path: Literal["original.wav"] = AUDIO_NAME
+    sha256: Sha256
+    size_bytes: int = Field(gt=WAV_HEADER_BYTES, le=MAX_PROFILE_TAKE_AUDIO_BYTES)
+    audio: AudioSpec
+
+    @model_validator(mode="after")
+    def _plain_pcm(self) -> ProfileTakeAudio:
+        spec = self.audio
+        if self.size_bytes != WAV_HEADER_BYTES + spec.frames * spec.channels * (
+            spec.sample_width_bytes
+        ):
+            raise ValueError("a v2 take's WAV is a 44-byte header and its frames")
+        return self
+
+
+class AlsaTakeContinuity(ContractModel):
+    """A v2 take's ALSA continuity evidence (``alsa_evidence``): its file, and what the PC
+    shows without reading it. Every field here equals the evidence file's own."""
+
+    path: Literal["continuity.json"] = CONTINUITY_NAME
+    sha256: Sha256
+    size_bytes: int = Field(gt=0, le=MAX_ALSA_EVIDENCE_BYTES)
+    pcm: _Text
+    simulated: bool
+    started_at: datetime
+    stop_reason: Literal["requested", "maximum-duration"]
+    tolerance_ns: int = Field(ge=1, le=MAX_TOLERANCE_NS)
+    max_abs_deviation_ns: int | None = Field(ge=0)
+
+    @field_validator("started_at")
+    @classmethod
+    def _started_utc(cls, value: datetime) -> datetime:
+        return _utc(value, "the stream's start")
+
+
+class CorpusTakeManifestV2(ContractModel):
+    """``manifest.json`` of a v2 take package: one take of one prompt, by a capture profile.
+
+    A v1 take's fields, but for its device: the capture profile names the device, the room,
+    each channel's source and the primary channel, and the continuity evidence is the
+    profile's backend's (ALSA for ``xvf3800-linear-4``)."""
+
+    schema_version: Literal["cole-voice-lab.corpus-take/v2"] = TAKE_V2_SCHEMA
+    take_id: TakeId
+    subject_id: StableId
+    prompt: Prompt
+    prompt_sha256: Sha256
+    catalog: CatalogReference
+    requested_at: datetime
+    capture_host: _Text
+    client: TakeClient
+    capture_profile: CaptureProfile
+    audio: ProfileTakeAudio
+    continuity: AlsaTakeContinuity
+
+    @field_validator("requested_at")
+    @classmethod
+    def _requested_utc(cls, value: datetime) -> datetime:
+        return _utc(value, "the request time")
+
+    @model_validator(mode="after")
+    def _bound(self) -> CorpusTakeManifestV2:
+        _check_take(self)
+        if self.catalog.purpose == "physical-test":
+            raise ValueError("a take is never recorded against a physical-test catalog")
+        spec = self.audio.audio
+        if not self.capture_profile.allows(spec):
+            raise ValueError(
+                f"profile {self.capture_profile.profile} takes 16 kHz audio with one channel "
+                f"per entry of its channels ({len(self.capture_profile.channels)}), not "
+                f"{spec.sample_rate_hz} Hz with {spec.channels}"
+            )
+        if spec.frames > spec.sample_rate_hz * MAX_TAKE_SECONDS:
+            raise ValueError(f"a take lasts at most {MAX_TAKE_SECONDS} s")
         return self
 
 

@@ -1,0 +1,651 @@
+{
+  "$defs": {
+    "AlsaTakeContinuity": {
+      "additionalProperties": false,
+      "description": "A v2 take's ALSA continuity evidence (``alsa_evidence``): its file, and what the PC\nshows without reading it. Every field here equals the evidence file's own.",
+      "properties": {
+        "max_abs_deviation_ns": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Abs Deviation Ns"
+        },
+        "path": {
+          "const": "continuity.json",
+          "default": "continuity.json",
+          "title": "Path",
+          "type": "string"
+        },
+        "pcm": {
+          "$ref": "#/$defs/_Text"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "simulated": {
+          "title": "Simulated",
+          "type": "boolean"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 2097152,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "stop_reason": {
+          "enum": [
+            "requested",
+            "maximum-duration"
+          ],
+          "title": "Stop Reason",
+          "type": "string"
+        },
+        "tolerance_ns": {
+          "maximum": 4000000,
+          "minimum": 1,
+          "title": "Tolerance Ns",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size_bytes",
+        "pcm",
+        "simulated",
+        "started_at",
+        "stop_reason",
+        "tolerance_ns",
+        "max_abs_deviation_ns"
+      ],
+      "title": "AlsaTakeContinuity",
+      "type": "object"
+    },
+    "AudioSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "encoding": {
+          "enum": [
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sample_rate_hz": {
+          "maximum": 384000,
+          "minimum": 8000,
+          "title": "Sample Rate Hz",
+          "type": "integer"
+        },
+        "sample_width_bytes": {
+          "enum": [
+            2,
+            3,
+            4
+          ],
+          "title": "Sample Width Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_rate_hz",
+        "channels",
+        "sample_width_bytes",
+        "encoding",
+        "frames",
+        "duration_seconds"
+      ],
+      "title": "AudioSpec",
+      "type": "object"
+    },
+    "CaptureProfile": {
+      "additionalProperties": false,
+      "description": "Profile ``xvf3800-linear-4``: the take's array, room, channels and settings.",
+      "properties": {
+        "channels": {
+          "items": {
+            "$ref": "#/$defs/Xvf3800Channel"
+          },
+          "maxItems": 6,
+          "minItems": 2,
+          "title": "Channels",
+          "type": "array"
+        },
+        "device": {
+          "$ref": "#/$defs/Xvf3800Device"
+        },
+        "primary_channel": {
+          "maximum": 6,
+          "minimum": 1,
+          "title": "Primary Channel",
+          "type": "integer"
+        },
+        "profile": {
+          "const": "xvf3800-linear-4",
+          "default": "xvf3800-linear-4",
+          "title": "Profile",
+          "type": "string"
+        },
+        "room": {
+          "$ref": "#/$defs/RoomSlug"
+        },
+        "settings": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/_Setting"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/Xvf3800Parameter"
+          },
+          "title": "Settings",
+          "type": "object"
+        }
+      },
+      "required": [
+        "device",
+        "room",
+        "channels",
+        "primary_channel",
+        "settings"
+      ],
+      "title": "Xvf3800Linear4Profile",
+      "type": "object"
+    },
+    "CatalogReference": {
+      "additionalProperties": false,
+      "description": "A published catalog version by id, version, exact suite digest and snapshot digest.\n\n``catalog_sha256`` is the canonical digest of the suite alone (the digest every take\nand coverage projection keys on); ``snapshot_sha256`` is the sha256 of the exact\nsnapshot file bytes, so the alias half of the file is pinned too. ``suite_id`` and\n``purpose`` repeat what the snapshot's suite declares so contract-level checks (purpose\nagainst the capture gate) need no file read; the store verifies all of them against the\nsnapshot whenever a reference is materialized.",
+      "properties": {
+        "catalog_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "catalog_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "catalog_version": {
+          "$ref": "#/$defs/PositiveRevision"
+        },
+        "purpose": {
+          "enum": [
+            "capture-pilot",
+            "capture-corpus",
+            "held-out-evaluation",
+            "physical-test"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "snapshot_path": {
+          "$ref": "#/$defs/RelativePath"
+        },
+        "snapshot_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "suite_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "catalog_id",
+        "catalog_version",
+        "catalog_sha256",
+        "snapshot_sha256",
+        "suite_id",
+        "purpose",
+        "snapshot_path"
+      ],
+      "title": "CatalogReference",
+      "type": "object"
+    },
+    "PositiveRevision": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "ProcessingStage": {
+      "enum": [
+        "aec",
+        "agc",
+        "noise-suppression",
+        "echo-suppression",
+        "nonlinear-attenuation",
+        "limiter",
+        "high-pass"
+      ],
+      "type": "string"
+    },
+    "ProfileTakeAudio": {
+      "additionalProperties": false,
+      "description": "A v2 take's one recording, in a format its capture profile allows.",
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioSpec"
+        },
+        "path": {
+          "const": "original.wav",
+          "default": "original.wav",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 44,
+          "maximum": 253440044,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size_bytes",
+        "audio"
+      ],
+      "title": "ProfileTakeAudio",
+      "type": "object"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+      "properties": {
+        "category": {
+          "enum": [
+            "room-tone",
+            "neutral",
+            "conversational",
+            "warm-narration",
+            "technical",
+            "numbers",
+            "expressive",
+            "reference",
+            "procedure"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Expected Seconds",
+          "type": "number"
+        },
+        "holdout": {
+          "default": false,
+          "title": "Holdout",
+          "type": "boolean"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptLabel"
+          },
+          "maxItems": 8,
+          "title": "Labels",
+          "type": "array"
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "reference_candidate": {
+          "default": false,
+          "title": "Reference Candidate",
+          "type": "boolean"
+        },
+        "style": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "category",
+        "style",
+        "expected_seconds"
+      ],
+      "title": "Prompt",
+      "type": "object"
+    },
+    "PromptLabel": {
+      "maxLength": 32,
+      "minLength": 2,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "RelativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "RoomSlug": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "TakeClient": {
+      "additionalProperties": false,
+      "description": "The program that recorded the take: its name, version and platform, as it reports them.",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/_Text"
+        },
+        "platform": {
+          "$ref": "#/$defs/_Text"
+        },
+        "version": {
+          "$ref": "#/$defs/_Text"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "platform"
+      ],
+      "title": "TakeClient",
+      "type": "object"
+    },
+    "TakeId": {
+      "pattern": "^take-[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Xvf3800Channel": {
+      "additionalProperties": false,
+      "description": "One channel of the take's WAV: where its output came from, and what ran on it.",
+      "properties": {
+        "mic": {
+          "anyOf": [
+            {
+              "maximum": 4,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Mic"
+        },
+        "processing": {
+          "items": {
+            "$ref": "#/$defs/ProcessingStage"
+          },
+          "title": "Processing",
+          "type": "array"
+        },
+        "routing": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/_Byte"
+            },
+            {
+              "$ref": "#/$defs/_Byte"
+            }
+          ],
+          "title": "Routing",
+          "type": "array"
+        },
+        "source": {
+          "enum": [
+            "processed",
+            "mic"
+          ],
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "mic",
+        "routing",
+        "processing"
+      ],
+      "title": "Xvf3800Channel",
+      "type": "object"
+    },
+    "Xvf3800Device": {
+      "additionalProperties": false,
+      "description": "The array that recorded the take.",
+      "properties": {
+        "firmware": {
+          "$ref": "#/$defs/Xvf3800Firmware"
+        },
+        "model": {
+          "$ref": "#/$defs/_Text"
+        },
+        "serial": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_Text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usb_product_id": {
+          "$ref": "#/$defs/_UsbId"
+        },
+        "usb_vendor_id": {
+          "$ref": "#/$defs/_UsbId"
+        }
+      },
+      "required": [
+        "model",
+        "usb_vendor_id",
+        "usb_product_id",
+        "serial",
+        "firmware"
+      ],
+      "title": "Xvf3800Device",
+      "type": "object"
+    },
+    "Xvf3800Firmware": {
+      "additionalProperties": false,
+      "description": "The array's firmware, as it reports itself.",
+      "properties": {
+        "build_message": {
+          "$ref": "#/$defs/_Text"
+        },
+        "build_repo_hash": {
+          "$ref": "#/$defs/_Text"
+        },
+        "version": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/_Byte"
+            },
+            {
+              "$ref": "#/$defs/_Byte"
+            },
+            {
+              "$ref": "#/$defs/_Byte"
+            }
+          ],
+          "title": "Version",
+          "type": "array"
+        }
+      },
+      "required": [
+        "version",
+        "build_message",
+        "build_repo_hash"
+      ],
+      "title": "Xvf3800Firmware",
+      "type": "object"
+    },
+    "Xvf3800Parameter": {
+      "enum": [
+        "SHF_BYPASS",
+        "PP_AGCONOFF",
+        "PP_AGCGAIN",
+        "PP_MIN_NS",
+        "PP_MIN_NN",
+        "PP_ECHOONOFF",
+        "PP_NLATTENONOFF",
+        "PP_LIMITONOFF",
+        "AEC_HPFONOFF"
+      ],
+      "type": "string"
+    },
+    "_Byte": {
+      "maximum": 255,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "_Setting": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        }
+      ]
+    },
+    "_Text": {
+      "maxLength": 500,
+      "minLength": 1,
+      "type": "string"
+    },
+    "_UsbId": {
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``manifest.json`` of a v2 take package: one take of one prompt, by a capture profile.\n\nA v1 take's fields, but for its device: the capture profile names the device, the room,\neach channel's source and the primary channel, and the continuity evidence is the\nprofile's backend's (ALSA for ``xvf3800-linear-4``).",
+  "properties": {
+    "audio": {
+      "$ref": "#/$defs/ProfileTakeAudio"
+    },
+    "capture_host": {
+      "$ref": "#/$defs/_Text"
+    },
+    "capture_profile": {
+      "$ref": "#/$defs/CaptureProfile"
+    },
+    "catalog": {
+      "$ref": "#/$defs/CatalogReference"
+    },
+    "client": {
+      "$ref": "#/$defs/TakeClient"
+    },
+    "continuity": {
+      "$ref": "#/$defs/AlsaTakeContinuity"
+    },
+    "prompt": {
+      "$ref": "#/$defs/Prompt"
+    },
+    "prompt_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "requested_at": {
+      "format": "date-time",
+      "title": "Requested At",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.corpus-take/v2",
+      "default": "cole-voice-lab.corpus-take/v2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "take_id": {
+      "$ref": "#/$defs/TakeId"
+    }
+  },
+  "required": [
+    "take_id",
+    "subject_id",
+    "prompt",
+    "prompt_sha256",
+    "catalog",
+    "requested_at",
+    "capture_host",
+    "client",
+    "capture_profile",
+    "audio",
+    "continuity"
+  ],
+  "title": "CorpusTakeManifestV2",
+  "type": "object"
+}

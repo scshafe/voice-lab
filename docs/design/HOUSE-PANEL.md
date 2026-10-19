@@ -171,6 +171,48 @@ and stay within the tolerance, which the PC bounds. The frames must add up to th
 minimum period size keeps the file within a bound. The exact rule and bounds are fixed with the
 contract (step 2 below) and published in the bundle, so #22 implements them as written.
 
+**The rule and bounds, as built** (step 2, 2026-10-19; `alsa_evidence.py`):
+
+- **Each pair** is `[position_frames, timestamp_ns]`, recorded after every read of one period:
+  - the position is the stream's hardware position, the frames read so far plus `avail`;
+  - the timestamp is `snd_pcm_status`'s `htstamp` of that position, on the `tstamp_type` clock
+    (`monotonic_raw` or `monotonic`).
+- **The rule**: for every pair after the first,
+  `deviation = (timestamp[i] - timestamp[i-1]) - (position[i] - position[i-1]) * ns_per_frame`.
+  - `ns_per_frame = 1_000_000_000 / rate` must be exact (62,500 ns at 16 kHz), so the panel and
+    the PC compute the same integers.
+  - Each pair is judged against the one before it, as D-039's blocks are, so jitter does not
+    accumulate and the device clock's drift does not matter.
+  - Every `abs(deviation)` is within `tolerance_ns`, and the largest equals the device's
+    `max_abs_deviation_ns` (`null` for a single pair).
+- **The bounds**:
+  - `tolerance_ns` from 1 to 4,000,000 (4 ms, D-039's 64 frames at 16 kHz);
+  - periods of 256 to 16,384 frames, so a lost period (at least 16 ms) is never within the
+    tolerance;
+  - a buffer of at least two periods and at most 2^20 frames;
+  - at most 41,250 pairs (660 s at 16 kHz in periods of 256), and a file of at most 2 MiB.
+- **A successful take**:
+  - no error and no xrun;
+  - its frames are its periods' frames (`len(periods) * period_frames`), and at most 660 s;
+  - the last position is those frames plus at most one buffer;
+  - its WAV (`original.wav`) is a plain 44-byte PCM header and its frames: `44 + frames *
+    channels * width`, where `format` gives the width (`S16_LE` 2, `S24_3LE` 3, `S32_LE` 4) and
+    the WAV's encoding byte for byte;
+  - its start (UTC) and its stop reason are present.
+
+  An unsuccessful take names its error.
+- **The profile's fields**:
+  - each channel gives:
+    - `source` (`processed` or `mic`);
+    - `mic` (1 to 4, for a raw microphone only);
+    - `routing`, the `AUDIO_MGR_OP_*` pair (category, source) as read;
+    - `processing`, the stages that ran, by the switches above (none on a raw microphone);
+  - `settings` maps every one of the nine parameters above to the values read from the device;
+  - the firmware's `version` is `VERSION`'s three bytes.
+
+  These are published in the bundle (step 5); the panel can ask for a change before step 4,
+  since nothing can upload a v2 take until then.
+
 **Validation and admission on the PC.**
 
 - Validation is as strict as v1's: the exact file set, no links, canonical JSON, every digest and
@@ -373,7 +415,11 @@ watched.
      checks;
    - the schemas and tests.
 
-   No token can upload a panel take yet, so this deploys inertly.
+   No token can upload a panel take yet, so this deploys inertly. Built in two PRs
+   (2026-10-19): first the contracts, the ALSA rule and the channel-selecting inspection, which
+   nothing dispatches to (a v2 package is still refused as an unknown capture package, so none
+   reaches `raw/`); then the validator, admission, the dispatch at every point, the record's
+   profile and the vault.
 3. **Per-profile library views**: the read-model files, `?profile=` and their classification.
    The default answer stays byte-identical.
 4. **The panel's audience**:

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from .alsa_evidence import AlsaContinuityEvidence
 from .api.contracts import (
     ApiMeta,
     ApiRefusal,
@@ -36,7 +37,7 @@ from .corpus_read_model import CorpusLibraryRecord
 from .corpus_requests import CorpusRequest, CorpusRequestOutcome
 from .corpus_take_imports import CorpusTakeImportManifest, MacTakeState
 from .corpus_take_store import CorpusTakeState
-from .corpus_takes import CorpusTakeManifest
+from .corpus_takes import CorpusTakeManifest, CorpusTakeManifestV2
 from .datasets import (
     DatasetManifest,
     DatasetSelectionDocument,
@@ -149,6 +150,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "corpus-request": CorpusRequest,
     "corpus-request-outcome": CorpusRequestOutcome,
     "corpus-take": CorpusTakeManifest,
+    "corpus-take-v2": CorpusTakeManifestV2,
     "corpus-take-import": CorpusTakeImportManifest,
     "corpus-take-import-state": MacTakeState,
     "corpus-take-state": CorpusTakeState,
@@ -168,6 +170,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "local-source-manifest": LocalSourceManifest,
     "pilot-gate": PilotGateApproval,
     "portaudio-continuity": PortAudioContinuityEvidence,
+    "alsa-continuity": AlsaContinuityEvidence,
     "prompt-suite": PromptSuite,
     "qc-report": QcReport,
     "reference-manifest": ReferenceManifest,
