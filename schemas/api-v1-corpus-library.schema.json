@@ -228,13 +228,26 @@
     }
   },
   "additionalProperties": false,
-  "description": "``GET /api/v1/corpus/library``: the subject's library of the active catalog version.\n\n``rows`` are the version's prompts in catalog order, each with its status\n(``missing``/``draft``/``kept``/``needs-attention``), its take count and the take that\nstands for it; ``coverage`` totals them. The answer's ``ETag`` is the read model's digest\n(``corpus_read_model``), which changes exactly when any row or history does.",
+  "description": "``GET /api/v1/corpus/library``: the subject's library of the active catalog version.\n\n``rows`` are the version's prompts in catalog order, each with its status\n(``missing``/``draft``/``kept``/``needs-attention``), its take count and the take that\nstands for it; ``coverage`` totals them. The answer's ``ETag`` is the read model's digest\n(``corpus_read_model``), which changes exactly when any row or history does.\n\nIt is one capture profile's view (D-056): ``profile`` is absent in the default view\n(``umik-1``), byte for byte the answer before profiles existed, and names any other.",
   "properties": {
     "catalog": {
       "$ref": "#/$defs/CatalogReference"
     },
     "coverage": {
       "$ref": "#/$defs/LibraryCoverage"
+    },
+    "profile": {
+      "anyOf": [
+        {
+          "const": "xvf3800-linear-4",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile"
     },
     "rows": {
       "items": {

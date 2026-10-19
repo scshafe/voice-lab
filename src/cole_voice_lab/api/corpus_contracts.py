@@ -52,7 +52,10 @@ class CorpusLibrary(ContractModel):
     ``rows`` are the version's prompts in catalog order, each with its status
     (``missing``/``draft``/``kept``/``needs-attention``), its take count and the take that
     stands for it; ``coverage`` totals them. The answer's ``ETag`` is the read model's digest
-    (``corpus_read_model``), which changes exactly when any row or history does."""
+    (``corpus_read_model``), which changes exactly when any row or history does.
+
+    It is one capture profile's view (D-056): ``profile`` is absent in the default view
+    (``umik-1``), byte for byte the answer before profiles existed, and names any other."""
 
     schema_version: Literal["cole-voice-lab.api.corpus-library/v1"] = (
         "cole-voice-lab.api.corpus-library/v1"
@@ -61,11 +64,15 @@ class CorpusLibrary(ContractModel):
     catalog: CatalogReference
     coverage: LibraryCoverage
     rows: tuple[LibraryRow, ...]
+    profile: Literal["xvf3800-linear-4"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class TakeHistory(ContractModel):
     """``GET /api/v1/corpus/prompts/{prompt_id}/takes``: one prompt's row and every take that
-    counts for it under the active version, newest first (an alias's takes included)."""
+    counts for it under the active version, newest first (an alias's takes included), in one
+    capture profile's view (``profile``, as ``CorpusLibrary``'s)."""
 
     schema_version: Literal["cole-voice-lab.api.take-history/v1"] = (
         "cole-voice-lab.api.take-history/v1"
@@ -74,6 +81,9 @@ class TakeHistory(ContractModel):
     catalog: CatalogReference
     row: LibraryRow
     takes: tuple[LibraryTake, ...]
+    profile: Literal["xvf3800-linear-4"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class TakeDecisionRequest(ContractModel):

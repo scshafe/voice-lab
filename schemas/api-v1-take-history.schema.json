@@ -326,10 +326,23 @@
     }
   },
   "additionalProperties": false,
-  "description": "``GET /api/v1/corpus/prompts/{prompt_id}/takes``: one prompt's row and every take that\ncounts for it under the active version, newest first (an alias's takes included).",
+  "description": "``GET /api/v1/corpus/prompts/{prompt_id}/takes``: one prompt's row and every take that\ncounts for it under the active version, newest first (an alias's takes included), in one\ncapture profile's view (``profile``, as ``CorpusLibrary``'s).",
   "properties": {
     "catalog": {
       "$ref": "#/$defs/CatalogReference"
+    },
+    "profile": {
+      "anyOf": [
+        {
+          "const": "xvf3800-linear-4",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile"
     },
     "row": {
       "$ref": "#/$defs/LibraryRow"
