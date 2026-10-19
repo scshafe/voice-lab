@@ -162,8 +162,17 @@ def test_the_take_under_review_keeps_its_edit(
     studio.toggleRecord()
     assert not takes.confirmOpen
     qtbot.waitUntil(lambda: len(recorder.takes) == count + 1, timeout=5000)
-    qtbot.waitUntil(lambda: len(studio.client.takes()) == 2, timeout=5000)
-    draft = next(t for t in studio.client.takes() if t.take_id != first)
+
+    def replaced() -> Any:
+        return next((t for t in studio.client.takes() if t.take_id != first), None)
+
+    # The app saves the take, then its trim, in one background task (studio._keep_draft):
+    # wait for the trim, not only the take, or a slow runner looks between the two.
+    qtbot.waitUntil(
+        lambda: (draft := replaced()) is not None and draft.sync.trim.start_frame is not None,
+        timeout=5000,
+    )
+    draft = replaced()
     assert draft.sync.decision.decision == "draft"
     assert (draft.sync.trim.start_frame, draft.sync.trim.end_frame) == (2_400, 12_000)
 
