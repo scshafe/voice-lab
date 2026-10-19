@@ -133,7 +133,7 @@ torchaudio==2.11.0
 torchcodec==0.16.0
 torchdiffeq==0.2.5
 tqdm==4.70.1
-transformers==5.17.0
+transformers==5.10.1
 transformers-stream-generator==0.0.5
 typer==0.27.2
 typing-inspection==0.4.4

@@ -3508,9 +3508,9 @@ tqdm==4.70.1 \
     #   f5-tts
     #   huggingface-hub
     #   transformers
-transformers==5.17.0 \
-    --hash=sha256:78ec1ce21579b38dfb83950a0658cd119f87212a2fcfdff478096ce9d6c03801 \
-    --hash=sha256:a153be279169b55b92d8000bf4af294aed684503d091cca7804da2dd8a9de000
+transformers==5.10.1 \
+    --hash=sha256:31112d1dcdfcf9934242acbba891f44e2279ff74b9b8ba4595640e0e04195a3a \
+    --hash=sha256:ccb919ea1b77338b44d0d45d23f7472081906b1bb6ed8e5f5cf4d692d1da03d4
     # via
     #   -c requirements/runtimes/f5-tts-finetune-1.1.22-mps.txt
     #   f5-tts
