@@ -1231,8 +1231,11 @@ def test_an_upload_the_vault_refuses_after_reading_it_is_still_the_mac_s_own(
         with pytest.raises(StorageError, match="STORAGE.QUOTA|quota|full") as refused:
             vault.blob_store.put(b"x" * 4096)
         assert refused.value.code == "STORAGE.QUOTA"
-        served = server.access_records()
 
+    # Read only now: a worker records an access after it answers, and the vault's
+    # server_close (leaving running_vault) waits for its workers. A slow host read the
+    # log before the refusal's line was written.
+    served = server.access_records()
     # The vault counted the whole body of the upload it read before refusing it.
     (drained,) = [record for record in served if record.status >= 400]
     assert (drained.operation, drained.bytes) == ("put-blob", 4096 + 33)
