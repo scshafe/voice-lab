@@ -2,7 +2,8 @@
 
 ## Mission
 
-Build a private, reproducible laboratory for recording Cole's voice, accepting
+Build a private, reproducible laboratory for recording Cole's voice (with the desktop
+app and, as a second capture client, the house panel: D-056), accepting
 recordings onto the Mac mini, comparing local voice-cloning systems, and
 speaking with the newest voice release of Cole's own voice (the base voice until a
 fine-tuned run exists), for callers he registers (D-044 to D-047, D-055).
