@@ -87,10 +87,10 @@ fi
   exit 69
 }
 for artifact_lock in "$build_artifact_lock" "$runtime_artifact_lock"; do
-  [ -f "$artifact_lock" ] && [ ! -L "$artifact_lock" ] || {
+  if ! { [ -f "$artifact_lock" ] && [ ! -L "$artifact_lock" ]; }; then
     printf 'missing regular capture-kit artifact lock: %s\n' "$artifact_lock" >&2
     exit 69
-  }
+  fi
 done
 
 source_commit=$("$git_bin" -C "$repo_dir" rev-parse --verify 'HEAD^{commit}') || {
@@ -273,10 +273,10 @@ PYTHONHASHSEED=0 SOURCE_DATE_EPOCH="$source_date_epoch" "$toolchain_python" -I -
   "$source_dir"
 
 set -- "$build_dir"/cole_voice_lab-*.whl
-[ "$#" -eq 1 ] && [ -f "$1" ] || {
+if ! { [ "$#" -eq 1 ] && [ -f "$1" ]; }; then
   printf '%s\n' 'build did not produce exactly one cole_voice_lab wheel' >&2
   exit 65
-}
+fi
 application_wheel=$1
 cp "$application_wheel" "$bundle_dir/"
 

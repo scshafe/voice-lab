@@ -930,10 +930,10 @@ bundle_directory=$(printf '%s\n' "$bundle_verification" | sed -n '1p')
 python_runtime_closure_sha256=$(printf '%s\n' "$bundle_verification" | sed -n '2p')
 ensurepip_wheel=$(printf '%s\n' "$bundle_verification" | sed -n '3p')
 validate_digest "$python_runtime_closure_sha256" 'Python runtime closure digest'
-[ -f "$ensurepip_wheel" ] && [ ! -L "$ensurepip_wheel" ] || {
+if ! { [ -f "$ensurepip_wheel" ] && [ ! -L "$ensurepip_wheel" ]; }; then
   printf 'reviewed ensurepip wheel is unavailable: %s\n' "$ensurepip_wheel" >&2
   exit 69
-}
+fi
 
 printf 'verified capture-kit bundle: %s\n' "$bundle_directory"
 if [ "$verify_only" -eq 1 ]; then
