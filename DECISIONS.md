@@ -652,6 +652,10 @@ AGENTS.md's mission, ARCHITECTURE.md's trust model ("the intake publisher re-has
 and D-008's reason for sequential residency. Those texts change with the design's phase 2,
 which builds the host; until then they describe what runs.
 
+Amended 2026-10-18 (D-056): a capturing host without a browser, the house panel, makes the
+standing approval on its own screen and checks the node through its own `tailscaled`. The
+approval and its ledger stay the capturing host's; the server never carries them.
+
 ## D-022 — Fine-tuning and Speak run on the PC, behind a consent record
 
 Cole decided on 2026-10-06 (design §13, decision 7) that fine-tuning and Speak move from
@@ -1075,6 +1079,10 @@ Amended 2026-10-15 (D-040's slower stop): the parent checks the WAV with
 canonical format, and data length against the header. It no longer measures every sample's
 level in Python, which nothing in the binding used and which took about 19 ms per second of
 audio (562 ms for a 30 s take on the PC).
+
+Amended 2026-10-18 (D-056): the house panel's takes carry ALSA evidence of their own
+(`cole-voice-lab.alsa-continuity/v1`) in `corpus-take/v2`. This evidence contract and the
+v1 take package are unchanged.
 
 ## D-040 — The S-1 harness, and what "S-1 passes" means
 
@@ -1722,6 +1730,10 @@ for HTTP clients, the recording service's relaunch pin.
 
 **The vault.** Every new path is classified for the vault in the PR that first writes it.
 
+Amended 2026-10-18 (D-056): a second client, the house panel, records `corpus-take/v2`
+takes of its own capture profile, `xvf3800-linear-4`. The library is seen per profile,
+`umik-1` by default, so the desktop's answers are unchanged.
+
 ## D-053 — The Mac's takes reach the PC as imported takes
 
 Recorded 2026-10-12, for Recording v1's step 9 ([docs/design/RECORDING-V1.md](docs/design/RECORDING-V1.md)
@@ -1814,6 +1826,10 @@ docs/NATIVE_RECORDING_UX.md §9 and §15 ("nothing leaves the Mac"); and RECORDI
 last paragraph, which said the exporter maps Swift takes onto the PC's take contracts: it maps
 them onto their own.
 
+Amended 2026-10-18 (D-056): `intake.validate_package` and its peers also tell a
+`corpus-take/v2` package apart by its manifest's `schema_version`. An imported take is
+profile `umik-1`.
+
 ## D-054 — A free Apple Development certificate signs the Mac builds
 
 Recorded 2026-10-15; amends D-043.
@@ -1898,3 +1914,139 @@ one replaces it or he pins an older one.
   ARCHITECTURE.md, CURRENT.md and the design (docs/design/VOICE-PLATFORM.md);
   docs/SPEECH_API.md, docs/MODEL_FAMILIES.md, docs/FINETUNE.md and docs/RUNBOOK.md; and
   deploy/speech/README.md and deploy/host-manual/.
+
+## D-056 — The house panel is a second capture client
+
+Recorded 2026-10-18, from the owner's plan in #86 and his answers to its questions on the same
+day. Design: [docs/design/HOUSE-PANEL.md](docs/design/HOUSE-PANEL.md). The house panel
+(scshafe/embedded-house-panel, an FRDM-i.MX8MP board on the bathroom mirror) records prompted
+takes into the PC's corpus alongside voice-lab-desktop, from a reSpeaker Flex XVF3800 Linear-4
+on USB (UAC 2.0). Its app is that repository's #23, and its capture is #22. The desktop app
+records exactly as before.
+
+- **Its own capture profile.** Panel takes enter the corpus tagged with their device and room,
+  as profile `xvf3800-linear-4`. Every take recorded so far is profile `umik-1`:
+  voice-lab-desktop's `corpus-take/v1` and D-053's imported Swift takes. Training uses `umik-1`
+  by default. A dataset that includes another profile says so in its corpus record, so
+  `families compare` flags it as another corpus and can test whether panel takes help. Nothing
+  trains on the PC's corpus before phase 5 (D-051); this is the rule that phase's selection
+  follows. A take is derived for a family from its primary channel: derived audio, written
+  elsewhere.
+- **`cole-voice-lab.corpus-take/v2`, not a separate contract.** D-053's reason, a take that
+  carries another store's records, does not apply: a panel take is a client's take with the
+  desktop's lifecycle. A v2 take declares its capture profile and carries its backend's
+  continuity evidence, in the same five files (`manifest.json`, `qc.json`, `READY`,
+  `original.wav`, `continuity.json`), so the upload, the staging and the publisher carry it
+  unchanged. v2 defines one profile, `xvf3800-linear-4`. v1 stays as it is, and
+  voice-lab-desktop keeps writing it; `umik-1` joins v2 when the desktop moves, not before.
+- **The capture profile** names:
+  - the device: model, USB vendor and product ids, serial when it has one, and firmware
+    (`VERSION`, `BLD_MSG`, `BLD_REPO_HASH`);
+  - the room, as a slug;
+  - each WAV channel's source (a processed output or raw microphone 1–4), the routing category
+    it was taken from, and the processing that ran on it;
+  - the primary channel, which the take is judged and derived from;
+  - the device's processing settings when the take started.
+
+  The panel records the raw microphones where the firmware gives them: channels 3–6 of the
+  6-channel image.
+- **The audio is what the device gives.** The XVF3800 decimates its microphones to 16 kHz, and
+  its 48 kHz image only upsamples that. A panel take is therefore 16 kHz, 6 or 2 channels, in
+  s16le (the firmware's default), s24le or s32le (`USB_BIT_DEPTH`). Every channel is exactly as
+  ALSA delivered it: the panel neither resamples nor extracts nor applies gain (D-003). 48 kHz
+  is refused, because the take would claim a band it does not have. A take lasts at most 660 s,
+  as a desktop take does.
+- **ALSA continuity evidence, `cole-voice-lab.alsa-continuity/v1`**, integers only. It holds:
+  - the PCM opened and its hardware parameters (access, format, rate, channels, period and
+    buffer frames), and the timestamp type;
+  - the xrun count, which is 0 for a success;
+  - one `[position_frames, timestamp_ns]` pair per period: ALSA's timestamp of the hardware
+    pointer's update after each read (USB audio has no link timestamps);
+  - the tolerance and the largest deviation the device measured;
+  - the frames, and the WAV it describes (name, SHA-256, size);
+  - the start, the stop reason, success, the error, and whether the source was simulated.
+
+  The PC recomputes every period's deviation from the pairs. Its figure must equal the device's
+  and stay within the tolerance, which the PC bounds. The exact rule and bounds are fixed with
+  the contract and published in the bundle.
+- **Validation and admission** are as strict as v1's:
+  - the exact file set, no links, canonical JSON, every digest and byte count;
+  - the WAV's format equal to the manifest's and allowed by the profile, and its channels equal
+    to the profile's;
+  - the evidence bound to the WAV and successful;
+  - a Seeed USB device (vendor 0x2886).
+
+  Then the PC's own rules apply: no simulated audio, no diagnostic root, and the catalog rule,
+  unchanged. Intake recomputes QC on the server from the primary channel, with a desktop take's
+  thresholds. The buffer-boundary and short-zero heuristics are tuned to the canonical format
+  and apply only to it; the ALSA evidence judges continuity instead. The raw microphones are
+  quiet, so more panel takes may read `review`. That is reported, not relaxed.
+- **Records on the PC.** The take record gains an optional capture-profile summary, absent for
+  a `umik-1` take, so every existing record keeps its bytes (the precedent is `origin`, D-053).
+  Its audio may be any format the profile allows. Every new path is classified for the vault in
+  the PR that first writes it (D-052).
+- **Two clients, and no reservation.** Each take is unique by its audio's digest. With one
+  speaker, duplicates are fine, and decisions resolve them. The library is one corpus, seen per
+  profile. `GET /api/v1/corpus/library` and a prompt's take history answer the `umik-1` view by
+  default, byte for byte today's answer, so the desktop never sees panel takes.
+  `?profile=xvf3800-linear-4` answers the panel's view. In each view, the newest kept take of the
+  profile stands for a prompt (D-016's rule, per profile).
+- **Sign-in is Pocket ID's device-code grant.** The panel signs in once, with the owner
+  approving from his phone, through the public client `voice-lab-panel`. The owner created
+  it on 2026-10-18 on Pocket ID v2.13.0, and the design's facts are read from that version's
+  source. Its tokens' audience is that client (the panel sends no `resource`) and their
+  subject is Cole's, so takes stay under `cole-self`. The door admits the
+  audience as one more extra JWT issuer entry. A panel token carries Cole's subject, which the
+  door forwards, so the API accepts that audience only on an allow-list and refuses it
+  everywhere else by default, not route by route: `/view/`, the journey routes, the journey
+  intake and speech included. The allow-list:
+  - `GET /api/v1/meta` and `GET|HEAD /api/v1/catalog`;
+  - the library and a prompt's take history, of the panel's profile only, with no audio;
+  - the intake session routes, where finalize refuses a package that is not a v2 take of the
+    panel's profile, so the panel's token cannot add to the `umik-1` corpus;
+  - a decision on a take of the panel's profile, and a request's status.
+
+  No take audio, and no trims. The speech routes and `client_credentials` are unchanged (D-046).
+- **The refresh token** is one file:
+  - mode 0600, owned by the panel's uploader user, in a 0700 directory, never in the image or a
+    log;
+  - refreshes are single-flight, and each rotation is written atomically before the new access
+    token is used, because v2.13 has no grace period and revokes the whole token family when
+    a rotated token is reused;
+  - access tokens stay in memory.
+
+  It is revoked by Cole under his Pocket ID account's authorized apps, or by deleting the client.
+  The client's access tokens live 15 minutes, which bounds one already issued, since Pocket ID
+  has no revocation endpoint. Removing the audience from the API, or the tailnet grant, cuts the
+  panel off at once.
+- **D-021 on a device without a browser.** The standing approval stays with the capturing host:
+  - the panel makes it on its own screen (endpoint, node, tag, expiry, digest);
+  - it reads the PC's stable node id and `tag:voice-lab` from its own `tailscaled`, and checks
+    them again before every upload session;
+  - it keeps the chained ledger, with an entry naming the manifest digest before the first byte.
+
+  The server does not carry the binding: it cannot vouch for its own identity to the client,
+  which is what the approval checks. The tailnet admits `tag:house-panel` to `tag:voice-lab` on
+  443 (infra #19), and to the Pocket ID node on 443 (infra #21). The panel shows the plain
+  verification URI and the code, never v2.13's complete link, which approves on load once
+  consent is recorded.
+- **A contract bundle the panel pins**, `contracts/corpus-client.v1/`. It is shaped like
+  lexinet's `study.v1`, which the panel already pins by commit and the SHA-256s of raw files. It
+  holds:
+  - a `manifest.json` listing every file's SHA-256 and size;
+  - an OpenAPI 3.1 document of the allowed routes, and the generated JSON Schemas;
+  - golden examples with their exact bytes, valid and invalid, each invalid one with its refusal
+    code;
+  - a golden take package whose WAV is given by an integer recipe and its digest (the
+    repository holds no audio file);
+  - canonical-JSON vectors;
+  - `PROTOCOL.md`: sign-in, the approval and ledger, the intake (declare, chunked `PUT` with
+    `Content-Range`, resume, finalize, receipt), decisions with stable request ids, `ETag`s,
+    retries, and the canonical form the panel writes byte for byte.
+
+  `scripts/verify` fails when the bundle drifts from the code. A fixture server runs the real
+  API, validator and publisher pass on a throwaway root, with a seeded catalog and a fake Pocket
+  ID (device grant, refresh rotation, a key made at start), for the panel's live check.
+- **Amends** D-021, D-039, D-052 and D-053 (dated notes) and AGENTS.md's mission. It is built in
+  four steps after this record, one PR each: the v2 contract, the per-profile views, the panel's
+  audience, and the bundle with its fixture.
