@@ -1109,14 +1109,16 @@ def test_a_speak_request_past_its_deadline_is_killed_with_its_output(
     write_speech_run(speech.layout, "finetune-a")
     speech.mode(synthesis_seconds=60)
     _queue, events, _ = speaking
-    supervisor = supervisor_for(speech, speaking, synthesis_deadline=1.5)
+    # Long enough that a slow host (a hosted CI runner) starts the synthesizer before the
+    # deadline stops it, so its group can be seen; far short of the 60 s render.
+    supervisor = supervisor_for(speech, speaking, synthesis_deadline=8)
     supervisor.synthesize(say())
     supervisor.start()
     group = speech_group(speech, "speak-1")
     failed = events.wait_for(said("failed"), timeout=30)
     assert failed.error is not None and failed.error.code == "FINETUNE.SYNTHESIS_DEADLINE"
     assert failed.error.message == (
-        "speech synthesis took longer than 1.5 seconds and was stopped; try a shorter text"
+        "speech synthesis took longer than 8 seconds and was stopped; try a shorter text"
     )
     assert failed.error.retryable
     wait_until(lambda: live_group(group) == [], timeout=10)
