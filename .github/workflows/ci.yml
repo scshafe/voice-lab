@@ -33,11 +33,16 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python }}
-      # scripts/verify uses the checkout's .venv (README, Linux setup).
+      # scripts/verify uses the checkout's .venv. pip turns on hash-checking for the whole
+      # install when one requirements file has hashes, and an editable install has no
+      # file to hash, so the hash-locked build tools go in first and alone (README, the
+      # macOS setup; uv, the PC's, does not switch hash-checking on).
       - name: Development environment
         run: |
           python -m venv .venv
-          .venv/bin/python -m pip install -e '.[dev]' -r requirements/development-build.txt
+          .venv/bin/python -m pip install --require-hashes --only-binary=:all: --no-deps \
+            -r requirements/development-build.txt
+          .venv/bin/python -m pip install -e '.[dev]'
       - name: Verify (dev.toml [verify] command)
         run: |
           scripts/verify
