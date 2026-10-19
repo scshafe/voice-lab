@@ -38,6 +38,9 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 ROCM_LOCK = REPOSITORY / "requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2.txt"
 ROCM_INPUT = REPOSITORY / "requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2/pyproject.toml"
 MPS_LOCK = REPOSITORY / "requirements/runtimes/f5-tts-finetune-1.1.22-mps.txt"
+ROCM_CONSTRAINTS = (
+    REPOSITORY / "requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2/constraints.txt"
+)
 BUILD_TOOLS = REPOSITORY / "requirements/development-build.txt"
 _PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==(\S+)$")
 TORCH_FAMILY = ("torch", "torchaudio", "torchcodec", "triton-rocm")
@@ -77,9 +80,9 @@ def _lock(text: str) -> tuple[list[str], dict[str, tuple[str, list[str]]], list[
     return header, packages, options
 
 
-def _mps_versions() -> dict[str, str]:
+def _constrained_versions() -> dict[str, str]:
     versions: dict[str, str] = {}
-    for line in MPS_LOCK.read_text().splitlines():
+    for line in ROCM_CONSTRAINTS.read_text().splitlines():
         pin = _PIN.match(line.strip())
         if pin:
             versions[_canonical(pin.group(1))] = pin.group(2)
@@ -477,20 +480,14 @@ def test_pip_searches_pypi_and_both_pytorch_indexes_for_the_lock(tmp_path: Path)
     assert "download.pytorch.org" not in completed.stdout + completed.stderr
 
 
-def test_the_rocm_lock_keeps_the_macs_versions_beside_its_torch() -> None:
+def test_the_rocm_lock_keeps_its_constraints_beside_its_torch() -> None:
     _, packages, _ = _lock(ROCM_LOCK.read_text())
-    mac = _mps_versions()
-    differs = {
-        name: (version, mac[name])
-        for name, (version, _) in packages.items()
-        if name in mac and version != mac[name]
-    }
-    assert set(differs) == {"torch", "torchaudio", "torchcodec"}
-    assert {name: pair[0].split("+")[0] == pair[1] for name, pair in differs.items()} == {
-        "torch": True,
-        "torchaudio": True,
-        "torchcodec": True,
-    }
+    constrained = _constrained_versions()
+    # Every package but the torch family, which the input pins, at its constrained version.
+    assert set(constrained) == set(packages) - set(TORCH_FAMILY)
+    assert {name: packages[name][0] for name in constrained} == constrained
+    # The advisory fixed on 2026-10-19 (GHSA-54p9-h82j-f925: multidict 6.7.0 to 6.9.0).
+    assert constrained["multidict"] == "6.9.1"
 
 
 def test_the_lock_input_routes_only_the_torch_family_to_pytorchs_indexes() -> None:
@@ -521,7 +518,8 @@ def test_the_lock_header_names_the_compile_and_install_commands(tmp_path: Path) 
     text = " ".join(line.lstrip("#").strip().removesuffix("\\") for line in header)
     relative_input = ROCM_INPUT.relative_to(REPOSITORY).as_posix()
     assert f"uv pip compile {relative_input}" in text
-    assert "-c requirements/runtimes/f5-tts-finetune-1.1.22-mps.txt" in text
+    relative_constraints = ROCM_CONSTRAINTS.relative_to(REPOSITORY).as_posix()
+    assert f"-c {relative_constraints}" in text
     assert "--generate-hashes" in text and "--no-header" in text
     assert "voice-lab finetune provision-runtime --target linux-rocm" in text
     plan = plan_finetune_runtime_provisioning(tmp_path / "rt", target="linux-rocm")

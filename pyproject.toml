@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools==80.9.0", "wheel==0.46.3"]
+requires = ["setuptools==84.0.0", "wheel==0.46.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -32,7 +32,7 @@ dev = [
   # The locks pin 2.13.5; pydantic 2.14 changes TypeAdapter typing under strict mypy.
   "pydantic==2.13.5",
   "build>=1.2,<2",
-  "setuptools==80.9.0",
+  "setuptools==84.0.0",
   "wheel==0.46.3",
   "mypy>=1.15,<2",
   "pytest>=8.3,<9",

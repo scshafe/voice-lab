@@ -1,7 +1,7 @@
 [build-system]
 # The backend's build tool, at its pin (requirements/development-build.txt), so that
 # scripts/verify builds this wheel offline with --no-isolation as it builds the backend's.
-requires = ["setuptools==80.9.0", "wheel==0.46.3"]
+requires = ["setuptools==84.0.0", "wheel==0.46.3"]
 build-backend = "setuptools.build_meta"
 
 [project]

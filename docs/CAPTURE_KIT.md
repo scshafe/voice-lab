@@ -13,7 +13,7 @@ installs these exact hash-locked wheels, and then invokes PEP 517 with
 `--no-isolation`:
 
 - `build==1.5.0`
-- `setuptools==80.9.0`
+- `setuptools==84.0.0`
 - `wheel==0.46.3`
 - `packaging==26.3`
 - `pyproject-hooks==1.2.0`

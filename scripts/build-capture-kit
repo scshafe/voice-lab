@@ -8,7 +8,7 @@ build_artifact_lock="$repo_dir/requirements/capture-kit-build.artifacts.txt"
 runtime_artifact_lock="$repo_dir/requirements/capture-kit-runtime.artifacts.txt"
 
 build_version=1.5.0
-setuptools_version=80.9.0
+setuptools_version=84.0.0
 wheel_version=0.46.3
 packaging_version=26.3
 pyproject_hooks_version=1.2.0
