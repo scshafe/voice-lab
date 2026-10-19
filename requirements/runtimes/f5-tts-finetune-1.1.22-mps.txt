@@ -127,7 +127,7 @@ threadpoolctl==3.7.0
 tokenizers==0.23.2
 tomli==2.4.1
 tomlkit==0.14.0
-torch==2.14.0
+torch==2.13.0
 torch-einops-utils==0.1.25
 torchaudio==2.11.0
 torchcodec==0.16.0

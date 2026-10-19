@@ -2,7 +2,7 @@
 # CPython 3.12 is required by the isolated lab worker. Stable matched PyTorch
 # wheels replace upstream's mutable nightly requirements-mac entries. A real
 # Seed smoke remains mandatory because upstream did not publish a 3.12 contract.
-torch==2.6.0
+torch==2.13.0
 torchvision==0.21.0
 torchaudio==2.6.0
 accelerate==1.2.1
