@@ -223,7 +223,7 @@ stop at the owner's manifest-hash approval.
   - `voice-lab-vault-laptop.{service,timer}` moved to `deploy/host-manual/`: the validator
     refuses `ImportCredential=`. The pair stays installed by hand, as it has run since the
     vault went live (same unit text), and the nightly copy keeps running; infra's
-    `host.conf` names `voice-lab-vault.colobus-stargazer.ts.net:443` in
+    `host.conf` names `voice-lab-vault.<tailnet>.ts.net:443` in
     `HOST_EGRESS_TAILNET` so the service user's egress table still lets it reach the vault.
     **Follow-up:** a credentials rule in infra's validator (an `ImportCredential=` glob
     allowlist per app, read from `host.conf`), then the pair moves back to `deploy/host/`.
@@ -255,7 +255,7 @@ stop at the owner's manifest-hash approval.
     the hand-installed intake and JWKS units removed, and the read-only
     `scshafe-host-release check` at `2f69633` passed. The dispatch (run 37528565746,
     `allow_rollback=true`) stopped in `prepare`: `HOST_EGRESS_TAILNET
-    id.colobus-stargazer.ts.net resolves to ::ffff:100.124.169.100, outside the tailnet`.
+    id.<tailnet>.ts.net resolves to ::ffff:100.x.y.z, outside the tailnet`.
     MagicDNS on the PC answers no AAAA for tailnet names, and `getent ahostsv6` then
     returns the IPv4 address v4-mapped. The development deployment was put back at once:
     the hand units reinstalled and active, `current` unchanged, the dev stack serving
@@ -304,7 +304,7 @@ stop at the owner's manifest-hash approval.
   removed; every `.env` name set but `TS_AUTHKEY` (joined identity); the release `stack.toml`
   equal to `main`'s; `scshafe-host-release check` at `d238be4` passed. Dispatch with
   `allow_rollback=true` at `d238be4`: run 37559505895, green in 53 s: 5b/8 prepare (both egress
-  hosts resolved: issuer `100.124.169.100`, laptop vault `100.101.139.46`; release
+  hosts resolved: issuer `100.x.y.z`, laptop vault `100.x.y.z`; release
   `36e8d776…fa75` sealed, 853 entries), 6/8 backup through `stack-backup@voice-lab`, 7/8 the
   stack (`voice-lab:d238be4`, takeover mode, `/healthz` 200), 8/8 host units activated
   (`current` -> `36e8d776…`, five units), health: live, containers, witness, tailnet-only.
@@ -361,7 +361,7 @@ stop at the owner's manifest-hash approval.
 Prepared: a phase-2 client runtime on the Air at `~/.local/share/voice-lab-phase2/runtime`
 (voice-lab from `main`, pydantic from PyPI; nothing else on the Air changed; its scratch
 `acceptance-client/` and `macos-synthetic-*` hold synthetic data only and may be deleted).
-The PC serves `https://voice-lab.colobus-stargazer.ts.net` (node StableID
+The PC serves `https://voice-lab.<tailnet>.ts.net` (node StableID
 `nMDiVAZnG111CNTRL`) in production mode: Pocket ID door, the real asset root
 `/data/voice-lab/lab`, the intake publisher unit.
 
@@ -375,18 +375,18 @@ the session (the one the recording app or `capture console` writes to):
 2. Approve the home host once (D-021). Run with `--preview`, read the record (endpoint,
    StableID, tag, classes, expiry), then run the same command without `--preview` plus
    `--reviewed-approval-sha256 <printed approval_sha256> --i-approve-this-destination`.
-   Confirm the StableID yourself first: `tailscale status --json | grep -A3 '"voice-lab.colobus'`
+   Confirm the StableID yourself first: `tailscale status --json | grep -A3 '"voice-lab.<tailnet>'`
    or in the admin console (machine `voice-lab`, tags `tag:voice-lab`, `tag:container`).
 
    ```sh
    $VL home-host approve --asset-root "$ASSET_ROOT" --approval-id pc-home-host-2026 \
-     --endpoint voice-lab.colobus-stargazer.ts.net --tailnet-suffix colobus-stargazer.ts.net \
+     --endpoint voice-lab.<tailnet>.ts.net --tailnet-suffix <tailnet>.ts.net \
      --node-stable-id nMDiVAZnG111CNTRL --classes capture \
      --approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --expires-at 2027-10-05T00:00:00Z \
      --approved-by Cole --statement "My own captures, to my own PC (D-021)." --preview
    ```
    (Use the same `--approved-at` value in both runs: copy it from the preview.)
-3. Sign in once: `$VL home-host sign-in --asset-root "$ASSET_ROOT" --issuer https://id.colobus-stargazer.ts.net`
+3. Sign in once: `$VL home-host sign-in --asset-root "$ASSET_ROOT" --issuer https://id.<tailnet>.ts.net`
    (a browser opens Pocket ID; use your passkey; the refresh token goes to the login Keychain).
 4. Upload: `$VL intake upload "$ASSET_ROOT/tmp/capture-<session-id>" --asset-root "$ASSET_ROOT"`.
    It prints the `accepted` status; its `receipt.manifest_sha256` equals the local
