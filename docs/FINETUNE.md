@@ -116,9 +116,9 @@ The ROCm lock is compiled by uv from
 `requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2/pyproject.toml` (which routes only the
 torch family to PyTorch's `rocm7.2` and `cpu` indexes) with the versions of every other package
 as constraints (`requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2/constraints.txt`: spike
-S-2's, which were the Mac lock's until 2026-10-19, with multidict at 6.9.1 since);
-its header has the exact command, and its body is that command's unchanged output. It
-installs in two steps, both `--require-hashes`: the hash-locked build tools
+S-2's, which were the Mac lock's until 2026-10-19, with multidict at 6.9.1 and aiohttp at
+3.14.4 since); its header has the exact command, and its body is that command's unchanged
+output. It installs in two steps, both `--require-hashes`: the hash-locked build tools
 (`requirements/development-build.txt`, `--build-requirements`), then the lock without build
 isolation and wheels only, except the three packages that publish none
 (`antlr4-python3-runtime`, `encodec`, `transformers-stream-generator`), which build from their

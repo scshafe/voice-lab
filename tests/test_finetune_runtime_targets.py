@@ -486,8 +486,10 @@ def test_the_rocm_lock_keeps_its_constraints_beside_its_torch() -> None:
     # Every package but the torch family, which the input pins, at its constrained version.
     assert set(constrained) == set(packages) - set(TORCH_FAMILY)
     assert {name: packages[name][0] for name in constrained} == constrained
-    # The advisory fixed on 2026-10-19 (GHSA-54p9-h82j-f925: multidict 6.7.0 to 6.9.0).
+    # The advisories fixed on 2026-10-19: GHSA-54p9-h82j-f925 (multidict 6.7.0 to 6.9.0), and
+    # GHSA-5wr8-gcqf-gqf3, GHSA-2g87-pp6c-29x5 and GHSA-494j-54xm-rwp3 (aiohttp to 3.14.3).
     assert constrained["multidict"] == "6.9.1"
+    assert constrained["aiohttp"] == "3.14.4"
 
 
 def test_the_lock_input_routes_only_the_torch_family_to_pytorchs_indexes() -> None:
