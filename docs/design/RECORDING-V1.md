@@ -297,7 +297,8 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   receipt lookup and the vault's raw source stay one path). The publisher refuses generated
   audio and a prompt the take's catalog snapshot does not count, and records each take in
   `provenance/corpus-takes/` (an undecided draft, rebuildable from `raw/`, copied by the
-  vault). The read model gains the library (`derived/corpus/library-<subject>.json`), rebuilt
+  vault). The read model gains the library (`derived/corpus/library-<subject>.json`; since
+  D-056 also one file per other capture profile, `library-<subject>-<profile>.json`), rebuilt
   by every pass and every `catalog` command; `GET /api/v1/corpus/library`,
   `GET /api/v1/corpus/prompts/{id}/takes` and, behind the playback approval,
   `GET /api/v1/corpus/takes/{id}/audio` serve it. After review: the publisher checks the

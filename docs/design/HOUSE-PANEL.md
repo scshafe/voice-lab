@@ -422,7 +422,15 @@ watched.
    profile and the vault. Until step 3, the library's default view counts a published v2 take
    as it counts any take; no client writes one until the panel can sign in (step 4).
 3. **Per-profile library views**: the read-model files, `?profile=` and their classification.
-   The default answer stays byte-identical.
+   The default answer stays byte-identical. As built (2026-10-19):
+   - `derived/corpus/library-<subject>.json` stays the default view (`umik-1`, every take
+     without a profile), and `library-<subject>-xvf3800-linear-4.json` is the panel's. Every
+     refresh writes both (each only when it changed), so the panel's view exists before its
+     first take. The read model's vault rule (`corpus-read-model`, Mac-only) covers both.
+   - The coverage counts the view's takes only.
+   - The panel's answers name their `profile`; the default view's omit it.
+   - `?profile=umik-1` answers the default view; any other query is refused, 400
+     `bad_request`, where before it was ignored.
 4. **The panel's audience**:
    - the fail-closed scopes and the allow-list;
    - the finalize and decision profile checks;

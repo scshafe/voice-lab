@@ -18,7 +18,17 @@ and ``voice-lab catalog init|publish|activate`` refreshes it at once
   a row per prompt with its status, coverage totals, and each prompt's take history, built
   from the take store's records (``corpus_take_store``) and the digest-checked snapshot. It
   carries no time of its own, so an unchanged library is never rewritten and its digest
-  changes exactly when its content does.
+  changes exactly when its content does;
+- ``library-<subject>-<profile>.json``: the same library seen by another capture profile
+  (D-056; today ``xvf3800-linear-4``, the house panel's).
+
+The library is one corpus, seen per capture profile (D-056). ``library-<subject>.json`` is the
+default view, profile ``umik-1``: every take that names no profile (voice-lab-desktop's and
+the imported Swift takes), so its bytes are those of the library before profiles existed and
+the desktop never sees another profile's takes. Each other profile's view holds that
+profile's takes only. In every view the rules below are the same, per profile (D-016's rule:
+the newest kept take of the profile stands for a prompt), and the coverage counts the view's
+takes only.
 
 A take counts for a prompt of the active version when ``CatalogSnapshot.current_prompt_for``
 says its recorded prompt does (the same prompt, or an earlier revision an alias accepts). A
@@ -71,6 +81,11 @@ MAX_RECORD_BYTES: Final = 64 * 1024
 MAX_LIBRARY_BYTES: Final = 64 * 1024 * 1024
 
 type PromptStatus = Literal["missing", "draft", "kept", "needs-attention"]
+#: The capture profiles the library is seen by: ``umik-1`` (no profile on the take), the
+#: default view, and each profile a v2 take can declare (``capture_profiles``).
+type LibraryProfile = Literal["umik-1", "xvf3800-linear-4"]
+DEFAULT_PROFILE: Final = "umik-1"
+LIBRARY_PROFILES: Final[tuple[LibraryProfile, ...]] = ("umik-1", "xvf3800-linear-4")
 
 
 class ActiveCatalogRecord(ContractModel):
@@ -208,7 +223,11 @@ class PromptTakes(ContractModel):
 
 
 class CorpusLibraryRecord(ContractModel):
-    """The subject's library of one catalog version: rows, coverage and take histories."""
+    """The subject's library of one catalog version, seen by one capture profile: rows,
+    coverage and take histories.
+
+    ``profile`` is absent in the default view (``umik-1``), so its bytes are those of the
+    library before profiles existed; it names any other view's profile."""
 
     schema_version: Literal["cole-voice-lab.corpus-library/v1"] = LIBRARY_SCHEMA
     subject_id: StableId
@@ -217,10 +236,22 @@ class CorpusLibraryRecord(ContractModel):
     rows: tuple[LibraryRow, ...]
     #: The prompts that have takes, in catalog order.
     histories: tuple[PromptTakes, ...]
+    profile: Literal["xvf3800-linear-4"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
-def library_path(layout: AssetLayout, subject_id: str) -> Path:
-    return read_model_directory(layout) / f"library-{subject_id}.json"
+def library_path(
+    layout: AssetLayout, subject_id: str, profile: LibraryProfile = DEFAULT_PROFILE
+) -> Path:
+    """The subject's library file of ``profile``'s view (the default view's has no suffix)."""
+    suffix = "" if profile == DEFAULT_PROFILE else f"-{profile}"
+    return read_model_directory(layout) / f"library-{subject_id}{suffix}.json"
+
+
+def take_profile(state: CorpusTakeState) -> LibraryProfile:
+    """The capture profile a take is seen by: its record's, else ``umik-1``."""
+    return DEFAULT_PROFILE if state.capture_profile is None else state.capture_profile.profile
 
 
 def _library_take(state: CorpusTakeState) -> LibraryTake:
@@ -257,14 +288,16 @@ def build_library(
     reference: CatalogReference,
     snapshot: CatalogSnapshot,
     states: Iterable[CorpusTakeState],
+    profile: LibraryProfile = DEFAULT_PROFILE,
 ) -> CorpusLibraryRecord:
-    """The library of ``snapshot`` (the version ``reference`` names) over the subject's takes.
+    """The library of ``snapshot`` (the version ``reference`` names) over the subject's takes
+    of ``profile`` (the default view's: those that name no profile).
 
     Raises: nothing (every input is already a validated contract)."""
     by_prompt: defaultdict[str, list[LibraryTake]] = defaultdict(list)
     counted = uncounted = 0
     for state in states:
-        if state.subject_id != subject_id:
+        if state.subject_id != subject_id or take_profile(state) != profile:
             continue
         prompt = snapshot.current_prompt_for(state.prompt)
         if prompt is None:
@@ -314,6 +347,7 @@ def build_library(
         coverage=coverage,
         rows=tuple(rows),
         histories=tuple(histories),
+        profile=None if profile == DEFAULT_PROFILE else profile,
     )
 
 
@@ -322,28 +356,30 @@ def refresh_library(
     record: ActiveCatalogRecord,
     states: Iterable[CorpusTakeState] | None = None,
 ) -> CorpusLibraryRecord:
-    """Rebuild the library of the active version ``record`` names; write it when it changed.
+    """Rebuild the library of the active version ``record`` names, in every profile's view;
+    write each view that changed.
 
     ``states`` are the take records when the caller has just read them (the publisher);
     otherwise they are read here.
+    Returns: the default view (``umik-1``).
     Raises: ``CorpusStoreError``/``SecurityError`` as ``corpus_store.read_catalog_snapshot``;
     ``ContractError``/``SecurityError`` as ``corpus_take_store.read_take_states``;
-    ``OSError`` when the library cannot be written."""
+    ``OSError`` when a library cannot be written."""
     from .corpus_store import read_catalog_snapshot  # the file-only reader
 
     snapshot = read_catalog_snapshot(layout, record.reference)
-    library = build_library(
-        record.subject_id,
-        record.reference,
-        snapshot,
-        read_take_states(layout) if states is None else states,
-    )
-    path = library_path(layout, record.subject_id)
-    payload = canonical_json_bytes(library) + b"\n"
-    current = _bounded_read(path, MAX_LIBRARY_BYTES) if os.path.lexists(path) else None
-    if current != payload:
-        write_canonical_json(path, library)
-    return library
+    takes = tuple(read_take_states(layout) if states is None else states)
+    views = {
+        profile: build_library(record.subject_id, record.reference, snapshot, takes, profile)
+        for profile in LIBRARY_PROFILES
+    }
+    for profile, library in views.items():
+        path = library_path(layout, record.subject_id, profile)
+        payload = canonical_json_bytes(library) + b"\n"
+        current = _bounded_read(path, MAX_LIBRARY_BYTES) if os.path.lexists(path) else None
+        if current != payload:
+            write_canonical_json(path, library)
+    return views[DEFAULT_PROFILE]
 
 
 def refresh_corpus_read_model(
@@ -371,12 +407,15 @@ def _bounded_read(path: Path, limit: int) -> bytes:
         return stream.read(limit + 1)
 
 
-def read_library(layout: AssetLayout, subject_id: str) -> tuple[CorpusLibraryRecord, str] | None:
-    """The subject's library and the SHA-256 of its file, or ``None`` when there is none yet.
+def read_library(
+    layout: AssetLayout, subject_id: str, profile: LibraryProfile = DEFAULT_PROFILE
+) -> tuple[CorpusLibraryRecord, str] | None:
+    """The subject's library in ``profile``'s view and the SHA-256 of its file, or ``None``
+    when there is none yet.
 
     Raises: ``SecurityError`` when the file is not a bounded regular file; ``ContractError``
-    when it is not this subject's canonical ``CorpusLibraryRecord``."""
-    path = library_path(layout, subject_id)
+    when it is not this subject's canonical ``CorpusLibraryRecord`` of that profile."""
+    path = library_path(layout, subject_id, profile)
     if not os.path.lexists(path):
         return None
     payload = _bounded_read(path, MAX_LIBRARY_BYTES)
@@ -384,6 +423,10 @@ def read_library(layout: AssetLayout, subject_id: str) -> tuple[CorpusLibraryRec
         library = CorpusLibraryRecord.model_validate_json(payload)
     except (ValidationError, ValueError) as error:
         raise ContractError(f"the corpus library is invalid: {path}: {error}") from error
-    if payload != canonical_json_bytes(library) + b"\n" or library.subject_id != subject_id:
+    if (
+        payload != canonical_json_bytes(library) + b"\n"
+        or library.subject_id != subject_id
+        or (library.profile or DEFAULT_PROFILE) != profile
+    ):
         raise ContractError(f"the corpus library is not this subject's canonical record: {path}")
     return library, hashlib.sha256(payload).hexdigest()

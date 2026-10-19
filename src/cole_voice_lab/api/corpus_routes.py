@@ -15,10 +15,16 @@ corpus store. The subject is the lab's one subject (``COLE_SUBJECT``, D-050).
   RECORDING-V1.md §7);
 - 500 ``catalog_invalid`` when the read model or the snapshot it names fails its checks.
 
-``GET|HEAD /api/v1/corpus/library`` and ``GET|HEAD /api/v1/corpus/prompts/{prompt_id}/takes``:
+``GET|HEAD /api/v1/corpus/library`` and ``GET|HEAD /api/v1/corpus/prompts/{prompt_id}/takes``,
+each with an optional ``?profile=<capture profile>`` (D-056):
 
-- 200 ``CorpusLibrary`` / ``TakeHistory``, with ``ETag: "<read model digest>"`` (the
-  library file's SHA-256, which changes exactly when its content does), or 304 for that tag;
+- 200 ``CorpusLibrary`` / ``TakeHistory`` of the profile's view, with ``ETag: "<read model
+  digest>"`` (that view's library file's SHA-256, which changes exactly when its content
+  does), or 304 for that tag. Without ``profile`` (or with ``profile=umik-1``) the answer is
+  the default view's, byte for byte the answer before profiles existed, so the desktop never
+  sees another profile's takes; ``profile=xvf3800-linear-4`` answers the house panel's view;
+- 400 ``bad_request`` for any other query (another parameter, ``profile`` twice, or a profile
+  the library is not seen by);
 - 404 ``prompt_not_found`` for a prompt the active version does not hold;
 - 503 ``catalog_unavailable`` as above, and ``library_unavailable`` while the library of the
   active version is not built yet (the next intake pass, or ``voice-lab catalog activate``,
@@ -50,11 +56,15 @@ import threading
 from collections.abc import Callable
 from datetime import datetime
 from typing import BinaryIO, Final
+from urllib.parse import parse_qsl
 
 from ..canonical import canonical_json_bytes, open_regular_no_follow
 from ..catalog_ports import CorpusStoreError
 from ..corpus_read_model import (
+    DEFAULT_PROFILE,
+    LIBRARY_PROFILES,
     CorpusLibraryRecord,
+    LibraryProfile,
     LibraryTake,
     library_path,
     read_active_catalog,
@@ -85,6 +95,28 @@ def _matches(header: str | None, tag: str) -> bool:
         return False
     candidates = {candidate.strip().removeprefix("W/") for candidate in header.split(",")}
     return "*" in candidates or tag in candidates
+
+
+def library_profile(query: str) -> LibraryProfile:
+    """The capture profile a library or take-history request asks for: ``umik-1`` without a
+    query, else its one ``profile`` parameter.
+
+    Raises: ``RouteRefusal`` 400 ``bad_request`` for another parameter, ``profile`` given
+    twice or empty, or a profile the library is not seen by."""
+    if not query:
+        return DEFAULT_PROFILE
+    try:
+        pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True)
+    except ValueError as error:
+        raise RouteRefusal(400, "bad_request", f"the query is malformed: {error}") from error
+    names = [name for name, _value in pairs]
+    if names != ["profile"]:
+        raise RouteRefusal(400, "bad_request", "this route takes only ?profile=<capture profile>")
+    value = pairs[0][1]
+    if value not in LIBRARY_PROFILES:
+        known = ", ".join(LIBRARY_PROFILES)
+        raise RouteRefusal(400, "bad_request", f"the library is seen only by {known}")
+    return value
 
 
 def byte_range(header: str | None, size: int) -> tuple[int, int] | None:
@@ -154,7 +186,8 @@ class CorpusRoutes:
         self.playback_approval = playback_approval or None
         self.requests = CorpusRequestRoutes(layout, subject_id, clock=clock)
         self._lock = threading.Lock()
-        self._cached: tuple[tuple[int, ...], _LibraryView] | None = None
+        #: Each profile's view, parsed once per change of its file.
+        self._cached: dict[LibraryProfile, tuple[tuple[int, ...], _LibraryView]] = {}
 
     def __call__(self, request: RouteRequest) -> RouteResponse | None:
         answer = self.requests(request)
@@ -165,10 +198,10 @@ class CorpusRoutes:
             return self._catalog(request)
         if request.path == LIBRARY_PATH:
             self._methods(request)
-            return self._library(request)
+            return self._library(request, library_profile(request.query))
         if (match := _TAKES_PATH.fullmatch(request.path)) is not None:
             self._methods(request)
-            return self._history(request, match["prompt_id"])
+            return self._history(request, match["prompt_id"], library_profile(request.query))
         if (match := _AUDIO_PATH.fullmatch(request.path)) is not None:
             self._methods(request)
             return self._audio(request, match["take_id"])
@@ -216,8 +249,9 @@ class CorpusRoutes:
             status=200, route=route, body=canonical_json_bytes(model) + b"\n", headers=headers
         )
 
-    def _current_library(self) -> _LibraryView:
-        """The library of the active version, parsed once per change of its file."""
+    def _current_library(self, profile: LibraryProfile) -> _LibraryView:
+        """The library of the active version in ``profile``'s view, parsed once per change of
+        its file."""
         try:
             record = read_active_catalog(self.layout, self.subject_id)
         except (ContractError, SecurityError, OSError) as error:
@@ -228,7 +262,7 @@ class CorpusRoutes:
                 "catalog_unavailable",
                 "no catalog is active on this server yet (docs/design/RECORDING-V1.md §7)",
             )
-        path = library_path(self.layout, self.subject_id)
+        path = library_path(self.layout, self.subject_id, profile)
         try:
             metadata = os.lstat(path)
         except FileNotFoundError:
@@ -247,11 +281,12 @@ class CorpusRoutes:
             )
         )
         with self._lock:
-            if key is not None and self._cached is not None and self._cached[0] == key:
-                view = self._cached[1]
+            cached = self._cached.get(profile)
+            if key is not None and cached is not None and cached[0] == key:
+                view = cached[1]
             else:
                 try:
-                    found = read_library(self.layout, self.subject_id)
+                    found = read_library(self.layout, self.subject_id, profile)
                 except (ContractError, SecurityError, OSError) as error:
                     raise RouteRefusal(
                         500, "library_invalid", f"the corpus library: {error}"
@@ -263,7 +298,7 @@ class CorpusRoutes:
                         "the library is built by the next intake pass on this server",
                     )
                 view = _LibraryView(*found)
-                self._cached = (key, view)
+                self._cached[profile] = (key, view)
         if view.library.catalog != record.reference:
             raise RouteRefusal(
                 503,
@@ -273,8 +308,8 @@ class CorpusRoutes:
             )
         return view
 
-    def _library(self, request: RouteRequest) -> RouteResponse:
-        view = self._current_library()
+    def _library(self, request: RouteRequest, profile: LibraryProfile) -> RouteResponse:
+        view = self._current_library(profile)
         headers = (("ETag", view.tag),)
         if _matches(request.header("If-None-Match"), view.tag):
             return RouteResponse(status=304, route="corpus.library", headers=headers)
@@ -284,11 +319,14 @@ class CorpusRoutes:
             catalog=library.catalog,
             coverage=library.coverage,
             rows=library.rows,
+            profile=library.profile,
         )
         return self._json("corpus.library", answer, headers)
 
-    def _history(self, request: RouteRequest, prompt_id: str) -> RouteResponse:
-        view = self._current_library()
+    def _history(
+        self, request: RouteRequest, prompt_id: str, profile: LibraryProfile
+    ) -> RouteResponse:
+        view = self._current_library(profile)
         row = view.rows.get(prompt_id) if _PROMPT_ID.fullmatch(prompt_id) else None
         if row is None:
             raise RouteRefusal(
@@ -302,6 +340,7 @@ class CorpusRoutes:
             catalog=view.library.catalog,
             row=row,
             takes=view.takes.get(prompt_id, ()),
+            profile=view.library.profile,
         )
         return self._json("corpus.takes", answer, headers)
 

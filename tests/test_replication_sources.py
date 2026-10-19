@@ -499,6 +499,7 @@ def add_lab_records(layout: AssetLayout) -> None:
         f"incoming/.refused/corpus-request-20261012T120000000000000Z-req-{HEX32}.json."
         "20261012T120001000000Z",
         "derived/corpus/library-cole-self.json",
+        "derived/corpus/library-cole-self-xvf3800-linear-4.json",
         "provenance/home-host/ledger/00000001.json",
         "runtimes/worker.lock",
         "runtimes/.evicting-runtime-f5-1/python",
@@ -789,6 +790,7 @@ PLAN_DISPOSITIONS: Mapping[str, tuple[str, int | None, str | None]] = {
     f"incoming/.corpus-request-tmp-{HEX32}": ("mac-only", None, None),
     "provenance/intake/sessions/pilot-001.json": ("mac-only", None, None),
     "derived/corpus/library-cole-self.json": ("mac-only", None, None),
+    "derived/corpus/library-cole-self-xvf3800-linear-4.json": ("mac-only", None, None),
     "provenance/home-host/ledger/00000001.json": ("mac-only", None, None),
     "runtimes/worker.lock": ("mac-only", None, None),
     "models/f5-tts/model.safetensors": ("mac-only", None, None),

@@ -407,7 +407,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "The subject's library of one catalog version: rows, coverage and take histories.",
+  "description": "The subject's library of one catalog version, seen by one capture profile: rows,\ncoverage and take histories.\n\n``profile`` is absent in the default view (``umik-1``), so its bytes are those of the\nlibrary before profiles existed; it names any other view's profile.",
   "properties": {
     "catalog": {
       "$ref": "#/$defs/CatalogReference"
@@ -421,6 +421,19 @@
       },
       "title": "Histories",
       "type": "array"
+    },
+    "profile": {
+      "anyOf": [
+        {
+          "const": "xvf3800-linear-4",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile"
     },
     "rows": {
       "items": {
