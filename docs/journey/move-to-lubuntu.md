@@ -180,7 +180,7 @@ lands.
   write-only access was verified (the Mini's key can write the drop and nothing
   else).
 - **Phase 4: done (cutover).** The server runs on Lubuntu: infra stack
-  `voice-journey`, node `https://voice-journey.colobus-stargazer.ts.net`, data
+  `voice-journey`, node `https://voice-journey.<tailnet>.ts.net`, data
   root `/srv/voice-journey`. `local-artifacts/` and the eight generated
   manifests were copied to the data root (checksums match); the server shows all
   2,433 recordings and 46 journeys with the watcher idle. The Mini's browser,

@@ -53,7 +53,7 @@ sudo systemctl start voice-lab-speech-benchmark.service
 
 The service user's egress table (written by the lane from infra's
 `stacks/voice-lab/host.conf`) applies to these units too: the vault's name,
-`voice-lab-vault.colobus-stargazer.ts.net:443`, is in its `HOST_EGRESS_TAILNET`, so the
+`voice-lab-vault.<tailnet>.ts.net:443`, is in its `HOST_EGRESS_TAILNET`, so the
 copier still reaches the laptop's vault and nothing else on the tailnet.
 
 Install (or update) by hand, as root, from a checkout at `main`:
