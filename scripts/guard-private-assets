@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import stat
@@ -132,6 +133,44 @@ MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_WHEEL_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 
 
+#: The contract bundles of synthetic examples (``cole_voice_lab.contract_bundle``). A file its
+#: bundle's ``manifest.json`` lists with its exact SHA-256, and that manifest itself, are public
+#: whatever records they hold or however they are named; ``contract_bundle check`` (in
+#: ``scripts/verify``) proves the listed bytes are the generator's. Only the record-schema and
+#: file-name findings are waived: every other check still applies to them.
+CONTRACT_BUNDLES = ("contracts/corpus-client.v1",)
+
+type Public = frozenset[tuple[str, str]]
+
+
+def _bundle_public(bundle: str, manifest: bytes) -> Public:
+    """The ``(path, sha256)`` pairs a bundle's manifest makes public, itself included; none
+    when it is not that contract's manifest."""
+    try:
+        value = json.loads(manifest)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return frozenset()
+    files = value.get("files") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or value.get("manifest_version") != 1
+        or value.get("contract_id") != PurePosixPath(bundle).name
+        or not isinstance(files, list)
+    ):
+        return frozenset()
+    public = {(f"{bundle}/manifest.json", hashlib.sha256(manifest).hexdigest())}
+    for entry in files:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        digest = entry.get("sha256") if isinstance(entry, dict) else None
+        if isinstance(path, str) and isinstance(digest, str) and ".." not in path.split("/"):
+            public.add((f"{bundle}/{path}", digest))
+    return frozenset(public)
+
+
+def _is_public(relative: str, payload: bytes, public: Public) -> bool:
+    return bool(public) and (relative, hashlib.sha256(payload).hexdigest()) in public
+
+
 def _display(relative: str) -> str:
     return relative.encode("unicode_escape", errors="backslashreplace").decode("ascii")
 
@@ -231,7 +270,14 @@ def _walk_json(value: object) -> tuple[bool, bool]:
     return sensitive_key, private_path
 
 
-def _scan_json(relative: str, payload: bytes, origin: str, findings: set[str]) -> None:
+def _scan_json(
+    relative: str,
+    payload: bytes,
+    origin: str,
+    findings: set[str],
+    *,
+    public: bool = False,
+) -> None:
     if len(payload) > MAX_JSON_BYTES:
         findings.add(f"{origin}: JSON exceeds 2 MiB inspection limit: {_display(relative)}")
         return
@@ -244,7 +290,8 @@ def _scan_json(relative: str, payload: bytes, origin: str, findings: set[str]) -
 
     schema_version = value.get("schema_version") if isinstance(value, dict) else None
     if (
-        isinstance(schema_version, str)
+        not public
+        and isinstance(schema_version, str)
         and schema_version.startswith("cole-voice-lab.")
         and not schema_version.startswith(PUBLIC_INSTANCE_SCHEMA_PREFIXES)
     ):
@@ -358,15 +405,17 @@ def _scan_blob(
     *,
     tracked: bool,
     actual_size: int | None = None,
+    public: Public = frozenset(),
 ) -> None:
     size = len(payload) if actual_size is None else actual_size
+    listed = _is_public(relative, payload, public)
     suffix = _suffix(relative)
     display = _display(relative)
     if suffix in FORBIDDEN_SUFFIXES:
         findings.add(f"{origin}: forbidden audio/model/embedding extension: {display}")
     if _path_has_private_component(relative):
         findings.add(f"{origin}: file under private asset directory name: {display}")
-    if PurePosixPath(relative).name.lower() in PRIVATE_BASENAMES:
+    if PurePosixPath(relative).name.lower() in PRIVATE_BASENAMES and not listed:
         findings.add(f"{origin}: private evidence filename: {display}")
     if size > MAX_TRACKABLE_BYTES:
         findings.add(f"{origin}: unexpected file larger than 20 MiB: {display}")
@@ -380,7 +429,7 @@ def _scan_blob(
     if kind is not None:
         findings.add(f"{origin}: {kind} file signature: {display}")
     if suffix == ".json" or PurePosixPath(relative).name.lower() in PRIVATE_BASENAMES:
-        _scan_json(relative, payload, origin, findings)
+        _scan_json(relative, payload, origin, findings, public=listed)
     if suffix == ".whl":
         if tracked:
             findings.add(f"{origin}: built wheel must not be tracked or staged: {display}")
@@ -409,7 +458,20 @@ def _read_regular(path: Path, maximum: int | None = None) -> bytes:
         os.close(descriptor)
 
 
+def _worktree_public(root: Path) -> Public:
+    """What the bundles' manifests on disk make public in the worktree."""
+    public: set[tuple[str, str]] = set()
+    for bundle in CONTRACT_BUNDLES:
+        try:
+            manifest = _read_regular(root / bundle / "manifest.json", MAX_JSON_BYTES)
+        except OSError:
+            continue
+        public |= _bundle_public(bundle, manifest)
+    return frozenset(public)
+
+
 def _scan_worktree(root: Path, findings: set[str]) -> None:
+    public = _worktree_public(root)
     for directory, names, files in os.walk(root, followlinks=False):
         kept_names = []
         base = Path(directory)
@@ -453,6 +515,7 @@ def _scan_worktree(root: Path, findings: set[str]) -> None:
                 findings,
                 tracked=False,
                 actual_size=metadata.st_size,
+                public=public,
             )
 
 
@@ -489,6 +552,25 @@ def _git_output(root: Path, arguments: list[str]) -> bytes:
     return result.stdout
 
 
+def _index_public(root: Path, records: list[bytes]) -> Public:
+    """What the bundles' staged manifests make public in the index."""
+    manifests = {f"{bundle}/manifest.json": bundle for bundle in CONTRACT_BUNDLES}
+    public: set[tuple[str, str]] = set()
+    for record in records:
+        prefix, _, raw_path = record.partition(b"\t")
+        bundle = manifests.get(raw_path.decode("utf-8", errors="replace"))
+        fields = prefix.split(b" ")
+        if bundle is None or len(fields) != 3 or fields[2] != b"0":
+            continue
+        try:
+            manifest = _git_output(root, ["cat-file", "blob", fields[1].decode("ascii")])
+        except (subprocess.CalledProcessError, UnicodeDecodeError):
+            continue
+        if len(manifest) <= MAX_JSON_BYTES:
+            public |= _bundle_public(bundle, manifest)
+    return frozenset(public)
+
+
 def _scan_index(root: Path, findings: set[str]) -> None:
     try:
         top_level = Path(
@@ -503,6 +585,7 @@ def _scan_index(root: Path, findings: set[str]) -> None:
         return
 
     records = _git_output(root, ["ls-files", "--stage", "-z"]).split(b"\0")
+    public = _index_public(root, records)
     for record in records:
         if not record:
             continue
@@ -550,6 +633,7 @@ def _scan_index(root: Path, findings: set[str]) -> None:
             findings,
             tracked=True,
             actual_size=blob_size,
+            public=public,
         )
 
 

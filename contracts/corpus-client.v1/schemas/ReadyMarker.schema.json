@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Last-written commit marker for a complete capture package.",
+  "properties": {
+    "finalized_at": {
+      "format": "date-time",
+      "title": "Finalized At",
+      "type": "string"
+    },
+    "manifest_path": {
+      "const": "manifest.json",
+      "default": "manifest.json",
+      "title": "Manifest Path",
+      "type": "string"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "qc_report_path": {
+      "const": "qc.json",
+      "default": "qc.json",
+      "title": "Qc Report Path",
+      "type": "string"
+    },
+    "qc_report_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.ready/v1",
+      "default": "cole-voice-lab.ready/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "session_id",
+    "manifest_sha256",
+    "qc_report_sha256",
+    "finalized_at"
+  ],
+  "title": "ReadyMarker",
+  "type": "object"
+}

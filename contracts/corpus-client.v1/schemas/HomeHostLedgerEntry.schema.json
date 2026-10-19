@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "Endpoint": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "LedgerEvent": {
+      "enum": [
+        "upload-started",
+        "upload-completed",
+        "upload-refused"
+      ],
+      "type": "string"
+    },
+    "NodeStableId": {
+      "pattern": "^[A-Za-z0-9]{1,64}$",
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    },
+    "UtcTimestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One step of one upload, chained to the entry before it.",
+  "properties": {
+    "approval_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "approval_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "at": {
+      "$ref": "#/$defs/UtcTimestamp"
+    },
+    "detail": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Detail"
+    },
+    "endpoint": {
+      "$ref": "#/$defs/Endpoint"
+    },
+    "event": {
+      "$ref": "#/$defs/LedgerEvent"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "node_stable_id": {
+      "$ref": "#/$defs/NodeStableId"
+    },
+    "previous_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "receipt_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sha256"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.home-host-ledger-entry/v1",
+      "default": "cole-voice-lab.home-host-ledger-entry/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "session_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "sequence",
+    "previous_sha256",
+    "event",
+    "at",
+    "approval_id",
+    "approval_sha256",
+    "endpoint",
+    "node_stable_id",
+    "session_id",
+    "manifest_sha256"
+  ],
+  "title": "HomeHostLedgerEntry",
+  "type": "object"
+}

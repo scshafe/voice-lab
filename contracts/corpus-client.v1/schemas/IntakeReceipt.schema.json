@@ -1,0 +1,53 @@
+{
+  "$defs": {
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "accepted_at": {
+      "format": "date-time",
+      "title": "Accepted At",
+      "type": "string"
+    },
+    "intake_qc_report_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "raw_path": {
+      "title": "Raw Path",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.intake-receipt/v2",
+      "default": "cole-voice-lab.intake-receipt/v2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "source_qc_report_sha256": {
+      "$ref": "#/$defs/Sha256"
+    }
+  },
+  "required": [
+    "session_id",
+    "manifest_sha256",
+    "source_qc_report_sha256",
+    "intake_qc_report_sha256",
+    "accepted_at",
+    "raw_path"
+  ],
+  "title": "IntakeReceipt",
+  "type": "object"
+}

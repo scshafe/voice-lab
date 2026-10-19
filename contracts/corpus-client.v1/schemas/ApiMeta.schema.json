@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "description": "``GET /api/v1/meta``: what this server is and which clients it serves.",
+  "properties": {
+    "api_versions": {
+      "default": [
+        "v1"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Api Versions",
+      "type": "array"
+    },
+    "minimum_client_version": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Minimum Client Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.meta/v1",
+      "default": "cole-voice-lab.api.meta/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "server_build": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Server Build",
+      "type": "string"
+    }
+  },
+  "required": [
+    "server_build",
+    "minimum_client_version"
+  ],
+  "title": "ApiMeta",
+  "type": "object"
+}
