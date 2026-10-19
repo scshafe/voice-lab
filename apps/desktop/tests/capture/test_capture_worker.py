@@ -87,7 +87,11 @@ def test_a_take_stops_at_its_maximum_duration_with_evidence(tmp_path):
     assert sum(record["frames"] for record in trace) == frames
     times = summary["monotonic"]
     assert times["started"] <= times["first_block"] <= times["finished"]
-    assert summary["max_rss_bytes"] >= summary["rss_before_bytes"] > 0
+    # Two kernel counters on Linux (/proc/self/statm before, ru_maxrss after), each
+    # approximate and read at different moments: the peak can read a few pages below the
+    # sample (a hosted runner's kernel showed 311 KB), never far below it.
+    assert summary["rss_before_bytes"] > 0
+    assert summary["max_rss_bytes"] >= summary["rss_before_bytes"] - 4 * 1024 * 1024
 
 
 def test_a_requested_stop_keeps_every_block_received(tmp_path):
