@@ -149,7 +149,7 @@ class ResidentProcess:
                 self.peak_memory_bytes = max(peak, self.peak_memory_bytes or 0)
             return int(answer["frames"])
         raise ResidentError(
-            f"the segment failed in the resident worker: {str(answer.get('error'))[:200]}",
+            f"the segment failed in the resident worker: {str(answer.get('error'))[:500]}",
             segment_only=True,
         )
 

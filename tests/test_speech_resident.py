@@ -9,6 +9,7 @@ shaped by each segment's seed, run by this interpreter: no torch, no weights, no
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import sys
 import time
@@ -377,3 +378,47 @@ def test_the_real_resident_worker_renders_sequentially_and_offline() -> None:
     write_keywords = {keyword.arg: ast.unparse(keyword.value) for keyword in write.keywords}
     assert write_keywords["format"] == "'WAV'"
     assert write_keywords["subtype"] == "'PCM_16'"
+
+
+def _real_worker(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``f5_resident.py`` as a module: it imports F5-TTS only once it serves. Its two
+    environment defaults are set here first, so the test leaves the environment as it was."""
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    spec = importlib.util.spec_from_file_location("f5_resident", resource_path("f5_resident.py"))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_failed_segment_says_where_it_failed_but_never_its_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = _real_worker(monkeypatch)
+
+    def innermost(text: str) -> None:
+        raise TypeError(f"cannot render {text!r}")
+
+    def middle(text: str) -> None:
+        innermost(text)
+
+    def outer(depth: int, text: str) -> None:
+        if depth:
+            outer(depth - 1, text)
+        else:
+            middle(text)
+
+    try:
+        outer(3, "the words of the reply")
+    except TypeError as error:
+        report = worker._failure(error)
+    assert "words" not in report and "cannot render" not in report
+    kind, _, where = report.partition(" at ")
+    assert kind == "TypeError"
+    frames = where.split(" < ")
+    assert len(frames) == worker.FAILURE_FRAMES
+    # Innermost first: file name, line and function, no directory.
+    assert frames[0].startswith("test_speech_resident.py:") and frames[0].endswith(" innermost")
+    assert frames[1].endswith(" middle") and "/" not in where
+    assert worker._failure(ValueError("no traceback")) == "ValueError"
