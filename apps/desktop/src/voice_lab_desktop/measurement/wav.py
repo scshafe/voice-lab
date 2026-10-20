@@ -14,6 +14,7 @@ import struct
 from array import array
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 HEADER_BYTES = 44
 BYTES_PER_SAMPLE = 3
@@ -127,8 +128,12 @@ class BlockStats:
         return self.frames > 0 and self.nonzero == 0
 
 
-def meter_fraction(dbfs: float | None, floor: float = -72.0) -> float:
-    """dBFS → 0..1 for a meter bar (floor .. 0 dBFS)."""
+#: The bottom of the measurement meter's scale (SuiLevelMeter's ``from``).
+METER_FLOOR_DB: Final = -72.0
+
+
+def meter_dbfs(dbfs: float | None) -> float:
+    """dBFS for the meter: on its scale (``METER_FLOOR_DB`` .. 0), the floor for none."""
     if dbfs is None:
-        return 0.0
-    return max(0.0, min(1.0, (dbfs - floor) / -floor))
+        return METER_FLOOR_DB
+    return max(METER_FLOOR_DB, min(0.0, dbfs))

@@ -778,8 +778,9 @@ def test_a_failed_summary_shows_and_retries(
 
 
 def test_the_select_is_controlled(qtbot: Any) -> None:
-    """SuiSelect never assigns its own ``value``: a choice is only ``valueSelected``; the
-    owner's binding carries it back, or a choice the owner does not take changes nothing."""
+    """SelectField (over scshafe-qt's SuiSelect) never assigns its own ``value``: a choice is
+    only ``valueSelected``; the owner's binding carries it back, or a choice the owner does
+    not take changes nothing."""
     import scshafe_qt
     from PySide6.QtQml import QQmlApplicationEngine
     from voice_lab_desktop.cli import qml_dir, teardown
@@ -788,11 +789,11 @@ def test_the_select_is_controlled(qtbot: Any) -> None:
     scshafe_qt.register(engine)
     engine.addImportPath(str(qml_dir()))
     engine.loadData(
-        b"import QtQuick\nimport VoiceLab.StandIn\n"
+        b"import QtQuick\nimport VoiceLab.Controls\n"
         b"Window { id: w; width: 400; height: 100; visible: true\n"
         b'  property string chosen: ""\n  property bool accept: true\n'
         b"  property var picked: []\n"
-        b'  SuiSelect { objectName: "select"; label: "Bucket"; value: w.chosen\n'
+        b'  SelectField { objectName: "select"; label: "Bucket"; value: w.chosen\n'
         b'    options: [{value: "", label: "All"}, {value: "a", label: "A"},'
         b' {value: "b", label: "B"}]\n'
         b"    onValueSelected: (v) => { w.picked = w.picked.concat([v]);"

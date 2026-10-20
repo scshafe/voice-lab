@@ -97,7 +97,9 @@ class TakeReviewModel(ViewModel):
     waveNote = qproperty(str, "waveNote", waveChanged)
     canZoomIn = qproperty(bool, "canZoomIn", waveChanged)
     canZoomOut = qproperty(bool, "canZoomOut", waveChanged)
-    levelPeak = qproperty(float, "levelPeak", waveChanged)
+    #: The live take's peak in dBFS (``audio.FLOOR_DB`` for none), for SuiLevelMeter.
+    levelPeakDb = qproperty(float, "levelPeakDb", waveChanged)
+    levelFloorDb = qproperty(float, "levelFloorDb", waveChanged)
     levelText = qproperty(str, "levelText", waveChanged)
     # -- the trim
     trimStart = qproperty(int, "trimStart", trimChanged)
@@ -146,7 +148,8 @@ class TakeReviewModel(ViewModel):
                 "waveNote": "No take selected",
                 "canZoomIn": False,
                 "canZoomOut": False,
-                "levelPeak": 0.0,
+                "levelPeakDb": audio.FLOOR_DB,
+                "levelFloorDb": audio.FLOOR_DB,
                 "levelText": "",
                 "trimStart": 0,
                 "trimEnd": 0,
@@ -255,7 +258,7 @@ class TakeReviewModel(ViewModel):
             slots=audio.LIVE_SLOTS,
             frameCount=0,
             waveNote="Waiting for the first frames · dB display scale",
-            levelPeak=0.0,
+            levelPeakDb=audio.FLOOR_DB,
             levelText="",
             canZoomIn=False,
             canZoomOut=False,
@@ -286,7 +289,7 @@ class TakeReviewModel(ViewModel):
                     self.waveChanged,
                     bins=bins,
                     waveNote="Live · dB display scale",
-                    levelPeak=max(0.0, (peak - audio.FLOOR_DB) / -audio.FLOOR_DB),
+                    levelPeakDb=peak,
                     levelText=f"{peak:.1f} dBFS",
                 )
             elif problem:
@@ -294,7 +297,7 @@ class TakeReviewModel(ViewModel):
                     self.waveChanged,
                     waveNote=f"No live waveform: {problem}",
                     levelText="",
-                    levelPeak=0.0,
+                    levelPeakDb=audio.FLOOR_DB,
                 )
 
         self.context.tasks.submit(work, done)
@@ -303,7 +306,7 @@ class TakeReviewModel(ViewModel):
         if self._live is None:
             return
         self._live = None
-        self._set(self.waveChanged, live=False, levelPeak=0.0, levelText="")
+        self._set(self.waveChanged, live=False, levelPeakDb=audio.FLOOR_DB, levelText="")
         if self._selected is None:
             self._clear_wave("No take selected")
 

@@ -237,16 +237,18 @@ def test_the_meter_follows_the_recording(qtbot: Any, ui: Window) -> None:
     space(ui)  # room silence: timed
     qtbot.waitUntil(lambda: controller.phase == "segment" and controller.currentIndex == 1)
     space(ui)  # /a/ soft: manual
-    qtbot.waitUntil(lambda: controller.meterRms > 0 and controller.meterPeak > 0, timeout=10000)
+    floor = controller.meterFloorDb
+    qtbot.waitUntil(lambda: controller.meterPeakDb > floor, timeout=10000)
     meter = ui.find("meter")
-    assert meter.property("peak") == controller.meterPeak
-    assert meter.property("rms") == controller.meterRms
-    assert meter.property("clipping") is False
-    assert meter.property("text") == controller.meterText
+    assert (meter.property("from"), meter.property("to")) == (floor, 0.0)
+    assert meter.property("level") == controller.meterPeakDb
+    assert meter.property("peak") >= controller.meterPeakDb  # the meter holds its peak
+    assert meter.property("clipped") is False and not controller.clipping
+    assert controller.meterText.endswith(" dBFS peak")
     assert ui.find("elapsedText").property("text").startswith("0:")
     space(ui)
     qtbot.waitUntil(lambda: controller.phase == "segment", timeout=10000)
-    assert (controller.meterPeak, controller.meterRms) == (0.0, 0.0)
+    assert controller.meterPeakDb == floor
 
 
 def test_the_devices_are_scanned_only_while_the_screen_is_shown(

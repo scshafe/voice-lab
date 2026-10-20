@@ -28,13 +28,13 @@ Card {
             ColumnLayout {
                 Layout.preferredWidth: 110
                 spacing: 0
-                SuiText { objectName: "dueTakes"; text: due.modelData.takes; variant: "number" }
+                SuiText { objectName: "dueTakes"; text: due.modelData.takes; tabular: true }
                 SuiText { objectName: "dueYears"; text: due.modelData.years; variant: "caption" }
             }
             ColumnLayout {
                 Layout.preferredWidth: 110
                 spacing: 0
-                SuiText { text: "last sung"; variant: "number" }
+                SuiText { text: "last sung"; tabular: true }
                 SuiText { objectName: "dueLastSung"; text: due.modelData.lastSung; variant: "caption" }
             }
             Flow {

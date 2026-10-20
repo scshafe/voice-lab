@@ -123,9 +123,9 @@ Window {
                 columnSpacing: SuiTheme.spaceLg
                 rowSpacing: SuiTheme.spaceXs
                 SuiText { text: "PC"; variant: "label" }
-                SuiText { objectName: "approveEndpoint"; text: approval.endpoint; variant: "mono" }
+                SuiText { objectName: "approveEndpoint"; text: approval.endpoint; variant: "code" }
                 SuiText { text: "Tailscale node"; variant: "label" }
-                SuiText { objectName: "approveNode"; text: approval.nodeId; variant: "mono" }
+                SuiText { objectName: "approveNode"; text: approval.nodeId; variant: "code" }
                 SuiText { text: "What"; variant: "label" }
                 SuiText {
                     objectName: "approveClasses"

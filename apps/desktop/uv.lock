@@ -150,7 +150,7 @@ requires-dist = [
     { name = "pytest-qt", marker = "extra == 'dev'", specifier = "==4.5.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = "==3.8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11,<1" },
-    { name = "scshafe-qt", marker = "extra == 'dev'", specifier = "==0.2.0" },
+    { name = "scshafe-qt", marker = "extra == 'dev'", specifier = "==0.9.0" },
     { name = "setuptools", marker = "extra == 'dev'", specifier = "==84.0.0" },
     { name = "sounddevice", marker = "extra == 'dev'", specifier = "==0.5.6" },
     { name = "wheel", marker = "extra == 'dev'", specifier = "==0.46.3" },
@@ -683,14 +683,14 @@ wheels = [
 
 [[package]]
 name = "scshafe-qt"
-version = "0.2.0"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyside6-essentials" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bd/9a/c6f54da93c760d2fffc3dbca616702069a28d564510e604c59e1928f1e8a/scshafe_qt-0.2.0.tar.gz", hash = "sha256:464b36c25395e537d55aaa5edabcfd0e5ae7b88d1a681e8c50796b5ffad54408", size = 84078, upload-time = "2026-10-06T08:16:49.514Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9c/3e/0416763ac932e579c5e0d89449369cd34e85d6dcccc04144861b620a6c3c/scshafe_qt-0.9.0.tar.gz", hash = "sha256:0b3a0452b93e191fcf069bfbe7eca7c17b3c228257eb66d4cafa1e7cdfffbf53", size = 179311, upload-time = "2026-10-19T23:20:16.326Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/39/ac/ac1cd51ba340ef0e25f123fa82ff0867c29d936e6ad9b65c3238748fe281/scshafe_qt-0.2.0-py3-none-any.whl", hash = "sha256:727d4ff4c45e492dadd3af67849db892ea86dc28a381a7d8f37e6171091cee9f", size = 51145, upload-time = "2026-10-06T08:16:48.052Z" },
+    { url = "https://files.pythonhosted.org/packages/df/bb/79a3ad43d4e27a32ea0e28138ccdc68c56bb1aa2722a819c6f89e1ab470c/scshafe_qt-0.9.0-py3-none-any.whl", hash = "sha256:f9a84fc9cc952ae8a1bceb8d227f3bccaa74950ec31d7b9dd35665346ae6f45f", size = 103500, upload-time = "2026-10-19T23:20:14.818Z" },
 ]
 
 [[package]]
@@ -786,7 +786,7 @@ requires-dist = [
     { name = "keyring", specifier = "==25.7.0" },
     { name = "numpy", specifier = "==2.5.3" },
     { name = "pyside6-essentials", specifier = ">=6.11.2,<6.12" },
-    { name = "scshafe-qt", specifier = ">=0.2.0,<0.3" },
+    { name = "scshafe-qt", specifier = ">=0.9.0,<0.10" },
     { name = "sounddevice", specifier = "==0.5.6" },
 ]
 

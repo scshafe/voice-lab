@@ -334,7 +334,8 @@ def test_the_live_waveform_while_recording(
         recorder.last.advance(4_800, amplitude=0.25)
     qtbot.waitUntil(lambda: len(takes.bins) == 2 * 50, timeout=5000)
     assert takes.waveNote == "Live · dB display scale"
-    assert takes.levelText == "-12.0 dBFS" and 0.79 < takes.levelPeak < 0.81
+    assert takes.levelText == "-12.0 dBFS" and takes.levelPeakDb == pytest.approx(-12.0, abs=0.05)
+    assert studio_window.find("studioLevel").property("level") == takes.levelPeakDb
     # The dB display scale: −12 dBFS draws at 80% of the half-height.
     assert max(takes.bins) == pytest.approx(0.8, abs=0.005)
     assert min(takes.bins) == pytest.approx(-0.8, abs=0.005)
@@ -344,6 +345,7 @@ def test_the_live_waveform_while_recording(
     wait_phase(qtbot, studio, "review")
     assert not takes.live and takes.selectedKey == "review"
     assert not studio_window.find("studioLevel").property("visible")
+    assert takes.levelPeakDb == takes.levelFloorDb
 
 
 SIX_B = (

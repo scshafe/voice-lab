@@ -160,7 +160,7 @@ SuiSheet {
                         Layout.fillWidth: true
                         visible: corpus.transcriptState === "loaded"
                         text: corpus.transcriptText
-                        variant: "mono"
+                        variant: "code"
                         wrapMode: Text.Wrap
                     }
                 }

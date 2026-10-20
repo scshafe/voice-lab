@@ -34,7 +34,7 @@ from .package import PackageError
 from .pin import CalFileError, GuardError, LevelMoved, LevelMuted, NotPinned, StateStore, guard
 from .ritual import Ritual, RitualError
 from .store import SessionStore
-from .wav import meter_fraction
+from .wav import METER_FLOOR_DB, meter_dbfs
 
 METER_MS = 50
 LEVEL_POLL_MS = 1000
@@ -79,8 +79,9 @@ class Controller(ViewModel):
     calTone = qproperty(bool, "calTone", sessionChanged)
     skipFree = qproperty(bool, "skipFree", sessionChanged)
     # meters
-    meterPeak = qproperty(float, "meterPeak", meterChanged)
-    meterRms = qproperty(float, "meterRms", meterChanged)
+    #: The block's sample peak in dBFS, on the meter's scale (``wav.meter_dbfs``).
+    meterPeakDb = qproperty(float, "meterPeakDb", meterChanged)
+    meterFloorDb = qproperty(float, "meterFloorDb", meterChanged)
     meterText = qproperty(str, "meterText", meterChanged)
     clipping = qproperty(bool, "clipping", meterChanged)
     elapsedText = qproperty(str, "elapsedText", meterChanged)
@@ -123,8 +124,8 @@ class Controller(ViewModel):
                 "abortReason": "",
                 "calTone": False,
                 "skipFree": False,
-                "meterPeak": 0.0,
-                "meterRms": 0.0,
+                "meterPeakDb": METER_FLOOR_DB,
+                "meterFloorDb": METER_FLOOR_DB,
                 "meterText": "",
                 "clipping": False,
                 "elapsedText": "",
@@ -508,7 +509,7 @@ class Controller(ViewModel):
                 self._aborted(str(exc))
                 return
             self.toast.emit(str(exc), "warn")  # too short: record it again
-        self._set(self.meterChanged, meterPeak=0.0, meterRms=0.0, clipping=False)
+        self._set(self.meterChanged, meterPeakDb=METER_FLOOR_DB, clipping=False)
         self._set_phase("segment" if r.current else "review")
         self._sync_segments()
 
@@ -574,7 +575,7 @@ class Controller(ViewModel):
     def _aborted(self, reason: str) -> None:
         self._meter.stop()
         self._level_poll.stop()
-        self._set(self.meterChanged, meterPeak=0.0, meterRms=0.0, clipping=False, elapsedText="")
+        self._set(self.meterChanged, meterPeakDb=METER_FLOOR_DB, clipping=False, elapsedText="")
         self._set_phase("aborted", abortReason=reason)
         self._sync_segments()
         self._update_can_start()
@@ -597,8 +598,7 @@ class Controller(ViewModel):
         peak = block.peak_dbfs
         self._set(
             self.meterChanged,
-            meterPeak=meter_fraction(peak),
-            meterRms=meter_fraction(block.rms_dbfs),
+            meterPeakDb=meter_dbfs(peak),
             meterText="—" if peak is None else f"{peak:.1f} dBFS peak",
             clipping=recording.stats.clipped > 0,
             elapsedText=elapsed,

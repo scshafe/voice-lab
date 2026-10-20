@@ -53,7 +53,7 @@ RowLayout {
         objectName: "playerTime"
         visible: bar.active && (bar.playerState === "playing" || bar.playerState === "paused")
         text: bar.clock(player.position) + " / " + bar.clock(player.duration)
-        variant: "number"
+        tabular: true
     }
     SuiText {
         objectName: "playerError"

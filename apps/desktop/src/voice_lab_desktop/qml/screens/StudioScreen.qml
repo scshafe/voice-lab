@@ -411,7 +411,7 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignHCenter
                     text: studio.rec.problemText
-                    tone: studio.rec.statusTone === "neutral" ? "default" : studio.rec.statusTone
+                    tone: studio.rec.statusTone === "neutral" ? "" : studio.rec.statusTone
                     wrapMode: Text.Wrap
                 }
             }
@@ -436,8 +436,8 @@ Item {
                 SuiText {
                     objectName: "studioTrimIn"
                     text: studio.takes.inText
-                    variant: "mono"
-                    tone: studio.takes.trimDirty ? "warn" : "default"
+                    variant: "code"
+                    tone: studio.takes.trimDirty ? "warn" : ""
                     Accessible.name: "In " + text
                 }
                 CompactButton {
@@ -456,8 +456,8 @@ Item {
                     objectName: "studioTrimOut"
                     Layout.leftMargin: trimRow.captions ? 0 : SuiTheme.spaceSm
                     text: studio.takes.outText
-                    variant: "mono"
-                    tone: studio.takes.trimDirty ? "warn" : "default"
+                    variant: "code"
+                    tone: studio.takes.trimDirty ? "warn" : ""
                     Accessible.name: "Out " + text
                 }
                 CompactButton {
@@ -528,10 +528,12 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 width: 64
                 visible: studio.takes.live && studio.takes.levelText !== ""
-                peak: studio.takes.levelPeak
-                rms: studio.takes.levelPeak
                 label: "Recording level"
-                text: studio.takes.levelText + " peak"
+                from: studio.takes.levelFloorDb
+                level: studio.takes.levelPeakDb
+                showScale: false
+                showValue: false
+                showClip: false
             }
             SuiText {
                 id: levelText
@@ -698,7 +700,7 @@ Item {
                 width: Math.floor(parent.width * 0.40)
                 height: parent.height
                 text: studio.rec.statusText
-                tone: studio.rec.statusTone === "neutral" ? "default" : studio.rec.statusTone
+                tone: studio.rec.statusTone === "neutral" ? "" : studio.rec.statusTone
                 variant: "caption"
                 wrapMode: Text.Wrap
                 maximumLineCount: 2

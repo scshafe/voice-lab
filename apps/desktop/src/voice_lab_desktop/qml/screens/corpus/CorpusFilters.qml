@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
 import VoiceLab.StandIn
+import VoiceLab.Controls
 
 Flow {
     id: filters
@@ -39,7 +40,7 @@ Flow {
 
     Repeater {
         model: corpus.filterControls
-        delegate: SuiSelect {
+        delegate: SelectField {
             required property var modelData
             objectName: "filter-" + modelData.key
             width: 170

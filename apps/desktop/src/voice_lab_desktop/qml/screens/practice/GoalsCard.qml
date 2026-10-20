@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
 import VoiceLab.StandIn
+import VoiceLab.Controls
 import ".."
 
 Card {
@@ -10,21 +11,6 @@ Card {
     objectName: "goalsCard"
     heading: "Goals — pre-registered experiments"
     subheading: "Declare the metric, target, and sample size before you sing; the first N qualifying takes after creation decide the verdict — no optional stopping, no peeking. Textbook Part VII, running in production."
-
-    // The SuiSelect stand-in assigns its own `value` when a choice is made, which drops
-    // an owner's binding of `value`; so the selects are set from the model whenever the
-    // form or its options change (the form empties after each submit).
-    function syncSelects() {
-        metricSelect.value = practice.formMetric
-        directionSelect.value = practice.formDirection
-        scopeSelect.value = practice.formCluster
-    }
-    Connections {
-        target: practice
-        function onFormChanged() { card.syncSelects() }
-        function onGoalsChanged() { card.syncSelects() }
-    }
-    Component.onCompleted: syncSelects()
 
     SuiBanner {
         objectName: "goalsError"
@@ -82,20 +68,22 @@ Card {
         objectName: "goalForm"
         Layout.fillWidth: true
         spacing: SuiTheme.spaceMd
-        SuiSelect {
+        SelectField {
             id: metricSelect
             objectName: "goalMetric"
             width: 220
             label: "Metric"
             options: practice.metricOptions
+            value: practice.formMetric
             onValueSelected: (value) => practice.setField("metric", value)
         }
-        SuiSelect {
+        SelectField {
             id: directionSelect
             objectName: "goalDirection"
             width: 140
             label: "Direction"
             options: practice.directionOptions
+            value: practice.formDirection
             onValueSelected: (value) => practice.setField("direction", value)
         }
         Column {
@@ -124,12 +112,13 @@ Card {
                 onTextChanged: if (text !== practice.formTakes) practice.setField("takesRequired", text)
             }
         }
-        SuiSelect {
+        SelectField {
             id: scopeSelect
             objectName: "goalScopeSelect"
             width: 240
             label: "Scope"
             options: practice.scopeOptions
+            value: practice.formCluster
             onValueSelected: (value) => practice.setField("clusterId", value)
         }
         Column {
