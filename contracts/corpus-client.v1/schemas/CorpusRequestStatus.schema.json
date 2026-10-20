@@ -1,0 +1,311 @@
+{
+  "$defs": {
+    "CorpusChange": {
+      "discriminator": {
+        "mapping": {
+          "decision": "#/$defs/DecisionChange",
+          "trim": "#/$defs/TrimChange"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/DecisionChange"
+        },
+        {
+          "$ref": "#/$defs/TrimChange"
+        }
+      ]
+    },
+    "CorpusRequestOutcome": {
+      "additionalProperties": false,
+      "description": "What the publisher did with a request: ``provenance/corpus-requests/<id>.json``.\n\n``revision`` is the take's revision of the change's kind after the request: the new one\nwhen applied, the current one, unchanged, when refused once the take was read (a\n``revision_conflict`` names the revision the client should have expected), and ``None``\notherwise. ``decided_at`` is the publisher's time; an applied decision has it as its own.\nA request file that could not be read is refused ``invalid_request`` with no take, change\nor receive time.",
+      "properties": {
+        "change": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CorpusChange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestRefusalCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decided_at": {
+          "format": "date-time",
+          "title": "Decided At",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Detail"
+        },
+        "received_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Received At"
+        },
+        "request_id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Revision"
+        },
+        "schema_version": {
+          "const": "cole-voice-lab.corpus-request-outcome/v1",
+          "default": "cole-voice-lab.corpus-request-outcome/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/RequestStatus"
+        },
+        "take_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TakeId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "request_id",
+        "take_id",
+        "change",
+        "received_at",
+        "status",
+        "code",
+        "detail",
+        "revision",
+        "decided_at"
+      ],
+      "title": "CorpusRequestOutcome",
+      "type": "object"
+    },
+    "DecisionChange": {
+      "additionalProperties": false,
+      "description": "Set the take's decision, if its decision revision is still ``expected_revision``.\n\n``kept``, ``rejected`` (with a reason) and ``removed`` are the operator's actions; a\nrestore sets the decision the take had before (``kept``, or ``draft`` for a take never\nkept). ``removed`` is a state, never a deletion.",
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/TakeDecisionName"
+        },
+        "expected_revision": {
+          "minimum": 0,
+          "title": "Expected Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "decision",
+          "default": "decision",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/_Reason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "decision",
+        "reason",
+        "expected_revision"
+      ],
+      "title": "DecisionChange",
+      "type": "object"
+    },
+    "RequestId": {
+      "pattern": "^req-[0-9a-f]{32}$",
+      "type": "string"
+    },
+    "RequestRefusalCode": {
+      "enum": [
+        "revision_conflict",
+        "take_not_found",
+        "trim_out_of_bounds",
+        "invalid_request"
+      ],
+      "type": "string"
+    },
+    "RequestStatus": {
+      "enum": [
+        "applied",
+        "refused"
+      ],
+      "type": "string"
+    },
+    "TakeDecisionName": {
+      "enum": [
+        "draft",
+        "kept",
+        "rejected",
+        "removed"
+      ],
+      "type": "string"
+    },
+    "TakeId": {
+      "pattern": "^take-[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "TrimChange": {
+      "additionalProperties": false,
+      "description": "Keep the frames ``[start_frame, end_frame)`` of the take, or all of them (both\n``None``: a reset), if its trim revision is still ``expected_revision``.",
+      "properties": {
+        "end_frame": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 31680000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "End Frame"
+        },
+        "expected_revision": {
+          "minimum": 0,
+          "title": "Expected Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "trim",
+          "default": "trim",
+          "title": "Kind",
+          "type": "string"
+        },
+        "start_frame": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 31680000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Start Frame"
+        }
+      },
+      "required": [
+        "start_frame",
+        "end_frame",
+        "expected_revision"
+      ],
+      "title": "TrimChange",
+      "type": "object"
+    },
+    "_Reason": {
+      "maxLength": 500,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A decision or trim request as the server sees it: the answer (202) to its ``POST`` or\n``PUT`` and to ``GET /api/v1/corpus/requests/{request_id}``.\n\n``queued``: it waits in ``incoming/`` for the PC's writer (the intake publisher), which\napplies a take's requests in the order they arrived. ``applied`` or ``refused``:\n``outcome`` says what the writer did (an applied change's new revision; a refusal's code,\nsuch as ``revision_conflict`` with the take's current revision).",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CorpusRequestOutcome"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "received_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Received At"
+    },
+    "request_id": {
+      "$ref": "#/$defs/RequestId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.corpus-request-status/v1",
+      "default": "cole-voice-lab.api.corpus-request-status/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "queued",
+        "applied",
+        "refused"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "take_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TakeId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "request_id",
+    "take_id",
+    "status",
+    "received_at",
+    "outcome"
+  ],
+  "title": "CorpusRequestStatus",
+  "type": "object"
+}

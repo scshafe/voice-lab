@@ -47,4 +47,7 @@ fi
 # Beside the backend in dist/, where guard-private-assets inspects every wheel built.
 .venv/bin/python -I -B -m build --no-isolation --outdir dist apps/desktop
 .venv/bin/python -I -B -m cole_voice_lab.schema --check
+# The corpus client's contract bundle is exactly what the code generates (D-056); the guard
+# below takes its examples as public only on that condition.
+.venv/bin/python -I -B -m cole_voice_lab.contract_bundle check
 .venv/bin/python -I -B scripts/guard-private-assets

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import math
 import os
 import struct
@@ -424,6 +425,28 @@ def inspect_pcm_wav(
     return WavInspection(
         sha256=sha256,
         size_bytes=size,
+        audio=audio,
+        peak_dbfs=float(values["peak_dbfs"]),
+        rms_dbfs=float(values["rms_dbfs"]),
+        dc_offset=float(values["dc_offset"]),
+        clipped_samples=int(values["clipped_samples"]),
+        longest_zero_run_ms=float(values["longest_zero_run_ms"]),
+        boundary_discontinuity_count=int(values["boundary_discontinuity_count"]),
+        interior_discontinuity_count=int(values["interior_discontinuity_count"]),
+        short_zero_run_count=int(values["short_zero_run_count"]),
+        channel=channel,
+    )
+
+
+def inspect_pcm_bytes(payload: bytes, *, channel: int | None = None) -> WavInspection:
+    """Inspect a WAV held in memory, as ``inspect_pcm_wav`` inspects a file: what a generated
+    example (``contract_bundle``'s golden take) is measured with before any file exists.
+
+    Raises: ``ContractError``."""
+    audio, values = _inspect_open_wav(io.BytesIO(payload), require_canonical=False, channel=channel)
+    return WavInspection(
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size_bytes=len(payload),
         audio=audio,
         peak_dbfs=float(values["peak_dbfs"]),
         rms_dbfs=float(values["rms_dbfs"]),

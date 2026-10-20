@@ -1,0 +1,41 @@
+{
+  "$defs": {
+    "CanonicalJsonVector": {
+      "additionalProperties": false,
+      "description": "One value and the exact text of its canonical JSON (without the file's ``\\n``).",
+      "properties": {
+        "canonical": {
+          "title": "Canonical",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "value",
+        "canonical"
+      ],
+      "title": "CanonicalJsonVector",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "description": "``examples/canonical-json-vectors.json``: what the canonical form makes of each value.",
+  "properties": {
+    "vectors": {
+      "items": {
+        "$ref": "#/$defs/CanonicalJsonVector"
+      },
+      "minItems": 1,
+      "title": "Vectors",
+      "type": "array"
+    }
+  },
+  "required": [
+    "vectors"
+  ],
+  "title": "CanonicalJsonVectors",
+  "type": "object"
+}

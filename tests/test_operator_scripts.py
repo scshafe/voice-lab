@@ -11,6 +11,7 @@ import os
 import platform
 import plistlib
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -97,6 +98,7 @@ def test_full_verification_launches_host_python_isolated_without_real_tools(tmp_
         "1:-I -B -m build --no-isolation",
         "1:-I -B -m build --no-isolation --outdir dist apps/desktop",
         "1:-I -B -m cole_voice_lab.schema --check",
+        "1:-I -B -m cole_voice_lab.contract_bundle check",
         "1:-I -B scripts/guard-private-assets",
     ]
 
@@ -522,6 +524,47 @@ def test_private_asset_guard_rejects_approved_consent_and_schema_spoofing(
     assert "private evidence JSON schema: approved.json" in result.stderr
     assert "human-reference provenance record in JSON: looks-like-a-schema.json" in result.stderr
     assert "private evidence JSON schema: looks-like-a-schema.json" in result.stderr
+
+
+def test_private_asset_guard_takes_only_a_bundles_listed_examples_as_public(
+    tmp_path: Path,
+) -> None:
+    # The contract bundle's examples are records by design (D-056); the guard takes one as
+    # public only when the bundle's manifest lists its exact bytes.
+    root = tmp_path / "repository"
+    bundle = root / "contracts" / "corpus-client.v1"
+    shutil.copytree(REPOSITORY / "contracts" / "corpus-client.v1", bundle)
+    guard = (sys.executable, str(REPOSITORY / "scripts" / "guard-private-assets"), "--root")
+    assert _run(*guard, str(root)).returncode == 0
+
+    qc = bundle / "examples" / "take" / "qc.json"
+    listed = qc.read_bytes()
+    qc.write_bytes(listed.replace(b'"status":"pass"', b'"status":"review"'))
+    result = _run(*guard, str(root))
+    assert result.returncode == 1
+    assert "private evidence JSON schema: contracts/corpus-client.v1/examples/take/qc.json" in (
+        result.stderr
+    )
+    qc.write_bytes(listed)
+
+    manifest = bundle / "manifest.json"
+    original = manifest.read_bytes()
+    manifest.write_bytes(original.replace(b'"corpus-client.v1"', b'"another.v1"', 1))
+    result = _run(*guard, str(root))
+    assert result.returncode == 1
+    assert "private evidence filename: contracts/corpus-client.v1/manifest.json" in result.stderr
+    assert "private evidence JSON schema: contracts/corpus-client.v1/examples/take/READY" in (
+        result.stderr
+    )
+    manifest.write_bytes(original)
+
+    # A record elsewhere in the repository is not the bundle's, whatever it matches.
+    elsewhere = root / "examples" / "qc.json"
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes(listed)
+    result = _run(*guard, str(root))
+    assert result.returncode == 1
+    assert "private evidence JSON schema: examples/qc.json" in result.stderr
 
 
 def test_private_asset_guard_allows_catalog_json_schemas_and_no_longer_a_consent_template(

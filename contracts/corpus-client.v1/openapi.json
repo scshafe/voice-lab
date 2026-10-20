@@ -1,0 +1,3376 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "voice-lab corpus client API",
+    "version": "corpus-client.v1",
+    "description": "The routes a corpus client's token reaches on the PC's /api/v1 (D-056): the house panel's.",
+    "x-contract-id": "corpus-client.v1",
+    "x-schema-version": 1
+  },
+  "servers": [
+    {
+      "url": "https://{voice_lab_host}",
+      "variables": {
+        "voice_lab_host": {
+          "default": "voice-lab.example.ts.net",
+          "description": "voice-lab.<tailnet>: the PC, on the tailnet only."
+        }
+      }
+    }
+  ],
+  "x-voice-lab-contract": {
+    "canonical": "corpus-client.v1",
+    "client_audience": "voice-lab-panel",
+    "capture_profile": "xvf3800-linear-4",
+    "response_style": "raw_success_resource",
+    "error_style": "ApiRefusal",
+    "compatibility": {
+      "optional_response_fields_may_be_added": true,
+      "unknown_request_fields_rejected": true,
+      "new_required_field_requires_new_contract": true,
+      "new_required_semantic_requires_new_contract": true,
+      "semantic_change_requires_new_contract": true
+    },
+    "bounds": {
+      "chunk_bytes_max": 67108864,
+      "control_file_bytes_max": 1048576,
+      "continuity_evidence_bytes_max": 2097152,
+      "take_audio_bytes_max": 253440044,
+      "take_seconds_max": 660,
+      "period_frames_min": 256,
+      "period_frames_max": 16384,
+      "buffer_frames_max": 1048576,
+      "periods_max": 41250,
+      "tolerance_ns_max": 4000000,
+      "wav_header_bytes": 44
+    },
+    "required_semantics": [
+      "device_code_sign_in_without_resource",
+      "single_flight_refresh_rotation",
+      "standing_approval_and_ledger_entry_before_the_first_byte",
+      "corpus_take_v2_in_five_files",
+      "canonical_json_byte_for_byte",
+      "alsa_continuity_rule_in_integer_nanoseconds",
+      "profile_scoped_library_and_history",
+      "resumable_chunked_upload",
+      "finalize_takes_only_the_clients_profile",
+      "decisions_with_stable_request_ids_and_expected_revisions"
+    ]
+  },
+  "paths": {
+    "/api/v1/meta": {
+      "get": {
+        "operationId": "get_api_v1_meta",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the server's build and API versions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiMeta"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/catalog": {
+      "get": {
+        "operationId": "get_api_v1_catalog",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the active catalog version (ETag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogView"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "If-None-Match names the current ETag"
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "head_api_v1_catalog",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the active catalog version (ETag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogView"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "If-None-Match names the current ETag"
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/corpus/library": {
+      "get": {
+        "operationId": "get_api_v1_corpus_library",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the client's profile's view (ETag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusLibrary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "If-None-Match names the current ETag"
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "the client's capture profile: its view only",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "xvf3800-linear-4"
+              ]
+            }
+          }
+        ]
+      },
+      "head": {
+        "operationId": "head_api_v1_corpus_library",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the client's profile's view (ETag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusLibrary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "If-None-Match names the current ETag"
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "the client's capture profile: its view only",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "xvf3800-linear-4"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/corpus/prompts/{prompt_id}/takes": {
+      "get": {
+        "operationId": "get_api_v1_corpus_prompts_prompt_id_takes",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the prompt's takes of the profile (ETag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TakeHistory"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "If-None-Match names the current ETag"
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "prompt_id",
+            "in": "path",
+            "required": true,
+            "description": "a prompt of the active version",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "the client's capture profile: its view only",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "xvf3800-linear-4"
+              ]
+            }
+          }
+        ]
+      },
+      "head": {
+        "operationId": "head_api_v1_corpus_prompts_prompt_id_takes",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the prompt's takes of the profile (ETag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TakeHistory"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "If-None-Match names the current ETag"
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "prompt_id",
+            "in": "path",
+            "required": true,
+            "description": "a prompt of the active version",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "the client's capture profile: its view only",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "xvf3800-linear-4"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/intake/sessions": {
+      "post": {
+        "operationId": "post_api_v1_intake_sessions",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "the session, opened",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntakeSessionStatus"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "the session, already open: resume from its files",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntakeSessionStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntakeSessionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/intake/sessions/{session_id}": {
+      "get": {
+        "operationId": "get_api_v1_intake_sessions_session_id",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the session's state and each file's progress",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntakeSessionStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "description": "the take's id (take-<SHA-256 of original.wav>)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/intake/sessions/{session_id}/files/{path}": {
+      "put": {
+        "operationId": "put_api_v1_intake_sessions_session_id_files_path",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the file is complete and hashes to its declaration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkAnswer"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "the chunk is held: send the next range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkAnswer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "description": "the take's id (take-<SHA-256 of original.wav>)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "description": "the declared path, percent-encoded as one segment",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Content-Range",
+            "in": "header",
+            "required": true,
+            "description": "bytes S-E/T, S the bytes the server holds (bytes */0 for an empty file)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "contentMediaType": "application/octet-stream"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/intake/sessions/{session_id}/finalize": {
+      "post": {
+        "operationId": "post_api_v1_intake_sessions_session_id_finalize",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "every file re-hashed and the package handed to the publisher; a client's only if it is a v2 take of its profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntakeSessionStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "description": "the take's id (take-<SHA-256 of original.wav>)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/intake/sessions/{session_id}/receipt": {
+      "get": {
+        "operationId": "get_api_v1_intake_sessions_session_id_receipt",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the intake receipt, once accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntakeReceipt"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "description": "the take's id (take-<SHA-256 of original.wav>)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/corpus/takes/{take_id}/decision": {
+      "post": {
+        "operationId": "post_api_v1_corpus_takes_take_id_decision",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "the request, queued (Location)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusRequestStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "take_id",
+            "in": "path",
+            "required": true,
+            "description": "a published take of the profile",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TakeDecisionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/corpus/requests/{request_id}": {
+      "get": {
+        "operationId": "get_api_v1_corpus_requests_request_id",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the request's status and outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusRequestStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "a refusal: its code (ApiErrorCode) and a message; PROTOCOL.md says which to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiRefusal"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "description": "req- and 32 hex digits",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "a Pocket ID access token whose aud names voice-lab-panel"
+      }
+    },
+    "schemas": {
+      "AlsaContinuityEvidence": {
+        "additionalProperties": false,
+        "description": "What the capture client knows about one take read from an ALSA PCM.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.alsa-continuity/v1",
+            "default": "cole-voice-lab.alsa-continuity/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "simulated": {
+            "title": "Simulated",
+            "type": "boolean"
+          },
+          "pcm": {
+            "$ref": "#/components/schemas/Text"
+          },
+          "access": {
+            "enum": [
+              "rw_interleaved",
+              "mmap_interleaved"
+            ],
+            "title": "Access",
+            "type": "string"
+          },
+          "format": {
+            "$ref": "#/components/schemas/AlsaFormat"
+          },
+          "rate": {
+            "maximum": 384000,
+            "minimum": 8000,
+            "title": "Rate",
+            "type": "integer"
+          },
+          "channels": {
+            "maximum": 32,
+            "minimum": 1,
+            "title": "Channels",
+            "type": "integer"
+          },
+          "period_frames": {
+            "maximum": 16384,
+            "minimum": 256,
+            "title": "Period Frames",
+            "type": "integer"
+          },
+          "buffer_frames": {
+            "maximum": 1048576,
+            "title": "Buffer Frames",
+            "type": "integer"
+          },
+          "tstamp_type": {
+            "enum": [
+              "monotonic_raw",
+              "monotonic"
+            ],
+            "title": "Tstamp Type",
+            "type": "string"
+          },
+          "xruns": {
+            "minimum": 0,
+            "title": "Xruns",
+            "type": "integer"
+          },
+          "periods": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "$ref": "#/components/schemas/Position"
+                },
+                {
+                  "$ref": "#/components/schemas/TimestampNs"
+                }
+              ],
+              "type": "array"
+            },
+            "maxItems": 41250,
+            "title": "Periods",
+            "type": "array"
+          },
+          "tolerance_ns": {
+            "maximum": 4000000,
+            "minimum": 1,
+            "title": "Tolerance Ns",
+            "type": "integer"
+          },
+          "max_abs_deviation_ns": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Abs Deviation Ns"
+          },
+          "frames": {
+            "minimum": 0,
+            "title": "Frames",
+            "type": "integer"
+          },
+          "wav": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlsaWav"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "requested",
+                  "maximum-duration"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "required": [
+          "simulated",
+          "pcm",
+          "access",
+          "format",
+          "rate",
+          "channels",
+          "period_frames",
+          "buffer_frames",
+          "tstamp_type",
+          "xruns",
+          "periods",
+          "tolerance_ns",
+          "max_abs_deviation_ns",
+          "frames",
+          "wav",
+          "started_at",
+          "stop_reason",
+          "success",
+          "error"
+        ],
+        "title": "AlsaContinuityEvidence",
+        "type": "object"
+      },
+      "AlsaFormat": {
+        "enum": [
+          "S16_LE",
+          "S24_3LE",
+          "S32_LE"
+        ],
+        "type": "string"
+      },
+      "AlsaTakeContinuity": {
+        "additionalProperties": false,
+        "description": "A v2 take's ALSA continuity evidence (``alsa_evidence``): its file, and what the PC\nshows without reading it. Every field here equals the evidence file's own.",
+        "properties": {
+          "path": {
+            "const": "continuity.json",
+            "default": "continuity.json",
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 0,
+            "maximum": 2097152,
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "pcm": {
+            "$ref": "#/components/schemas/_Text"
+          },
+          "simulated": {
+            "title": "Simulated",
+            "type": "boolean"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "stop_reason": {
+            "enum": [
+              "requested",
+              "maximum-duration"
+            ],
+            "title": "Stop Reason",
+            "type": "string"
+          },
+          "tolerance_ns": {
+            "maximum": 4000000,
+            "minimum": 1,
+            "title": "Tolerance Ns",
+            "type": "integer"
+          },
+          "max_abs_deviation_ns": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Abs Deviation Ns"
+          }
+        },
+        "required": [
+          "sha256",
+          "size_bytes",
+          "pcm",
+          "simulated",
+          "started_at",
+          "stop_reason",
+          "tolerance_ns",
+          "max_abs_deviation_ns"
+        ],
+        "title": "AlsaTakeContinuity",
+        "type": "object"
+      },
+      "AlsaWav": {
+        "additionalProperties": false,
+        "description": "The WAV the evidence describes: the take's ``original.wav``.",
+        "properties": {
+          "name": {
+            "const": "original.wav",
+            "default": "original.wav",
+            "title": "Name",
+            "type": "string"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 44,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sha256",
+          "size_bytes"
+        ],
+        "title": "AlsaWav",
+        "type": "object"
+      },
+      "ApiErrorCode": {
+        "enum": [
+          "bad_request",
+          "unauthorized",
+          "forbidden",
+          "not_found",
+          "method_not_allowed",
+          "invalid_json",
+          "invalid_request",
+          "body_too_large",
+          "content_length_required",
+          "invalid_content_range",
+          "content_range_out_of_bounds",
+          "range_not_contiguous",
+          "file_not_declared",
+          "file_already_received",
+          "checksum_mismatch",
+          "incomplete",
+          "session_not_found",
+          "session_conflict",
+          "session_busy",
+          "session_finalized",
+          "session_refused",
+          "too_many_open_sessions",
+          "insufficient_storage",
+          "not_accepted",
+          "journey_unavailable",
+          "recording_not_found",
+          "unsupported_fields_projection",
+          "playback_not_approved",
+          "corpus_access_denied",
+          "seam_handle_mismatch",
+          "audio_not_found",
+          "transcript_dir_not_configured",
+          "transcript_not_available",
+          "transcript_text_missing",
+          "invalid_transcript_path",
+          "feature_dir_not_configured",
+          "feature_detail_missing",
+          "invalid_feature_detail_path",
+          "invalid_goal",
+          "goal_not_found",
+          "pair_not_found",
+          "caller_not_registered",
+          "purpose_not_allowed",
+          "unsupported_format",
+          "callback_not_allowed",
+          "idempotency_conflict",
+          "idempotency_key_unverifiable",
+          "voice_release_unavailable",
+          "gpu_busy",
+          "too_many_jobs",
+          "too_many_streams",
+          "daily_budget_exhausted",
+          "queue_full",
+          "speech_not_found",
+          "audio_not_ready",
+          "audio_expired",
+          "range_not_satisfiable",
+          "already_finished",
+          "catalog_unavailable",
+          "catalog_invalid",
+          "library_unavailable",
+          "library_invalid",
+          "prompt_not_found",
+          "take_not_found",
+          "take_invalid",
+          "trim_out_of_bounds",
+          "request_conflict",
+          "request_not_found",
+          "request_queue_full",
+          "client_scope",
+          "take_profile_not_allowed",
+          "internal_error"
+        ],
+        "type": "string"
+      },
+      "ApiMeta": {
+        "additionalProperties": false,
+        "description": "``GET /api/v1/meta``: what this server is and which clients it serves.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.api.meta/v1",
+            "default": "cole-voice-lab.api.meta/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "server_build": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Server Build",
+            "type": "string"
+          },
+          "api_versions": {
+            "default": [
+              "v1"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Api Versions",
+            "type": "array"
+          },
+          "minimum_client_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Minimum Client Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "server_build",
+          "minimum_client_version"
+        ],
+        "title": "ApiMeta",
+        "type": "object"
+      },
+      "ApiRefusal": {
+        "additionalProperties": false,
+        "description": "Every refusal's body: a stable code and a message that carries no secret.\n\n``received_bytes`` accompanies refusals of a ``PUT`` (``range_not_contiguous``,\n``checksum_mismatch``): how much of the file the server holds, so the client resumes\nfrom there.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ApiErrorCode"
+          },
+          "detail": {
+            "maxLength": 2000,
+            "title": "Detail",
+            "type": "string"
+          },
+          "received_bytes": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Received Bytes"
+          }
+        },
+        "required": [
+          "error",
+          "detail"
+        ],
+        "title": "ApiRefusal",
+        "type": "object"
+      },
+      "AudioQcMetrics": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "duration_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration Seconds",
+            "type": "number"
+          },
+          "peak_dbfs": {
+            "maximum": 0.0,
+            "title": "Peak Dbfs",
+            "type": "number"
+          },
+          "rms_dbfs": {
+            "maximum": 0.0,
+            "title": "Rms Dbfs",
+            "type": "number"
+          },
+          "dc_offset": {
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "title": "Dc Offset",
+            "type": "number"
+          },
+          "clipped_samples": {
+            "minimum": 0,
+            "title": "Clipped Samples",
+            "type": "integer"
+          },
+          "longest_zero_run_ms": {
+            "minimum": 0.0,
+            "title": "Longest Zero Run Ms",
+            "type": "number"
+          },
+          "signal_to_noise_db": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Signal To Noise Db"
+          },
+          "passed": {
+            "title": "Passed",
+            "type": "boolean"
+          },
+          "findings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Findings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "path",
+          "duration_seconds",
+          "peak_dbfs",
+          "rms_dbfs",
+          "dc_offset",
+          "clipped_samples",
+          "longest_zero_run_ms",
+          "passed"
+        ],
+        "title": "AudioQcMetrics",
+        "type": "object"
+      },
+      "AudioSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "sample_rate_hz": {
+            "maximum": 384000,
+            "minimum": 8000,
+            "title": "Sample Rate Hz",
+            "type": "integer"
+          },
+          "channels": {
+            "maximum": 32,
+            "minimum": 1,
+            "title": "Channels",
+            "type": "integer"
+          },
+          "sample_width_bytes": {
+            "enum": [
+              2,
+              3,
+              4
+            ],
+            "title": "Sample Width Bytes",
+            "type": "integer"
+          },
+          "encoding": {
+            "enum": [
+              "pcm_s16le",
+              "pcm_s24le",
+              "pcm_s32le"
+            ],
+            "title": "Encoding",
+            "type": "string"
+          },
+          "frames": {
+            "minimum": 1,
+            "title": "Frames",
+            "type": "integer"
+          },
+          "duration_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "sample_rate_hz",
+          "channels",
+          "sample_width_bytes",
+          "encoding",
+          "frames",
+          "duration_seconds"
+        ],
+        "title": "AudioSpec",
+        "type": "object"
+      },
+      "CanonicalJsonVector": {
+        "additionalProperties": false,
+        "description": "One value and the exact text of its canonical JSON (without the file's ``\\n``).",
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "canonical": {
+            "title": "Canonical",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "canonical"
+        ],
+        "title": "CanonicalJsonVector",
+        "type": "object"
+      },
+      "CanonicalJsonVectors": {
+        "additionalProperties": false,
+        "description": "``examples/canonical-json-vectors.json``: what the canonical form makes of each value.",
+        "properties": {
+          "vectors": {
+            "items": {
+              "$ref": "#/components/schemas/CanonicalJsonVector"
+            },
+            "minItems": 1,
+            "title": "Vectors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "vectors"
+        ],
+        "title": "CanonicalJsonVectors",
+        "type": "object"
+      },
+      "CaptureProfile": {
+        "additionalProperties": false,
+        "description": "Profile ``xvf3800-linear-4``: the take's array, room, channels and settings.",
+        "properties": {
+          "profile": {
+            "const": "xvf3800-linear-4",
+            "default": "xvf3800-linear-4",
+            "title": "Profile",
+            "type": "string"
+          },
+          "device": {
+            "$ref": "#/components/schemas/Xvf3800Device"
+          },
+          "room": {
+            "$ref": "#/components/schemas/RoomSlug"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/Xvf3800Channel"
+            },
+            "maxItems": 6,
+            "minItems": 2,
+            "title": "Channels",
+            "type": "array"
+          },
+          "primary_channel": {
+            "maximum": 6,
+            "minimum": 1,
+            "title": "Primary Channel",
+            "type": "integer"
+          },
+          "settings": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/_Setting"
+              },
+              "maxItems": 16,
+              "minItems": 1,
+              "type": "array"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/Xvf3800Parameter"
+            },
+            "title": "Settings",
+            "type": "object"
+          }
+        },
+        "required": [
+          "device",
+          "room",
+          "channels",
+          "primary_channel",
+          "settings"
+        ],
+        "title": "Xvf3800Linear4Profile",
+        "type": "object"
+      },
+      "CatalogReference": {
+        "additionalProperties": false,
+        "description": "A published catalog version by id, version, exact suite digest and snapshot digest.\n\n``catalog_sha256`` is the canonical digest of the suite alone (the digest every take\nand coverage projection keys on); ``snapshot_sha256`` is the sha256 of the exact\nsnapshot file bytes, so the alias half of the file is pinned too. ``suite_id`` and\n``purpose`` repeat what the snapshot's suite declares so contract-level checks (purpose\nagainst the capture gate) need no file read; the store verifies all of them against the\nsnapshot whenever a reference is materialized.",
+        "properties": {
+          "catalog_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "catalog_version": {
+            "$ref": "#/components/schemas/PositiveRevision"
+          },
+          "catalog_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "snapshot_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "suite_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "purpose": {
+            "enum": [
+              "capture-pilot",
+              "capture-corpus",
+              "held-out-evaluation",
+              "physical-test"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "snapshot_path": {
+            "$ref": "#/components/schemas/RelativePath"
+          }
+        },
+        "required": [
+          "catalog_id",
+          "catalog_version",
+          "catalog_sha256",
+          "snapshot_sha256",
+          "suite_id",
+          "purpose",
+          "snapshot_path"
+        ],
+        "title": "CatalogReference",
+        "type": "object"
+      },
+      "CatalogView": {
+        "additionalProperties": false,
+        "description": "``GET /api/v1/catalog``: the active catalog version of the lab's subject.\n\n``reference`` pins the version (its ``snapshot_sha256`` is also the answer's ``ETag``);\n``suite`` is the exact prompt suite and ``prompt_aliases`` the earlier prompt digests a\nkeep-recordings revision still counts, both from the digest-checked snapshot.\n``refreshed_at`` is when the PC's writer last recorded this version as active.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.api.catalog/v1",
+            "default": "cole-voice-lab.api.catalog/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "subject_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/CatalogReference"
+          },
+          "suite": {
+            "$ref": "#/components/schemas/PromptSuite"
+          },
+          "prompt_aliases": {
+            "items": {
+              "$ref": "#/components/schemas/PromptAlias"
+            },
+            "title": "Prompt Aliases",
+            "type": "array"
+          },
+          "refreshed_at": {
+            "format": "date-time",
+            "title": "Refreshed At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_id",
+          "reference",
+          "suite",
+          "prompt_aliases",
+          "refreshed_at"
+        ],
+        "title": "CatalogView",
+        "type": "object"
+      },
+      "ChunkAnswer": {
+        "additionalProperties": false,
+        "description": "``PUT …/files/{path}``: ``partial`` while bytes are missing, ``received`` once the\nfile is complete and its digest matched its declaration.",
+        "properties": {
+          "state": {
+            "enum": [
+              "partial",
+              "received"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "received_bytes": {
+            "minimum": 0,
+            "title": "Received Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state",
+          "received_bytes"
+        ],
+        "title": "ChunkAnswer",
+        "type": "object"
+      },
+      "CorpusChange": {
+        "discriminator": {
+          "mapping": {
+            "decision": "#/components/schemas/DecisionChange",
+            "trim": "#/components/schemas/TrimChange"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/DecisionChange"
+          },
+          {
+            "$ref": "#/components/schemas/TrimChange"
+          }
+        ]
+      },
+      "CorpusLibrary": {
+        "additionalProperties": false,
+        "description": "``GET /api/v1/corpus/library``: the subject's library of the active catalog version.\n\n``rows`` are the version's prompts in catalog order, each with its status\n(``missing``/``draft``/``kept``/``needs-attention``), its take count and the take that\nstands for it; ``coverage`` totals them. The answer's ``ETag`` is the read model's digest\n(``corpus_read_model``), which changes exactly when any row or history does.\n\nIt is one capture profile's view (D-056): ``profile`` is absent in the default view\n(``umik-1``), byte for byte the answer before profiles existed, and names any other.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.api.corpus-library/v1",
+            "default": "cole-voice-lab.api.corpus-library/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "subject_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "catalog": {
+            "$ref": "#/components/schemas/CatalogReference"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/LibraryCoverage"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "const": "xvf3800-linear-4",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "subject_id",
+          "catalog",
+          "coverage",
+          "rows"
+        ],
+        "title": "CorpusLibrary",
+        "type": "object"
+      },
+      "CorpusRequestOutcome": {
+        "additionalProperties": false,
+        "description": "What the publisher did with a request: ``provenance/corpus-requests/<id>.json``.\n\n``revision`` is the take's revision of the change's kind after the request: the new one\nwhen applied, the current one, unchanged, when refused once the take was read (a\n``revision_conflict`` names the revision the client should have expected), and ``None``\notherwise. ``decided_at`` is the publisher's time; an applied decision has it as its own.\nA request file that could not be read is refused ``invalid_request`` with no take, change\nor receive time.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.corpus-request-outcome/v1",
+            "default": "cole-voice-lab.corpus-request-outcome/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "request_id": {
+            "$ref": "#/components/schemas/RequestId"
+          },
+          "take_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TakeId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CorpusChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequestStatus"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequestRefusalCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "take_id",
+          "change",
+          "received_at",
+          "status",
+          "code",
+          "detail",
+          "revision",
+          "decided_at"
+        ],
+        "title": "CorpusRequestOutcome",
+        "type": "object"
+      },
+      "CorpusRequestStatus": {
+        "additionalProperties": false,
+        "description": "A decision or trim request as the server sees it: the answer (202) to its ``POST`` or\n``PUT`` and to ``GET /api/v1/corpus/requests/{request_id}``.\n\n``queued``: it waits in ``incoming/`` for the PC's writer (the intake publisher), which\napplies a take's requests in the order they arrived. ``applied`` or ``refused``:\n``outcome`` says what the writer did (an applied change's new revision; a refusal's code,\nsuch as ``revision_conflict`` with the take's current revision).",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.api.corpus-request-status/v1",
+            "default": "cole-voice-lab.api.corpus-request-status/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "request_id": {
+            "$ref": "#/components/schemas/RequestId"
+          },
+          "take_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TakeId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "applied",
+              "refused"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CorpusRequestOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "request_id",
+          "take_id",
+          "status",
+          "received_at",
+          "outcome"
+        ],
+        "title": "CorpusRequestStatus",
+        "type": "object"
+      },
+      "CorpusTakeManifestV2": {
+        "additionalProperties": false,
+        "description": "``manifest.json`` of a v2 take package: one take of one prompt, by a capture profile.\n\nA v1 take's fields, but for its device: the capture profile names the device, the room,\neach channel's source and the primary channel, and the continuity evidence is the\nprofile's backend's (ALSA for ``xvf3800-linear-4``).",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.corpus-take/v2",
+            "default": "cole-voice-lab.corpus-take/v2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "take_id": {
+            "$ref": "#/components/schemas/TakeId"
+          },
+          "subject_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "prompt": {
+            "$ref": "#/components/schemas/Prompt"
+          },
+          "prompt_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "catalog": {
+            "$ref": "#/components/schemas/CatalogReference"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "capture_host": {
+            "$ref": "#/components/schemas/_Text"
+          },
+          "client": {
+            "$ref": "#/components/schemas/TakeClient"
+          },
+          "capture_profile": {
+            "$ref": "#/components/schemas/CaptureProfile"
+          },
+          "audio": {
+            "$ref": "#/components/schemas/ProfileTakeAudio"
+          },
+          "continuity": {
+            "$ref": "#/components/schemas/AlsaTakeContinuity"
+          }
+        },
+        "required": [
+          "take_id",
+          "subject_id",
+          "prompt",
+          "prompt_sha256",
+          "catalog",
+          "requested_at",
+          "capture_host",
+          "client",
+          "capture_profile",
+          "audio",
+          "continuity"
+        ],
+        "title": "CorpusTakeManifestV2",
+        "type": "object"
+      },
+      "DecisionChange": {
+        "additionalProperties": false,
+        "description": "Set the take's decision, if its decision revision is still ``expected_revision``.\n\n``kept``, ``rejected`` (with a reason) and ``removed`` are the operator's actions; a\nrestore sets the decision the take had before (``kept``, or ``draft`` for a take never\nkept). ``removed`` is a state, never a deletion.",
+        "properties": {
+          "kind": {
+            "const": "decision",
+            "default": "decision",
+            "title": "Kind",
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/TakeDecisionName"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/_Reason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "decision",
+          "reason",
+          "expected_revision"
+        ],
+        "title": "DecisionChange",
+        "type": "object"
+      },
+      "Endpoint": {
+        "maxLength": 1024,
+        "minLength": 1,
+        "type": "string"
+      },
+      "FileDeclaration": {
+        "additionalProperties": false,
+        "description": "One member of the package the client will upload: its path, digest and size.",
+        "properties": {
+          "path": {
+            "$ref": "#/components/schemas/PackagePath"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "size_bytes": {
+            "maximum": 8589934592,
+            "minimum": 0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "size_bytes"
+        ],
+        "title": "FileDeclaration",
+        "type": "object"
+      },
+      "FileProgress": {
+        "additionalProperties": false,
+        "description": "How much of one declared file the server holds.",
+        "properties": {
+          "path": {
+            "$ref": "#/components/schemas/PackagePath"
+          },
+          "size_bytes": {
+            "minimum": 0,
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "received_bytes": {
+            "minimum": 0,
+            "title": "Received Bytes",
+            "type": "integer"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "size_bytes",
+          "received_bytes",
+          "complete"
+        ],
+        "title": "FileProgress",
+        "type": "object"
+      },
+      "HomeHostApproval": {
+        "additionalProperties": false,
+        "description": "Cole's standing authorization to upload captures to his own home host.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.home-host-approval/v1",
+            "default": "cole-voice-lab.home-host-approval/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "approval_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "approved": {
+            "const": true,
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "endpoint": {
+            "$ref": "#/components/schemas/Endpoint"
+          },
+          "tailnet_suffix": {
+            "$ref": "#/components/schemas/TailnetName"
+          },
+          "node_stable_id": {
+            "$ref": "#/components/schemas/NodeStableId"
+          },
+          "tag": {
+            "const": "tag:voice-lab",
+            "default": "tag:voice-lab",
+            "title": "Tag",
+            "type": "string"
+          },
+          "classes": {
+            "items": {
+              "$ref": "#/components/schemas/HomeHostClass"
+            },
+            "maxItems": 2,
+            "minItems": 1,
+            "title": "Classes",
+            "type": "array"
+          },
+          "approved_at": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "expires_at": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "approved_by": {
+            "$ref": "#/components/schemas/cole_voice_lab__storage_contracts__NonBlank__1"
+          },
+          "statement": {
+            "$ref": "#/components/schemas/cole_voice_lab__storage_contracts__NonBlank__2"
+          }
+        },
+        "required": [
+          "approval_id",
+          "approved",
+          "endpoint",
+          "tailnet_suffix",
+          "node_stable_id",
+          "classes",
+          "approved_at",
+          "expires_at",
+          "approved_by",
+          "statement"
+        ],
+        "title": "HomeHostApproval",
+        "type": "object"
+      },
+      "HomeHostBinding": {
+        "additionalProperties": false,
+        "description": "Which approval is in force: its id and the digest of the file that was reviewed.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.home-host-binding/v1",
+            "default": "cole-voice-lab.home-host-binding/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "approval_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "approval_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "bound_at": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          }
+        },
+        "required": [
+          "approval_id",
+          "approval_sha256",
+          "bound_at"
+        ],
+        "title": "HomeHostBinding",
+        "type": "object"
+      },
+      "HomeHostClass": {
+        "enum": [
+          "capture",
+          "measurement"
+        ],
+        "type": "string"
+      },
+      "HomeHostLedgerEntry": {
+        "additionalProperties": false,
+        "description": "One step of one upload, chained to the entry before it.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.home-host-ledger-entry/v1",
+            "default": "cole-voice-lab.home-host-ledger-entry/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 1,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "previous_sha256": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Sha256"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "event": {
+            "$ref": "#/components/schemas/LedgerEvent"
+          },
+          "at": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "approval_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "approval_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "endpoint": {
+            "$ref": "#/components/schemas/Endpoint"
+          },
+          "node_stable_id": {
+            "$ref": "#/components/schemas/NodeStableId"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "manifest_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "receipt_sha256": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Sha256"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          }
+        },
+        "required": [
+          "sequence",
+          "previous_sha256",
+          "event",
+          "at",
+          "approval_id",
+          "approval_sha256",
+          "endpoint",
+          "node_stable_id",
+          "session_id",
+          "manifest_sha256"
+        ],
+        "title": "HomeHostLedgerEntry",
+        "type": "object"
+      },
+      "IntakeReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.intake-receipt/v2",
+            "default": "cole-voice-lab.intake-receipt/v2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "manifest_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "source_qc_report_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "intake_qc_report_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "accepted_at": {
+            "format": "date-time",
+            "title": "Accepted At",
+            "type": "string"
+          },
+          "raw_path": {
+            "title": "Raw Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "manifest_sha256",
+          "source_qc_report_sha256",
+          "intake_qc_report_sha256",
+          "accepted_at",
+          "raw_path"
+        ],
+        "title": "IntakeReceipt",
+        "type": "object"
+      },
+      "IntakeSessionRequest": {
+        "additionalProperties": false,
+        "description": "``POST /api/v1/intake/sessions``: the complete list of the package's files.\n\nThe list names every file of the capture package, the three control files included,\nand nothing else. ``manifest_sha256`` is the digest of ``manifest.json`` and must equal\nthat file's declared digest; the intake receipt the publisher writes names it.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.api.intake-session/v1",
+            "default": "cole-voice-lab.api.intake-session/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "manifest_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/FileDeclaration"
+            },
+            "minItems": 3,
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "manifest_sha256",
+          "files"
+        ],
+        "title": "IntakeSessionRequest",
+        "type": "object"
+      },
+      "IntakeSessionStatus": {
+        "additionalProperties": false,
+        "description": "A session as the server sees it.\n\n``open``: files are being received (``files`` shows each one's progress). ``finalized``:\nevery file was received and checked, and the package waits in ``incoming/`` for the\npublisher. ``accepted``: the publisher published it; ``receipt`` is its intake receipt.\n``refused``: the publisher refused it; ``refusal`` says why.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.api.intake-session-status/v1",
+            "default": "cole-voice-lab.api.intake-session-status/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "manifest_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/FileProgress"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IntakeReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "refusal": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Refusal"
+          }
+        },
+        "required": [
+          "session_id",
+          "manifest_sha256",
+          "state",
+          "files"
+        ],
+        "title": "IntakeSessionStatus",
+        "type": "object"
+      },
+      "JsonValue": {},
+      "LedgerEvent": {
+        "enum": [
+          "upload-started",
+          "upload-completed",
+          "upload-refused"
+        ],
+        "type": "string"
+      },
+      "LibraryCoverage": {
+        "additionalProperties": false,
+        "description": "The totals of the rows (``recorded`` is ``kept`` plus ``needs_attention``), and how\nmany takes count for a prompt of this version and how many count for none.",
+        "properties": {
+          "prompts": {
+            "minimum": 0,
+            "title": "Prompts",
+            "type": "integer"
+          },
+          "recorded": {
+            "minimum": 0,
+            "title": "Recorded",
+            "type": "integer"
+          },
+          "kept": {
+            "minimum": 0,
+            "title": "Kept",
+            "type": "integer"
+          },
+          "needs_attention": {
+            "minimum": 0,
+            "title": "Needs Attention",
+            "type": "integer"
+          },
+          "draft": {
+            "minimum": 0,
+            "title": "Draft",
+            "type": "integer"
+          },
+          "missing": {
+            "minimum": 0,
+            "title": "Missing",
+            "type": "integer"
+          },
+          "takes": {
+            "minimum": 0,
+            "title": "Takes",
+            "type": "integer"
+          },
+          "uncounted_takes": {
+            "minimum": 0,
+            "title": "Uncounted Takes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompts",
+          "recorded",
+          "kept",
+          "needs_attention",
+          "draft",
+          "missing",
+          "takes",
+          "uncounted_takes"
+        ],
+        "title": "LibraryCoverage",
+        "type": "object"
+      },
+      "LibraryRow": {
+        "additionalProperties": false,
+        "description": "One prompt of the active catalog version, in catalog order, and where it stands.\n\n``latest_*`` describe the take that stands for the prompt: its newest kept take, else\nits newest undecided one; ``take_count`` counts its whole history.",
+        "properties": {
+          "prompt_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "prompt_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "category": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Category",
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "$ref": "#/components/schemas/PromptLabel"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "holdout": {
+            "title": "Holdout",
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PromptStatus"
+          },
+          "take_count": {
+            "minimum": 0,
+            "title": "Take Count",
+            "type": "integer"
+          },
+          "latest_take_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TakeId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Requested At"
+          },
+          "latest_duration_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Duration Seconds"
+          }
+        },
+        "required": [
+          "prompt_id",
+          "prompt_sha256",
+          "category",
+          "labels",
+          "holdout",
+          "status",
+          "take_count",
+          "latest_take_id",
+          "latest_requested_at",
+          "latest_duration_seconds"
+        ],
+        "title": "LibraryRow",
+        "type": "object"
+      },
+      "LibraryTake": {
+        "additionalProperties": false,
+        "description": "One take in a prompt's history.",
+        "properties": {
+          "take_id": {
+            "$ref": "#/components/schemas/TakeId"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "duration_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration Seconds",
+            "type": "number"
+          },
+          "capture_host": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Capture Host",
+            "type": "string"
+          },
+          "device": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Device",
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/TakeDecisionName"
+          },
+          "decision_revision": {
+            "minimum": 0,
+            "title": "Decision Revision",
+            "type": "integer"
+          },
+          "trim": {
+            "$ref": "#/components/schemas/TakeTrim"
+          },
+          "qc_status": {
+            "enum": [
+              "pass",
+              "review",
+              "fail"
+            ],
+            "title": "Qc Status",
+            "type": "string"
+          },
+          "recorded_prompt_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "catalog_version": {
+            "minimum": 1,
+            "title": "Catalog Version",
+            "type": "integer"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TakeOrigin"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "take_id",
+          "requested_at",
+          "duration_seconds",
+          "capture_host",
+          "device",
+          "decision",
+          "decision_revision",
+          "trim",
+          "qc_status",
+          "recorded_prompt_sha256",
+          "catalog_version"
+        ],
+        "title": "LibraryTake",
+        "type": "object"
+      },
+      "NodeStableId": {
+        "pattern": "^[A-Za-z0-9]{1,64}$",
+        "type": "string"
+      },
+      "PackagePath": {
+        "maxLength": 255,
+        "minLength": 1,
+        "type": "string"
+      },
+      "Position": {
+        "maximum": 1099511627775,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "PositiveRevision": {
+        "maximum": 9223372036854775807,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "ProcessingStage": {
+        "enum": [
+          "aec",
+          "agc",
+          "noise-suppression",
+          "echo-suppression",
+          "nonlinear-attenuation",
+          "limiter",
+          "high-pass"
+        ],
+        "type": "string"
+      },
+      "ProfileTakeAudio": {
+        "additionalProperties": false,
+        "description": "A v2 take's one recording, in a format its capture profile allows.",
+        "properties": {
+          "path": {
+            "const": "original.wav",
+            "default": "original.wav",
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 44,
+            "maximum": 253440044,
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "audio": {
+            "$ref": "#/components/schemas/AudioSpec"
+          }
+        },
+        "required": [
+          "sha256",
+          "size_bytes",
+          "audio"
+        ],
+        "title": "ProfileTakeAudio",
+        "type": "object"
+      },
+      "Prompt": {
+        "additionalProperties": false,
+        "description": "One catalog entry. Optional v2 fields are omitted when absent so v1 bytes never change.",
+        "properties": {
+          "prompt_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "category": {
+            "enum": [
+              "room-tone",
+              "neutral",
+              "conversational",
+              "warm-narration",
+              "technical",
+              "numbers",
+              "expressive",
+              "reference",
+              "procedure"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "style": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Style",
+            "type": "string"
+          },
+          "reference_candidate": {
+            "default": false,
+            "title": "Reference Candidate",
+            "type": "boolean"
+          },
+          "holdout": {
+            "default": false,
+            "title": "Holdout",
+            "type": "boolean"
+          },
+          "expected_seconds": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 120.0,
+            "title": "Expected Seconds",
+            "type": "number"
+          },
+          "labels": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PromptLabel"
+            },
+            "maxItems": 8,
+            "title": "Labels",
+            "type": "array"
+          },
+          "instructions": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Instructions"
+          }
+        },
+        "required": [
+          "prompt_id",
+          "category",
+          "style",
+          "expected_seconds"
+        ],
+        "title": "Prompt",
+        "type": "object"
+      },
+      "PromptAlias": {
+        "additionalProperties": false,
+        "description": "One earlier prompt digest that still counts as a recording of the current prompt.",
+        "properties": {
+          "prompt_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "accepted_prompt_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          }
+        },
+        "required": [
+          "prompt_sha256",
+          "accepted_prompt_sha256"
+        ],
+        "title": "PromptAlias",
+        "type": "object"
+      },
+      "PromptLabel": {
+        "maxLength": 32,
+        "minLength": 2,
+        "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+        "type": "string"
+      },
+      "PromptStatus": {
+        "enum": [
+          "missing",
+          "draft",
+          "kept",
+          "needs-attention"
+        ],
+        "type": "string"
+      },
+      "PromptSuite": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "default": "cole-voice-lab.prompt-suite/v1",
+            "enum": [
+              "cole-voice-lab.prompt-suite/v1",
+              "cole-voice-lab.prompt-suite/v2"
+            ],
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "suite_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "purpose": {
+            "enum": [
+              "capture-pilot",
+              "capture-corpus",
+              "held-out-evaluation",
+              "physical-test"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "prompts": {
+            "items": {
+              "$ref": "#/components/schemas/Prompt"
+            },
+            "minItems": 1,
+            "title": "Prompts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "suite_id",
+          "purpose",
+          "prompts"
+        ],
+        "title": "PromptSuite",
+        "type": "object"
+      },
+      "QcReport": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.qc-report/v1",
+            "default": "cole-voice-lab.qc-report/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "manifest_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "review",
+              "fail"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/AudioQcMetrics"
+            },
+            "minItems": 1,
+            "title": "Metrics",
+            "type": "array"
+          },
+          "headphone_review_required": {
+            "const": true,
+            "default": true,
+            "title": "Headphone Review Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "manifest_sha256",
+          "generated_at",
+          "status",
+          "metrics"
+        ],
+        "title": "QcReport",
+        "type": "object"
+      },
+      "ReadyMarker": {
+        "additionalProperties": false,
+        "description": "Last-written commit marker for a complete capture package.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.ready/v1",
+            "default": "cole-voice-lab.ready/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "manifest_path": {
+            "const": "manifest.json",
+            "default": "manifest.json",
+            "title": "Manifest Path",
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "qc_report_path": {
+            "const": "qc.json",
+            "default": "qc.json",
+            "title": "Qc Report Path",
+            "type": "string"
+          },
+          "qc_report_sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "finalized_at": {
+            "format": "date-time",
+            "title": "Finalized At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "manifest_sha256",
+          "qc_report_sha256",
+          "finalized_at"
+        ],
+        "title": "ReadyMarker",
+        "type": "object"
+      },
+      "RelativePath": {
+        "maxLength": 1024,
+        "minLength": 1,
+        "type": "string"
+      },
+      "RequestId": {
+        "pattern": "^req-[0-9a-f]{32}$",
+        "type": "string"
+      },
+      "RequestRefusalCode": {
+        "enum": [
+          "revision_conflict",
+          "take_not_found",
+          "trim_out_of_bounds",
+          "invalid_request"
+        ],
+        "type": "string"
+      },
+      "RequestStatus": {
+        "enum": [
+          "applied",
+          "refused"
+        ],
+        "type": "string"
+      },
+      "RoomSlug": {
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        "type": "string"
+      },
+      "SessionState": {
+        "enum": [
+          "open",
+          "finalized",
+          "accepted",
+          "refused"
+        ],
+        "type": "string"
+      },
+      "Sha256": {
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "StableId": {
+        "maxLength": 128,
+        "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+        "type": "string"
+      },
+      "TailnetName": {
+        "maxLength": 253,
+        "minLength": 1,
+        "type": "string"
+      },
+      "TakeClient": {
+        "additionalProperties": false,
+        "description": "The program that recorded the take: its name, version and platform, as it reports them.",
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/_Text"
+          },
+          "version": {
+            "$ref": "#/components/schemas/_Text"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/_Text"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "platform"
+        ],
+        "title": "TakeClient",
+        "type": "object"
+      },
+      "TakeDecisionName": {
+        "enum": [
+          "draft",
+          "kept",
+          "rejected",
+          "removed"
+        ],
+        "type": "string"
+      },
+      "TakeDecisionRequest": {
+        "additionalProperties": false,
+        "description": "``POST /api/v1/corpus/takes/{take_id}/decision``: set the take's decision.\n\n``request_id`` is the client's id for this change (``req-`` and 32 lower-case hex digits),\nthe same on every retry. ``expected_revision`` is the take's decision revision the client\nlast saw (``LibraryTake.decision_revision``): the PC applies the change only at that\nrevision. ``reason`` is a rejection's, and only a rejection's. A restore sends the decision\nthe take had before (``kept``, or ``draft``); ``removed`` never deletes anything.",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.api.take-decision-request/v1",
+            "default": "cole-voice-lab.api.take-decision-request/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "request_id": {
+            "$ref": "#/components/schemas/RequestId"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/TakeDecisionName"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/_Reason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_id",
+          "decision",
+          "expected_revision"
+        ],
+        "title": "TakeDecisionRequest",
+        "type": "object"
+      },
+      "TakeHistory": {
+        "additionalProperties": false,
+        "description": "``GET /api/v1/corpus/prompts/{prompt_id}/takes``: one prompt's row and every take that\ncounts for it under the active version, newest first (an alias's takes included), in one\ncapture profile's view (``profile``, as ``CorpusLibrary``'s).",
+        "properties": {
+          "schema_version": {
+            "const": "cole-voice-lab.api.take-history/v1",
+            "default": "cole-voice-lab.api.take-history/v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "subject_id": {
+            "$ref": "#/components/schemas/StableId"
+          },
+          "catalog": {
+            "$ref": "#/components/schemas/CatalogReference"
+          },
+          "row": {
+            "$ref": "#/components/schemas/LibraryRow"
+          },
+          "takes": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryTake"
+            },
+            "title": "Takes",
+            "type": "array"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "const": "xvf3800-linear-4",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "subject_id",
+          "catalog",
+          "row",
+          "takes"
+        ],
+        "title": "TakeHistory",
+        "type": "object"
+      },
+      "TakeId": {
+        "pattern": "^take-[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "TakeOrigin": {
+        "additionalProperties": false,
+        "description": "Where a take the PC did not receive from a recording client came from.\n\n``imported``: a take of the Swift app on the Mac (D-053), whose own id was\n``source_take_id``; its raw package keeps its seal, reservation, group and the Mac's\ndecision and trim as they were exported.",
+        "properties": {
+          "kind": {
+            "const": "imported",
+            "title": "Kind",
+            "type": "string"
+          },
+          "source_take_id": {
+            "$ref": "#/components/schemas/TakeId"
+          }
+        },
+        "required": [
+          "kind",
+          "source_take_id"
+        ],
+        "title": "TakeOrigin",
+        "type": "object"
+      },
+      "TakeTrim": {
+        "additionalProperties": false,
+        "description": "The frames a take keeps, ``[start_frame, end_frame)``, or all of them (both ``None``),\nat which revision (0: never trimmed).",
+        "properties": {
+          "revision": {
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "start_frame": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Frame"
+          },
+          "end_frame": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Frame"
+          }
+        },
+        "required": [
+          "revision",
+          "start_frame",
+          "end_frame"
+        ],
+        "title": "TakeTrim",
+        "type": "object"
+      },
+      "Text": {
+        "maxLength": 500,
+        "minLength": 1,
+        "type": "string"
+      },
+      "TimestampNs": {
+        "maximum": 9223372036854775807,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "TrimChange": {
+        "additionalProperties": false,
+        "description": "Keep the frames ``[start_frame, end_frame)`` of the take, or all of them (both\n``None``: a reset), if its trim revision is still ``expected_revision``.",
+        "properties": {
+          "kind": {
+            "const": "trim",
+            "default": "trim",
+            "title": "Kind",
+            "type": "string"
+          },
+          "start_frame": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 31680000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Frame"
+          },
+          "end_frame": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 31680000,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Frame"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_frame",
+          "end_frame",
+          "expected_revision"
+        ],
+        "title": "TrimChange",
+        "type": "object"
+      },
+      "UtcTimestamp": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "WavRecipe": {
+        "additionalProperties": false,
+        "description": "An ``original.wav`` given by integers, so the repository holds no audio and a client in\nany language makes the same bytes.\n\nThe file is the plain 44-byte PCM header (RIFF, ``WAVE_FORMAT_PCM``: ``wav_header``), then\n``frames`` frames of ``channels`` interleaved samples, frame after frame. The sample of\nchannel ``c`` (from 0) in frame ``f`` (from 0) is ``((f * (c + 3) + offset) % modulus -\ncenter) * (c + 1) * scale``, little-endian and signed, in the width ``format`` gives. Every\nterm is a non-negative integer before the subtraction, so ``%`` means the same in C++ and\nPython.",
+        "properties": {
+          "recipe": {
+            "const": "corpus-client.v1/interleaved-sawtooth",
+            "default": "corpus-client.v1/interleaved-sawtooth",
+            "title": "Recipe",
+            "type": "string"
+          },
+          "format": {
+            "enum": [
+              "S16_LE",
+              "S24_3LE",
+              "S32_LE"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "rate": {
+            "maximum": 384000,
+            "minimum": 8000,
+            "title": "Rate",
+            "type": "integer"
+          },
+          "channels": {
+            "maximum": 32,
+            "minimum": 1,
+            "title": "Channels",
+            "type": "integer"
+          },
+          "frames": {
+            "minimum": 1,
+            "title": "Frames",
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "modulus": {
+            "minimum": 1,
+            "title": "Modulus",
+            "type": "integer"
+          },
+          "center": {
+            "minimum": 0,
+            "title": "Center",
+            "type": "integer"
+          },
+          "scale": {
+            "minimum": 1,
+            "title": "Scale",
+            "type": "integer"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 44,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "format",
+          "rate",
+          "channels",
+          "frames",
+          "offset",
+          "modulus",
+          "center",
+          "scale",
+          "sha256",
+          "size_bytes"
+        ],
+        "title": "WavRecipe",
+        "type": "object"
+      },
+      "Xvf3800Channel": {
+        "additionalProperties": false,
+        "description": "One channel of the take's WAV: where its output came from, and what ran on it.",
+        "properties": {
+          "source": {
+            "enum": [
+              "processed",
+              "mic"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "mic": {
+            "anyOf": [
+              {
+                "maximum": 4,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mic"
+          },
+          "routing": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "$ref": "#/components/schemas/_Byte"
+              },
+              {
+                "$ref": "#/components/schemas/_Byte"
+              }
+            ],
+            "title": "Routing",
+            "type": "array"
+          },
+          "processing": {
+            "items": {
+              "$ref": "#/components/schemas/ProcessingStage"
+            },
+            "title": "Processing",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source",
+          "mic",
+          "routing",
+          "processing"
+        ],
+        "title": "Xvf3800Channel",
+        "type": "object"
+      },
+      "Xvf3800Device": {
+        "additionalProperties": false,
+        "description": "The array that recorded the take.",
+        "properties": {
+          "model": {
+            "$ref": "#/components/schemas/_Text"
+          },
+          "usb_vendor_id": {
+            "$ref": "#/components/schemas/_UsbId"
+          },
+          "usb_product_id": {
+            "$ref": "#/components/schemas/_UsbId"
+          },
+          "serial": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/_Text"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "firmware": {
+            "$ref": "#/components/schemas/Xvf3800Firmware"
+          }
+        },
+        "required": [
+          "model",
+          "usb_vendor_id",
+          "usb_product_id",
+          "serial",
+          "firmware"
+        ],
+        "title": "Xvf3800Device",
+        "type": "object"
+      },
+      "Xvf3800Firmware": {
+        "additionalProperties": false,
+        "description": "The array's firmware, as it reports itself.",
+        "properties": {
+          "version": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "$ref": "#/components/schemas/_Byte"
+              },
+              {
+                "$ref": "#/components/schemas/_Byte"
+              },
+              {
+                "$ref": "#/components/schemas/_Byte"
+              }
+            ],
+            "title": "Version",
+            "type": "array"
+          },
+          "build_message": {
+            "$ref": "#/components/schemas/_Text"
+          },
+          "build_repo_hash": {
+            "$ref": "#/components/schemas/_Text"
+          }
+        },
+        "required": [
+          "version",
+          "build_message",
+          "build_repo_hash"
+        ],
+        "title": "Xvf3800Firmware",
+        "type": "object"
+      },
+      "Xvf3800Parameter": {
+        "enum": [
+          "SHF_BYPASS",
+          "PP_AGCONOFF",
+          "PP_AGCGAIN",
+          "PP_MIN_NS",
+          "PP_MIN_NN",
+          "PP_ECHOONOFF",
+          "PP_NLATTENONOFF",
+          "PP_LIMITONOFF",
+          "AEC_HPFONOFF"
+        ],
+        "type": "string"
+      },
+      "_Byte": {
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "_Reason": {
+        "maxLength": 500,
+        "minLength": 1,
+        "type": "string"
+      },
+      "_Setting": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          }
+        ]
+      },
+      "_Text": {
+        "maxLength": 500,
+        "minLength": 1,
+        "type": "string"
+      },
+      "_UsbId": {
+        "maximum": 65535,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "cole_voice_lab__storage_contracts__NonBlank__1": {
+        "maxLength": 256,
+        "minLength": 1,
+        "type": "string"
+      },
+      "cole_voice_lab__storage_contracts__NonBlank__2": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "type": "string"
+      }
+    }
+  }
+}

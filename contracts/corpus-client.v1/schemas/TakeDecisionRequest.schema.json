@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "RequestId": {
+      "pattern": "^req-[0-9a-f]{32}$",
+      "type": "string"
+    },
+    "TakeDecisionName": {
+      "enum": [
+        "draft",
+        "kept",
+        "rejected",
+        "removed"
+      ],
+      "type": "string"
+    },
+    "_Reason": {
+      "maxLength": 500,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``POST /api/v1/corpus/takes/{take_id}/decision``: set the take's decision.\n\n``request_id`` is the client's id for this change (``req-`` and 32 lower-case hex digits),\nthe same on every retry. ``expected_revision`` is the take's decision revision the client\nlast saw (``LibraryTake.decision_revision``): the PC applies the change only at that\nrevision. ``reason`` is a rejection's, and only a rejection's. A restore sends the decision\nthe take had before (``kept``, or ``draft``); ``removed`` never deletes anything.",
+  "properties": {
+    "decision": {
+      "$ref": "#/$defs/TakeDecisionName"
+    },
+    "expected_revision": {
+      "minimum": 0,
+      "title": "Expected Revision",
+      "type": "integer"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/_Reason"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "request_id": {
+      "$ref": "#/$defs/RequestId"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.take-decision-request/v1",
+      "default": "cole-voice-lab.api.take-decision-request/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "decision",
+    "expected_revision"
+  ],
+  "title": "TakeDecisionRequest",
+  "type": "object"
+}
