@@ -219,8 +219,9 @@ contract (step 2 below) and published in the bundle, so #22 implements them as w
   byte count.
 - The WAV's format equals the manifest's and is one the profile allows, and its channels equal
   `channels[]`.
-- The evidence is bound to the WAV and successful, and the device is a Seeed USB device (vendor
-  0x2886, and the Flex's product id once the array has been measured).
+- The evidence is bound to the WAV and successful, and the device is the Flex Linear-4: Seeed's
+  USB vendor 0x2886 and product 0x0022, as the panel's array reports it (measured on the panel
+  and relayed on 2026-10-19).
 - Then the PC's rules: no simulated audio, no diagnostic root, and the catalog rule
   (`admit_catalog`, unchanged).
 - **QC is recomputed on the server from the primary channel** (a channel-selecting inspection in

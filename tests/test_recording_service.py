@@ -827,7 +827,8 @@ def test_shared_capture_lock_survives_parent_descriptor_close_in_inherited_child
     )
     assert process.stdin is not None and process.stdout is not None
     try:
-        assert select.select([process.stdout], [], [], 2)[0]
+        # The child imports the package before it answers: room for a loaded PC.
+        assert select.select([process.stdout], [], [], 30)[0]
         assert process.stdout.readline() == b"ready\n"
         os.close(descriptor)
         descriptor = -1
@@ -835,7 +836,7 @@ def test_shared_capture_lock_survives_parent_descriptor_close_in_inherited_child
             acquire_capture_ownership(layout)
         process.stdin.write(b"q")
         process.stdin.flush()
-        assert process.wait(timeout=2) == 0
+        assert process.wait(timeout=30) == 0
         with capture_ownership(layout):
             pass
     finally:
