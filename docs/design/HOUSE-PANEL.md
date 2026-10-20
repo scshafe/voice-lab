@@ -440,7 +440,14 @@ watched.
    - tests that refuse a panel token on `/view/`, `/api/intake/`, the journey routes, speech, take
      audio and trims.
 
-   Deploying this before the Pocket ID client exists is harmless.
+   Deploying this before the Pocket ID client exists is harmless. As built (2026-10-19):
+   - `TrustedIssuer.client_audiences` and `Principal.scope` (`api/auth.py`);
+   - `verify_any_header` for the server's `/api/v1` check alone;
+   - the allow-list in `api/client_scope.py`;
+   - the finalize check in `api/staging.py`, after the files are re-hashed;
+   - the decision check in `api/corpus_request_routes.py`. A take whose record is not written
+     yet answers 404 `take_not_found`, and the panel asks again once intake has published it;
+   - `deploy/stack/compose.yaml` holds the door's third entry and the API's flag.
 5. **The contract bundle and the fixture server**: the generator, `check` in verify,
    PROTOCOL.md and the examples, and tests that drive the fixture through the golden package.
 

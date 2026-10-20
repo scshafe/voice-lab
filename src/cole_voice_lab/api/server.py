@@ -47,7 +47,8 @@ from ..paths import AssetLayout
 from ..speech.config import load_speech_config
 from ..speech.routes import SpeechRoutes, caller_policy
 from ..view.routes import ViewRoutes
-from .auth import AuthError, AuthPolicy, TokenVerifier, TrustedIssuer
+from .auth import AuthError, AuthPolicy, Scope, TokenVerifier, TrustedIssuer
+from .client_scope import CLIENT_PROFILE, require_client_may
 from .contracts import (
     ApiErrorCode,
     ApiMeta,
@@ -167,6 +168,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
     _route = "-"
     _started = 0.0
     _unread = 0
+    #: The verified token's scope for the request in hand (``_authorize``).
+    _scope: Scope = "full"
 
     # -- plumbing ---------------------------------------------------------------------------
 
@@ -237,15 +240,24 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 422, "invalid_request", f"the body is not a valid {model.__name__}"
             ) from error
 
-    def _authorize(self) -> None:
+    def _authorize(self, path: str, query: str) -> None:
+        """The global ``/api/`` check: any verified token, a corpus client's only on its
+        allow-list (``api.client_scope``, D-056); the scope is kept for the routes.
+
+        Raises: ``_Refusal`` 401 ``unauthorized``; ``RouteRefusal`` 403 ``client_scope``."""
         try:
-            self.server.verifier.verify_header(self.headers.get("Authorization"))
+            principal = self.server.verifier.verify_any_header(self.headers.get("Authorization"))
         except AuthError as error:
             raise _Refusal(401, "unauthorized", str(error)) from error
+        self._scope = principal.scope
+        if principal.scope == "corpus-client":
+            require_client_may(self.command, path, query)
 
     def _dispatch(self) -> None:
         self._started = time.monotonic()
         self._unread = self._content_length_or_zero()
+        # One handler serves every request of a keep-alive connection: no scope carries over.
+        self._scope = "full"
         try:
             self._handle()
         except _Refusal as refusal:
@@ -302,7 +314,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._journey_intake(self.server.journey_intake, path)
             return
         if api and not self._self_authenticating(path):
-            self._authorize()
+            self._authorize(path, parts.query)
         if self._extension(parts.path, parts.query):
             return
         if not api:
@@ -331,7 +343,9 @@ class _ApiHandler(BaseHTTPRequestHandler):
         elif rest == "finalize":
             self._route = "intake.finalize"
             self._only("POST")
-            self._send(200, staging.finalize(session_id))
+            # A corpus client finalizes only a v2 take of its own profile (D-056).
+            profile = CLIENT_PROFILE if self._scope == "corpus-client" else None
+            self._send(200, staging.finalize(session_id, profile=profile))
         elif rest == "receipt":
             self._route = "intake.receipt"
             self._only("GET")
@@ -385,6 +399,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
             header=self.headers.get,
             content_length=self._content_length(),
             read_body=self._read_body,
+            scope=self._scope,
         )
         for route in self.server.routes:
             response = route(request)
@@ -570,6 +585,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     serve.add_argument("--jwks", required=True, help="the identity provider's key file")
     serve.add_argument("--issuer", required=True)
     serve.add_argument("--audience", action="append", required=True)
+    serve.add_argument(
+        "--client-audience",
+        action="append",
+        default=[],
+        help="an audience whose tokens are scoped to a corpus client (D-056: voice-lab-panel)",
+    )
     serve.add_argument("--allowed-subject", action="append", required=True)
     serve.add_argument("--server-build", required=True)
     serve.add_argument("--minimum-client-version", default="0.1.0")
@@ -593,6 +614,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     issuer=options.issuer,
                     audiences=tuple(options.audience),
                     jwks_path=options.jwks,
+                    client_audiences=tuple(options.client_audience),
                 ),
             ),
             allowed_subjects=tuple(options.allowed_subject),
