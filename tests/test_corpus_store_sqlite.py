@@ -451,6 +451,28 @@ def test_missing_and_stray_members_are_detected_before_the_next_query(
         store.list_prompts()
 
 
+def test_a_new_store_on_btrfs_opens_and_its_checks_see_strays_made_since_the_last(
+    btrfs_directory: Path,
+) -> None:
+    """#112: the store listed its directories through the descriptors it opened them with,
+    and btrfs lists through a descriptor only what was there when it was opened or when the
+    previous listing through it ended. A new store refused the database it had just made,
+    and the check before a query missed a stray made since the last check."""
+    layout = AssetLayout.initialize(btrfs_directory / "private-assets")
+    with CorpusStore(layout, create=True, clock=Clock()) as store:
+        seeded(store, 1)
+        for directory, refusal in (
+            (store.directory, "unexpected corpus store member"),
+            (store.snapshot_directory, "unexpected catalog snapshot member"),
+        ):
+            stray = directory / "notes.txt"
+            stray.write_bytes(b"")
+            with pytest.raises(CorpusStoreSecurityError, match=refusal):
+                store._check_paths()  # the check a query starts with
+            stray.unlink()
+        assert [record.prompt.prompt_id for record in store.list_prompts()] == ["prompt-01"]
+
+
 def test_snapshot_with_open_permissions_is_refused_before_it_is_read(store: CorpusStore) -> None:
     seeded(store)
     reference = published(store)

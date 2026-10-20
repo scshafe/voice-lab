@@ -87,6 +87,25 @@ def file_identity(metadata: os.stat_result) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
+def list_open_directory(descriptor: int) -> list[str]:
+    """The names in an open directory as it is now.
+
+    Lists through a new descriptor on ``"."`` of ``descriptor`` (the same directory, with no
+    path lookup between), never through ``descriptor`` itself: a directory stream may leave
+    out entries added since it was opened or rewound, and btrfs does (#112). There, listing
+    through a long-held descriptor shows the directory as it was when the descriptor was
+    opened, or when the previous ``os.listdir`` through it ended (which rewinds it).
+    Params: ``descriptor`` is an open directory.
+    Returns: the entry names, unsorted.
+    Raises: ``OSError`` from the open or the listing.
+    """
+    current = os.open(".", os.O_RDONLY | os.O_DIRECTORY, dir_fd=descriptor)
+    try:
+        return os.listdir(current)
+    finally:
+        os.close(current)
+
+
 def open_regular_no_follow(path: Path, *, nonblocking: bool = False) -> BinaryIO:
     """Open one regular file without following its final symlink.
 

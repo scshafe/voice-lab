@@ -14,7 +14,11 @@ or launch the frozen macOS service, carry ``requires_macos`` skips instead.
 from __future__ import annotations
 
 import hashlib
+import shutil
+import subprocess
 import sys
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -37,3 +41,33 @@ def pytest_configure(config: pytest.Config) -> None:
         runtime._current_recording_python_environment_identity = (  # type: ignore[assignment]
             _test_stand_in_environment_identity
         )
+
+
+def _filesystem(path: Path) -> str:
+    if sys.platform != "linux":
+        return ""
+    found = subprocess.run(
+        ["stat", "--file-system", "--format=%T", str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return found.stdout.strip()
+
+
+@pytest.fixture
+def btrfs_directory(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[Path]:
+    """A new private directory on btrfs, or a skip where there is none.
+
+    btrfs lists a directory through a descriptor only as far as the directory was when that
+    descriptor was opened or last rewound (#112). The directory is the test's own temporary
+    directory when that is on btrfs, else one in the pytest cache under the checkout: on the
+    PC, /tmp is tmpfs and /home (and /data, production's) is btrfs.
+    """
+    for parent in (tmp_path, request.config.cache.mkdir("btrfs")):
+        if _filesystem(parent) == "btrfs":
+            directory = Path(tempfile.mkdtemp(dir=parent))
+            yield directory
+            shutil.rmtree(directory)
+            return
+    pytest.skip("needs a btrfs directory: neither the temporary directory nor the checkout")

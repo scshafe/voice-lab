@@ -21,6 +21,7 @@ from cole_voice_lab.canonical import (
     canonical_sha256,
     fsync_directory,
     json_ready,
+    list_open_directory,
     open_regular_no_follow,
     read_json_object,
     rename_no_replace,
@@ -670,3 +671,18 @@ def test_a_failed_directory_sync_is_reported_after_the_file_is_published(
         write_new_private_file(tmp_path / "record", b"bytes")
     assert (tmp_path / "record").read_bytes() == b"bytes"
     assert private_entries(tmp_path) == ["record"]
+
+
+def test_listing_an_open_directory_sees_entries_made_since_it_was_opened_or_listed(
+    btrfs_directory: Path,
+) -> None:
+    """#112: on btrfs, ``os.listdir(descriptor)`` sees neither."""
+    descriptor = os.open(btrfs_directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        (btrfs_directory / "made-after-open").touch()
+        assert list_open_directory(descriptor) == ["made-after-open"]
+        os.listdir(descriptor)
+        (btrfs_directory / "made-after-listing").touch()
+        assert sorted(list_open_directory(descriptor)) == ["made-after-listing", "made-after-open"]
+    finally:
+        os.close(descriptor)

@@ -43,6 +43,7 @@ from .canonical import (
     canonical_json_bytes,
     canonical_sha256,
     file_identity,
+    list_open_directory,
     require_private_metadata,
 )
 from .catalog_ports import (
@@ -425,7 +426,7 @@ class CorpusStore:
     def _discard_snapshot_scratch(self) -> None:
         """Remove temporaries a crashed publish left behind; see the class docstring."""
         removed = False
-        for name in os.listdir(self._snapshots_fd):
+        for name in list_open_directory(self._snapshots_fd):
             if not _SNAPSHOT_TEMPORARY_NAME.match(name):
                 continue
             metadata = os.stat(name, dir_fd=self._snapshots_fd, follow_symlinks=False)
@@ -487,7 +488,7 @@ class CorpusStore:
                 )
         sidecars = tuple(CORPUS_DATABASE_NAME + suffix for suffix in ("-wal", "-shm", "-journal"))
         allowed = {_LOCK_NAME, _LEASE_NAME, CORPUS_DATABASE_NAME, SNAPSHOT_DIRECTORY, *sidecars}
-        members = os.listdir(self._corpus_fd)
+        members = list_open_directory(self._corpus_fd)
         for name in members:
             if name not in allowed:
                 raise CorpusStoreSecurityError(
@@ -513,7 +514,7 @@ class CorpusStore:
                 raise CorpusStoreSecurityError(
                     "CORPUS.STORE_UNSAFE", f"corpus store member disappeared: {required}"
                 )
-        for name in os.listdir(self._snapshots_fd):
+        for name in list_open_directory(self._snapshots_fd):
             if not (_SNAPSHOT_NAME.match(name) or _SNAPSHOT_TEMPORARY_NAME.match(name)):
                 raise CorpusStoreSecurityError(
                     "CORPUS.STORE_UNSAFE", f"unexpected catalog snapshot member: {name}"

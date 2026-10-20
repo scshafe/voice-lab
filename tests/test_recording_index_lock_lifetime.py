@@ -165,3 +165,19 @@ def test_disappeared_guard_is_rejected_before_query(tmp_path: Path, member: str)
         (index.directory / member).rename(tmp_path / (member + "-retained"))
         with pytest.raises(SecurityError, match="member disappeared"):
             index.analysis_jobs()
+
+
+def test_a_new_index_on_btrfs_opens_and_its_checks_see_strays_made_since_the_last(
+    btrfs_directory: Path,
+) -> None:
+    """#112, as for the corpus store: btrfs lists through a descriptor only what was there
+    when it was opened or when the previous listing through it ended."""
+    layout = AssetLayout.initialize(btrfs_directory / "private-assets")
+    with RecordingIndex(layout) as index:
+        index.analysis_jobs()
+        stray = index.directory / "notes.txt"
+        stray.touch(mode=0o600)
+        with pytest.raises(SecurityError, match="unexpected recording index member"):
+            index._check_paths()  # the check a query starts with
+        stray.unlink()
+        index.analysis_jobs()

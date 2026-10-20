@@ -39,6 +39,7 @@ from .canonical import (
     canonical_json_bytes,
     canonical_sha256,
     file_identity,
+    list_open_directory,
     require_private_metadata,
 )
 from .corpus_store import GroupCatalogCache, GroupCatalogKey
@@ -651,7 +652,7 @@ class RecordingIndex:
             _DATABASE_NAME,
             *(_DATABASE_NAME + s for s in ("-wal", "-shm", "-journal")),
         }
-        members = os.listdir(directory_fd)
+        members = list_open_directory(directory_fd)
         for name in members:
             if name not in allowed:
                 raise SecurityError(f"unexpected recording index member: {name}")
