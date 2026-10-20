@@ -100,6 +100,15 @@
       }
     },
     {
+      "path": "examples/invalid/manifest-another-product.json",
+      "schema": "CorpusTakeManifestV2",
+      "expected": "invalid",
+      "refusal": {
+        "where": "the publisher refuses the package: the session's state is refused",
+        "message_contains": "product 0x0022"
+      }
+    },
+    {
       "path": "examples/invalid/continuity-lost-period.json",
       "schema": "AlsaContinuityEvidence",
       "expected": "invalid",
@@ -121,13 +130,13 @@
   "files": [
     {
       "path": "PROTOCOL.md",
-      "sha256": "5e7cbbb7046d2c1916b333f6949b278ddc559850a7787ea6b075a97ee4e2be5f",
-      "size_bytes": 12378
+      "sha256": "f30f4f7d0ae4fdef679b966010c06900604863ad1170420bf1fead40ba97d449",
+      "size_bytes": 12404
     },
     {
       "path": "README.md",
-      "sha256": "97a946c0e256025c364df26aa856da4009569fd9df79fa1fcb13a0554054d889",
-      "size_bytes": 4213
+      "sha256": "bf6c7ee29e9e68efb8c0e9d8a7a70cf6566213e748dbd5d02387a85c91173753",
+      "size_bytes": 4274
     },
     {
       "path": "examples/canonical-json-vectors.json",
@@ -146,12 +155,12 @@
     },
     {
       "path": "examples/home-host-ledger-upload-started.json",
-      "sha256": "f52e5a36e91496740d52c3dbc5d3a75900a298c48c587fcce6c06ee4b34df395",
+      "sha256": "aebcf6ab42de763fc8e10168073bb813fb319fa37d73ce3d5b3ac29b248a309a",
       "size_bytes": 544
     },
     {
       "path": "examples/intake-session-request.json",
-      "sha256": "b0dd1ee5de49919a30b2e34ff01eee332431988fd2bc2eca72e89fa825d83738",
+      "sha256": "45017b3c71e11b16ba0675733dfaa69a3c9d5a9733f688d6f517d755014b6ee2",
       "size_bytes": 818
     },
     {
@@ -161,12 +170,17 @@
     },
     {
       "path": "examples/invalid/manifest-48-khz.json",
-      "sha256": "a6078ac4b13836dcee75b76a6415bd0c14f97a9f131e3312d467adb0fdf9f1b5",
+      "sha256": "11f12b0b896fba1ffcce7d811178baebf430655b6a8e28ea72869f2fe3505ac9",
       "size_bytes": 2690
     },
     {
+      "path": "examples/invalid/manifest-another-product.json",
+      "sha256": "396d7c408534bdc2520039ee1078694064955d86a7125ecbd545e1b16e735eea",
+      "size_bytes": 2676
+    },
+    {
       "path": "examples/invalid/manifest-another-vendor.json",
-      "sha256": "0d217ce9ec7889946e8b032d9a0a2039b90e1abe4a7c77cba28947eadf553656",
+      "sha256": "d8cd63766dd8d38201ac220dddf66e3a22a1278cdb5df04a9e60743cd56529ff",
       "size_bytes": 2675
     },
     {
@@ -191,7 +205,7 @@
     },
     {
       "path": "examples/take/READY",
-      "sha256": "7be46d43ff9372bdb33b7f4ed13e02e4b76a302f4b27473971b80706880990d6",
+      "sha256": "ba661eacfaee86ab8930fee36be19d5403a85b10015377859290e8f49ef58343",
       "size_bytes": 398
     },
     {
@@ -201,7 +215,7 @@
     },
     {
       "path": "examples/take/manifest.json",
-      "sha256": "768b714b6c1992e4182c27bcdc5a94d7eceeeae90e60db112e1c11eb54cc07a5",
+      "sha256": "8782992dd7be853b9633b73a8c723a5f962b126624456d8b329cee8d8d9bff59",
       "size_bytes": 2676
     },
     {
@@ -211,7 +225,7 @@
     },
     {
       "path": "examples/take/qc.json",
-      "sha256": "3476ae5fbee0dbd738c037d7400eb5e30ad8c97ce7591d4195a30ea2cc4dd0d7",
+      "sha256": "21059a20d981b8313cfed425a8c6aa926bd0b005b0cc6f2c4cd8d8ae3841ba03",
       "size_bytes": 565
     },
     {

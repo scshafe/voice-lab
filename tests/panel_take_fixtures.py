@@ -74,7 +74,7 @@ def profile(**changes: Any) -> Xvf3800Linear4Profile:
         "device": {
             "model": "reSpeaker Flex XVF3800 Linear-4",
             "usb_vendor_id": 0x2886,
-            "usb_product_id": 0x001A,
+            "usb_product_id": 0x0022,
             "serial": "SYNTHETIC-0001",
             "firmware": {
                 "version": [1, 0, 4],

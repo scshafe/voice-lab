@@ -198,8 +198,10 @@ def test_discovery_child_parent_loss_exits_without_running_audio(tmp_path: Path)
     assert process.stdin is not None
     started = time.monotonic()
     process.stdin.close()
-    assert process.wait(timeout=5) == 0
-    assert time.monotonic() - started < 5
+    # The child exits when its parent goes away instead of running on; the bound leaves room
+    # for its start (it imports the package), which took over 5 s on a loaded PC.
+    assert process.wait(timeout=30) == 0
+    assert time.monotonic() - started < 30
 
 
 @pytest.mark.parametrize("problem", ["public", "noncanonical", "oversize"])

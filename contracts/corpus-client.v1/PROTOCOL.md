@@ -68,7 +68,7 @@ A take is a directory of exactly five files ([the golden take](examples/take)):
 - **The capture profile** is `xvf3800-linear-4`:
   - 16 kHz only, in the 2- or 6-channel image (48 kHz is refused);
   - `S16_LE`, `S24_3LE` or `S32_LE`;
-  - a Seeed device (USB vendor 0x2886);
+  - the Flex Linear-4: USB vendor 0x2886 (Seeed), product 0x0022;
   - one `channels[]` entry per WAV channel, and a 1-based `primary_channel`.
 - **The WAV** is the plain 44-byte PCM header, then the frames:
   `size = 44 + frames × channels × width`. A take lasts at most 660 s.
