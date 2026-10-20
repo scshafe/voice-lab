@@ -28,6 +28,9 @@ from .models import AudioSpec, ContractModel
 XVF3800_PROFILE: Final = "xvf3800-linear-4"
 #: Seeed Studio's USB vendor id: the XVF3800 arrays are Seeed's reSpeaker devices.
 SEEED_USB_VENDOR_ID: Final = 0x2886
+#: The reSpeaker Flex XVF3800 Linear-4's USB product id, as the house panel's array reports it
+#: (measured on the panel, 2026-10-19).
+XVF3800_LINEAR4_USB_PRODUCT_ID: Final = 0x0022
 XVF3800_SAMPLE_RATE_HZ: Final = 16_000
 #: The firmware's 16 kHz images: 2 channels, or 6 (2 processed, then 4 that can be raw).
 XVF3800_CHANNEL_COUNTS: Final = frozenset({2, 6})
@@ -95,6 +98,10 @@ class Xvf3800Device(ContractModel):
     def _seeed(self) -> Self:
         if self.usb_vendor_id != SEEED_USB_VENDOR_ID:
             raise ValueError("an XVF3800 take is recorded by a Seeed USB device (vendor 0x2886)")
+        if self.usb_product_id != XVF3800_LINEAR4_USB_PRODUCT_ID:
+            raise ValueError(
+                "an XVF3800 Linear-4 take is recorded by the Flex Linear-4 (product 0x0022)"
+            )
         return self
 
 
