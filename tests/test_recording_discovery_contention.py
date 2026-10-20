@@ -18,6 +18,7 @@ from cole_voice_lab.canonical import canonical_sha256
 from cole_voice_lab.errors import ContractError
 from cole_voice_lab.recording_contracts import CatalogSnapshot
 from cole_voice_lab.recording_discovery import (
+    DISCOVERY_RETRY_SECONDS,
     MAX_DISCOVERY_QUEUE,
     RecordingDiscoveryCoordinator,
     _retry_background_metadata,
@@ -28,6 +29,11 @@ from cole_voice_lab.recording_takes import (
     RecordingMetadataBusyError,
     RecordingTakeStore,
 )
+
+#: How long a child process may take to start and answer: it imports the package, which took
+#: over 5 s on the PC while other work loaded it (2026-10-19). Every bound here stays below the
+#: 30 s cooldown, so "promptly" still means what the tests mean.
+CHILD_START_SECONDS = 25.0
 
 
 @contextmanager
@@ -166,10 +172,13 @@ def test_owned_child_deferred_exit_requeues_promptly_then_completes(
     try:
         with held_metadata_lock(layout.root):
             coordinator.schedule(group)
-            assert deferred.wait(5)
+            assert deferred.wait(CHILD_START_SECONDS)
         started = time.monotonic()
-        assert complete.wait(5)
-        assert time.monotonic() - started < 5
+        # Promptly: a deferred discovery is queued again at once, not after the 30 s cooldown
+        # a finished group waits. The bound leaves room for the child process's start (it
+        # imports the package), which took over 5 s on a loaded PC.
+        assert complete.wait(CHILD_START_SECONDS)
+        assert time.monotonic() - started < CHILD_START_SECONDS < DISCOVERY_RETRY_SECONDS
         assert reports[0] == "building" and reports[-1] == "complete"
     finally:
         coordinator.close()
