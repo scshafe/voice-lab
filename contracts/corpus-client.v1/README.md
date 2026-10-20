@@ -31,6 +31,34 @@ order, hashed as `path NUL contents NUL` into one SHA-256. No tags are needed. F
 python -m cole_voice_lab.contract_bundle digest
 ```
 
+## The live check: the fixture server
+
+A client's live check runs against the PC's own code, from a pinned checkout in a venv (the
+API image's hash-locked closure):
+
+```sh
+python -m cole_voice_lab.contract_fixture serve --root "$(mktemp -d)" --report fixture.json
+```
+
+It serves on loopback until SIGINT or SIGTERM, keeps every file under `--root` (an empty
+directory), and writes `fixture.json` once it is listening:
+
+- `api_url`: the real API server, its staging, routes and the scoped verifier. After each
+  finalize and each decision it runs the real validator, admission and publisher pass, so a
+  session's outcome and a request's status are final by the time their call returns.
+- `oidc`: the discovery document of a fake Pocket ID that behaves as v2.13.0 does. It approves a
+  device code by itself after `--approve-after` pending polls (default 1), has no `slow_down`,
+  refuses a `resource`, and revokes a refresh token's whole family when a rotated one is used
+  again. Its RS256 key is made at start.
+- `issuer`, `client_id` (`voice-lab-panel`), `subject`, `capture_profile` and `catalog` (the
+  examples' catalog, which the fixture seeds).
+
+Over plain HTTP the issuer is the nominal `https://id.fixture.invalid`; with `--tls-cert` and
+`--tls-key` both servers use TLS and the issuer is the fake's own URL. `--admit-simulated`
+admits a take whose evidence is `simulated`, which the PC refuses: it is the fixture's own
+switch. `--port`, `--idp-port`, `--host` and `--interval` (the poll interval it announces)
+are there for a test harness; `--once` binds, reports and exits.
+
 ## Compatibility
 
 Compatibility is asymmetric:

@@ -47,7 +47,9 @@ import os
 import re
 import secrets
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -775,6 +777,24 @@ def validate_profile_take_package(
     )
 
 
+#: Set only by the contract fixture (``contract_fixture``, D-056): its publisher pass admits a
+#: simulated take, so a client's live check needs no microphone. No production entry point sets
+#: it, and a test holds every other module to that (``test_contract_fixture``).
+_ADMIT_SIMULATED: ContextVar[bool] = ContextVar("admit_simulated_takes", default=False)
+
+
+@contextmanager
+def admitting_simulated_takes() -> Iterator[None]:
+    """Within this block (this thread's context), ``admit_take`` admits simulated audio.
+
+    For the contract fixture's server alone."""
+    token = _ADMIT_SIMULATED.set(True)
+    try:
+        yield
+    finally:
+        _ADMIT_SIMULATED.reset(token)
+
+
 def admit_take(layout: AssetLayout, take: ValidatedTake | ValidatedProfileTake) -> Prompt:
     """The PC's rules for a valid take of either version, checked before intake publishes it.
 
@@ -789,7 +809,7 @@ def admit_take(layout: AssetLayout, take: ValidatedTake | ValidatedProfileTake) 
     that version yet or cannot be read; ``OSError`` as the store's own.
     """
     manifest = take.manifest
-    if take.evidence.simulated:
+    if take.evidence.simulated and not _ADMIT_SIMULATED.get():
         raise TakeRefusal(
             "take_simulated", "the simulated capture device's audio never enters the corpus"
         )
