@@ -475,7 +475,9 @@ event. The text is deleted on every ending, first. It sweeps retention every few
 cancel is honoured between sentences, and ends a wait for the GPU slot at once.
 
 Every error ends the job with a code (`internal_error` when nothing more precise fits); the
-particulars go to the unit's journal.
+particulars go to the unit's journal. A segment that fails in the resident worker is logged
+with the exception's class and the innermost frames that raised it (file, line, function),
+never its message, which may quote the text.
 
 **The ledger and what is served.** Each sentence is served as soon as it is published, while
 the job renders and before its ledger entry exists: that is what serving sentences during a

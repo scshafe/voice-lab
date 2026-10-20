@@ -25,7 +25,9 @@ Render::
 
 answered ``{"event": "rendered", "id": N, "frames": F}`` (the WAV, 24 kHz mono 16-bit, 0600,
 at ``output_path``; on a GPU also ``"peak_memory_bytes"``, the most memory torch has
-allocated) or ``{"event": "failed", "id": N, "error": "..."}``. ``{"op": "quit"}``
+allocated) or ``{"event": "failed", "id": N, "error": "..."}``. A failed segment's error is
+the exception's class and the innermost frames that raised it (``_failure``), never its
+message, which may quote the text. ``{"op": "quit"}``
 ends the worker. Each segment is seeded just before it renders and is rendered in one pass
 through ``infer_batch_process``'s sequential streaming path, never through ``infer_process``,
 whose thread pool shares the global RNG between chunks (spike S-2: not reproducible, and
@@ -40,12 +42,16 @@ import shutil
 import stat
 import sys
 import tempfile
+import traceback
 from importlib.resources import files
 from pathlib import Path
 from typing import IO, Any
 
 os.environ.setdefault("WANDB_MODE", "disabled")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+# How many of the innermost frames a failed segment names.
+FAILURE_FRAMES = 4
 
 
 def _private_work_directory(work_directory: Path) -> None:
@@ -55,6 +61,17 @@ def _private_work_directory(work_directory: Path) -> None:
         shutil.rmtree(work_directory)
     work_directory.mkdir(mode=0o700)
     os.chmod(work_directory, 0o700)
+
+
+def _failure(error: BaseException) -> str:
+    """A failed segment's report: the exception's class and where it was raised, innermost
+    first (file name, line, function), so the job runner's log can say what broke. Never
+    its message: an error inside F5-TTS can quote the text being rendered."""
+    frames = traceback.extract_tb(error.__traceback__)[-FAILURE_FRAMES:]
+    where = " < ".join(
+        f"{Path(frame.filename).name}:{frame.lineno} {frame.name}" for frame in reversed(frames)
+    )
+    return f"{type(error).__name__} at {where}" if where else type(error).__name__
 
 
 def _send(protocol: IO[str], message: dict[str, Any]) -> None:
@@ -159,10 +176,7 @@ def _serve(job: dict[str, Any], protocol: IO[str]) -> int:
                 answer["peak_memory_bytes"] = int(torch.cuda.max_memory_allocated())
             _send(protocol, answer)
         except Exception as error:  # noqa: BLE001 - one segment fails, the worker stays
-            _send(
-                protocol,
-                {"event": "failed", "id": identifier, "error": f"{type(error).__name__}"},
-            )
+            _send(protocol, {"event": "failed", "id": identifier, "error": _failure(error)})
     return 0
 
 
