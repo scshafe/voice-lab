@@ -282,6 +282,35 @@ Deviations and open items:
   without the block: a rebuilt package would name another digest, and the intake treats
   that as a collision.
 
+### 2026-10-19, scshafe-qt 0.9.0: seven stand-ins adopted
+
+- **The release.** scshafe-qt released the §6.4 components as 0.3.0 (`SuiText`) through 0.9.0
+  (`SuiWaveform`). The app now requires `scshafe-qt>=0.9.0,<0.10` (uv.lock and the root
+  dev extra pin 0.9.0). PySide6-Essentials stays at 6.11.2, within 0.9.0's range.
+- **Adopted, stand-in deleted:**
+  - `SuiText` (0.3.0): `"mono"` is now `"code"`, `"number"` is now `tabular: true`, and the
+    variant's own colour is `tone: ""`;
+  - `SuiCheckBox`, `SuiSlider` (0.4.0): the stand-in's `SuiCheckbox` is renamed;
+  - `SuiSelect` (0.4.0): a ComboBox, so `VoiceLab.Controls`'s `SelectField` captions it and
+    keeps it controlled (`options`, `value`, `valueSelected`). The goals form now binds
+    `value` instead of re-syncing it;
+  - `SuiProgressBar` (0.5.0): the upload's bytes are its `valueText`;
+  - `SuiLevelMeter` (0.6.0), in dBFS: the controllers expose `meterPeakDb` and
+    `levelPeakDb`. The meter draws the sample peak and holds it, and no longer draws an RMS
+    bar. The capture's own clip count still lights "CLIPPED";
+  - `SuiWaveform` (0.9.0): the API asked, unchanged.
+- **Kept as stand-ins: `SuiTable` and `SuiChart`.** Their releases (0.7.0, 0.8.0) lack what
+  the screens use (the asks below):
+  - the table has no pinned columns, no cell kinds (`link`, `chip`, `stack`, `actions`),
+    no `cellActivated` or `actionTriggered`, no `sortRequested` for the server's sort and
+    no `endReached` paging;
+  - the chart has no panels on a shared x axis, no log2 scale and no compact sparkline.
+    Its points, bars and regions carry no id or tooltip, and it has no `activated(id)`,
+    zones or text.
+
+  Whether to keep them until scshafe-qt has these or to rework the screens is the owner's
+  decision.
+
 ## scshafe-qt asks
 
 What voice-lab-desktop needs from scshafe-qt (design §6.4), as the API its stand-ins in
@@ -292,15 +321,15 @@ instant under reduced motion.
 
 | Component | Stand-in | Used by | State |
 | --- | --- | --- | --- |
-| `SuiText` (typography) | yes | every screen | waiting |
-| `SuiCheckbox` | yes | Journey (include flagged) | waiting |
-| `SuiSelect` | yes | Corpus filters, the goal form | waiting |
-| `SuiSlider` | yes | the player's position | waiting |
-| `SuiProgress` (determinate, cancel) | yes | Uploads | waiting |
-| `SuiTable` (sortable, virtualised) | yes | Corpus (about 7,000 rows), data tables | waiting |
-| `SuiChart` (line, band, scatter, bars) | yes | Journey, Referee | waiting |
-| `SuiLevelMeter` | yes (4b) | Record: measurement | waiting |
-| `SuiWaveform` with trim | yes (4c) | Record: prompts | waiting |
+| `SuiText` (typography) | deleted | every screen | adopted (0.3.0) |
+| `SuiCheckbox` | deleted | Journey (include flagged) | adopted as `SuiCheckBox` (0.4.0) |
+| `SuiSelect` | deleted | Corpus filters, the goal form | adopted (0.4.0), under `SelectField` |
+| `SuiSlider` | deleted | the player's position | adopted (0.4.0) |
+| `SuiProgress` (determinate, cancel) | deleted | Uploads | adopted as `SuiProgressBar` (0.5.0) |
+| `SuiTable` (sortable, virtualised) | yes | Corpus (about 7,000 rows), data tables | released (0.7.0) without the API below |
+| `SuiChart` (line, band, scatter, bars) | yes | Journey, Referee | released (0.8.0) without the API below |
+| `SuiLevelMeter` | deleted | Record: measurement | adopted, in dBFS (0.6.0) |
+| `SuiWaveform` with trim | deleted | Record: prompts | adopted (0.9.0) |
 | `SuiSwitch`, `SuiRadio` | no | not needed by phase 4 | — |
 
 ### SuiText
@@ -434,8 +463,7 @@ A take's waveform with trim handles (the reference is `cole_voice_lab/desktop_wa
 ## Stand-ins waiting on scshafe-qt
 
 Every file in `apps/desktop/src/voice_lab_desktop/qml/VoiceLab/StandIn/` (see the table
-above): `SuiText`, `SuiCheckbox`, `SuiSelect`, `SuiSlider`, `SuiProgress`, `SuiTable`,
-`SuiChart`, `SuiLevelMeter`, `SuiWaveform`.
+above): `SuiTable` and `SuiChart`, since scshafe-qt 0.9.0 (2026-10-19).
 
 ## Owner's steps
 

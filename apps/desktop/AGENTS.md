@@ -25,7 +25,10 @@ voice-lab's desktop app (design [VOICE-PLATFORM.md](../../docs/design/VOICE-PLAT
 - `qml/VoiceLab/StandIn/` holds stand-ins for components scshafe-qt does not have yet
   (§6.4). Each is marked for removal and has the API asked of scshafe-qt
   (docs/design/PHASE-4-LOG.md, "scshafe-qt asks"). When scshafe-qt releases one, adopt it
-  and delete the stand-in in the same change.
+  and delete the stand-in in the same change. Since 0.9.0 only `SuiTable` and `SuiChart`
+  remain, because their releases lack what the screens use.
+- `qml/VoiceLab/Controls/` is the app's own composition of released components, not a
+  stand-in: `SelectField` captions `SuiSelect` and keeps it controlled.
 - Plain text only: every string from the server is shown with `Text.PlainText`. Logs and
   toasts carry ids, counts and error codes, never audio, a transcript, a token or a name.
 - Audio is played from memory and never written to disk (D-038); recordings, cal files and

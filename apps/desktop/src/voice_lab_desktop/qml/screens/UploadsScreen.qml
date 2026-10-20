@@ -39,7 +39,7 @@ ScreenPage {
                 objectName: "uploadsApprovalText"
                 Layout.fillWidth: true
                 text: approval.summary
-                tone: approval.needed ? "warn" : "default"
+                tone: approval.needed ? "warn" : ""
                 wrapMode: Text.Wrap
             }
             SuiButton {
@@ -66,13 +66,15 @@ ScreenPage {
                 onClicked: uploads.uploadAll()
             }
         }
-        SuiProgress {
+        SuiProgressBar {
             objectName: "uploadProgress"
             Layout.fillWidth: true
             visible: uploads.busy
             value: uploads.progressValue
             label: uploads.progressLabel
-            detail: uploads.progressDetail
+            // The bytes sent ("12.4 MB of 48 MB"), else the percentage.
+            valueText: uploads.progressDetail !== "" ? uploads.progressDetail
+                                                     : Math.round(position * 100) + " %"
         }
     }
 
@@ -96,7 +98,7 @@ ScreenPage {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 0
-                    SuiText { text: modelData.sessionId; variant: "mono" }
+                    SuiText { text: modelData.sessionId; variant: "code" }
                     SuiText {
                         objectName: "sessionDetail"
                         Layout.fillWidth: true

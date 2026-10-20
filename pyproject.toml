@@ -48,7 +48,7 @@ dev = [
   "numpy==2.5.3",
   # The desktop app's closure (apps/desktop, D-037), so that scripts/verify checks and
   # tests it in this environment; its conftest puts apps/desktop/src on sys.path.
-  "scshafe-qt==0.2.0",
+  "scshafe-qt==0.9.0",
   "httpx==0.28.1",
   "keyring==25.7.0",
   "sounddevice==0.5.6",

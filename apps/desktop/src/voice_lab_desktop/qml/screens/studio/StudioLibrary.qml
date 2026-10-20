@@ -7,6 +7,7 @@ import QtQuick.Layouts
 import QtQuick.Templates as T
 import Scshafe.Ui
 import VoiceLab.StandIn
+import VoiceLab.Controls
 
 Rectangle {
     id: library
@@ -46,7 +47,7 @@ Rectangle {
             SuiText {
                 objectName: "studioCoverage"
                 text: library.rec.coverageText
-                variant: "number"
+                tabular: true
                 tone: "muted"
                 Accessible.name: library.rec.coverageSpoken
             }
@@ -80,7 +81,7 @@ Rectangle {
             onTextEdited: library.rec.setSearch(text)
             onCleared: library.rec.setSearch("")
         }
-        SuiSelect {
+        SelectField {
             id: showSelect
             objectName: "studioShow"
             Layout.fillWidth: true
@@ -227,7 +228,7 @@ Rectangle {
                 spacing: 0
                 Repeater {
                     model: library.rec.labelOptions
-                    delegate: SuiCheckbox {
+                    delegate: SuiCheckBox {
                         required property var modelData
                         objectName: "studioLabel-" + modelData.token
                         Layout.fillWidth: true

@@ -255,7 +255,7 @@ ScreenPage {
                                 Layout.fillWidth: true
                                 text: modelData.label
                                 elide: Text.ElideRight
-                                tone: modelData.state === "pending" ? "muted" : "default"
+                                tone: modelData.state === "pending" ? "muted" : ""
                             }
                             SuiText { text: modelData.detail; variant: "caption" }
                             SuiChip {
@@ -285,14 +285,16 @@ ScreenPage {
                     Layout.fillWidth: true
                     visible: measurement.phase === "recording" || measurement.phase === "segment"
                     spacing: SuiTheme.spaceXs
+                    // The block's sample peak, held by the meter; the reading is beside it,
+                    // and the capture's own count of clipped samples lights "CLIPPED".
                     SuiLevelMeter {
                         objectName: "meter"
                         Layout.fillWidth: true
-                        peak: measurement.meterPeak
-                        rms: measurement.meterRms
-                        clipping: measurement.clipping
                         label: "Input meter"
-                        text: measurement.meterText
+                        from: measurement.meterFloorDb
+                        level: measurement.meterPeakDb
+                        showValue: false
+                        showClip: false
                     }
                     RowLayout {
                         Layout.fillWidth: true
@@ -304,7 +306,7 @@ ScreenPage {
                             tone: "danger"
                         }
                         Item { Layout.fillWidth: true }
-                        SuiText { objectName: "elapsedText"; text: measurement.elapsedText; variant: "mono" }
+                        SuiText { objectName: "elapsedText"; text: measurement.elapsedText; variant: "code" }
                     }
                 }
 

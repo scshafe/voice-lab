@@ -8,7 +8,13 @@ import wave
 
 import pytest
 from voice_lab_desktop.measurement.simulated import tone_block
-from voice_lab_desktop.measurement.wav import BlockStats, WavWriter, int32_to_s24le, meter_fraction
+from voice_lab_desktop.measurement.wav import (
+    METER_FLOOR_DB,
+    BlockStats,
+    WavWriter,
+    int32_to_s24le,
+    meter_dbfs,
+)
 
 
 def int32s(*values: int) -> bytes:
@@ -67,9 +73,7 @@ def test_clipping_and_digital_silence():
     assert not BlockStats().digital_silence  # nothing heard yet is not "silence"
 
 
-def test_meter_fraction():
-    assert meter_fraction(None) == 0.0
-    assert (
-        meter_fraction(0.0) == 1.0 and meter_fraction(-72.0) == 0.0 and meter_fraction(-36.0) == 0.5
-    )
-    assert meter_fraction(-200.0) == 0.0
+def test_meter_dbfs():
+    assert meter_dbfs(None) == METER_FLOOR_DB == -72.0
+    assert meter_dbfs(0.0) == 0.0 and meter_dbfs(-36.0) == -36.0
+    assert meter_dbfs(-200.0) == METER_FLOOR_DB and meter_dbfs(3.0) == 0.0

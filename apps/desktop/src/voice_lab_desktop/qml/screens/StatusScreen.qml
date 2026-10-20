@@ -68,9 +68,9 @@ ScreenPage {
             columnSpacing: SuiTheme.spaceLg
             rowSpacing: SuiTheme.spaceXs
             SuiText { text: "Address"; variant: "label" }
-            SuiText { objectName: "serverAddress"; text: app.server || "not set"; variant: "mono" }
+            SuiText { objectName: "serverAddress"; text: app.server || "not set"; variant: "code" }
             SuiText { text: "Build"; variant: "label" }
-            SuiText { objectName: "serverBuild"; text: status.serverBuild || "—"; variant: "mono" }
+            SuiText { objectName: "serverBuild"; text: status.serverBuild || "—"; variant: "code" }
             SuiText { text: "API versions"; variant: "label" }
             SuiText { objectName: "apiVersions"; text: status.apiVersions || "—" }
             SuiText { text: "Minimum client"; variant: "label" }
@@ -119,7 +119,7 @@ ScreenPage {
                 objectName: "approvalSummary"
                 Layout.fillWidth: true
                 text: approval.summary
-                tone: approval.needed ? "warn" : "default"
+                tone: approval.needed ? "warn" : ""
                 wrapMode: Text.Wrap
             }
             SuiButton {

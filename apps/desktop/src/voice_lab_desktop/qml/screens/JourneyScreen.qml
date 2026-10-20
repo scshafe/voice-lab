@@ -73,7 +73,7 @@ ScreenPage {
             }
         }
     }
-    SuiCheckbox {
+    SuiCheckBox {
         objectName: "includeFlagged"
         visible: page.ready
         text: "include the flagged low-reliability takes (hollow in scatters)"
@@ -114,8 +114,8 @@ ScreenPage {
                 Layout.fillWidth: true
                 spacing: SuiTheme.spaceMd
                 SuiText { Layout.fillWidth: true; text: modelData.label }
-                SuiText { objectName: "verdictSlope"; text: modelData.slope; variant: "number" }
-                SuiText { objectName: "verdictCi"; text: modelData.ci; variant: "number" }
+                SuiText { objectName: "verdictSlope"; text: modelData.slope; tabular: true }
+                SuiText { objectName: "verdictCi"; text: modelData.ci; tabular: true }
                 SuiText { text: modelData.songs; variant: "caption" }
                 SuiChip { objectName: "verdictChip"; text: modelData.verdict; tone: modelData.tone }
             }
@@ -304,7 +304,7 @@ ScreenPage {
                 ColumnLayout {
                     Layout.preferredWidth: 100
                     spacing: 0
-                    SuiText { objectName: "songTakes"; text: modelData.takes; variant: "number" }
+                    SuiText { objectName: "songTakes"; text: modelData.takes; tabular: true }
                     SuiText { text: modelData.years; variant: "caption" }
                 }
                 SuiChart {

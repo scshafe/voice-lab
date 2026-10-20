@@ -10,6 +10,7 @@ import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
 import VoiceLab.StandIn
+import VoiceLab.Controls
 
 ScreenPage {
     id: page
@@ -68,7 +69,7 @@ ScreenPage {
         RowLayout {
             Layout.fillWidth: true
             spacing: SuiTheme.spaceMd
-            SuiSelect {
+            SelectField {
                 id: catalogSelect
                 objectName: "catalogSelect"
                 Layout.preferredWidth: 320
@@ -123,7 +124,7 @@ ScreenPage {
             Repeater {
                 objectName: "catalogPromptRows"
                 model: rec.catalogPrompts
-                delegate: SuiCheckbox {
+                delegate: SuiCheckBox {
                     required property var modelData
                     objectName: "choose-" + modelData.promptId
                     width: 360
@@ -289,7 +290,7 @@ ScreenPage {
                         tone: rec.phase === "recording" ? "warn" : "info"
                         dot: rec.phase === "recording"
                     }
-                    SuiText { objectName: "promptsElapsed"; text: rec.elapsedText; variant: "mono" }
+                    SuiText { objectName: "promptsElapsed"; text: rec.elapsedText; variant: "code" }
                     Item { Layout.fillWidth: true }
                     SuiButton {
                         objectName: "recordTakeButton"
@@ -414,7 +415,7 @@ ScreenPage {
                             spacing: 0
                             SuiText {
                                 text: modelData.label + (modelData.trimmed ? " · trimmed" : "")
-                                tone: modelData.selected ? "strong" : "default"
+                                tone: modelData.selected ? "strong" : ""
                             }
                             SuiText {
                                 Layout.fillWidth: true

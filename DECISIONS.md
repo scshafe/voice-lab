@@ -1022,7 +1022,8 @@ with the phase (docs/design/PHASE-4-LOG.md). What the design left open, and one 
 - **Stand-ins.** What scshafe-qt does not have yet (§6.4) is a local QML module,
   `VoiceLab.StandIn`, with the API asked of scshafe-qt (PHASE-4-LOG.md, "scshafe-qt asks").
   Each file says it is marked for removal; adopting a release is deleting the file and its
-  qmldir line.
+  qmldir line. (2026-10-19: scshafe-qt 0.9.0 replaced seven of the nine. `SuiTable` and
+  `SuiChart` stay, since their releases lack the API asked: PHASE-4-LOG.md.)
 - **Verification.** The app's suite runs in `scripts/verify` as its own pytest run
   (`-c apps/desktop/pyproject.toml`, pytest-qt, any Qt warning fails it); the backend's suite
   runs without pytest-qt (`-p no:pytest-qt`), whose hooks break the backend's tests that
