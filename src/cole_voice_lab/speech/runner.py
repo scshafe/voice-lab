@@ -107,7 +107,7 @@ from .release import (
     designate_newest,
     verify_voice,
 )
-from .segments import job_seed, join_wavs, segment_seed, split_sentences
+from .segments import job_seed, join_wavs, segment_seed, split_segments
 from .store import AUDIO_NAME, LEDGER_DIRECTORY, Job, SpeechStore, log_to_stderr
 
 MAX_AUDIO_FRAMES: Final = API_SAMPLE_RATE_HZ * 60 * 30  # 30 minutes: far beyond 2,000 characters
@@ -591,7 +591,7 @@ class SpeechRunner:
     def _render(self, job: Job, verified: VerifiedRelease, fingerprint: RenderFingerprint) -> Job:
         job_id = job.record.job_id
         text = self.store.read_input(job_id).text
-        sentences = split_sentences(
+        sentences = split_segments(
             text, max_bytes=max(verified.max_segment_bytes, MIN_SEGMENT_BYTES)
         )
         seed = job_seed(
@@ -614,14 +614,20 @@ class SpeechRunner:
                 partial = self.store.partial_segment_path(job_id, index)
                 partial.unlink(missing_ok=True)
                 self.backend.render_segment(
-                    sentence,
+                    sentence.text,
                     seed=segment_seed(seed, index),
                     output=partial,
                     deadline_seconds=float(self.config.segment_deadline_seconds),
                 )
                 checked = check_wav(partial)
                 running = self.store.publish_segment(
-                    running, SegmentAudio(index=index, **checked.model_dump())
+                    running,
+                    SegmentAudio(
+                        index=index,
+                        text_start=sentence.start,
+                        text_end=sentence.end,
+                        **checked.model_dump(),
+                    ),
                 )
             if outcome == "succeeded":
                 joined = self.store.partial_audio_path(job_id)

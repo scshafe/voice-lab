@@ -837,6 +837,8 @@ def to_status(job: Job) -> SpeechJobStatus:
             bytes=segment.bytes,
             duration_ms=round(segment.frames * 1000 / segment.sample_rate_hz),
             audio=segment_link(record.job_id, segment.index),
+            text_start=segment.text_start,
+            text_end=segment.text_end,
         )
         for segment in state.segments
     )

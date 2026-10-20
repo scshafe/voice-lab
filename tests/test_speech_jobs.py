@@ -40,6 +40,7 @@ from cole_voice_lab.speech.backend import SpeechBackendError
 from cole_voice_lab.speech.contracts import (
     FAILURE_DETAILS,
     GpuSlotHolder,
+    SegmentAudio,
     SpeechJobState,
     SpeechRenderRecord,
     SpeechRequest,
@@ -211,6 +212,10 @@ def test_a_job_renders_sentence_by_sentence_and_joins_them(lab: Lab) -> None:
     ended = store.load(job_id)
     assert ended is not None and ended.state.state == "succeeded"
     assert ended.state.segment_count == 3 and [s.index for s in ended.state.segments] == [1, 2, 3]
+    # Each segment names the range of the text it speaks (#78).
+    ranges = [(s.text_start, s.text_end) for s in ended.state.segments]
+    assert ranges == [(0, 27), (28, 52), (53, 74)]
+    assert [THREE[start:end] for start, end in ranges] == [text for text, _ in backend.calls]
     for segment in ended.state.segments:
         path = store.segment_path(job_id, segment.index)
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -273,6 +278,7 @@ def test_a_job_renders_sentence_by_sentence_and_joins_them(lab: Lab) -> None:
     refused("not_found", lambda: open_segment(store, ended, 4))
     status = to_status(ended)
     assert status.segments[0].audio == f"/api/v1/speech/{job_id}/segments/1/audio"
+    assert [(s.text_start, s.text_end) for s in status.segments] == ranges
 
 
 def test_a_rerun_of_the_same_text_is_byte_identical(tmp_path: Path) -> None:
@@ -597,6 +603,37 @@ def test_a_job_state_is_consistent() -> None:
         SpeechJobState(job_id=job_id, state="succeeded", finished_at=NOW)
     with pytest.raises(ValueError, match="start time"):
         SpeechJobState(job_id=job_id, state="running")
+
+
+def test_a_segments_text_range_is_whole_and_in_order() -> None:
+    audio = {"sha256": "0" * 64, "bytes": 1_000, "frames": 400}
+    job_id = "sp-" + "a" * 24
+
+    def segment(index: int, text_range: tuple[int, int] | None) -> dict[str, Any]:
+        start, end = text_range if text_range is not None else (None, None)
+        return {"index": index, "text_start": start, "text_end": end, **audio}
+
+    with pytest.raises(ValueError, match="both ends or neither"):
+        SegmentAudio.model_validate({"index": 1, "text_start": 0, **audio})
+    with pytest.raises(ValueError, match="at least one character"):
+        SegmentAudio.model_validate(segment(1, (5, 5)))
+    running = {"job_id": job_id, "state": "running", "started_at": NOW, "segment_count": 3}
+    with pytest.raises(ValueError, match="in order"):
+        SpeechJobState.model_validate(
+            {**running, "segments": (segment(1, (10, 20)), segment(2, (0, 9)))}
+        )
+    # A segment published before ranges existed has none (an older status.json): its
+    # neighbours keep theirs, and the API serves null for it.
+    older = SegmentAudio.model_validate({"index": 1, **audio})
+    assert (older.text_start, older.text_end) == (None, None)
+    state = SpeechJobState.model_validate(
+        {**running, "segments": ({"index": 1, **audio}, segment(2, (12, 30)), segment(3, (31, 40)))}
+    )
+    assert [(s.text_start, s.text_end) for s in state.segments] == [
+        (None, None),
+        (12, 30),
+        (31, 40),
+    ]
 
 
 # -- review findings: nothing stays claimed, every path ends the job ------------------------

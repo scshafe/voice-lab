@@ -121,7 +121,7 @@
     },
     "SpeechSegment": {
       "additionalProperties": false,
-      "description": "One finished sentence, as a caller sees it (and fetches it at ``audio``).",
+      "description": "One finished sentence, as a caller sees it (and fetches it at ``audio``).\n\n``text_start`` and ``text_end`` are the range of the request's text it speaks (#78):\n0-based offsets in code points into the text as received, ``text_end`` exclusive\n(``segments.split_segments``). Both are null only for a segment published before they\nexisted (2026-10-20).",
       "properties": {
         "audio": {
           "title": "Audio",
@@ -145,6 +145,26 @@
         },
         "sha256": {
           "$ref": "#/$defs/Sha256"
+        },
+        "text_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextOffset"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text_start": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextOffset"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -152,10 +172,17 @@
         "sha256",
         "bytes",
         "duration_ms",
-        "audio"
+        "audio",
+        "text_start",
+        "text_end"
       ],
       "title": "SpeechSegment",
       "type": "object"
+    },
+    "TextOffset": {
+      "maximum": 2000,
+      "minimum": 0,
+      "type": "integer"
     },
     "UtcTimestamp": {
       "format": "date-time",

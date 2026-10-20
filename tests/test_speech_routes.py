@@ -458,6 +458,12 @@ def test_each_sentence_is_served_as_soon_as_it_is_published(rig: SpeechRig) -> N
     run_jobs(rig)
     _, done = answer(rig, "GET", job["links"]["self"])
     assert done["segment_count"] == 3 and [s["index"] for s in done["segments"]] == [1, 2, 3]
+    spoken = [THREE[s["text_start"] : s["text_end"]] for s in done["segments"]]
+    assert spoken == [
+        "The first sentence is here.",
+        "A second one follows it!",
+        "And is there a third?",
+    ]
     status, headers, audio = call(rig, "GET", done["segments"][1]["audio"])
     assert status == 200 and headers["ETag"] == f'"{done["segments"][1]["sha256"]}"'
     stored = Path(rig.lab.config.state_root) / "jobs" / job["id"] / "segments" / "0002.wav"
@@ -497,6 +503,10 @@ def test_the_event_stream_announces_segments_then_the_end(rig: SpeechRig) -> Non
     ]
     assert [event["id"] for event in events] == ["1", "2", "3", "end"]
     assert json.loads(events[0]["data"])["audio"].endswith("/segments/1/audio")
+    ranges = [
+        (json.loads(e["data"])["text_start"], json.loads(e["data"])["text_end"]) for e in events[:3]
+    ]
+    assert ranges == [(0, 27), (28, 52), (53, 74)]
     assert json.loads(events[-1]["data"])["state"] == "succeeded"
     assert b"first sentence" not in received[0]
     status, headers, resumed = call(

@@ -338,7 +338,8 @@ runner before every render, not by the API); a long job holding the GPU slot
  "text_characters": 182, "created_at": "…", "started_at": "…", "finished_at": null,
  "queue_ms": 410, "render_ms": null, "segment_count": 3,
  "segments": [{"index": 1, "sha256": "…", "bytes": 140844, "duration_ms": 2933,
-               "audio": "/api/v1/speech/sp-…/segments/1/audio"}],
+               "audio": "/api/v1/speech/sp-…/segments/1/audio",
+               "text_start": 0, "text_end": 41}],
  "audio": null, "error": null, "links": {"self": "…", "audio": "…", "events": "…", "cancel": "…"}}
 ```
 
@@ -348,7 +349,14 @@ request that skipped the global token check.
 
 States: `queued` → `running` → `succeeded` | `failed` | `cancelled`; a succeeded job becomes
 `expired` once its audio is deleted. `segment_count` is known once the job runs; `segments`
-lists the sentences already rendered, in order. `audio` (the joined file) is present once the
+lists the sentences already rendered, in order. A segment's `text_start` and `text_end` are
+the range of the request's `text` it speaks, for following along as it plays:
+0-based offsets in Unicode code points (Python string indices, not UTF-16 units or bytes)
+into the text as it was received, `text_end` exclusive. The ranges cover the text in order,
+with only white space between them (§7, "Sentences and seeds"), so `text[text_start:text_end]`
+is what the segment says. The one difference is a short sentence joined to the next: the
+segment says one space between the two, and the range keeps the text's own white space there.
+Both are `null` only for a segment rendered before they existed (2026-10-20). `audio` (the joined file) is present once the
 job has succeeded. `error` is `{code, detail}` for `failed`; the codes are
 `runtime_unavailable` (no runtime for the PC, or it cannot start), `render_failed`,
 `render_timeout`, `queue_timeout`, `voice_release_changed` and `internal_error`. `detail` is
@@ -373,7 +381,7 @@ sentence the moment it is ready rather than polling:
 ```text
 id: 1
 event: segment.ready
-data: {"index": 1, "sha256": "…", "bytes": 140844, "duration_ms": 2933, "audio": "…/segments/1/audio"}
+data: {"index": 1, "sha256": "…", "bytes": 140844, "duration_ms": 2933, "audio": "…/segments/1/audio", "text_start": 0, "text_end": 41}
 
 id: end
 event: speech.succeeded
@@ -443,7 +451,8 @@ The ledger lives in the asset root (§9); the audio does not, so the vault never
 **Sentences and seeds.** The job runner splits the text into sentences (after `.`, `!`, `?`,
 `…` and their CJK forms followed by a space or the end, and at line breaks); a fragment under
 12 characters joins the next sentence, and a sentence too long for one pass of the release's
-model is split at its last comma, semicolon or colon within the limit, else at a space. The
+model is split at its last comma, semicolon or colon within the limit, else at a space. Each
+segment keeps the range of the text it speaks (`text_start`, `text_end`, §6). The
 limit is the family's (D-048): for F5-TTS upstream's limit from the reference clip, its text's
 bytes per second times 22 s less the clip's length. The job's seed is derived from the text's
 keyed digest, the release's digest and the digest of the render settings (for F5-TTS the flow

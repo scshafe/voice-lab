@@ -30,7 +30,7 @@ from ..models import (
     historical_field,
     reject_explicit_null,
 )
-from ..recording_contracts import SpeechText, UtcTimestamp
+from ..recording_contracts import SPEECH_MAX_TEXT_CHARACTERS, SpeechText, UtcTimestamp
 
 JOB_ID_PATTERN: Final = re.compile(r"^sp-[0-9a-f]{24}$")
 MAX_SEGMENTS: Final = 2000
@@ -102,14 +102,24 @@ def segment_link(job_id: str, index: int) -> str:
     return f"/api/v1/speech/{job_id}/segments/{index}/audio"
 
 
+type TextOffset = Annotated[int, Field(ge=0, le=SPEECH_MAX_TEXT_CHARACTERS)]
+
+
 class SpeechSegment(ContractModel):
-    """One finished sentence, as a caller sees it (and fetches it at ``audio``)."""
+    """One finished sentence, as a caller sees it (and fetches it at ``audio``).
+
+    ``text_start`` and ``text_end`` are the range of the request's text it speaks (#78):
+    0-based offsets in code points into the text as received, ``text_end`` exclusive
+    (``segments.split_segments``). Both are null only for a segment published before they
+    existed (2026-10-20)."""
 
     index: int = Field(ge=1, le=MAX_SEGMENTS)
     sha256: Sha256
     bytes: int = Field(ge=45)
     duration_ms: int = Field(ge=0)
     audio: str
+    text_start: TextOffset | None
+    text_end: TextOffset | None
 
 
 class SpeechAudio(ContractModel):
@@ -224,9 +234,21 @@ class RenderedAudio(ContractModel):
 
 
 class SegmentAudio(RenderedAudio):
-    """One published sentence: ``jobs/<id>/segments/<index, 4 digits>.wav``."""
+    """One published sentence: ``jobs/<id>/segments/<index, 4 digits>.wav``, and the range of
+    the job's text it speaks (``SpeechSegment``; absent from a segment published before)."""
 
     index: int = Field(ge=1, le=MAX_SEGMENTS)
+    text_start: TextOffset | None = None
+    text_end: TextOffset | None = None
+
+    @model_validator(mode="after")
+    def _range(self) -> SegmentAudio:
+        if (self.text_start is None) != (self.text_end is None):
+            raise ValueError("a segment's text range has both ends or neither")
+        if self.text_start is not None and self.text_end is not None:
+            if self.text_start >= self.text_end:
+                raise ValueError("a segment speaks a range of at least one character")
+        return self
 
 
 class SpeechJobState(ContractModel):
@@ -249,6 +271,13 @@ class SpeechJobState(ContractModel):
     def _consistent(self) -> SpeechJobState:
         if [segment.index for segment in self.segments] != list(range(1, len(self.segments) + 1)):
             raise ValueError("segments are published in order, from 1")
+        ends = [
+            (segment.text_start, segment.text_end)
+            for segment in self.segments
+            if segment.text_start is not None and segment.text_end is not None
+        ]
+        if any(start < previous for (_, previous), (start, _) in zip(ends, ends[1:], strict=False)):
+            raise ValueError("segments speak the text in order")
         if self.segments and (
             self.segment_count is None or len(self.segments) > self.segment_count
         ):
