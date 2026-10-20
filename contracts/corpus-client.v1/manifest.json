@@ -135,8 +135,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "29ec043e3d686dda7ff6fb82b2e465c6edabe6d165e5ca9b0f5b1497bdf8c732",
-      "size_bytes": 2687
+      "sha256": "bf6c7ee29e9e68efb8c0e9d8a7a70cf6566213e748dbd5d02387a85c91173753",
+      "size_bytes": 4274
     },
     {
       "path": "examples/canonical-json-vectors.json",
