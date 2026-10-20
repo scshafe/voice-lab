@@ -75,10 +75,12 @@ def test_the_door_admits_the_speech_callers_and_skips_no_speech_route() -> None:
     door = "\n".join(_service("oauth2-proxy"))
     issuers = re.search(r"OAUTH2_PROXY_EXTRA_JWT_ISSUERS: (.+)$", door, re.M)
     assert issuers is not None
-    desktop, speech = issuers.group(1).split(",")
+    desktop, speech, panel = issuers.group(1).split(",")
     assert desktop == "${OIDC_ISSUER}=voice-lab-desktop"
     assert speech.startswith("${OIDC_ISSUER}=${VOICE_LAB_SPEECH_AUDIENCE:?set ")
     assert speech.endswith("}") and speech.count("}") == 2
+    # The house panel's audience (D-056): admitted with no .env name, scoped by the API.
+    assert panel == "${OIDC_ISSUER}=voice-lab-panel"
     assert 'OAUTH2_PROXY_SKIP_JWT_BEARER_TOKENS: "true"' in door
     assert 'OAUTH2_PROXY_EMAIL_DOMAINS: "*"' in door
     # Bearer sessions take their email from `sub` when the token has none: no claim mapping
@@ -99,3 +101,11 @@ def test_the_speech_audience_is_a_required_name_of_the_stack() -> None:
 
 def test_the_override_is_folded_in() -> None:
     assert not (REPOSITORY / "deploy" / "speech" / "compose.speech.yaml").exists()
+
+
+def test_the_api_scopes_the_panels_audience_to_a_corpus_client() -> None:
+    # D-056: the panel's tokens are a corpus client's (api/client_scope.py), never full.
+    command = "\n".join(_service("api"))
+    assert re.search(r"- --client-audience\n\s+- voice-lab-panel$", command, re.M)
+    full = re.findall(r"- --audience\n\s+- (\S+)$", command, re.M)
+    assert full == ["voice-lab-desktop"]

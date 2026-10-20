@@ -18,6 +18,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import IO, Protocol
 
+from .auth import Scope
 from .contracts import ApiErrorCode
 
 
@@ -54,6 +55,9 @@ class RouteRequest:
     header: Callable[[str], str | None]
     content_length: int | None
     read_body: Callable[[int], bytes]
+    #: The verified token's scope (``api.auth``): a corpus client's request reached the route
+    #: through its allow-list (``api.client_scope``), and the route applies its own rule.
+    scope: Scope = "full"
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,6 +11,14 @@ provider; the file is re-read when it changes.
 Signature verification is RSASSA-PKCS1-v1_5 with SHA-256 (RFC 8017 §8.2.2), done with the
 standard library's modular exponentiation over public values only; no secret is involved.
 Nothing in a refusal message quotes the token.
+
+**Scopes, fail-closed** (D-056). A verified principal carries a scope: ``full`` for the
+issuer's ``audiences`` (the desktop's), ``corpus-client`` for its ``client_audiences`` (the
+house panel's, ``voice-lab-panel``). A token that names any client audience is scoped, whatever
+else it names. ``verify_header`` keeps its meaning, full access only, so every caller of it
+refuses a client's token without being changed (``/view/``, the journey routes and their
+intake); only the server's ``/api/v1`` check takes a client's token, through
+``verify_any_header``, and only on its allow-list (``api.client_scope``).
 """
 
 from __future__ import annotations
@@ -28,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from ..models import ContractModel
 
@@ -44,11 +52,14 @@ class AuthError(Exception):
 
 
 class TrustedIssuer(ContractModel):
-    """One identity provider whose tokens the API accepts, and for which audiences."""
+    """One identity provider whose tokens the API accepts, and for which audiences: the
+    full-access ``audiences``, and the ``client_audiences`` whose tokens are scoped to a
+    corpus client (D-056)."""
 
     issuer: str = Field(min_length=8, max_length=512)
     audiences: tuple[str, ...] = Field(min_length=1, max_length=8)
     jwks_path: str = Field(min_length=1, max_length=4096)
+    client_audiences: tuple[str, ...] = Field(default=(), max_length=8)
 
     @field_validator("issuer")
     @classmethod
@@ -56,6 +67,12 @@ class TrustedIssuer(ContractModel):
         if not value.startswith("https://") or value.endswith("/"):
             raise ValueError("an issuer is an https URL without a trailing slash")
         return value
+
+    @model_validator(mode="after")
+    def _distinct(self) -> TrustedIssuer:
+        if set(self.audiences) & set(self.client_audiences):
+            raise ValueError("an audience is either full or a client's, never both")
+        return self
 
 
 class AuthPolicy(ContractModel):
@@ -69,13 +86,18 @@ class AuthPolicy(ContractModel):
     leeway_seconds: int = Field(default=60, ge=0, le=300)
 
 
+#: What a verified token may reach: everything, or a corpus client's allow-list (D-056).
+type Scope = Literal["full", "corpus-client"]
+
+
 @dataclass(frozen=True, slots=True)
 class Principal:
-    """Who a verified token speaks for."""
+    """Who a verified token speaks for, and with which scope."""
 
     issuer: str
     subject: str
     audiences: tuple[str, ...] = ()
+    scope: Scope = "full"
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,7 +219,19 @@ class TokenVerifier:
         }
 
     def verify_header(self, header: str | None) -> Principal:
-        """The principal a bearer header speaks for.
+        """The full-access principal a bearer header speaks for.
+
+        Raises: ``AuthError`` when there is no bearer token, it fails any check, or it is a
+        corpus client's (scoped) token.
+        """
+        principal = self.verify_any_header(header)
+        if principal.scope != "full":
+            raise AuthError("the token's client may not use this route")
+        return principal
+
+    def verify_any_header(self, header: str | None) -> Principal:
+        """The principal a bearer header speaks for, whatever its scope: for the server's
+        ``/api/v1`` check, which holds a scoped principal to its allow-list.
 
         Raises: ``AuthError`` when there is no bearer token, or it fails any check.
         """
@@ -206,7 +240,8 @@ class TokenVerifier:
         return self.verify(header.removeprefix("Bearer ").strip())
 
     def verify(self, token: str) -> Principal:
-        """The principal ``token`` speaks for; see the module docstring for the checks."""
+        """The principal ``token`` speaks for, whatever its scope; see the module docstring
+        for the checks."""
         if not token or len(token) > MAX_TOKEN_BYTES or not token.isascii():
             raise AuthError("the bearer token is malformed")
         parts = token.split(".")
@@ -239,14 +274,21 @@ class TokenVerifier:
             if isinstance(audience, str)
             else tuple(item for item in audience if isinstance(item, str))
         )
-        return Principal(issuer=trusted.issuer, subject=subject, audiences=audiences)
+        scoped = bool(set(trusted.client_audiences) & set(audiences))
+        return Principal(
+            issuer=trusted.issuer,
+            subject=subject,
+            audiences=audiences,
+            scope="corpus-client" if scoped else "full",
+        )
 
     def _check_claims(self, claims: Mapping[str, Any], trusted: TrustedIssuer) -> None:
         now = self._clock()
         leeway = self.policy.leeway_seconds
         audience = claims.get("aud")
         audiences = [audience] if isinstance(audience, str) else audience
-        if not isinstance(audiences, list) or not set(trusted.audiences) & {
+        accepted = set(trusted.audiences) | set(trusted.client_audiences)
+        if not isinstance(audiences, list) or not accepted & {
             item for item in audiences if isinstance(item, str)
         }:
             raise AuthError("the token is not for this API")

@@ -27,6 +27,14 @@
 # route refuses it (the desktop audience and Cole's subject only; /view/ wants
 # the forwarded user to be Cole's subject).
 #
+# The house panel (D-056, docs/design/HOUSE-PANEL.md §3) signs in with Pocket ID's
+# device-code grant through the public client `voice-lab-panel`; its tokens'
+# `aud` is that client and their `sub` is Cole's. The door admits them through a
+# third extra JWT issuer entry, with no new .env value. The API takes them as a
+# corpus client's (--client-audience): only on its allow-list
+# (src/cole_voice_lab/api/client_scope.py), never audio, and 403 `client_scope`
+# everywhere else. Remove the entry and the flag to cut the panel off at once.
+#
 # Topology (exact addresses are authority; the door layout):
 #   door      internal /29   ts-voice-lab .2 -> oauth2-proxy .3:4180 (serve.json)
 #   upstream  internal /29   oauth2-proxy .10 -> api .11:8080
@@ -143,7 +151,7 @@ services:
       # audience: a second caller, or a caller with another audience, needs one
       # more ${OIDC_ISSUER}=<audience> entry here (and its .env name).
       OAUTH2_PROXY_SKIP_JWT_BEARER_TOKENS: "true"
-      OAUTH2_PROXY_EXTRA_JWT_ISSUERS: ${OIDC_ISSUER}=voice-lab-desktop,${OIDC_ISSUER}=${VOICE_LAB_SPEECH_AUDIENCE:?set VOICE_LAB_SPEECH_AUDIENCE (the speech caller's token audience) in .env}
+      OAUTH2_PROXY_EXTRA_JWT_ISSUERS: ${OIDC_ISSUER}=voice-lab-desktop,${OIDC_ISSUER}=${VOICE_LAB_SPEECH_AUDIENCE:?set VOICE_LAB_SPEECH_AUDIENCE (the speech caller's token audience) in .env},${OIDC_ISSUER}=voice-lab-panel
       OAUTH2_PROXY_API_ROUTES: "^/api/"
       # finalize re-hashes a whole package before it answers.
       OAUTH2_PROXY_UPSTREAM_TIMEOUT: 600s
@@ -183,6 +191,9 @@ services:
       - ${OIDC_ISSUER}
       - --audience
       - voice-lab-desktop
+      # The house panel's tokens: a corpus client's scope (D-056; header comment).
+      - --client-audience
+      - voice-lab-panel
       - --allowed-subject
       - ${VOICE_LAB_SUBJECT:?set VOICE_LAB_SUBJECT (Cole's Pocket ID user id) in .env}
       - --server-build

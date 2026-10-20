@@ -200,6 +200,35 @@ The speech API of D-046 ([docs/SPEECH_API.md](docs/SPEECH_API.md)) adds these co
   short reply cannot be recovered by hashing guesses. Rendered audio is kept 7 days by
   default, outside the asset root, so the vault never copies it.
 
+## The house panel's token (D-056)
+
+The house panel signs in with Pocket ID's device-code grant through its own public client,
+`voice-lab-panel` (docs/design/HOUSE-PANEL.md §3). Its tokens carry Cole's subject, so the
+API's one-subject rule does not tell them from the desktop's; their audience does.
+
+- The door admits the audience as one more extra JWT issuer entry, and the API takes it as a
+  **client audience** (`--client-audience`): its tokens are scoped `corpus-client`, whatever
+  else they name (`api/auth.py`).
+- **Fail-closed.** `verify_header` takes full-access tokens only, so every route that checks
+  tokens with it refuses the panel's without being changed: `/view/`, the journey routes and
+  their intake. The speech routes have their own verifier, which knows only their callers'
+  audiences. The server's `/api/v1` check takes a client's token only on an allow-list
+  (`api/client_scope.py`) and answers 403 `client_scope` everywhere else.
+- **The allow-list opens no audio and no other profile:**
+  - the server's meta and the catalog;
+  - the library and take history of the panel's capture profile only (`?profile=xvf3800-linear-4`);
+  - the intake sessions, where finalize refuses (422 `take_profile_not_allowed`) any package
+    that is not a v2 take of that profile, read from the checked manifest, so a panel token
+    never adds audio to the `umik-1` corpus training uses by default;
+  - a decision on a published take of that profile only, and a request's status.
+
+  No take audio, no trims.
+- **Revocation.** An access token lives 15 minutes, and Pocket ID has no revocation
+  endpoint. Cole revokes the client under his account's authorized apps (or the admin deletes
+  it), and removing `--client-audience` or the door's entry (a deploy), or the tailnet grant,
+  cuts the panel off at once. The panel keeps its rotating refresh token in one owner-only
+  file, never in its image or a log.
+
 ## Deliberately avoided
 
 - Voice-authentication phrases in the recording script.

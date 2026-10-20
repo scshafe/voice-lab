@@ -71,6 +71,8 @@
         "request_conflict",
         "request_not_found",
         "request_queue_full",
+        "client_scope",
+        "take_profile_not_allowed",
         "internal_error"
       ],
       "type": "string"
