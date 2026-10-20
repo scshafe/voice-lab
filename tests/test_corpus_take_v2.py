@@ -180,6 +180,9 @@ def test_the_device_is_a_seeed_usb_device() -> None:
     device = profile().device.model_dump(mode="json")
     with pytest.raises(ValidationError, match="Seeed USB device"):
         profile(device={**device, "usb_vendor_id": 0x20B1})
+    # Only the Flex Linear-4's product id: another Seeed device's is refused.
+    with pytest.raises(ValidationError, match=r"Flex Linear-4 \(product 0x0022\)"):
+        profile(device={**device, "usb_product_id": 0x0018})
     firmware = {**device["firmware"], "version": [1, 0, 256]}
     with pytest.raises(ValidationError, match="less than or equal to 255"):
         profile(device={**device, "firmware": firmware})
