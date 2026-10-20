@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "ApiErrorCode": {
+      "enum": [
+        "bad_request",
+        "unauthorized",
+        "forbidden",
+        "not_found",
+        "method_not_allowed",
+        "invalid_json",
+        "invalid_request",
+        "body_too_large",
+        "content_length_required",
+        "invalid_content_range",
+        "content_range_out_of_bounds",
+        "range_not_contiguous",
+        "file_not_declared",
+        "file_already_received",
+        "checksum_mismatch",
+        "incomplete",
+        "session_not_found",
+        "session_conflict",
+        "session_busy",
+        "session_finalized",
+        "session_refused",
+        "too_many_open_sessions",
+        "insufficient_storage",
+        "not_accepted",
+        "journey_unavailable",
+        "recording_not_found",
+        "unsupported_fields_projection",
+        "playback_not_approved",
+        "corpus_access_denied",
+        "seam_handle_mismatch",
+        "audio_not_found",
+        "transcript_dir_not_configured",
+        "transcript_not_available",
+        "transcript_text_missing",
+        "invalid_transcript_path",
+        "feature_dir_not_configured",
+        "feature_detail_missing",
+        "invalid_feature_detail_path",
+        "invalid_goal",
+        "goal_not_found",
+        "pair_not_found",
+        "caller_not_registered",
+        "purpose_not_allowed",
+        "unsupported_format",
+        "callback_not_allowed",
+        "idempotency_conflict",
+        "idempotency_key_unverifiable",
+        "voice_release_unavailable",
+        "gpu_busy",
+        "too_many_jobs",
+        "too_many_streams",
+        "daily_budget_exhausted",
+        "queue_full",
+        "speech_not_found",
+        "audio_not_ready",
+        "audio_expired",
+        "range_not_satisfiable",
+        "already_finished",
+        "catalog_unavailable",
+        "catalog_invalid",
+        "library_unavailable",
+        "library_invalid",
+        "prompt_not_found",
+        "take_not_found",
+        "take_invalid",
+        "trim_out_of_bounds",
+        "request_conflict",
+        "request_not_found",
+        "request_queue_full",
+        "client_scope",
+        "take_profile_not_allowed",
+        "internal_error"
+      ],
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Every refusal's body: a stable code and a message that carries no secret.\n\n``received_bytes`` accompanies refusals of a ``PUT`` (``range_not_contiguous``,\n``checksum_mismatch``): how much of the file the server holds, so the client resumes\nfrom there.",
+  "properties": {
+    "detail": {
+      "maxLength": 2000,
+      "title": "Detail",
+      "type": "string"
+    },
+    "error": {
+      "$ref": "#/$defs/ApiErrorCode"
+    },
+    "received_bytes": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Received Bytes"
+    }
+  },
+  "required": [
+    "error",
+    "detail"
+  ],
+  "title": "ApiRefusal",
+  "type": "object"
+}

@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "description": "``PUT \u2026/files/{path}``: ``partial`` while bytes are missing, ``received`` once the\nfile is complete and its digest matched its declaration.",
+  "properties": {
+    "received_bytes": {
+      "minimum": 0,
+      "title": "Received Bytes",
+      "type": "integer"
+    },
+    "state": {
+      "enum": [
+        "partial",
+        "received"
+      ],
+      "title": "State",
+      "type": "string"
+    }
+  },
+  "required": [
+    "state",
+    "received_bytes"
+  ],
+  "title": "ChunkAnswer",
+  "type": "object"
+}

@@ -450,6 +450,11 @@ watched.
    - `deploy/stack/compose.yaml` holds the door's third entry and the API's flag.
 5. **The contract bundle and the fixture server**: the generator, `check` in verify,
    PROTOCOL.md and the examples, and tests that drive the fixture through the golden package.
+   Built in two PRs (2026-10-19). First the bundle (`contract_bundle.py`,
+   `contracts/corpus-client.v1/`). Its golden take is checked against the validator and a
+   server seeded with `catalog init --from-builtin pilot-v2`, and `scripts/guard-private-assets`
+   takes a bundle file's records as public only when its manifest lists the exact bytes. Then
+   the fixture server, with its fake Pocket ID.
 
 ## 7. Outside this repository
 

@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "FileDeclaration": {
+      "additionalProperties": false,
+      "description": "One member of the package the client will upload: its path, digest and size.",
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/PackagePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "maximum": 8589934592,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "FileDeclaration",
+      "type": "object"
+    },
+    "PackagePath": {
+      "maxLength": 255,
+      "minLength": 1,
+      "type": "string"
+    },
+    "Sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StableId": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``POST /api/v1/intake/sessions``: the complete list of the package's files.\n\nThe list names every file of the capture package, the three control files included,\nand nothing else. ``manifest_sha256`` is the digest of ``manifest.json`` and must equal\nthat file's declared digest; the intake receipt the publisher writes names it.",
+  "properties": {
+    "files": {
+      "items": {
+        "$ref": "#/$defs/FileDeclaration"
+      },
+      "minItems": 3,
+      "title": "Files",
+      "type": "array"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "cole-voice-lab.api.intake-session/v1",
+      "default": "cole-voice-lab.api.intake-session/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "$ref": "#/$defs/StableId"
+    }
+  },
+  "required": [
+    "session_id",
+    "manifest_sha256",
+    "files"
+  ],
+  "title": "IntakeSessionRequest",
+  "type": "object"
+}
