@@ -22,11 +22,11 @@ write now, as ``schema.py --check`` does for ``schemas/``. ``scripts/guard-priva
 takes a bundle file's records as public only when ``manifest.json`` lists it with its exact
 digest, which ``check`` proves is the generator's.
 
-The examples are synthetic: no recording of Cole's, the array's USB product id is
-illustrative until the array has been measured, and the fixture catalog is the built-in
-``pilot-v2`` suite as version 1 of ``cole-corpus`` (what ``voice-lab catalog init --subject-id
-cole-self --from-builtin pilot-v2`` publishes), so the golden take is admissible on a server
-seeded that way.
+The examples are synthetic: no recording of Cole's, an example serial and firmware hash
+(the USB ids are the Flex Linear-4's own, ``capture_profiles``), and the fixture catalog is
+the built-in ``pilot-v2`` suite as version 1 of ``cole-corpus`` (what ``voice-lab catalog
+init --subject-id cole-self --from-builtin pilot-v2`` publishes), so the golden take is
+admissible on a server seeded that way.
 """
 
 from __future__ import annotations
@@ -78,6 +78,7 @@ from .api.corpus_contracts import (
 from .audio import inspect_pcm_bytes
 from .canonical import canonical_json_bytes, canonical_sha256
 from .capture import ReadyMarker
+from .capture_profiles import SEEED_USB_VENDOR_ID, XVF3800_LINEAR4_USB_PRODUCT_ID
 from .corpus_takes import (
     MAX_PROFILE_TAKE_AUDIO_BYTES,
     CorpusTakeManifestV2,
@@ -271,8 +272,8 @@ def _profile() -> dict[str, Any]:
         "profile": CLIENT_PROFILE,
         "device": {
             "model": "reSpeaker Flex XVF3800 Linear-4",
-            "usb_vendor_id": 0x2886,
-            "usb_product_id": 0x001A,
+            "usb_vendor_id": SEEED_USB_VENDOR_ID,
+            "usb_product_id": XVF3800_LINEAR4_USB_PRODUCT_ID,
             "serial": "EXAMPLE-0001",
             "firmware": {
                 "version": [1, 0, 4],
@@ -588,6 +589,13 @@ def examples() -> tuple[dict[str, bytes], list[dict[str, Any]]]:
             "device": {**device, "usb_vendor_id": 0x20B1},
         },
     )
+    files["examples/invalid/manifest-another-product.json"] = _invalid(
+        manifest,
+        capture_profile={
+            **manifest["capture_profile"],
+            "device": {**device, "usb_product_id": 0x0018},
+        },
+    )
     shifted = [
         [position, timestamp + (_PERIOD_FRAMES * 62_500 if index >= 2 else 0)]
         for index, (position, timestamp) in enumerate(evidence["periods"])
@@ -634,6 +642,12 @@ def examples() -> tuple[dict[str, bytes], list[dict[str, Any]]]:
             "schema": "CorpusTakeManifestV2",
             "expected": "invalid",
             "refusal": {"where": publisher, "message_contains": "Seeed USB device"},
+        },
+        {
+            "path": "examples/invalid/manifest-another-product.json",
+            "schema": "CorpusTakeManifestV2",
+            "expected": "invalid",
+            "refusal": {"where": publisher, "message_contains": "product 0x0022"},
         },
         {
             "path": "examples/invalid/continuity-lost-period.json",

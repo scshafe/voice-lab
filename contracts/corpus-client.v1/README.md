@@ -50,7 +50,8 @@ from the validator that judges a real take.
 The examples are synthetic:
 
 - no recording of Cole's;
-- the array's USB product id is illustrative until the array has been measured;
+- the device's serial and firmware build hash are examples, while its USB ids are the Flex
+  Linear-4's own (vendor 0x2886, product 0x0022);
 - the catalog they name is the built-in `pilot-v2` suite as version 1 of `cole-corpus`, which
   `voice-lab catalog init --subject-id cole-self --from-builtin pilot-v2` publishes. A server
   seeded that way admits the golden take.
