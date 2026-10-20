@@ -59,7 +59,7 @@
     },
     "SegmentAudio": {
       "additionalProperties": false,
-      "description": "One published sentence: ``jobs/<id>/segments/<index, 4 digits>.wav``.",
+      "description": "One published sentence: ``jobs/<id>/segments/<index, 4 digits>.wav``, and the range of\nthe job's text it speaks (``SpeechSegment``; absent from a segment published before).",
       "properties": {
         "bytes": {
           "minimum": 45,
@@ -85,6 +85,28 @@
         },
         "sha256": {
           "$ref": "#/$defs/Sha256"
+        },
+        "text_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextOffset"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text_start": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextOffset"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -118,6 +140,11 @@
       ],
       "title": "SpeechFailure",
       "type": "object"
+    },
+    "TextOffset": {
+      "maximum": 2000,
+      "minimum": 0,
+      "type": "integer"
     },
     "UtcTimestamp": {
       "format": "date-time",
