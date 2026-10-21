@@ -30,7 +30,7 @@ services:
       retries: 3
       start_period: 10s
   tailscale:
-    image: ${TAILSCALE_IMAGE:?Set the reviewed tailscale/tailscale v1.102.2 digest pin}
+    image: ${TAILSCALE_IMAGE:?Set the reviewed tailscale/tailscale v1.104.2 digest pin}
     hostname: voice-lab-vault
     # Userspace serve ingress needs neither a tun device nor Linux capabilities.
     read_only: true

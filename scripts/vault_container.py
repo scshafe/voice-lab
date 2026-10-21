@@ -702,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("stage", "verify", "check-tailscale-image"))
     parser.add_argument("--wheelhouse", type=Path, default=WHEELHOUSE)
-    parser.add_argument("--image", help="digest-pinned tailscale/tailscale:v1.102.2 image")
+    parser.add_argument("--image", help="digest-pinned tailscale/tailscale:v1.104.2 image")
     options = parser.parse_args(argv)
     previous_umask = os.umask(0o077)
 
@@ -713,9 +713,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if options.command == "check-tailscale-image":
             value = options.image or os.environ.get("TAILSCALE_IMAGE", "")
-            if re.fullmatch(r"tailscale/tailscale:v1\.102\.2@sha256:[0-9a-f]{64}", value) is None:
+            if re.fullmatch(r"tailscale/tailscale:v1\.104\.2@sha256:[0-9a-f]{64}", value) is None:
                 raise ContainerFailure(
-                    "VAULT.SIDECAR_PIN: require tailscale/tailscale:v1.102.2@sha256:<64hex>"
+                    "VAULT.SIDECAR_PIN: require tailscale/tailscale:v1.104.2@sha256:<64hex>"
                 )
             print(json.dumps({"status": "valid", "image": value}, sort_keys=True))
         elif options.command == "stage":
