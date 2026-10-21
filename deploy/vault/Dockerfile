@@ -1,5 +1,5 @@
 # Only build from scripts/stage-vault-image's private, offline context.
-FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
+FROM python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 \
     PIP_NO_INDEX=1 PIP_DISABLE_PIP_VERSION_CHECK=1 HOME=/nonexistent
