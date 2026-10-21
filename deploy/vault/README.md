@@ -185,12 +185,12 @@ docker compose --env-file "$VAULT_ENV" -f deploy/vault/compose.yaml \
 ## Dedicated sidecar join and first use
 
 With Cole, review [tailnet-policy.md](tailnet-policy.md), then select and inspect
-the multi-architecture digest of `tailscale/tailscale:v1.102.2`. No sidecar image
+the multi-architecture digest of `tailscale/tailscale:v1.104.2`. No sidecar image
 was pulled or run by the Mac verifier. Record the full pin as `TAILSCALE_IMAGE`
 and validate it before any Compose start:
 
 ```sh
-scripts/check-vault-deployment --image 'tailscale/tailscale:v1.102.2@sha256:<64hex>'
+scripts/check-vault-deployment --image 'tailscale/tailscale:v1.104.2@sha256:<64hex>'
 ```
 
 Run this check from the Mac checkout; it needs no network and does not start or

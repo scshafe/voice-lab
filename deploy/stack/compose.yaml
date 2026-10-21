@@ -76,8 +76,8 @@ networks:
 services:
   # --- the door ------------------------------------------------------------------
   ts-voice-lab:
-    # tailscale/tailscale:v1.102.2, multi-arch index digest (the fleet's pin)
-    image: tailscale/tailscale:v1.102.2@sha256:321ce041508c19079b57a28b6666c8d81ab0b08accc0a2585b3ab663d557ac24
+    # tailscale/tailscale:v1.104.2, multi-arch index digest (the fleet's pin; TS-2026-013)
+    image: tailscale/tailscale:v1.104.2@sha256:b11583ad2e93e4671128538c88cf11f460444a5d7e449311dd1933a400ab849d
     container_name: ts-voice-lab
     init: true
     restart: unless-stopped

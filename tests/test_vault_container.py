@@ -297,9 +297,10 @@ def test_staging_rejects_linked_source(
     "image",
     [
         "tailscale/tailscale:latest",
-        "tailscale/tailscale:v1.102.2",
-        "evil/tailscale:v1.102.2@sha256:" + "a" * 64,
-        "tailscale/tailscale:v1.102.3@sha256:" + "a" * 64,
+        "tailscale/tailscale:v1.104.2",
+        "evil/tailscale:v1.104.2@sha256:" + "a" * 64,
+        "tailscale/tailscale:v1.104.3@sha256:" + "a" * 64,
+        "tailscale/tailscale:v1.102.2@sha256:" + "a" * 64,
     ],
 )
 def test_sidecar_pin_refuses_mutable_wrong_owner_or_wrong_version(
@@ -311,7 +312,7 @@ def test_sidecar_pin_refuses_mutable_wrong_owner_or_wrong_version(
 def test_sidecar_pin_accepts_reviewed_version_with_digest(container_module: ModuleType) -> None:
     assert (
         container_module.main(
-            ["check-tailscale-image", "--image", "tailscale/tailscale:v1.102.2@sha256:" + "a" * 64]
+            ["check-tailscale-image", "--image", "tailscale/tailscale:v1.104.2@sha256:" + "a" * 64]
         )
         == 0
     )
@@ -517,7 +518,7 @@ def test_stage_and_pin_check_do_not_resolve_docker(
     assert container_module.main(["stage"]) == 0
     assert (
         container_module.main(
-            ["check-tailscale-image", "--image", "tailscale/tailscale:v1.102.2@sha256:" + "a" * 64]
+            ["check-tailscale-image", "--image", "tailscale/tailscale:v1.104.2@sha256:" + "a" * 64]
         )
         == 0
     )
