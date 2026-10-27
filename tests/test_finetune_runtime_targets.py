@@ -255,7 +255,9 @@ def test_missing_files_are_refused_by_name(tmp_path: Path, monkeypatch: pytest.M
         default_finetune_requirements("linux-rocm")
     assert "pass --requirements" in str(refused.value)
     with pytest.raises(FineTuneError) as refused:
-        plan_finetune_runtime_provisioning(tmp_path / "rt", requirements=ROCM_LOCK)
+        plan_finetune_runtime_provisioning(
+            tmp_path / "rt", target="linux-rocm", requirements=ROCM_LOCK
+        )
     assert "pass --build-requirements" in str(refused.value)
 
 

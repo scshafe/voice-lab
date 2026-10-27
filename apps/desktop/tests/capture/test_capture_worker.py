@@ -4,6 +4,7 @@ subprocess the app starts (D-039). No audio device is ever opened."""
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import os
 import queue
@@ -48,13 +49,34 @@ def settings(take: Path, **changes) -> Settings:
     )
 
 
-def run(take: Path, spec: dict | None = None, *, stop_after: float | None = None, **changes):
+class StopAtBlock(SimulatedTimedBackend):
+    """Requests the stop from the stream's callback once ``block`` blocks arrived: never before
+    the microphone opened, however loaded the host (a timer started first can fire before)."""
+
+    def __init__(self, spec: SimulatedSpec, *, block: int, stop: threading.Event) -> None:
+        super().__init__(spec)
+        self.block, self.stop = block, stop
+
+    def open_timed_input(self, device, *, block_frames, callback):
+        received = itertools.count(1)
+
+        def receive(data, timing):
+            callback(data, timing)
+            if next(received) == self.block:
+                self.stop.set()
+
+        return super().open_timed_input(device, block_frames=block_frames, callback=receive)
+
+
+def run(take: Path, spec: dict | None = None, *, stop_at_block: int | None = None, **changes):
     """``run_capture`` in this process; returns (summary or CaptureError, progress bytes)."""
     stop = threading.Event()
     progress = io.BytesIO()
-    if stop_after is not None:
-        threading.Timer(stop_after, stop.set).start()
-    backend = SimulatedTimedBackend(SimulatedSpec.from_json({**FAST, **(spec or {})}))
+    simulated = SimulatedSpec.from_json({**FAST, **(spec or {})})
+    if stop_at_block is None:
+        backend = SimulatedTimedBackend(simulated)
+    else:
+        backend = StopAtBlock(simulated, block=stop_at_block, stop=stop)
     try:
         result = run_capture(
             settings(take, **changes), backend=backend, stop_requested=stop, progress=progress
@@ -95,7 +117,7 @@ def test_a_take_stops_at_its_maximum_duration_with_evidence(tmp_path):
 
 
 def test_a_requested_stop_keeps_every_block_received(tmp_path):
-    summary, progress = run(tmp_path / "take", stop_after=0.1, max_seconds=60)
+    summary, progress = run(tmp_path / "take", stop_at_block=8, max_seconds=60)
     assert isinstance(summary, dict) and summary["stop_reason"] == "requested"
     assert summary["frames"] == summary["received_frames"] == confirmed(progress) > 0
 

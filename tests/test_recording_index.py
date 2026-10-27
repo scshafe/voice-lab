@@ -554,7 +554,7 @@ def test_legacy_accepted_raw_and_finalized_tmp_deduplicate_across_restart(
     result = session.finalize()
     incoming = layout.directory("incoming") / session.evidence.session_id
     shutil.copytree(result.session_directory, incoming)
-    accept_capture_session(layout, incoming)
+    accept_capture_session(layout, incoming, min_free_bytes=0)
     with RecordingIndex(layout) as index:
         backfill_recording_library(library, index)
         before = library.indexed_history(index)

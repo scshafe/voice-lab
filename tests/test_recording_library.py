@@ -350,7 +350,7 @@ def test_trim_retains_finalized_and_accepted_raw_package_bytes(library: Recordin
     finalized = session.finalize()
     incoming = library.layout.directory("incoming") / session.evidence.session_id
     shutil.copytree(finalized.session_directory, incoming)
-    receipt = accept_capture_session(library.layout, incoming)
+    receipt = accept_capture_session(library.layout, incoming, min_free_bytes=0)
     entry = library.rows()[1].history[0]
     source = library.original_preview_path(entry)
     original = source.read_bytes()
@@ -377,7 +377,7 @@ def test_remove_restore_updates_coverage_and_raw_eligibility(library: RecordingL
     finalized = session.finalize()
     incoming = library.layout.directory("incoming") / session.evidence.session_id
     shutil.copytree(finalized.session_directory, incoming)
-    receipt = accept_capture_session(library.layout, incoming)
+    receipt = accept_capture_session(library.layout, incoming, min_free_bytes=0)
     original = library.rows()[1].history[0]
     source_bytes = library.original_preview_path(original).read_bytes()
     library.remove_take(original, "recorded another prompt")
