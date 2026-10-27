@@ -108,7 +108,7 @@ def legacy(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
     if request.param:
         incoming = layout.directory("incoming") / session.evidence.session_id
         shutil.copytree(result.session_directory, incoming)
-        accept_capture_session(layout, incoming)
+        accept_capture_session(layout, incoming, min_free_bytes=0)
     index = RecordingIndex(layout)
     backfill_recording_library(library, index)
     entry = library.indexed_history(index).takes[0]
