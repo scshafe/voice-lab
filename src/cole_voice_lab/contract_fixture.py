@@ -71,6 +71,8 @@ TOKEN_SECONDS: Final = 15 * 60
 DEVICE_CODE_SECONDS: Final = 15 * 60
 POLL_INTERVAL_SECONDS: Final = 5
 _MAX_FORM_BYTES: Final = 16 * 1024
+#: A form over the limit, up to this size, is read (and dropped) before its 413.
+_MAX_REFUSED_BYTES: Final = 1024 * 1024
 _SMALL_PRIMES: Final = (
     2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
 )  # fmt: skip
@@ -363,6 +365,10 @@ class _IdpHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         length = int(self.headers.get("Content-Length") or 0)
         if length > _MAX_FORM_BYTES:
+            # Read first: answered and closed with the body unread, the connection is reset
+            # under a client still sending it, which sees a broken pipe instead of the 413.
+            if length <= _MAX_REFUSED_BYTES:
+                self.rfile.read(length)
             self._answer(413, {"error": "invalid_request"})
             return
         form = dict(parse_qsl(self.rfile.read(length).decode("utf-8"), keep_blank_values=True))
