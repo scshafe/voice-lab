@@ -145,14 +145,19 @@ def test_uploads_offer_approve_and_send_what_waits(
     assert text(approve_window, "uploadsApprovalText") == approval.summary
     seen = toasts(approve_window)
     # One press: Tailscale is asked, and the dialog shows exactly what Approve writes.
+    before = utc_now()
     click(approve_window, "uploadsApprove")
     dialog_open(qtbot, approve_window)
+    after = utc_now()
     assert approval.canApprove and approval.dialogTitle == "Approve uploads to my PC?"
     assert text(approve_window, "approveEndpoint") == ENDPOINT
     assert text(approve_window, "approveNode") == NODE
     assert text(approve_window, "approveClasses").startswith("capture (takes, prompted")
-    until = logic.local_time(utc_now() + timedelta(days=365))  # in local time
-    assert text(approve_window, "approveExpires") == f"{until} (365 days)"
+    expires = text(approve_window, "approveExpires")
+    until = expires.removesuffix(" (365 days)")
+    # In local time, 365 days after the dialog opened: the minute may turn while it opens.
+    assert until != expires
+    assert until in {logic.local_time(moment + timedelta(days=365)) for moment in (before, after)}
     assert text(approve_window, "approveBy") == "Cole"  # the sign-in names no one
     assert approve_window.items("approveConfirm")[0].isVisible()
     assert approval_files(data_dir) == []  # nothing is written before Approve
