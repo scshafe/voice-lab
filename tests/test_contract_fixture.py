@@ -460,6 +460,31 @@ def test_over_tls_the_issuer_is_the_fakes_own_url(key: SigningKey, tmp_path: Pat
         assert api.call("GET", "/api/v1/meta")[0] == 200
 
 
+def test_an_oversized_form_still_sending_reads_its_413(key: SigningKey, tmp_path: Path) -> None:
+    # The body arrives after the provider has its headers, as on a slow runner: answered and
+    # closed with the body unread, the connection was reset under the client, which saw a broken
+    # pipe instead of the 413 (CI, over TLS).
+    def late() -> Iterator[bytes]:
+        yield b"x" * 1024
+        time.sleep(0.3)
+        yield b"x" * 19_000
+
+    cert, private, context = _tls(tmp_path)
+    with running(tmp_path / "fixture", key, host="localhost", tls=(cert, private)) as fixture:
+        token_endpoint = fixture.report["oidc"]["token_endpoint"]
+        idp = Http(token_endpoint, context)
+        idp.connection.request(
+            "POST", urlsplit(token_endpoint).path, late(), {"Content-Length": "20024"}
+        )
+        assert idp.connection.getresponse().status == 413
+        # A body past the bound is not read: refused from its headers alone.
+        idp = Http(token_endpoint, context)
+        idp.connection.putrequest("POST", urlsplit(token_endpoint).path)
+        idp.connection.putheader("Content-Length", str(2 * 1024 * 1024))
+        idp.connection.endheaders()
+        assert idp.connection.getresponse().status == 413
+
+
 # -- The command ---------------------------------------------------------------------------------
 
 
