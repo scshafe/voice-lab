@@ -2,6 +2,15 @@
 
 ## Current operator focus
 
+On 2026-10-30, the owner settled the recording UX review (D-058,
+[the review](docs/research/2026-10-30-recording-ux-review.md)). Recording work now goes to the
+Qt prompt studio: voice-lab.app's Record → Prompts, in `apps/desktop`. Under D-051 it replaces
+the Swift recorder (Cole Voice Recorder, `apps/macos`) once the owner signs off parity on the
+Mac. Until then the Swift recorder is the reference, and it is not changed. The work is
+tracked in [the studio's recording loop](docs/design/RECORDING-LOOP.md).
+Where the speech corpus, its catalog and coverage live is described in
+[RECORDING-V1.md](docs/design/RECORDING-V1.md) (D-051, D-052).
+
 On 2026-09-17, Cole settled the open questions in
 [the library vault plan](.claude/plans/2026-09-17-library-vault-on-ubuntu-pc.md)
 and asked for it to be built: an encrypted, content-addressed copy of the prompt
@@ -27,9 +36,12 @@ first copy. See [the host runbook](deploy/vault/README.md).
 On 2026-09-11, Cole requested a complete implementation plan for a faster,
 Voice Memos-like native recording interface with a real-time waveform and stable
 layout. [The native recording plan](.claude/plans/2026-09-11-native-recording-ux.md)
-and [design/acceptance contract](docs/NATIVE_RECORDING_UX.md) specify this future
-increment, including independent takes and background verification. It is planned,
-not implemented; the existing desktop remains the current application.
+and [design/acceptance contract](docs/NATIVE_RECORDING_UX.md) specified this
+increment, including independent takes and background verification. Amended
+2026-10-30: it was built as the Swift recorder (`apps/macos`). Since D-051
+(2026-10-12) that recorder is the reference the Qt prompt studio is matched against,
+and the studio replaces it after the owner's parity sign-off. The plan's step 17
+(cutover to Swift, Qt removed) is superseded.
 
 On 2026-09-07, Cole chose to record the existing first pilot batch and return to
 interface review next. [Corpus research notes](docs/CORPUS_RESEARCH.md) preserve

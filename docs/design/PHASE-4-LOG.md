@@ -308,8 +308,8 @@ Deviations and open items:
     Its points, bars and regions carry no id or tooltip, and it has no `activated(id)`,
     zones or text.
 
-  Whether to keep them until scshafe-qt has these or to rework the screens is the owner's
-  decision.
+  The owner decided on 2026-10-20 to keep them until scshafe-qt has these; the screens are
+  not reworked.
 
 ## scshafe-qt asks
 
