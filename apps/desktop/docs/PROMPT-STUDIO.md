@@ -55,7 +55,9 @@ depend on the fonts installed, so no test pins them.
    (its continuity evidence, its WAV) and waits for review.
 3. **Save** keeps it: the take is saved into the spool, decided `kept`, and queued for the
    PC. This runs off the GUI thread, and the prompt stays selected. **Save & Next** does the
-   same, then selects the next missing prompt.
+   same, then selects the next missing prompt. Return or ⌘S pressed while the take is still
+   checked (*Stopping*) is not lost: the status line says *Stopping · will save when ready*,
+   and the save is done the moment the take is ready. A take that fails drops it.
 4. **Retake** records the prompt again. The take it replaces is saved as an undecided draft,
    so no recording is lost. A take you leave by selecting another prompt is saved the same
    way, and one left by closing the app stays on disk and is saved at the next start. A
@@ -123,14 +125,23 @@ Click the chip to look again after plugging the UMIK-1 in.
 | --- | --- |
 | R | Record; Stop while recording |
 | Space | Stop while recording; otherwise play or pause the selected take. It never starts a recording (the Swift app's rule: Space never opens the microphone) |
-| Return, Enter | Save & Next |
-| Ctrl+S (⌘S on macOS) | Save |
+| Return, Enter | Save & Next; typed ahead while the take is checked, done when it is ready |
+| Ctrl+S (⌘S on macOS) | Save; typed ahead the same way |
 | ← / → (waveform focused) | The playhead a tenth of a second back or on, within the kept frames |
 | Home / End (waveform focused) | The playhead to the kept frames' start or end |
 
 A click in the waveform gives it the keyboard focus. The keys belong to this screen only.
 They do nothing while you type in a field (the search, the reason), while a menu, a list or
 a dialog is open (`menuOpen`), or on a held key's repeats.
+
+## The core loop
+
+Open the prompts, **R** to record, **R** or **Space** to stop, **Return** to save and go to
+the next prompt, and again, rapid fire. The owner's rule (D-058) is that this loop gets
+faster, never slower. `test_studio_core_loop.py` holds it, over six prompts in a row: no
+dialog, menu or popup opens, the keyboard focus never moves, the keys work the moment the
+next prompt shows (R would record in the very change that shows it), and a Return pressed
+before the take seals is done when it seals. Every change to the studio keeps it passing.
 
 ## Coverage and status
 
@@ -271,6 +282,7 @@ parity off in step 10, on the real Mac, after S-1 (step 8).
 | Playback with −0.1 s and +0.1 s steps | yes | `test_steps_of_a_tenth_of_a_second` |
 | Take history across every session, with dates and status | yes | `test_the_picker_lists…`, `test_a_take_changed_elsewhere_shows_so`, `test_a_take_imported_from_the_mac_says_so`, `test_a_late_history_never_moves_the_selection` |
 | Keys R, Space, Return, ⌘S; ←/→/Home/End in the waveform | yes | `test_r_space_return_and_save`, `test_the_waveform_keys` |
+| The core loop, rapid fire; a Save typed ahead before the seal (D-058) | yes | `test_the_core_loop_rapid_fire`, `test_a_save_typed_ahead_stays_and_a_failed_take_drops_it` |
 | Keys ignored while typing, in dialogs, on auto-repeat | yes | `test_keys_are_ignored_while_typing_in_menus_dialogs_and_elsewhere`, `test_the_waveform_keys`. The page's shortcuts are checked to refuse repeats (`autoRepeat: false`): QtTest cannot send a repeat through the window's shortcut map |
 | Corpus-first: no sessions, groups or packages; Continue Missing walks the whole catalog in order | yes | `test_the_workspace_loads…`, `test_continue_missing_walks_the_catalog_in_order` |
 

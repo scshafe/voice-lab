@@ -19,7 +19,8 @@ ends it, and the worker's validated take waits for review. Save keeps it
 once, its upload queued); Save & Next then selects the next missing prompt. Retake records
 again; the take it replaces is not lost: it is saved as an undecided draft, as is a take left
 by selecting another prompt or closing the app. Discard removes a failed take only; a good
-take is never discarded (Remove sets a saved one aside).
+take is never discarded (Remove sets a saved one aside). A Save typed ahead while the take is
+checked (Return or ⌘S while it stops) is done when the take is ready, never dropped (D-058).
 The take picker, Reject, Remove, Restore, the waveform, trims and playback are the takes
 model's (``screens/studio_takes.py``, step 6b; ``takes`` here); Save follows its selection
 (the take under review, or a draft of this machine). Keys are 6c's (``toggleRecord``,
@@ -77,6 +78,8 @@ STATE_TEXT: Final[dict[str, str]] = {
     "review": "Take recorded · Save keeps it, Retake keeps it as a draft",
     "saving": "Saving",
 }
+#: While the take is checked, a Save (Return or ⌘S) typed ahead waits for it (D-058).
+QUEUED_TEXT: Final = "Stopping · will save when ready"
 #: The reading sizes the header offers (the Swift app's Standard, Large, Extra large).
 READING_SIZES: Final = (24, 28, 32)
 VIEW_FILE: Final = "view.json"
@@ -263,6 +266,8 @@ class StudioModel(ViewModel):
         self._captured: CapturedTake | None = None
         self._running: RunningTake | None = None
         self._stop_asked = False
+        #: A Save typed ahead while the take is checked: "next" (Return) or "stay" (⌘S).
+        self._queued: Literal["next", "stay"] | None = None
         self._failure = ""
         self._outcome: status.Line | None = None
         self._shown = False
@@ -790,6 +795,7 @@ class StudioModel(ViewModel):
         self._pending = pending
         self._captured = None
         self._stop_asked = False
+        self._queued = None
         self._outcome = None
         self.take_review.begin_live(pending.directory / PARTIAL_NAME)
         self._phase("starting", elapsedText=elapsed_text(0))
@@ -847,6 +853,7 @@ class StudioModel(ViewModel):
             self._running = None
             if self._closed:
                 return
+            queued, self._queued = self._queued, None
             if error is not None or captured is None:
                 self._failure = str(error) if error is not None else "no take"
                 self.take_review.end_live()
@@ -855,6 +862,8 @@ class StudioModel(ViewModel):
             self._captured = captured
             self.take_review.review(captured)
             self._phase("review", elapsedText=elapsed_text(captured.frames))
+            if queued is not None:
+                self._save(advance=queued == "next")
 
         self.context.tasks.submit(lambda: running.wait(STOP_TIMEOUT_S), done)
 
@@ -936,6 +945,12 @@ class StudioModel(ViewModel):
         self._save(advance=True)
 
     def _save(self, *, advance: bool) -> None:
+        if self._v["phase"] == "stopping" and self._pending is not None:
+            # Typed ahead while the take is checked: done when it is ready, never dropped
+            # (D-058). A take that fails drops it; the status line says why.
+            self._queued = "next" if advance else "stay"
+            self._update_status()
+            return
         if not self._v["canSave"]:
             return
         if self._v["phase"] == "ready":
@@ -1098,6 +1113,8 @@ class StudioModel(ViewModel):
                 "danger",
                 f"The take failed: {self._failure}",
             )
+        if phase == "stopping" and self._queued is not None:
+            return status.Line(QUEUED_TEXT, "info")
         if phase in STATE_TEXT:
             if phase == "review" and self._outcome is not None:
                 return self._outcome
