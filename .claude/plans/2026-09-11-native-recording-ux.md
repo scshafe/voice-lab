@@ -9,6 +9,12 @@ audio enhancement, automatic trimming/transcription, iOS, and physical deletion
 of human recordings. Planning does not authorize opening a microphone or
 replacing the installed app.
 
+**Status (2026-10-30):** built as the Swift recorder (`apps/macos`), the reference
+the Qt prompt studio is matched against until the owner signs off parity (D-051).
+Step 17 is superseded (D-058): the studio replaces this recorder, not the reverse.
+New recording work goes to the studio
+([its plan](../../docs/design/RECORDING-LOOP.md)).
+
 ## Context
 
 - [Design and acceptance contract](../../docs/NATIVE_RECORDING_UX.md) is the
@@ -627,6 +633,10 @@ migrations and data backfill are separate changes. No delegation is required.
     strategy. Do not hide missed latency by displaying fabricated sample progress.
 
 - [ ] **Step 17: Cut over and remove temporary desktop paths.**
+  - **Superseded 2026-10-30 (D-051, D-058).** The cutover runs the other way: the Qt
+    prompt studio (`apps/desktop`) replaces this Swift recorder once the owner signs off
+    parity (docs/design/RECORDING-V1.md step 10), and the Swift recorder is then frozen
+    with a tag. Do not do this step. What it described follows, as it was.
   - Deliver: native app as the primary documented desktop workflow; safe
     installation/relaunch procedure; explicit retirement of Qt-only desktop
     modules/tests/dependency and temporary rollout routing once parity passes.

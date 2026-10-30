@@ -527,3 +527,10 @@ merged with `Merge #N: <title>`, with the deploy watched to green.
   at `f0e54ad` passed again, and the row now passes too: p95 293.8 ms against 300 (339.8 ms
   before), median 289.9 ms. Every other performance row passes as well. D-040 has the numbers;
   the margin is thin.
+- 2026-10-30: **the studio's recording loop** (D-058). The owner settled the recording UX
+  review ([docs/research/2026-10-30-recording-ux-review.md](../research/2026-10-30-recording-ux-review.md)):
+  nine improvements to the Qt studio, a hideable inspector, and an acceptance test that keeps
+  the core loop (R, R or Space, Return) as fast as it is. The rhythm modes are dropped: the
+  app never starts recording on its own. The Swift recorder stays the untouched reference
+  until step 10. The checklist is
+  [RECORDING-LOOP.md](RECORDING-LOOP.md).

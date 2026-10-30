@@ -2136,3 +2136,45 @@ urllib3, protobuf, python-dotenv and multidict), in runtimes nothing on the PC u
   bake-off is no longer kept, blind review is) and D-050 (the unfinished-plan promise), with dated
   notes. Also amended: the design (docs/design/VOICE-PLATFORM.md §2, §4, §7, phase 5, §10 and
   §12), README, CURRENT.md, ARCHITECTURE.md, TESTING.md, PROGRESS_CONTRACT.md and RUNBOOK §6.
+
+## D-058 — The prompt studio's recording loop: the owner's decisions
+
+Recorded 2026-10-30, from the owner's decisions of that day on the recording UX review
+([docs/research/2026-10-30-recording-ux-review.md](docs/research/2026-10-30-recording-ux-review.md)),
+relayed by the owner session. The plan and its progress are in
+[docs/design/RECORDING-LOOP.md](docs/design/RECORDING-LOOP.md).
+
+- **The Qt prompt studio only** (`apps/desktop`, voice-lab.app, Record → Prompts). The Swift
+  recorder (`apps/macos`) stays the untouched reference until the owner signs off parity
+  (D-051, RECORDING-V1.md step 10). It gets none of this.
+- **The app never starts recording on its own.** The rule stays (2026-09-07: "Never
+  auto-record after Keep or Retry"). The review's opt-in rhythm modes are dropped, not
+  deferred: no Continuous mode, no voice-activity stop, no count-in and no auto-play.
+- **The core loop is sacred: it gets faster, never slower.** Open the prompts, R to record, R
+  or Space to stop, Return to save and go to the next prompt, and again, rapid fire. An
+  acceptance test holds it: no dialog, no focus jump, the keys work the moment the next prompt
+  shows, and a Return pressed just before the take seals is queued, not dropped.
+- **All nine improvements, with no added friction:**
+  1. Quality flags at review that never block: clipping, low SNR, inconsistency with recent
+     takes, too short or too long, cut edges. They judge SNR and consistency, or the level
+     after the known training gain (FINETUNE.md), never raw ACX loudness: the UMIK-1 sits near
+     −50 dBFS. They reuse the PC's QC thresholds. Plus an optional, one-time input check.
+  2. R in review is Redo: the attempt under review is rejected as superseded, with no typed
+     reason, and ⌘Z reverses it.
+  3. Edge protection (pre- and post-roll) and a Speak cue once the microphone is actually
+     live.
+  4. A native Recording menu with every command and its key, and key hints.
+  5. Next Flagged, and a flagged pass at the end of a session.
+  6. A session progress strip and a quiet, non-modal break hint at about 30 minutes. The
+     match-line re-read is optional and off by default.
+  7. The app opens on Record → Prompts at the last prompt, with the window restored.
+  8. Keys 1–9 audition takes, and Return keeps the selected one.
+  9. A sync badge apart from the status line, and a Settings window on ⌘,.
+- **The layout.** A right inspector that hides (⌥⌘I, the standard Mac toggle) holds the take
+  history and picking, the quality flags' details, long delivery notes, session pacing and
+  the sync status. The centre keeps only the prompt, the waveform and Record, Retake and
+  Save & Next. The left library collapses (the planned Focus mode).
+- **The order.** The items that only add behaviour come first (1, 4, 5, 6, 9), one PR each,
+  CI green before each merge. The stale documents the review lists are fixed: CURRENT.md,
+  docs/NATIVE_RECORDING_UX.md and the Swift plan's step 17. The work ends with the list of
+  what needs a check on the Mac.

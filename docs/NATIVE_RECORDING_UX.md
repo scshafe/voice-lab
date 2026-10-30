@@ -1,8 +1,13 @@
 # Native recording experience: design and acceptance contract
 
-**Status:** proposed implementation design, September 11, 2026. The application
-still uses Qt. This document specifies the replacement; it does not claim that
-the replacement exists or has passed acceptance.
+**Status:** the design of the Swift recorder (Cole Voice Recorder, `apps/macos`),
+September 11, 2026. Amended 2026-10-30: the recorder was built. Under D-051
+(2026-10-12) it is the reference recording interface, and voice-lab.app's Qt prompt
+studio (`apps/desktop`, Record → Prompts) is rebuilt to its layout and behaviour. The
+studio replaces it once the owner signs off parity on the Mac. Until then, this
+document is what the studio is matched against. It gets no new features; new
+recording work goes to the studio (D-058). The cutover this document planned (the
+plan's step 17: Qt removed) is superseded and runs the other way.
 
 **Execution plan:** [Native recording UX](../.claude/plans/2026-09-11-native-recording-ux.md).
 That checklist owns implementation progress. This document owns the intended
