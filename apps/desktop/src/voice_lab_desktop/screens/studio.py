@@ -48,6 +48,7 @@ from cole_voice_lab.api.corpus_contracts import TakeHistory
 from cole_voice_lab.canonical import canonical_sha256
 from cole_voice_lab.corpus_read_model import LibraryTake
 
+from .. import menus
 from ..api import ApiError
 from ..auth import AuthError
 from ..capture.types import PARTIAL_NAME, SAMPLE_RATE, CapturedTake, RunningTake, TakeRecorder
@@ -115,6 +116,9 @@ class StudioModel(ViewModel):
     transportChanged = Signal()
     statusChanged = Signal()
     deviceChanged = Signal()
+    commandsChanged = Signal()
+    #: The menu's Keyboard Shortcuts (⌘/): the screen opens its overlay.
+    shortcutsRequested = Signal()
 
     # -- the library (sidebar)
     coverageText = qproperty(str, "coverageText", libraryChanged)
@@ -177,6 +181,12 @@ class StudioModel(ViewModel):
     # -- the microphone
     deviceOk = qproperty(bool, "deviceOk", deviceChanged)
     deviceLabel = qproperty(str, "deviceLabel", deviceChanged)
+    # -- the menu bar (menus.py) and the keys' hints
+    #: The studio takes commands: shown, no menu or dialog of its own open (its QML says so).
+    commandsEnabled = qproperty(bool, "commandsEnabled", commandsChanged)
+    #: Each command's key as this platform writes it (the buttons' hints).
+    keys = qproperty("QVariantMap", "keys", commandsChanged)
+    shortcuts = qproperty("QVariantList", "shortcuts", commandsChanged)
 
     def _get_rows(self) -> RoleRows:
         return self._rows
@@ -260,6 +270,9 @@ class StudioModel(ViewModel):
                 "deviceLabel": "",
                 "readingSize": READING_SIZES[0],
                 "readingSizes": list(READING_SIZES),
+                "commandsEnabled": False,
+                "keys": menus.key_hints(),
+                "shortcuts": menus.shortcut_rows(),
             },
         )
         self.client = client
@@ -673,6 +686,35 @@ class StudioModel(ViewModel):
                 self._select(target)
 
         self.take_review.guard(go)
+
+    def neighbour(self, step: int) -> str | None:
+        """The prompt ``step`` rows before (-1) or after (1) the selected one in the library
+        as it shows (its search and filters); ``None`` at an end, or when none can be
+        selected now. A selected prompt the filters hide goes to the list's first or last."""
+        if not self._navigable():
+            return None
+        shown = [str(row["promptId"]) for row in self._rows.rows]
+        if not shown:
+            return None
+        if self._current in shown:
+            index = shown.index(self._current) + step
+            return shown[index] if 0 <= index < len(shown) else None
+        return shown[0] if step > 0 else shown[-1]
+
+    @Slot()
+    def previousPrompt(self) -> None:  # noqa: N802
+        """⌘↑: the prompt before in the list, without saving (a take under review is kept as
+        a draft, as when another prompt is selected)."""
+        target = self.neighbour(-1)
+        if target is not None:
+            self.selectPrompt(target)
+
+    @Slot()
+    def nextPrompt(self) -> None:  # noqa: N802
+        """⌘↓: the prompt after in the list, without saving."""
+        target = self.neighbour(1)
+        if target is not None:
+            self.selectPrompt(target)
 
     def _select(self, prompt_id: str, *, latest: bool = False) -> None:
         """Select ``prompt_id`` (``latest``: with its latest kept take, as an explicit
@@ -1142,6 +1184,13 @@ class StudioModel(ViewModel):
         return size if isinstance(size, int) and size in READING_SIZES else READING_SIZES[0]
 
     @Slot(int)
+    def stepReadingSize(self, step: int) -> None:  # noqa: N802
+        """⌘+ and ⌘−: the next reading size up (1) or down (-1)."""
+        index = READING_SIZES.index(self._v["readingSize"]) + step
+        if 0 <= index < len(READING_SIZES):
+            self.setReadingSize(READING_SIZES[index])
+
+    @Slot(int)
     def setReadingSize(self, size: int) -> None:  # noqa: N802
         """The script's reading size (24, 28 or 32 points), kept for the next start."""
         if size not in READING_SIZES or size == self._v["readingSize"]:
@@ -1157,6 +1206,19 @@ class StudioModel(ViewModel):
             os.replace(temporary, path)
         except OSError as exc:
             self.toast.emit(f"The reading size is not kept: {exc}", "warn")
+
+    # -- the menu bar --------------------------------------------------------------------------
+
+    @Slot(bool)
+    def setCommandsEnabled(self, enabled: bool) -> None:  # noqa: N802
+        """The screen says whether it takes commands (shown, nothing of its own open)."""
+        self._set(self.commandsChanged, commandsEnabled=bool(enabled))
+
+    @Slot()
+    def showShortcuts(self) -> None:  # noqa: N802
+        """⌘/: the keyboard shortcuts' overlay."""
+        if self._v["commandsEnabled"]:
+            self.shortcutsRequested.emit()
 
     # -- the status line ----------------------------------------------------------------------
 

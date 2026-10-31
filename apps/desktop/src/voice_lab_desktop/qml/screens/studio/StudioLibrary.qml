@@ -62,11 +62,12 @@ Rectangle {
             maximumLineCount: 2
             elide: Text.ElideRight
         }
-        SuiButton {
+        StudioKeyButton {
             objectName: "studioContinueMissing"
             Layout.fillWidth: true
             Layout.preferredHeight: 36
             text: "Continue Missing"
+            key: library.rec.keys.continueMissing
             variant: "primary"
             enabled: library.rec.canContinueMissing
             Accessible.description: library.rec.continueHelp

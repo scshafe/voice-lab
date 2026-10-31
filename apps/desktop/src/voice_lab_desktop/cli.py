@@ -454,12 +454,21 @@ def main_window_properties(model: Any) -> dict[str, Any]:
 
 
 def load_main_window(model: Any) -> Any:
-    return _engine(main_window_properties(model), qml_dir() / "Main.qml")
+    """Main.qml over ``model``, and the app's menu bar (``engine.menus``, menus.py)."""
+    from .menus import MenuBar
+
+    engine = _engine(main_window_properties(model), qml_dir() / "Main.qml")
+    roots = engine.rootObjects()
+    engine.menus = MenuBar(model, roots[0] if roots else None)
+    return engine
 
 
 def teardown(engine: Any, shutdown: Callable[[], None]) -> None:
     from PySide6.QtCore import QCoreApplication, QEvent
 
+    menus = getattr(engine, "menus", None)
+    if menus is not None:
+        menus.close()  # it reads the models: it goes with the window
     # QML goes first: bindings must never outlive the models they read.
     for obj in engine.rootObjects():
         obj.deleteLater()

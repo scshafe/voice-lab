@@ -169,12 +169,37 @@ which is deleted once measured; **Stop** (or Escape) ends it and keeps nothing.
 | Space | Stop while recording; otherwise play or pause the selected take. It never starts a recording (the Swift app's rule: Space never opens the microphone) |
 | Return, Enter | Save & Next; typed ahead while the take is checked, done when it is ready |
 | Ctrl+S (⌘S on macOS) | Save; typed ahead the same way |
+| ⌘J | Continue Missing |
+| ⌘↑ / ⌘↓ | The prompt before or after in the list as it shows (its search and filters), without saving: a take under review is kept as a draft, as when another prompt is selected |
+| ⌘+ / ⌘− / ⌘0 | A bigger, smaller or the standard reading size |
+| ⌘/ | The keyboard shortcuts (Escape closes them) |
 | ← / → (waveform focused) | The playhead a tenth of a second back or on, within the kept frames |
 | Home / End (waveform focused) | The playhead to the kept frames' start or end |
 
 A click in the waveform gives it the keyboard focus. The keys belong to this screen only.
 They do nothing while you type in a field (the search, the reason), while a menu, a list or
-a dialog is open (`menuOpen`), or on a held key's repeats.
+a dialog is open (`menuOpen`), or on a held key's repeats. (On macOS a ⌘ key may reach its
+menu item while you type, as in any Mac app: ⌘S saves from the search field.)
+
+The footer's buttons, Play and Continue Missing show their keys after their labels, and R
+sits beside the Record control's label.
+
+## The menu bar
+
+On macOS the app has the system's menu bar (D-058; the recording UX review's item 4), in the
+HIG's order: File (Close Window), View (Bigger Text, Smaller Text, Standard Text Size),
+**Recording**, Window (Minimize, Zoom) and Help (Keyboard Shortcuts). The Recording menu
+holds every recording command with its key: Record (Stop while recording, Retake in review)
+R; Play or Pause, Space; Save ⌘S; Save & Next ↩; Discard Take; Remove Take, Reject Take… and
+Restore Take; Check Input…; Continue Missing ⌘J; Previous Prompt ⌘↑ and Next Prompt ⌘↓. An
+item that cannot run now is disabled, never hidden, and every item is disabled while a
+dialog or menu of the studio is open and on other screens. So VoiceOver reads the commands,
+Full Keyboard Access drives the whole loop from the menus, and System Settings can remap a
+key (App Shortcuts).
+
+The keys stay the screen's own `Shortcut`s, which know when to keep quiet; a menu item only
+shows its key, in a context Qt never fires (`Qt.WidgetShortcut`), so no key is taken twice.
+Elsewhere than macOS the menu bar is not shown; the buttons and keys are the same.
 
 ## The core loop
 
@@ -272,6 +297,7 @@ two keep their data apart: the studio in `<data dir>/corpus/`, the sessions in
 | `screens/studio.py` | `StudioModel`, the screen's model over a `CorpusClient`. Every connection goes to a declared `@Slot` (#41). |
 | `screens/studio_takes.py` | `TakeReviewModel` (`app.studioModel.takes`): the picker, the decisions, the waveform, trims and playback, and each take's quality flags. |
 | `screens/studio_check.py` | `InputCheckModel` (`app.studioModel.check`): Check Input. |
+| `menus.py` | The menu bar (`MenuBar`, made with the window by `cli.load_main_window`), its commands and the shortcut overlay's rows. |
 | `studio/quality.py` | The flags, their thresholds, the store of verdicts, Check Input's levels. |
 | `studio/takes.py` | A prompt's takes from the spool and the PC, merged, with their status and where they live. |
 | `studio/audio.py` | Samples in memory, the dB display bins, exact clips, the live waveform. |
@@ -298,7 +324,8 @@ reason, trims with the preview's exact frames, Zoom and Fit, the steps, the live
 the geometry across states, and changed elsewhere. 6c: `test_studio_remote.py`,
 `test_studio_keys.py`, `test_studio_confirm.py`, `test_studio_polish.py`. D-058:
 `test_studio_core_loop.py` (the core loop), `test_studio_quality.py` (the flags, on synthetic
-voices from `studio_fakes.voice_samples`, and Check Input). The layout tests
+voices from `studio_fakes.voice_samples`, and Check Input), `test_studio_menus.py` (the menu
+bar, its items through each phase, the new keys and the overlay). The layout tests
 (`geometry`) read every region only after the window has drawn a frame, then again after the
 next, and fail unless the two agree.
 
@@ -335,6 +362,7 @@ parity off in step 10, on the real Mac, after S-1 (step 8).
 Additions beyond the Swift app (D-058), which change nothing it does:
 
 - **Quality flags at review and Check Input** (the review's item 1): `test_studio_quality.py`.
+- **The menu bar, key hints, ⌘/, ⌘J, ⌘↑ and ⌘↓, ⌘+ ⌘− ⌘0** (item 4): `test_studio_menus.py`.
 - **A Save typed ahead while the take seals** is done when it seals: `test_studio_core_loop.py`.
 
 Two differences from the Swift app remain, both deliberate:
