@@ -52,6 +52,49 @@ Rectangle {
                 Accessible.name: library.rec.coverageSpoken
             }
         }
+        // The pace (D-058, item 6): kept, redone, minutes, what is left and its reading time,
+        // and after half an hour a quiet hint to take a break (never a dialog). Both keep their
+        // places, so the library below never moves.
+        SuiText {
+            objectName: "studioSessionText"
+            Layout.fillWidth: true
+            Layout.preferredHeight: 34
+            Layout.maximumHeight: 34
+            text: library.rec.sessionText
+            variant: "caption"
+            wrapMode: Text.Wrap
+            maximumLineCount: 2
+            elide: Text.ElideRight
+        }
+        RowLayout {
+            objectName: "studioBreakRow"
+            readonly property bool shown: library.rec.breakHint !== ""
+            Layout.fillWidth: true
+            Layout.preferredHeight: 24
+            Layout.maximumHeight: 24
+            spacing: SuiTheme.spaceXs
+            SuiText {
+                objectName: "studioBreakHint"
+                Layout.fillWidth: true
+                visible: parent.shown
+                text: library.rec.breakHint
+                variant: "caption"
+                tone: "info"
+                wrapMode: Text.NoWrap
+                maximumLineCount: 1
+                elide: Text.ElideRight
+            }
+            SuiButton {
+                visible: parent.shown
+                objectName: "studioDismissBreak"
+                Layout.preferredHeight: 24
+                topPadding: 0
+                bottomPadding: 0
+                variant: "ghost"
+                text: "OK"
+                onClicked: library.rec.dismissBreak()
+            }
+        }
         SuiText {
             objectName: "studioCoverageSource"
             Layout.fillWidth: true

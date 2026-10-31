@@ -300,6 +300,42 @@ Item {
                 tone: studio.check.summaryTone === "neutral" ? "" : studio.check.summaryTone
                 wrapMode: Text.Wrap
             }
+            // The match line (D-058, item 6), off by default.
+            SuiCheckBox {
+                objectName: "studioMatchLine"
+                Layout.fillWidth: true
+                text: "Compare with my match line"
+                description: "Keeps your first reading of this line on this machine (never sent)"
+                             + " and compares each later check with it: level, SNR, length."
+                checked: studio.rec.matchLine
+                enabled: !studio.check.running
+                onToggled: studio.rec.setMatchLine(checked)
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                visible: studio.check.referenceText !== ""
+                spacing: SuiTheme.spaceSm
+                SuiText {
+                    objectName: "studioMatchReference"
+                    Layout.fillWidth: true
+                    text: studio.check.referenceText
+                    variant: "caption"
+                }
+                SuiButton {
+                    objectName: "studioPlayReference"
+                    text: "Play reference"
+                    variant: "ghost"
+                    enabled: !studio.check.running
+                    onClicked: studio.check.playReference()
+                }
+                SuiButton {
+                    objectName: "studioForgetReference"
+                    text: "Forget reference"
+                    variant: "ghost"
+                    enabled: !studio.check.running
+                    onClicked: studio.check.forgetReference()
+                }
+            }
         }
         actions: [
             SuiButton {

@@ -444,6 +444,15 @@ class CheckLevels:
     snr_db: float | None
     clipped: int
     gain_db: float
+    #: From the first to the last 20 ms of speech (0 without speech): the line's length.
+    speech_seconds: float = 0.0
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> CheckLevels:
+        return cls(**data)
 
     def verdict(self) -> tuple[str, str]:
         """One line and its tone."""
@@ -507,6 +516,8 @@ def check_levels(samples: Samples, *, quiet_seconds: float, settle_seconds: floa
     decibels = np.array([_db(float(p)) for p in powers])
     active = powers[decibels > floor + SPEECH_OVER_FLOOR_DB]
     speech_dbfs = _db(float(np.mean(active))) if active.size else None
+    voiced = np.flatnonzero(decibels > floor + SPEECH_OVER_FLOOR_DB)
+    spoken = (voiced[-1] - voiced[0] + 1) * WINDOW_FRAMES / SAMPLE_RATE if voiced.size else 0.0
     values = speech.astype(np.float64)
     peak = float(np.max(np.abs(values))) if values.size else 0.0
     peak_dbfs = 20.0 * math.log10(peak) if peak > 0 else _SILENT_DB
@@ -520,4 +531,45 @@ def check_levels(samples: Samples, *, quiet_seconds: float, settle_seconds: floa
         snr_db=None if speech_dbfs is None else speech_dbfs - floor,
         clipped=clipped,
         gain_db=training_gain_db(rms_dbfs, peak_dbfs),
+        speech_seconds=float(spoken),
     )
+
+
+#: The match line: a reading this far from the reference is worth a look.
+MATCH_LENGTH_SHARE: Final = 0.2
+
+
+def match_rows(now: CheckLevels, reference: CheckLevels) -> list[dict[str, str]]:
+    """Check Input's line against the reference reading of it (the match line): its level
+    (Inconsistent's tolerance), its SNR and its length."""
+    if now.speech_dbfs is None or reference.speech_dbfs is None:
+        return [{"label": "Match line", "value": "no speech to compare", "tone": "warn"}]
+    level = now.speech_dbfs - reference.speech_dbfs
+    way = "louder" if level > 0 else "quieter"
+    rows = [
+        {
+            "label": "Match line: level",
+            "value": "the same" if abs(level) < 0.05 else f"{abs(level):.1f} dB {way}",
+            "tone": "warn" if abs(level) > DRIFT_DB else "ok",
+        }
+    ]
+    if now.snr_db is not None and reference.snr_db is not None:
+        snr = now.snr_db - reference.snr_db
+        rows.append(
+            {
+                "label": "Match line: SNR",
+                "value": f"{abs(snr):.1f} dB {'better' if snr >= 0 else 'worse'}",
+                "tone": "warn" if snr < -DRIFT_DB else "",
+            }
+        )
+    if reference.speech_seconds > 0:
+        length = now.speech_seconds - reference.speech_seconds
+        share = abs(length) / reference.speech_seconds
+        rows.append(
+            {
+                "label": "Match line: length",
+                "value": f"{abs(length):.1f} s {'longer' if length >= 0 else 'shorter'}",
+                "tone": "warn" if share > MATCH_LENGTH_SHARE else "",
+            }
+        )
+    return rows

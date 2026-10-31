@@ -48,7 +48,7 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 - [x] 3: quality flags at review; Check Input
 - [x] 4: the menu bar, key hints, ⌘/; ⌘J, ⌘↑ and ⌘↓; the View menu's text sizes
 - [x] 5: Show's Flagged here, Failed PC QC and Drafts only; Next Flagged; badges; the flagged pass
-- [ ] 6
+- [x] 6: the pace strip ("So far · …"), the break hint, the match line (off by default)
 - [ ] 7
 - [ ] 8
 - [ ] 9
@@ -92,3 +92,8 @@ Filled in by each PR; the last one hands the whole list to the owner.
   2. Next Flagged (⇧⌘J) reaches it;
   3. a redo and Return clear it from the list, and the line *N prompts flagged since you
      started · Review now* walks the rest with R, R, Return.
+- **Pace and the match line (6).** Over a sitting of about 35 minutes:
+  1. the strip's counts match the picker (kept, redone), and its minutes the clock;
+  2. the break hint appears once, quietly, and OK puts it away;
+  3. with the match line on, the next day's Check Input reports a level within the
+     consistency tolerance (6 dB) of the first day's reference, and Play reference plays it.

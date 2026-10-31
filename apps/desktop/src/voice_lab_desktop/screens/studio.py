@@ -31,7 +31,9 @@ judged by the takes model between takes), and **Check Input** (``check``,
 ``screens/studio_check.py``) measures the room and a spoken line on demand, never a take.
 Flagged prompts (item 5): Show's Flagged here, Failed PC QC and Drafts only; **Next
 Flagged**; a row's badge for a prompt recorded in this run once it is flagged; and the
-session's flagged pass (``reviewFlagged``), which Save & Next walks.
+run's flagged pass (``reviewFlagged``), which Save & Next walks. Pacing (item 6): the strip
+("So far · …") and a quiet break hint (``studio/pacing.py``), and the match line, off by
+default (``matchLine``: Check Input compares its line with the first reading of it).
 
 Every connection made here goes to a declared ``@Slot`` (#41): QML reads this object.
 """
@@ -40,6 +42,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -61,13 +64,13 @@ from ..corpus.client import CorpusClient, PendingTake
 from ..corpus.files import private_dir
 from ..corpus.spool import SpooledTake, SpoolError
 from ..corpus.status import SyncStatus
-from ..studio import library, presentation, quality, status
+from ..studio import library, pacing, presentation, quality, status
 from ..studio.library import PromptState
 from ..studio.presentation import PromptView
 from ..tablemodel import RoleRows
 from ..viewmodel import AppContext, ViewModel, qproperty
 from .prompts import default_recorder
-from .studio_check import CHECK_DIR, NOT_RECORDING, InputCheckModel
+from .studio_check import CHECK_DIR, MATCH_DIR, NOT_RECORDING, InputCheckModel
 from .studio_takes import TakeReviewModel
 
 #: How often a running take's confirmed frames are read.
@@ -122,6 +125,7 @@ class StudioModel(ViewModel):
     statusChanged = Signal()
     deviceChanged = Signal()
     commandsChanged = Signal()
+    paceChanged = Signal()
     #: The menu's Keyboard Shortcuts (⌘/): the screen opens its overlay.
     shortcutsRequested = Signal()
 
@@ -190,6 +194,11 @@ class StudioModel(ViewModel):
     # -- the reading size (kept per viewer)
     readingSize = qproperty(int, "readingSize", viewChanged)
     readingSizes = qproperty("QVariantList", "readingSizes", viewChanged)
+    #: The match line (D-058, item 6; off by default, kept per viewer).
+    matchLine = qproperty(bool, "matchLine", viewChanged)
+    # -- the session's pace (D-058, item 6)
+    sessionText = qproperty(str, "sessionText", paceChanged)
+    breakHint = qproperty(str, "breakHint", paceChanged)
     # -- the microphone
     deviceOk = qproperty(bool, "deviceOk", deviceChanged)
     deviceLabel = qproperty(str, "deviceLabel", deviceChanged)
@@ -285,6 +294,9 @@ class StudioModel(ViewModel):
                 "deviceLabel": "",
                 "readingSize": READING_SIZES[0],
                 "readingSizes": list(READING_SIZES),
+                "matchLine": False,
+                "sessionText": "",
+                "breakHint": "",
                 "commandsEnabled": False,
                 "keys": menus.key_hints(),
                 "shortcuts": menus.shortcut_rows(),
@@ -292,7 +304,12 @@ class StudioModel(ViewModel):
         )
         self.client = client
         self.recorder_factory = recorder_factory
-        self._v["readingSize"] = self._load_view()
+        view = self._load_view()
+        self._v["readingSize"] = view["reading_size"]
+        self._v["matchLine"] = view["match_line"]
+        #: This sitting's pace; its clock is a test's to set. It is read again with each take
+        #: (a sitting is takes): no timer runs for it.
+        self.pacing = pacing.Pacing(time.monotonic)
         self._rows = RoleRows(ROW_ROLES, self)
         self._recorder: TakeRecorder | None = None
         self._pinned: PinnedCatalog | None = None
@@ -328,7 +345,10 @@ class StudioModel(ViewModel):
         self.take_review.quality_store = self.quality_store
         self.take_review.verdictsChanged.connect(self._verdicts_changed)
         context.tasks.submit(self.quality_store.warm, self._quality_read)
-        self.input_check = InputCheckModel(context, studio_dir / CHECK_DIR)
+        self.input_check = InputCheckModel(
+            context, studio_dir / CHECK_DIR, match_root=studio_dir / MATCH_DIR
+        )
+        self.input_check.match_enabled = self._v["matchLine"]
         self.input_check.setParent(self)
         self.input_check.checkChanged.connect(self._check_changed)
         #: The PC's history of prompts whose status needs it (#3), per read of its library.
@@ -471,6 +491,30 @@ class StudioModel(ViewModel):
         self._show_prompt()  # the same prompt id may read otherwise in another version
         self._prompt_takes(latest=False)
 
+    # -- the session's pace (D-058, item 6) ----------------------------------------------------
+
+    @Slot()
+    def _update_pace(self) -> None:
+        """The strip (kept, redone, minutes, what is left and its reading time) and the hint."""
+        if self._closed:
+            return
+        left = [
+            view for view in self._views if self._state(view.prompt_id).status in library.UNCOVERED
+        ]
+        seconds = sum(view.prompt.expected_seconds for view in left)
+        text = self.pacing.text(left=len(left), left_seconds=seconds) if self._views else ""
+        self._set(
+            self.paceChanged,
+            sessionText=text,
+            breakHint=pacing.HINT_TEXT if self.pacing.hint else "",
+        )
+
+    @Slot()
+    def dismissBreak(self) -> None:  # noqa: N802
+        """The break hint's OK: it comes back after another half hour of session."""
+        self.pacing.dismiss_hint()
+        self._update_pace()
+
     def _recount(self) -> None:
         pinned = self._pinned
         cached = self.client.library.peek()
@@ -501,6 +545,7 @@ class StudioModel(ViewModel):
         self._update_rows()
         self._update_prompt_status()
         self._update_transport()
+        self._update_pace()
 
     def _ask_histories(self, prompts: list[str]) -> None:
         """Read the PC's history of prompts whose status needs it, one at a time."""
@@ -1006,6 +1051,7 @@ class StudioModel(ViewModel):
         recorder = self._recorder_or_none()
         if recorder is None:
             return
+        again = self._v["phase"] in ("review", "failed")  # a take recorded again
         self._leave_take()
         try:
             pending = self.client.begin_take(self._current)
@@ -1013,6 +1059,10 @@ class StudioModel(ViewModel):
             self._outcome = status.Line("No take started", "danger", f"No take started: {exc}")
             self._update_status()
             return
+        if again:
+            self.pacing.redone += 1
+        self.pacing.take_started()
+        self._update_pace()
         self._pending = pending
         self._captured = None
         self._stop_asked = False
@@ -1208,6 +1258,8 @@ class StudioModel(ViewModel):
                 return
             saved, problem = result
             self._session[saved.take_id] = saved.prompt_id
+            if not problem:
+                self.pacing.kept += 1
             self._pending = self._captured = None
             self.take_review.clear_review(select=saved.take_id)
             if not problem:
@@ -1241,6 +1293,7 @@ class StudioModel(ViewModel):
             self._update_status()
             return
         self.take_review.note_kept(take_id)
+        self.pacing.kept += 1
         if self._current is not None:
             self._session[take_id] = self._current
         self._outcome = status.Line("Saved · kept on this machine", "ok")
@@ -1338,13 +1391,51 @@ class StudioModel(ViewModel):
     def _view_file(self) -> Path:
         return Path(self.context.config.data_dir) / "studio" / VIEW_FILE
 
-    def _load_view(self) -> int:
+    def _read_view(self) -> dict[str, Any]:
+        """``view.json`` as written (``{}`` when it cannot be read)."""
         try:
             data = json.loads(self._view_file().read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return READING_SIZES[0]
-        size = data.get("reading_size") if isinstance(data, dict) else None
-        return size if isinstance(size, int) and size in READING_SIZES else READING_SIZES[0]
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _load_view(self) -> dict[str, Any]:
+        """The viewer's choices (``view.json``): the reading size, the match line; what is
+        missing or not valid reads as its default."""
+        data = self._read_view()
+        size = data.get("reading_size")
+        match = data.get("match_line")
+        return {
+            "reading_size": size
+            if isinstance(size, int) and size in READING_SIZES
+            else READING_SIZES[0],
+            "match_line": match if isinstance(match, bool) else False,
+        }
+
+    def _save_view(self, **changes: Any) -> None:
+        """Keep these choices with the others the file holds."""
+        data = {**self._read_view(), **changes}
+        path = self._view_file()
+        try:
+            private_dir(path.parent)
+            temporary = path.with_name(f".{path.name}.tmp")
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(data, stream)
+            os.replace(temporary, path)
+        except OSError as exc:
+            self.toast.emit(f"Your view settings are not kept: {exc}", "warn")
+
+    @Slot(bool)
+    def setMatchLine(self, enabled: bool) -> None:  # noqa: N802
+        """The match line: Check Input keeps your first reading of its line here (never sent)
+        and compares each later one with it."""
+        enabled = bool(enabled)
+        if enabled == self._v["matchLine"]:
+            return
+        self._set(self.viewChanged, matchLine=enabled)
+        self.input_check.match_enabled = enabled
+        self._save_view(match_line=enabled)
 
     @Slot(int)
     def stepReadingSize(self, step: int) -> None:  # noqa: N802
@@ -1359,16 +1450,7 @@ class StudioModel(ViewModel):
         if size not in READING_SIZES or size == self._v["readingSize"]:
             return
         self._set(self.viewChanged, readingSize=size)
-        path = self._view_file()
-        try:
-            private_dir(path.parent)
-            temporary = path.with_name(f".{path.name}.tmp")
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump({"reading_size": size}, stream)
-            os.replace(temporary, path)
-        except OSError as exc:
-            self.toast.emit(f"The reading size is not kept: {exc}", "warn")
+        self._save_view(reading_size=size)
 
     # -- the menu bar --------------------------------------------------------------------------
 
