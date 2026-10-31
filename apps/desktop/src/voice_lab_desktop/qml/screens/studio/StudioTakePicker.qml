@@ -104,7 +104,10 @@ Item {
                 width: ListView.view ? ListView.view.width : implicitWidth
                 implicitHeight: entryColumn.implicitHeight + 2 * SuiTheme.spaceXs
                 padding: SuiTheme.spaceXs
-                leftPadding: SuiTheme.spaceSm
+                // A take a retake set aside sits under the others, indented (D-058, item 2).
+                leftPadding: modelData.superseded ? SuiTheme.spaceLg + SuiTheme.spaceSm
+                                                  : SuiTheme.spaceSm
+                opacity: modelData.superseded ? 0.75 : 1
                 highlighted: combo.highlightedIndex === index
                 Accessible.role: Accessible.ListItem
                 Accessible.name: modelData.when + ", " + modelData.status + ", " + modelData.where

@@ -289,7 +289,7 @@ def test_save_and_next_goes_to_the_next_missing_prompt(
     assert len(studio.client.takes()) == 3 and studio.coverageText == "3 / 34"
 
 
-def test_retake_keeps_the_earlier_take_as_a_draft_and_discard_drops_a_failed_one(
+def test_retake_sets_the_earlier_take_aside_and_discard_drops_a_failed_one(
     qtbot: Any, studio_window: Window, recorder: StudioRecorder, pc: PC
 ) -> None:
     studio = studio_window.model.studio
@@ -297,9 +297,13 @@ def test_retake_keeps_the_earlier_take_as_a_draft_and_discard_drops_a_failed_one
     take_one(qtbot, studio_window, recorder)
     click(studio_window, "studioRetake")
     qtbot.waitUntil(lambda: len(recorder.takes) == 2, timeout=5000)
-    # The take it replaces is saved, undecided: never lost, and not coverage.
-    qtbot.waitUntil(lambda: len(studio.client.takes()) == 1, timeout=5000)
-    assert studio.client.takes()[0].sync.decision.decision == "draft"
+    # The take it replaces is saved and set aside (D-058, item 2): never lost, not coverage,
+    # and no reason to type.
+    qtbot.waitUntil(
+        lambda: [t.sync.decision.decision for t in studio.client.takes()] == ["rejected"],
+        timeout=5000,
+    )
+    assert studio.client.takes()[0].sync.decision.reason == "superseded by retake"
     recorder.last.advance(4_800)
     wait_phase(qtbot, studio, "recording")
     studio.toggleRecord()  # what R will call (6c)
@@ -307,7 +311,7 @@ def test_retake_keeps_the_earlier_take_as_a_draft_and_discard_drops_a_failed_one
     click(studio_window, "studioSave")
     wait_phase(qtbot, studio, "ready")
     decisions = sorted(t.sync.decision.decision for t in studio.client.takes())
-    assert decisions == ["draft", "kept"] and studio.coverageText == "1 / 34"
+    assert decisions == ["kept", "rejected"] and studio.coverageText == "1 / 34"
     # A draft alone is Needs attention, not coverage; leaving it for another prompt saves it.
     studio.selectPrompt(ids[1])
     take_one(qtbot, studio_window, recorder)
@@ -347,8 +351,9 @@ def test_retake_keeps_the_earlier_take_as_a_draft_and_discard_drops_a_failed_one
 def test_a_good_take_is_never_discarded(
     qtbot: Any, studio_window: Window, recorder: StudioRecorder
 ) -> None:
-    """Discard is for a failed take only. A good take, stopped, is kept: as a draft by Retake
-    (or by leaving it), kept by Save; Remove sets a saved one aside afterwards."""
+    """Discard is for a failed take only. A good take, stopped, is kept: set aside by Retake
+    (rejected, superseded, D-058), a draft by leaving it, kept by Save; Remove sets a saved one
+    aside afterwards."""
     studio, takes = studio_window.model.studio, studio_window.model.studio.takes
     take_one(qtbot, studio_window, recorder)
     assert not studio.canDiscard and not studio_window.find("studioDiscard").property("enabled")
@@ -356,9 +361,10 @@ def test_a_good_take_is_never_discarded(
     assert studio.phase == "review" and takes.selectedKey == "review"
     assert list(studio.client.spool.recording_root.iterdir())  # still there
     click(studio_window, "studioRetake")
-    qtbot.waitUntil(lambda: len(studio.client.takes()) == 1, timeout=5000)
-    (draft,) = studio.client.takes()
-    assert draft.sync.decision.decision == "draft"
+    qtbot.waitUntil(
+        lambda: [t.sync.decision.decision for t in studio.client.takes()] == ["rejected"],
+        timeout=5000,
+    )
     # The new take has started (its worker starts off the GUI thread): only now is it last.
     qtbot.waitUntil(lambda: len(recorder.takes) == 2, timeout=5000)
     recorder.last.advance(4_800)
@@ -368,11 +374,12 @@ def test_a_good_take_is_never_discarded(
     assert not studio.canDiscard
     click(studio_window, "studioSave")
     wait_phase(qtbot, studio, "ready")
-    # Afterwards: Remove sets the draft aside (and Restore brings it back).
-    takes.selectTake(draft.take_id)
+    # Afterwards: Remove sets the kept take aside (and Restore brings it back).
+    (kept,) = [t for t in studio.client.takes() if t.sync.decision.decision == "kept"]
+    takes.selectTake(kept.take_id)
     qtbot.waitUntil(lambda: takes.canRemove, timeout=5000)
     click(studio_window, "studioRemoveTake")
-    assert studio.client.spool.take(draft.take_id).sync.decision.decision == "removed"
+    assert studio.client.spool.take(kept.take_id).sync.decision.decision == "removed"
     assert len(studio.client.takes()) == 2
 
 

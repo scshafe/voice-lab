@@ -32,6 +32,8 @@ type Where = Literal["here", "pc", "both", "unsaved"]
 
 #: The take under review before Save: not a take yet (it has no id).
 REVIEW: Final = "review"
+#: Retake's reason for the attempt it sets aside (screens/studio.py's ``SUPERSEDED``).
+SUPERSEDED: Final = "superseded by retake"
 DECISION_TITLES: Final[dict[str, str]] = {
     "draft": "Draft",
     "kept": "Kept",
@@ -77,6 +79,11 @@ class TakeEntry:
     @property
     def take_id(self) -> str:
         return "" if self.key == REVIEW else self.key
+
+    @property
+    def superseded(self) -> bool:
+        """Set aside by a retake (D-058, item 2): rejected with Retake's own reason."""
+        return self.decision == "rejected" and self.reason == SUPERSEDED
 
     @property
     def seconds(self) -> float:

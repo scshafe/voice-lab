@@ -3,9 +3,9 @@ menu, with its key, disabled (never hidden) when it cannot run.
 
 On macOS a parentless ``QMenuBar`` is the system's menu bar for the app: VoiceOver reads it,
 Full Keyboard Access drives it, and System Settings can remap its keys (App Shortcuts). Its
-menus follow the HIG's order: File, View, Recording, Window and Help (Qt makes the app menu,
-with Quit, which ``QuitGuard`` holds). Elsewhere it is not shown; the studio's buttons and
-keys are the same.
+menus follow the HIG's order: File, Edit, View, Recording, Window and Help (Qt makes the app
+menu, with Quit, which ``QuitGuard`` holds). Elsewhere it is not shown; the studio's buttons
+and keys are the same.
 
 The keys stay the studio's own ``Shortcut``s (StudioScreen.qml), which know when to keep
 quiet: while typing, with a menu or dialog open, on another screen, on a held key's repeats.
@@ -245,6 +245,11 @@ def shortcut_rows() -> list[dict[str, Any]]:
             "description": "Save",
         },
         {
+            "group": "Recording",
+            "keys": [key_text(QKeySequence.StandardKey.Undo)],
+            "description": "Undo the last Save or Retake: the take is a draft again",
+        },
+        {
             "group": "Prompts",
             "keys": [key_text(CONTINUE_MISSING_KEY)],
             "description": "Continue Missing",
@@ -321,6 +326,18 @@ class MenuBar(QObject):
                     QKeySequence(QKeySequence.StandardKey.Close),
                 ),
             )
+        edit_menu = self.bar.addMenu("Edit")
+        if studio is not None:
+            self._add(
+                edit_menu,
+                Command(
+                    "undo",
+                    lambda: str(studio.undoText),
+                    studio.undo,
+                    lambda: bool(studio.commandsEnabled and studio.canUndo),
+                    QKeySequence(QKeySequence.StandardKey.Undo),
+                ),
+            )
         view_menu = self.bar.addMenu("View")
         if studio is not None:
             self._fill(view_menu, view_commands(studio))
@@ -360,6 +377,7 @@ class MenuBar(QObject):
                 studio.rowsChanged,
                 studio.viewChanged,
                 studio.roomChanged,
+                studio.undoChanged,
                 studio.commandsChanged,
                 studio.take_review.takesChanged,
                 studio.take_review.playChanged,

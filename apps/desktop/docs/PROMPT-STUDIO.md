@@ -71,11 +71,18 @@ has them. They are the same controls, moved between the two places.
    same, then selects the next missing prompt. Return or ⌘S pressed while the take is still
    checked (*Stopping*) is not lost: the status line says *Stopping · will save when ready*,
    and the save is done the moment the take is ready. A take that fails drops it.
-4. **Retake** records the prompt again. The take it replaces is saved as an undecided draft,
-   so no recording is lost. A take you leave by selecting another prompt is saved the same
-   way, and one left by closing the app stays on disk and is saved at the next start. A
-   draft does not count as coverage: its prompt shows *Draft* under Needs attention.
-5. A take that fails (a continuity break, a worker that stopped) says why in the status line.
+4. **Retake**, or **R** in review, records the prompt again (D-058; the review's item 2). The
+   take it replaces is saved and set aside: rejected, *superseded by retake*, with no dialog
+   and no reason to type, so no recording is lost, it is sent like any take, and it does not
+   leave the prompt under Needs attention. The picker lists such takes under the others,
+   indented. **⌘Z** (Edit → Undo Retake) brings it back as a draft, selected; Save then keeps
+   it. A take you leave by selecting another prompt is saved as an undecided draft, and one
+   left by closing the app stays on disk and is saved at the next start. A draft does not
+   count as coverage: its prompt shows *Draft* under Needs attention.
+5. **⌘Z** undoes the last keep or retake, up to twenty back (Edit → Undo Save, Undo Retake):
+   the take is a draft again, on its prompt, selected; the status line says so. A take under
+   review stays under review meanwhile.
+6. A take that fails (a continuity break, a worker that stopped) says why in the status line.
    **Discard** removes it. Retake, or selecting another prompt, discards a failed take too.
    Discard is for a failed take only: a good take is never discarded. To set one aside,
    save it (or let Retake keep it as a draft), then **Remove** it.
@@ -225,6 +232,7 @@ prompt, not leave it in a mixed bin (D-058; the review's item 5).
 | Space | Stop while recording; otherwise play or pause the selected take. It never starts a recording (the Swift app's rule: Space never opens the microphone) |
 | Return, Enter | Save & Next; typed ahead while the take is checked, done when it is ready |
 | Ctrl+S (⌘S on macOS) | Save; typed ahead the same way |
+| ⌘Z | Undo the last Save or Retake: the take is a draft again |
 | ⌘J | Continue Missing |
 | ⇧⌘J | Next Flagged |
 | ⌘↑ / ⌘↓ | The prompt before or after in the list as it shows (its search and filters), without saving: a take under review is kept as a draft, as when another prompt is selected |
@@ -245,8 +253,9 @@ sits beside the Record control's label.
 ## The menu bar
 
 On macOS the app has the system's menu bar (D-058; the recording UX review's item 4), in the
-HIG's order: File (Close Window), View (Bigger Text, Smaller Text, Standard Text Size),
-**Recording**, Window (Minimize, Zoom) and Help (Keyboard Shortcuts). The Recording menu
+HIG's order: File (Close Window), Edit (Undo Save or Undo Retake, ⌘Z), View (Bigger Text,
+Smaller Text, Standard Text Size), **Recording**, Window (Minimize, Zoom) and Help (Keyboard
+Shortcuts). The Recording menu
 holds every recording command with its key: Record (Stop while recording, Retake in review)
 R; Play or Pause, Space; Save ⌘S; Save & Next ↩; Discard Take; Remove Take, Reject Take… and
 Restore Take; Check Input…; Continue Missing ⌘J; Next Flagged ⇧⌘J; Previous Prompt ⌘↑ and
@@ -431,7 +440,7 @@ parity off in step 10, on the real Mac, after S-1 (step 8).
 | 56 pt Record/Stop footer and a status line | yes | `test_transport_never_moves_the_layout`, `test_the_sync_line_for_each_state`, `test_nothing_is_cut_off_on_the_smallest_window`, `test_every_sync_line_is_whole_on_the_smallest_window` |
 | Transport state never moves the layout | yes | `test_transport_never_moves_the_layout` (with and without the sync line's Details), `test_transport_and_review_never_move_the_layout` (two window sizes, every region inside the content area), `test_the_longest_prompt_is_shown_whole` |
 | The live waveform while recording | yes | `test_the_live_waveform_while_recording` (from the worker's partial WAV) |
-| Take actions: Retake, Remove, Reject (with a reason), Restore | yes | `test_retake_keeps_the_earlier_take_as_a_draft…`, `test_a_good_take_is_never_discarded`, `test_each_decision_goes_through_the_client`, `test_reject_without_a_reason_is_impossible`, `test_takes_recorded_elsewhere_are_decided_and_trimmed_here`, `test_restore_asks_when_what_came_before_is_not_known` |
+| Take actions: Retake, Remove, Reject (with a reason), Restore | yes | `test_retake_sets_the_earlier_take_aside…`, `test_a_good_take_is_never_discarded`, `test_each_decision_goes_through_the_client`, `test_reject_without_a_reason_is_impossible`, `test_takes_recorded_elsewhere_are_decided_and_trimmed_here`, `test_restore_asks_when_what_came_before_is_not_known` |
 | Save, or Save & Next in context; Return = Save & Next, ⌘S = Save | yes | `test_record_stop_save…`, `test_save_and_next_goes_to_the_next_missing_prompt`, `test_r_space_return_and_save` |
 | Trims with In/Out, Save trim and Reset | yes | `test_trims_save_and_reset_with_a_preview_of_exactly_the_kept_frames`, `test_another_take_save_discard_or_cancel`, `test_closing_the_window_or_quit_asks_first` |
 | Zoom and Fit | yes | `test_zoom_and_fit` |
@@ -459,6 +468,9 @@ These differences from the Swift app remain, all deliberate:
 - **Space stops a recording.** The plan's keys say "R and Space to record and stop". The
   Swift app's rule is that Space never opens the microphone. Here, Space stops a take and
   plays or pauses otherwise, but never starts one.
+- **Redo** (D-058, item 2): R in review records again, and Retake sets the attempt it replaces
+  aside as *superseded by retake* instead of keeping it as a draft; ⌘Z undoes it. The Swift
+  app ignores R in review and keeps the replaced take. `test_studio_redo.py`.
 - **The layout** (D-058): while the inspector shows, the take's picker, its trim, Save and
   Discard sit in it, not between the script and the footer, and a spoken prompt's
   instructions are its delivery notes. Hidden, or on the smallest window, the reference layout

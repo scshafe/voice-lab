@@ -51,7 +51,7 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 - [x] 6: the pace strip ("So far · …"), the break hint, the match line (off by default)
 - [x] 7: the sync badge, the take's caption, Record's blocker; Settings (⌘,)
 - [x] 8: the inspector (⌥⌘I) and the library that folds away (⌃⌘S, Focus)
-- [ ] 9
+- [x] 9: R in review is Redo (the attempt set aside, no dialog); ⌘Z reverses
 - [ ] 10
 - [ ] 11
 - [ ] 12
@@ -109,3 +109,8 @@ Filled in by each PR; the last one hands the whole list to the owner.
   2. with both shown on the smallest window, the footer and the header still read whole;
   3. the core loop is no slower with the inspector shown: the keys, the focus and Return work
      as before.
+- **Redo and ⌘Z (9).** On one prompt, R, R, R, R, Return:
+  1. the picker shows one kept take and, under it, one *Rejected (superseded by retake)*;
+  2. no reason was asked for;
+  3. the prompt is not under Needs attention;
+  4. ⌘Z brings the kept take back as a draft, and ⌘Z again the one set aside.
