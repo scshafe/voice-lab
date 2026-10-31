@@ -157,7 +157,8 @@ def test_the_take_under_review_keeps_its_edit(
     takes.selectTake("review")
     qtbot.waitUntil(lambda: takes.frameCount > 0, timeout=5000)
     assert (takes.trimStart, takes.trimDirty) == (2_400, True)
-    # Record again: no question; the replaced take is saved as a draft with its trim.
+    # Record again: no question; the replaced take is saved with its trim, and set aside as
+    # superseded by the retake (D-058, item 2).
     count = len(recorder.takes)
     studio.toggleRecord()
     assert not takes.confirmOpen
@@ -172,8 +173,12 @@ def test_the_take_under_review_keeps_its_edit(
         lambda: (draft := replaced()) is not None and draft.sync.trim.start_frame is not None,
         timeout=5000,
     )
+    qtbot.waitUntil(
+        lambda: (taken := replaced()) is not None and taken.sync.decision.decision == "rejected",
+        timeout=5000,
+    )
     draft = replaced()
-    assert draft.sync.decision.decision == "draft"
+    assert draft.sync.decision.reason == "superseded by retake"
     assert (draft.sync.trim.start_frame, draft.sync.trim.end_frame) == (2_400, 12_000)
 
 

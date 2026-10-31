@@ -191,11 +191,11 @@ def test_reject_without_a_reason_is_impossible(
     assert studio.client.spool.take(take_id).sync.decision.decision == "kept"
     studio_window.find("studioRejectDialog").reject()
     # The take under review is not a take yet: never rejected, never discarded (Save keeps
-    # it; Retake or leaving keeps it as a draft).
+    # it; Retake sets it aside, which ⌘Z undoes; leaving keeps it as a draft).
     recorded(qtbot, studio_window, recorder)
     assert takes.selectedKey == "review"
     assert not takes.canReject and not takes.canRemove
-    assert takes.actionNote == "Not saved yet: Save keeps it; Retake or leaving keeps it as a draft"
+    assert takes.actionNote == "Not saved yet: Save keeps it; Retake sets it aside (⌘Z undoes)"
     assert not studio.canDiscard
 
 

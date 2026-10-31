@@ -466,6 +466,8 @@ class TakeReviewModel(ViewModel):
     def _rebuild(self) -> None:
         mine = [take for take in self._all_local if take.prompt_id == self._prompt]
         entries = takes.merge(mine, self._pc, self._notices)
+        # Attempts a retake set aside go under the others, newest first, like a take folder.
+        entries.sort(key=lambda entry: entry.superseded)
         if self._review is not None:
             entries.insert(0, self._review)
         self._entries = entries
@@ -519,6 +521,7 @@ class TakeReviewModel(ViewModel):
             "where": entry.where_title,
             "origin": takes.ORIGIN_TITLES.get(entry.origin, entry.origin),
             "decision": entry.decision,
+            "superseded": entry.superseded,
             "changedElsewhere": entry.changed_elsewhere,
             "selected": selected,
         }
@@ -825,7 +828,7 @@ class TakeReviewModel(ViewModel):
         decision = entry.decision if entry is not None else ""
         note = ""
         if entry is not None and entry.key == REVIEW:
-            note = "Not saved yet: Save keeps it; Retake or leaving keeps it as a draft"
+            note = "Not saved yet: Save keeps it; Retake sets it aside (⌘Z undoes)"
         self._set(
             self.takesChanged,
             canRemove=decidable and decision in ("draft", "kept"),

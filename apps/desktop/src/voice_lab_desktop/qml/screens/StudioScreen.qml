@@ -74,6 +74,14 @@ Item {
         enabled: studio.keysEnabled
         onActivated: studio.rec.save()
     }
+    // ⌘Z undoes the last Save or Retake (D-058, item 2).
+    Shortcut {
+        objectName: "studioKeyUndo"
+        sequences: [StandardKey.Undo]
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.undo()
+    }
     // The Recording and View menus' keys (D-058, item 4): the menu shows them; these take them.
     Shortcut {
         objectName: "studioKeyContinue"

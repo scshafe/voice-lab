@@ -64,7 +64,7 @@ CTRL = Qt.KeyboardModifier.ControlModifier
 def test_the_menus_in_the_higs_order_with_their_keys(studio_window: Window) -> None:
     menu_bar = bar(studio_window).bar
     titles = [action.text() for action in menu_bar.actions()]
-    assert titles == ["File", "View", "Recording", "Window", "Help"]
+    assert titles == ["File", "Edit", "View", "Recording", "Window", "Help"]
     recording = next(a.menu() for a in menu_bar.actions() if a.text() == "Recording")
     names = [a.objectName().removeprefix("menu-") for a in recording.actions() if a.objectName()]
     assert names == RECORDING

@@ -34,6 +34,9 @@ Flagged**; a row's badge for a prompt recorded in this run once it is flagged; a
 run's flagged pass (``reviewFlagged``), which Save & Next walks. Pacing (item 6): the strip
 ("So far · …") and a quiet break hint (``studio/pacing.py``), and the match line, off by
 default (``matchLine``: Check Input compares its line with the first reading of it).
+Redo (D-058, item 2): R in review (or Retake) records again, and the attempt under review is
+saved and rejected as ``SUPERSEDED``, with no dialog and no typing; ⌘Z (``undo``) reverses the
+last keep or retake: the take is a draft again, on its prompt, selected.
 The layout (D-058, D): an inspector on the right (⌥⌘I, ``toggleInspector``) holds the take's
 history and picking, the flags' details, the delivery notes, the pace and the sync, so the
 centre keeps the prompt, the waveform and Record, Retake and Save & Next; the library on the
@@ -48,6 +51,7 @@ import json
 import os
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -69,6 +73,7 @@ from ..corpus.files import private_dir
 from ..corpus.spool import SpooledTake, SpoolError
 from ..corpus.status import SyncStatus
 from ..studio import library, pacing, presentation, quality, status
+from ..studio import takes as takes_module
 from ..studio.library import PromptState
 from ..studio.presentation import PromptView
 from ..tablemodel import RoleRows
@@ -93,9 +98,14 @@ STATE_TEXT: Final[dict[str, str]] = {
     "starting": "Starting the microphone",
     "recording": "Recording",
     "stopping": "Stopping · checking the audio",
-    "review": "Take recorded · Save keeps it, Retake keeps it as a draft",
+    "review": "Take recorded · Save keeps it, R records it again",
     "saving": "Saving",
 }
+#: Retake's reason for the attempt it sets aside (D-058, item 2: no dialog, no typing).
+SUPERSEDED: Final = takes_module.SUPERSEDED
+#: How many keeps and retakes ⌘Z can undo, newest first.
+UNDO_DEPTH: Final = 20
+UNDO_TITLES: Final[dict[str, str]] = {"keep": "Undo Save", "supersede": "Undo Retake"}
 #: While the take is checked, a Save (Return or ⌘S) typed ahead waits for it (D-058).
 QUEUED_TEXT: Final = "Stopping · will save when ready"
 #: The reading sizes the header offers (the Swift app's Standard, Large, Extra large).
@@ -104,6 +114,15 @@ VIEW_FILE: Final = "view.json"
 CONTINUE_HELP: Final = (
     "Selects the next missing prompt in catalog order; ignores search and filters."
 )
+
+
+@dataclass(frozen=True)
+class _Undo:
+    """One step ⌘Z can undo: a take kept, or set aside by a retake (``kind``)."""
+
+    kind: Literal["keep", "supersede"]
+    take_id: str
+    prompt_id: str
 
 
 def elapsed_text(frames: int) -> str:
@@ -131,6 +150,7 @@ class StudioModel(ViewModel):
     commandsChanged = Signal()
     paceChanged = Signal()
     roomChanged = Signal()
+    undoChanged = Signal()
     #: The menu's Keyboard Shortcuts (⌘/): the screen opens its overlay.
     shortcutsRequested = Signal()
 
@@ -185,6 +205,9 @@ class StudioModel(ViewModel):
     canSaveNext = qproperty(bool, "canSaveNext", transportChanged)
     canDiscard = qproperty(bool, "canDiscard", transportChanged)
     canNavigate = qproperty(bool, "canNavigate", transportChanged)
+    #: ⌘Z (D-058, item 2): what it would undo ("Undo Save", "Undo Retake"), and whether it can.
+    canUndo = qproperty(bool, "canUndo", undoChanged)
+    undoText = qproperty(str, "undoText", undoChanged)
     #: Why Record cannot start now ("" when it can, or stops): its tooltip (D-058, item 9).
     recordBlocker = qproperty(str, "recordBlocker", transportChanged)
     #: Check Input may open the microphone now (between takes, with a UMIK-1).
@@ -299,6 +322,8 @@ class StudioModel(ViewModel):
                 "canDiscard": False,
                 "canNavigate": False,
                 "recordBlocker": "",
+                "canUndo": False,
+                "undoText": "Undo",
                 "canCheck": False,
                 "statusText": "",
                 "statusTone": "neutral",
@@ -390,6 +415,8 @@ class StudioModel(ViewModel):
         self._session: dict[str, str] = {}
         #: The flagged pass under way: its prompts in catalog order (``None``: none).
         self._pass: list[str] | None = None
+        #: What ⌘Z can undo, oldest first.
+        self._undo: list[_Undo] = []
         client.add_listener(self._client_changed)
         if not client.ready:
             # Listing this machine's takes recovers what an earlier run left (it may copy
@@ -1071,7 +1098,55 @@ class StudioModel(ViewModel):
         self._set(self.transportChanged, phase=phase, **values)
         self._update_transport()
         self._update_status()
+        self._update_undo()
         self.take_review.transport_changed()
+
+    # -- ⌘Z (D-058, item 2) ---------------------------------------------------------------------
+
+    def _push_undo(self, kind: Literal["keep", "supersede"], take_id: str, prompt_id: str) -> None:
+        self._undo.append(_Undo(kind, take_id, prompt_id))
+        del self._undo[:-UNDO_DEPTH]
+        self._update_undo()
+
+    def _update_undo(self) -> None:
+        step = self._undo[-1] if self._undo else None
+        self._set(
+            self.undoChanged,
+            canUndo=step is not None and self._v["phase"] in ("ready", "review", "failed"),
+            undoText=UNDO_TITLES[step.kind] if step is not None else "Undo",
+        )
+
+    @Slot()
+    def undo(self) -> None:
+        """⌘Z: the last keep or retake undone. The take is a draft again, on its prompt,
+        selected (Save keeps it again); a take under review there stays under review."""
+        if not self._v["canUndo"]:
+            return
+        step = self._undo[-1]
+
+        def go() -> None:
+            if not self._v["canUndo"] or not self._undo or self._undo[-1] != step:
+                return
+            self._undo.pop()
+            try:
+                self.client.decide(step.take_id, "draft")
+            except SpoolError as exc:
+                self._outcome = status.Line("Not undone", "danger", f"Not undone: {exc}")
+                self._update_status()
+                self._update_undo()
+                return
+            if step.prompt_id != self._current and step.prompt_id in self._by_id:
+                self._leave_take()
+                self._select(step.prompt_id)
+            self._refresh()
+            if self._v["phase"] != "review":
+                self.take_review.selectTake(step.take_id)
+            what = "kept" if step.kind == "keep" else "set aside"
+            self._outcome = status.Line(f"Undone: the take {what} is a draft again", "info")
+            self._update_status()
+            self._update_undo()
+
+        self.take_review.guard(go)
 
     @Slot()
     def toggleRecord(self) -> None:  # noqa: N802
@@ -1083,7 +1158,8 @@ class StudioModel(ViewModel):
 
     @Slot()
     def retake(self) -> None:
-        """Record the selected prompt again: the take under review is saved as a draft."""
+        """Record the selected prompt again: the take under review is saved and set aside
+        (rejected, ``SUPERSEDED``); ⌘Z brings it back."""
         if self._v["phase"] in ("review", "failed"):
             self.record()
 
@@ -1102,7 +1178,7 @@ class StudioModel(ViewModel):
         if recorder is None:
             return
         again = self._v["phase"] in ("review", "failed")  # a take recorded again
-        self._leave_take()
+        self._leave_take(supersede=self._v["phase"] == "review")
         try:
             pending = self.client.begin_take(self._current)
         except (SpoolError, OSError) as exc:
@@ -1212,16 +1288,18 @@ class StudioModel(ViewModel):
                     f"The take could not be discarded: {exc}",
                 )
 
-    def _leave_take(self) -> None:
+    def _leave_take(self, *, supersede: bool = False) -> None:
         """Before another take or prompt: a failed take is discarded; a take under review is
-        saved as an undecided draft (off the GUI thread), never lost."""
+        saved (off the GUI thread), never lost: set aside as ``SUPERSEDED`` when the prompt
+        is recorded again (``supersede``), else an undecided draft."""
         phase = self._v["phase"]
         if phase == "failed":
             self._discard_pending()
         elif phase == "review" and self._pending is not None and self._captured is not None:
             pending, captured = self._pending, self._captured
             self._pending = self._captured = None
-            self._keep_draft(pending, captured, self.take_review.pending_trim())
+            trim = self.take_review.pending_trim()
+            self._keep_draft(pending, captured, trim, supersede=supersede)
         if phase in ("review", "failed"):
             self.take_review.clear_review()
             self._phase("ready", elapsedText=elapsed_text(0))
@@ -1231,6 +1309,8 @@ class StudioModel(ViewModel):
         pending: PendingTake,
         captured: CapturedTake,
         trim: tuple[int | None, int | None] | None,
+        *,
+        supersede: bool = False,
     ) -> None:
         client = self.client
 
@@ -1238,6 +1318,8 @@ class StudioModel(ViewModel):
             take = client.save_take(pending, captured)
             if trim is not None:
                 take = client.set_trim(take.take_id, *trim)
+            if supersede:
+                take = client.decide(take.take_id, "rejected", SUPERSEDED)
             return take
 
         def done(take: SpooledTake | None, error: BaseException | None) -> None:
@@ -1245,6 +1327,8 @@ class StudioModel(ViewModel):
                 return
             if take is not None:
                 self._session[take.take_id] = take.prompt_id
+                if supersede:
+                    self._push_undo("supersede", take.take_id, take.prompt_id)
             if error is not None:
                 if not isinstance(error, (SpoolError, OSError)):
                     raise error
@@ -1314,6 +1398,7 @@ class StudioModel(ViewModel):
             self.take_review.clear_review(select=saved.take_id)
             if not problem:
                 self.take_review.note_kept(saved.take_id)
+                self._push_undo("keep", saved.take_id, saved.prompt_id)
             if problem:
                 self._outcome = status.Line(
                     "Saved as a draft, not kept", "warn", f"Saved as a draft, not kept: {problem}"
@@ -1346,6 +1431,7 @@ class StudioModel(ViewModel):
         self.pacing.kept += 1
         if self._current is not None:
             self._session[take_id] = self._current
+            self._push_undo("keep", take_id, self._current)
         self._outcome = status.Line("Saved · kept on this machine", "ok")
         self._refresh()
         if advance:
