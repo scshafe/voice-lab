@@ -43,6 +43,11 @@ LIVE_BIN_FRAMES: Final = 480
 LIVE_SLOTS: Final = 500
 #: The live peak level covers the last 50 ms.
 PEAK_FRAMES: Final = 2400
+#: A voiced tail (D-058, item 3): the last ``TAIL_BINS`` live bins (100 ms) stand this far
+#: over the quietest tenth of the live view (its room), once ``FLOOR_BINS`` bins are in.
+TAIL_BINS: Final = 10
+TAIL_OVER_FLOOR_DB: Final = 20.0
+FLOOR_BINS: Final = 20
 _HEADER_BYTES: Final = 44
 _FULL_SCALE: Final = float(2**23)
 
@@ -175,3 +180,15 @@ class LiveWaveform:
     @property
     def peak_dbfs(self) -> float:
         return peak_dbfs(self._recent)
+
+    @property
+    def tail_voiced(self) -> bool:
+        """The last 100 ms stand well over the room (the quietest tenth of the live view): a
+        voice still speaking, whose last word a stop now would cut (D-058, item 3)."""
+        if len(self._pairs) < FLOOR_BINS + TAIL_BINS:
+            return False
+        peaks = np.abs(np.asarray(self._pairs, dtype=np.float64)).max(axis=1)
+        with np.errstate(divide="ignore"):
+            decibels = 20.0 * np.log10(np.maximum(peaks, 1e-12))
+        floor = float(np.percentile(decibels[:-TAIL_BINS], 10))
+        return float(decibels[-TAIL_BINS:].max()) >= floor + TAIL_OVER_FLOOR_DB

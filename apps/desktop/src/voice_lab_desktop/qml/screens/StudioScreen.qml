@@ -687,6 +687,18 @@ Item {
             }
         }
 
+        // The reader's cue (D-058, item 3): Wait… while the microphone opens and the first
+        // 200 ms are confirmed, then Speak, in the script card's corner.
+        SuiChip {
+            objectName: "studioSpeakCue"
+            z: 2
+            x: studio.inset + studio.contentWidth - width - SuiTheme.spaceSm
+            y: studio.scriptY + SuiTheme.spaceSm
+            visible: studio.live
+            text: studio.rec.speak ? "Speak" : "Wait…"
+            tone: studio.rec.speak ? "ok" : "neutral"
+            dot: true
+        }
         StudioScriptCard {
             x: studio.inset
             y: studio.scriptY
@@ -952,6 +964,7 @@ Item {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 stopping: studio.live || studio.rec.phase === "stopping"
+                cue: studio.rec.speak
                 enabled: studio.rec.canRecord || studio.rec.canStop
                 onClicked: studio.rec.toggleRecord()
                 Accessible.description: studio.rec.recordBlocker

@@ -65,7 +65,13 @@ has them. They are the same controls, moved between the two places.
    a take is recorded or saved.
 2. **Record** starts the capture worker (D-039) into a new take directory bound to that
    prompt (`CorpusClient.begin_take`). **Stop** ends it. The worker's take is then checked
-   (its continuity evidence, its WAV) and waits for review.
+   (its continuity evidence, its WAV) and waits for review. Edge protection (D-058; the
+   review's item 3): the script card's corner says *Wait…* while the microphone opens, and
+   **Speak** (with a green ring on the Record control) once 200 ms of the take are confirmed,
+   in the audio's own time, so a reader who waits for it leaves silence at the head. A stop
+   while the voice still sounds (its last 100 ms stand 20 dB over the room) holds the
+   microphone 300 ms more, so the last word is whole; a stop after it stops at once, and the
+   loop is no slower. Nothing here ever starts a recording.
 3. **Save** keeps it: the take is saved into the spool, decided `kept`, and queued for the
    PC. This runs off the GUI thread, and the prompt stays selected. **Save & Next** does the
    same, then selects the next missing prompt. Return or ⌘S pressed while the take is still
@@ -478,6 +484,8 @@ These differences from the Swift app remain, all deliberate:
 - **Redo** (D-058, item 2): R in review records again, and Retake sets the attempt it replaces
   aside as *superseded by retake* instead of keeping it as a draft; ⌘Z undoes it. The Swift
   app ignores R in review and keeps the replaced take. `test_studio_redo.py`.
+- **Speak and the tail** (D-058, item 3): the Speak cue and the held tail; the Swift app has
+  neither. `test_studio_edges.py`.
 - **Keeping the picked take** (D-058, item 8): keys 1–9 audition the prompt's takes, and Save
   and Save & Next keep the selected one, also while a newer take is under review (it is then
   set aside); the Swift app saves only the newest. `test_studio_pick.py`.

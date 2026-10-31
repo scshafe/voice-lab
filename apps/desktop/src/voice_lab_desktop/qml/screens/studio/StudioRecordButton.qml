@@ -8,6 +8,8 @@ T.Button {
     id: control
 
     property bool stopping: false
+    // The take is live: a green ring says Speak (D-058, item 3).
+    property bool cue: false
 
     implicitWidth: 56
     implicitHeight: 56
@@ -31,8 +33,9 @@ T.Button {
         radius: width / 2
         color: control.down ? SuiTheme.alpha(SuiTheme.toneRed, 0.18)
                : control.hovered ? SuiTheme.alpha(SuiTheme.toneRed, 0.10) : SuiTheme.field
-        border.width: 2
-        border.color: control.stopping ? SuiTheme.toneRed : SuiTheme.borderStrong
+        border.width: control.cue ? 3 : 2
+        border.color: control.cue ? SuiTheme.toneGreen
+                      : control.stopping ? SuiTheme.toneRed : SuiTheme.borderStrong
         Rectangle {
             visible: control.visualFocus
             anchors.fill: parent
