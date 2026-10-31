@@ -238,6 +238,9 @@ class TakeReviewModel(ViewModel):
         self._live_reading = False
         #: The take to play once it is loaded (keys 1–9: audition).
         self._play_on_load = ""
+        #: The take being recorded still sounds a voice at its end (its last 100 ms, as last
+        #: read): a stop holds the tail (D-058, item 3).
+        self.tail_voiced = False
         #: Told each PC history read (prompt id, library tag, history): the studio's status.
         self.on_history: Callable[[str, str | None, TakeHistory], None] | None = None
         #: Where verdicts are kept (the studio sets it: ``<data dir>/studio/quality.json``).
@@ -326,6 +329,7 @@ class TakeReviewModel(ViewModel):
         self.stop_playback()
         self._select(None, load=False)
         self._live = audio.LiveWaveform(path)
+        self.tail_voiced = False
         self._set(self.takesChanged, takeCaption=self._caption())
         self._set(
             self.waveChanged,
@@ -348,19 +352,20 @@ class TakeReviewModel(ViewModel):
             return
         self._live_reading = True
 
-        def work() -> tuple[bool, list[float], float, str]:
+        def work() -> tuple[bool, list[float], float, str, bool]:
             grew = live.poll()
-            return grew, live.bins(), live.peak_dbfs, live.error
+            return grew, live.bins(), live.peak_dbfs, live.error, live.tail_voiced
 
         def done(
-            result: tuple[bool, list[float], float, str] | None, error: BaseException | None
+            result: tuple[bool, list[float], float, str, bool] | None, error: BaseException | None
         ) -> None:
             self._live_reading = False
             if error is not None:
                 raise error
             if self._closed or live is not self._live or result is None:
                 return
-            grew, bins, peak, problem = result
+            grew, bins, peak, problem, voiced = result
+            self.tail_voiced = voiced
             if grew:
                 self._set(
                     self.waveChanged,

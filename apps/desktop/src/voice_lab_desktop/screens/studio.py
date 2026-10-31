@@ -34,6 +34,10 @@ Flagged**; a row's badge for a prompt recorded in this run once it is flagged; a
 run's flagged pass (``reviewFlagged``), which Save & Next walks. Pacing (item 6): the strip
 ("So far · …") and a quiet break hint (``studio/pacing.py``), and the match line, off by
 default (``matchLine``: Check Input compares its line with the first reading of it).
+Edge protection (D-058, item 3): **Speak** shows on the Record control and the script card once
+200 ms of the take are confirmed (``speak``), so the head has silence; a stop while the voice
+still sounds (``take_review.tail_voiced``) holds the microphone 300 ms more, so the last word is
+whole, and a stop after it stops at once: the loop is no slower.
 Redo (D-058, item 2): R in review (or Retake) records again, and the attempt under review is
 saved and rejected as ``SUPERSEDED``, with no dialog and no typing; ⌘Z (``undo``) reverses the
 last keep or retake: the take is as it was, on its prompt, selected. Picking (item 8): keys
@@ -89,6 +93,11 @@ from .studio_takes import TakeReviewModel
 POLL_MS: Final = 50
 #: How long the worker may take to stop and validate a take.
 STOP_TIMEOUT_S: Final = 30.0
+#: Edge protection (D-058, item 3): Speak shows once this much of the take is confirmed
+#: (200 ms of head silence when the reader waits for it) ...
+SPEAK_FRAMES: Final = SAMPLE_RATE // 5
+#: ... and a stop while a voice still sounds holds the microphone this long more (its tail).
+TAIL_MS: Final = 300
 ROW_ROLES: Final = ("promptId", "title", "status", "statusTitle", "kind", "current", "flag")
 #: A row's badge, for a prompt recorded in this run that is flagged.
 FLAG_TITLES: Final[dict[str, str]] = {"here": "Flagged", "pc": "Failed PC QC"}
@@ -212,6 +221,8 @@ class StudioModel(ViewModel):
     canSaveNext = qproperty(bool, "canSaveNext", transportChanged)
     canDiscard = qproperty(bool, "canDiscard", transportChanged)
     canNavigate = qproperty(bool, "canNavigate", transportChanged)
+    #: The take is live: 200 ms confirmed, the reader's cue (D-058, item 3).
+    speak = qproperty(bool, "speak", transportChanged)
     #: ⌘Z (D-058, item 2): what it would undo ("Undo Save", "Undo Retake"), and whether it can.
     canUndo = qproperty(bool, "canUndo", undoChanged)
     undoText = qproperty(str, "undoText", undoChanged)
@@ -328,6 +339,7 @@ class StudioModel(ViewModel):
                 "canSaveNext": False,
                 "canDiscard": False,
                 "canNavigate": False,
+                "speak": False,
                 "recordBlocker": "",
                 "canUndo": False,
                 "undoText": "Undo",
@@ -384,6 +396,8 @@ class StudioModel(ViewModel):
         self._captured: CapturedTake | None = None
         self._running: RunningTake | None = None
         self._stop_asked = False
+        #: A take whose stop waits out its voiced tail (``TAIL_MS``).
+        self._tail: RunningTake | None = None
         #: A Save typed ahead while the take is checked: "next" (Return) or "stay" (⌘S).
         self._queued: Literal["next", "stay"] | None = None
         self._failure = ""
@@ -463,6 +477,7 @@ class StudioModel(ViewModel):
         self.client.remove_listener(self._client_changed)
         self.client.shutdown()
         running, self._running = self._running, None
+        self._tail = None
         if running is not None:
             running.stop()
 
@@ -1222,7 +1237,7 @@ class StudioModel(ViewModel):
         self._queued = None
         self._outcome = None
         self.take_review.begin_live(pending.directory / PARTIAL_NAME)
-        self._phase("starting", elapsedText=elapsed_text(0))
+        self._phase("starting", elapsedText=elapsed_text(0), speak=False)
 
         def done(running: RunningTake | None, error: BaseException | None) -> None:
             if self._closed:
@@ -1247,12 +1262,27 @@ class StudioModel(ViewModel):
 
     @Slot()
     def stop(self) -> None:
-        if self._v["phase"] not in ("starting", "recording"):
+        """Stop the take. While the voice still sounds at its end, the microphone stays open
+        ``TAIL_MS`` more, so the last word is whole; otherwise it stops at once."""
+        phase = self._v["phase"]
+        if phase not in ("starting", "recording"):
             return
         self._stop_asked = True
-        self._phase("stopping")
-        if self._running is not None:
-            self._running.stop()
+        self._phase("stopping", speak=False)
+        running = self._running
+        if running is None:
+            return
+        if phase == "recording" and self.take_review.tail_voiced:
+            self._tail = running
+            QTimer.singleShot(TAIL_MS, self._end_tail)
+        else:
+            running.stop()
+
+    @Slot()
+    def _end_tail(self) -> None:
+        running, self._tail = self._tail, None
+        if running is not None:
+            running.stop()
 
     @Slot()
     def _on_poll(self) -> None:
@@ -1263,7 +1293,8 @@ class StudioModel(ViewModel):
         frames = running.confirmed_frames
         if frames > 0 and self._v["phase"] == "starting":
             self._phase("recording")
-        self._set(self.transportChanged, elapsedText=elapsed_text(frames))
+        speak = self._v["phase"] == "recording" and frames >= SPEAK_FRAMES
+        self._set(self.transportChanged, elapsedText=elapsed_text(frames), speak=speak)
         self.take_review.poll_live()
         if running.done:
             self._poll.stop()

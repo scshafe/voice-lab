@@ -53,7 +53,7 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 - [x] 8: the inspector (⌥⌘I) and the library that folds away (⌃⌘S, Focus)
 - [x] 9: R in review is Redo (the attempt set aside, no dialog); ⌘Z reverses
 - [x] 10: keys 1–9 audition the prompt's takes; Return keeps the one picked
-- [ ] 11
+- [x] 11: the Speak cue at 200 ms confirmed; a voiced tail held 300 ms at Stop
 - [ ] 12
 
 ## What the Mac must check
@@ -117,3 +117,10 @@ Filled in by each PR; the last one hands the whole list to the owner.
 - **Keys 1–9 (10).** Record three attempts of one prompt (R, R three times), press 2, then
   Return: attempt 2 is the kept take, the other two are set aside, the picker had marked
   attempt 2 (*Return keeps*) and coverage counts the prompt once. Each key plays its take.
+- **Edges (11).** With every setting as shipped, Save & Next, Retake, Continue Missing,
+  switching prompts, relaunch and wake from sleep never start a recording. Then:
+  1. *Speak* shows about a quarter of a second after R, with the green ring, and a take begun
+     on it has silence before the first word;
+  2. stopping while still saying the last word keeps it whole (the take runs about 300 ms
+     past the key), and stopping after a pause stops at once;
+  3. the measured stop-to-review time with a pause before R (the usual case) is unchanged.
