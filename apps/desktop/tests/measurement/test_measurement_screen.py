@@ -21,6 +21,7 @@ from voice_lab_desktop import cli
 from voice_lab_desktop.app import AppModel
 from voice_lab_desktop.measurement.controller import SETUP_POLL_MS
 from voice_lab_desktop.measurement.devices import DeviceError
+from voice_lab_desktop.measurement.ritual import MIN_MANUAL_SECONDS
 from voice_lab_desktop.measurement.simulated import (
     BUILT_IN,
     SimulatedBackend,
@@ -277,7 +278,10 @@ def test_a_session_keeps_running_on_another_screen(qtbot: Any, ui: Window) -> No
     assert entry["status"] == "held"  # visible from every screen
     model.navigate("corpus")
     before = controller.ritual.recording.seconds
-    qtbot.waitUntil(lambda: controller.ritual.recording.seconds > before + 0.5, timeout=10000)
+    # It records on, and past the shortest take a manual segment keeps (a slow host had
+    # recorded less than that, and the stop below asked for the segment again).
+    least = max(before + 0.5, MIN_MANUAL_SECONDS + 0.25)
+    qtbot.waitUntil(lambda: controller.ritual.recording.seconds > least, timeout=10000)
     # The keyboard acts on the measurement screen only.
     assert not ui.find("spaceShortcut").property("enabled")
     space(ui)
