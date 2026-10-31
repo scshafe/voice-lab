@@ -3,7 +3,8 @@
 // smallest window, and, open, every take of the prompt from this machine and the PC, newest
 // first, with its date, length, status (changed elsewhere, imported from the Mac) and where
 // it lives; then the selected take's actions: Remove, Reject (with a reason) and Restore.
-// The model is the studio's `takes` (screens/studio_takes.py).
+// The model is the studio's `takes` (screens/studio_takes.py). In the inspector (D-058's
+// layout) it is `stacked`: the line above its actions.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Templates as T
@@ -16,6 +17,8 @@ Item {
 
     required property var takes
     property bool busy: false
+    property bool stacked: false
+    implicitHeight: pickerGrid.implicitHeight
     readonly property bool menuOpen: combo.popup.visible || rejectDialog.visible
 
     function indexOf(key) {
@@ -32,9 +35,14 @@ Item {
         variant: "ghost"
     }
 
-    RowLayout {
-        anchors.fill: parent
-        spacing: SuiTheme.spaceXs
+    GridLayout {
+        id: pickerGrid
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.verticalCenter: picker.stacked ? undefined : parent.verticalCenter
+        columns: picker.stacked ? 1 : 2
+        columnSpacing: SuiTheme.spaceXs
+        rowSpacing: SuiTheme.spaceXs
 
         T.ComboBox {
             id: combo
@@ -139,7 +147,8 @@ Item {
             popup: T.Popup {
                 objectName: "studioHistoryPopup"
                 y: combo.height + 2
-                width: Math.max(combo.width, Math.min(picker.width, 520))
+                width: Math.max(combo.width, Math.min(400, picker.Window.width))
+                x: combo.width - width
                 implicitHeight: Math.min(contentItem.implicitHeight + 2 * padding, 360)
                 padding: 2
                 contentItem: ListView {
@@ -168,6 +177,8 @@ Item {
                 }
             }
         }
+        RowLayout {
+        spacing: SuiTheme.spaceXs
         RowButton {
             objectName: "studioRemoveTake"
             text: "Remove"
@@ -191,6 +202,7 @@ Item {
             enabled: picker.takes.canRestore
             Accessible.description: picker.takes.actionNote
             onClicked: picker.takes.restore()
+        }
         }
     }
 

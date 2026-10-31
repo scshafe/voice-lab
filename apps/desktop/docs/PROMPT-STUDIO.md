@@ -28,23 +28,36 @@ points) when it fits the card, and otherwise at the largest smaller size that do
 sync line. What the layout tests assert (`test_the_longest_prompt_is_shown_whole`, for each
 reading size at 960×600 and at 1440×900): the rig catalog's longest prompt is whole at the
 chosen size or below it, never below 16 points, inside the card and without scrolling; the
-size and every region stay the same while recording, in review and with the sync line's
-**Details** shown; at 1440×900 the default 24 is untouched. Each geometry is read only after
+size and every region stay the same while recording, in review and with a notice on the sync
+badge; at 1440×900 the default 24 is untouched. Each geometry is read only after
 the window has drawn a frame, twice, the two the same. Exact sizes below the chosen one
 depend on the fonts installed, so no test pins them.
 
+Three panes (D-058's layout): the library on the left, which folds away (⌃⌘S, View → Hide
+Library, or the header's left button: Focus); the centre; and the inspector on the right (300
+points; 260 below a 1,100-point screen), which hides (⌥⌘I, View → Hide Inspector, or the
+header's right button). Both choices are kept in `<data dir>/studio/view.json`.
+
+The inspector takes its width only where the centre keeps at least 440 points beside it.
+There it holds the take's picker, Save and Discard, and the trim, and a spoken prompt's
+instructions are its delivery notes, so the centre keeps the prompt, the waveform and Record,
+Retake and Save & Next. Hidden, or with no room for it (the smallest window: its button is
+then disabled and says so), those come back to the centre, where the reference layout below
+has them. They are the same controls, moved between the two places.
+
 | Region | What |
 | --- | --- |
-| **Library** (left, 280 points; 240 below a 1,000-point screen) | `Library` with the covered count (`n / 1,886`), and where it comes from. Then the pace and the break hint (below), **Continue Missing**, the flagged prompts (below), the search, **Show** (All prompts, Missing, Needs attention, Flagged here, Failed PC QC, Drafts only) and **Labels**. Then the catalog version this run records against, and the switch the next session makes. Then every prompt, with its status. |
-| **Header** | The prompt's title and its label chips. Chips that do not fit collapse into `+N`, but the category always shows. On the right: **Check input** (below), the reading size (**Aa 24**, 28 or 32, kept for you in `<data dir>/studio/view.json`) and the microphone. |
-| **Script card** | For a spoken prompt, `PROMPT · READ ALOUD` and the text, whole (see above). For room tone or a test step, a banner and "No spoken prompt" instead. The `INSTRUCTIONS · NOT READ ALOUD` section is always there, with the guidance and the duration. |
-| **Take picker** | The selected take in a short line (`12 Oct 07:01 · 2.0 s · Kept · here`), whole on the smallest window. Open, it is the history: every take of the prompt, newest first, from this machine and the PC, with date and time, length, status (trimmed, changed elsewhere, imported from the Mac) and where it lives. Then **Remove**, **Reject…** and **Restore**. |
+| **Library** (left, 280 points; 240 below a 1,000-point screen; folds away) | `Library` with the covered count (`n / 1,886`), and where it comes from. Then **Continue Missing**, the search, **Show** (All prompts, Missing, Needs attention, Flagged here, Failed PC QC, Drafts only) and **Labels**. Then the catalog version this run records against, and the switch the next session makes. Then every prompt, with its status. |
+| **Header** | The library's button, the prompt's title and its label chips. Chips that do not fit collapse into `+N`, but the category always shows. On the right: the reading size (**Aa 24**, 28 or 32, kept for you in `<data dir>/studio/view.json`), the microphone and the inspector's button. |
+| **Script card** | For a spoken prompt, `PROMPT · READ ALOUD` and the text, whole (see above); its instructions are the inspector's delivery notes while the inspector shows, and otherwise the card's `INSTRUCTIONS · NOT READ ALOUD` section, with the guidance and the duration. For room tone or a test step, a banner, "No spoken prompt" and its instructions, always. |
+| **Take picker** (in the inspector while it shows) | The selected take in a short line (`12 Oct 07:01 · 2.0 s · Kept · here`), whole on the smallest window. Open, it is the history: every take of the prompt, newest first, from this machine and the PC, with date and time, length, status (trimmed, changed elsewhere, imported from the Mac) and where it lives. Then **Remove**, **Reject…** and **Restore**. |
 | **Waveform** | The selected take on the dB display scale, its kept frames between the trim handles, the playhead. In its top right corner, the take's quality flags (below). While recording: the live waveform, in red. When a take fails or does not start, or there is no microphone, the whole message shows here instead. |
-| **Trim row** | **In** and **Out**, set from the playhead (**Set In**, **Set Out**) or by dragging the handles; **Save trim**; **Reset**. |
+| **Trim row** (in the inspector while it shows) | **In** and **Out**, set from the playhead (**Set In**, **Set Out**) or by dragging the handles; **Save trim**; **Reset**. |
 | **Timer** | While recording, the take's length from the frames the worker confirmed (D-014), never a clock, and the peak level. Otherwise the playhead within the kept frames, and their length. On its left, the take's own caption: what it is (*Not saved yet*, *Kept · this machine*, …) and the scale. |
 | **Playback row** | **−** and **+** (Zoom) and **Fit**; **−0.1 s**, **Play**/**Pause**, **+0.1 s**. |
-| **Footer** | The 56-point Record/Stop control, then **Retake**, **Discard**, **Save** and **Save & Next**. Actions that do not apply stay in place, greyed out. A Record that cannot start says why in its tooltip (*No microphone: plug the UMIK-1 in, then click its chip*, *Check Input has the microphone*, …). |
+| **Footer** | The 56-point Record/Stop control, then **Retake**, **Discard** and **Save** (the inspector's while it shows) and **Save & Next**. Actions that do not apply stay in place, greyed out. A Record that cannot start says why in its tooltip (*No microphone: plug the UMIK-1 in, then click its chip*, *Check Input has the microphone*, …). |
 | **Status line** | On the left, what the take is doing, in two lines at most. On the right, the sync badge (a word or two) with at most one action beside it; a click on the badge shows the whole sync line, or a notice. |
+| **Inspector** (right; hides) | **Microphone**: the device and **Check input**. **Take**: the take picker, **Save** and **Discard**, and the trim row (above). **Flags**: the selected take's flags and why, with its levels. **Delivery notes** of a spoken prompt: its instructions, guidance and duration. **Pace**: the strip, the break hint and the flagged prompts with **Review now**. **Sync**: the whole line and the client's message. It scrolls when taller than the window. |
 
 ## Recording
 
@@ -217,6 +230,7 @@ prompt, not leave it in a mixed bin (D-058; the review's item 5).
 | ⌘↑ / ⌘↓ | The prompt before or after in the list as it shows (its search and filters), without saving: a take under review is kept as a draft, as when another prompt is selected |
 | ⌘+ / ⌘− / ⌘0 | A bigger, smaller or the standard reading size |
 | ⌘/ | The keyboard shortcuts (Escape closes them) |
+| ⌃⌘S / ⌥⌘I | Fold the library away (Focus) or bring it back / hide or show the inspector |
 | ← / → (waveform focused) | The playhead a tenth of a second back or on, within the kept frames |
 | Home / End (waveform focused) | The playhead to the kept frames' start or end |
 
@@ -437,14 +451,18 @@ Additions beyond the Swift app (D-058), which change nothing it does:
 - **The pace strip, the break hint and the match line** (item 6): `test_studio_pacing.py`.
 - **The sync badge, the take's caption, Record's blocker, Settings (⌘,)** (item 9):
   `test_studio_status.py`, `test_studio_settings.py`.
+- **The inspector and the library that folds away** (the layout): `test_studio_inspector.py`.
 - **A Save typed ahead while the take seals** is done when it seals: `test_studio_core_loop.py`.
 
-Two differences from the Swift app remain, both deliberate:
+These differences from the Swift app remain, all deliberate:
 
 - **Space stops a recording.** The plan's keys say "R and Space to record and stop". The
   Swift app's rule is that Space never opens the microphone. Here, Space stops a take and
   plays or pauses otherwise, but never starts one.
-- **Focus mode** (hiding the library) is outside §5 and not built.
+- **The layout** (D-058): while the inspector shows, the take's picker, its trim, Save and
+  Discard sit in it, not between the script and the footer, and a spoken prompt's
+  instructions are its delivery notes. Hidden, or on the smallest window, the reference layout
+  returns. The library folds away (Focus), which §5 left out. `test_studio_inspector.py`.
 
 What only the real Mac proves is outside this checklist: the UMIK-1 through PortAudio (S-1),
 playback through a device, the bundle, light and dark rendered by macOS, and VoiceOver.

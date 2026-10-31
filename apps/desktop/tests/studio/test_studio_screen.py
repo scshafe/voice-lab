@@ -111,7 +111,10 @@ def test_the_workspace_loads_the_pinned_catalog_and_its_coverage(
             assert window.find("studioDuration").property("text").startswith("About ")
             assert studio.labelChips == ["Reference", "Reference Candidate"]
             chips = window.find("studioLabelChips")
-            assert chips.property("shown") == 2
+            # Both chips show in a header the inspector leaves wide enough (D-058's layout).
+            if window.find("studioScreen").property("inspectorOn"):
+                studio.toggleInspector()
+            qtbot.waitUntil(lambda: chips.property("shown") == 2, timeout=5000)
             assert chips.property("spokenLabel") == "Labels: Reference, Reference Candidate"
             assert studio.takesText == "No takes of this prompt yet"
             assert window.find("studioDevice").property("text") == "UMIK-1"
@@ -467,13 +470,15 @@ def test_transport_never_moves_the_layout(
     studio = studio_window.model.studio
     resize(qtbot, studio_window, 1440, 980)
     idle = geometry(qtbot, studio_window)
-    # Regions stack without overlap, at their final size.
+    # Regions stack without overlap, at their final size. With the inspector (D-058's layout),
+    # the take's picker and trim row are its own.
+    inspector = studio_window.find("studioScreen").property("inspectorOn")
     order = [
         "studioHeader",
         "studioScriptCard",
-        "studioTakePicker",
+        *(() if inspector else ("studioTakePicker",)),
         "studioWaveform",
-        "studioTrimRow",
+        *(() if inspector else ("studioTrimRow",)),
         "studioTimer",
         "studioPlaybackRow",
         "studioFooter",
@@ -481,6 +486,10 @@ def test_transport_never_moves_the_layout(
     ]
     for upper, lower in zip(order, order[1:], strict=False):
         assert idle[upper][1] + idle[upper][3] <= idle[lower][1], (upper, lower)
+    if inspector:
+        pane = scene_rect(studio_window.find("studioInspector"))
+        for name in ("studioTakePicker", "studioTrimRow"):
+            assert idle[name][0] >= pane[0], name
     assert idle["studioFooter"][3] == 56 and idle["studioRecord"][2:] == (56, 56)
     assert idle["studioWaveform"][3] >= 120 and idle["studioLibrary"][2] == 280
     seen = {"idle": idle}

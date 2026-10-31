@@ -51,6 +51,9 @@ BIGGER_KEY: Final = "Ctrl+="
 SMALLER_KEY: Final = "Ctrl+-"
 STANDARD_SIZE_KEY: Final = "Ctrl+0"
 MINIMIZE_KEY: Final = "Ctrl+M"
+#: ⌃⌘S and ⌥⌘I, the Mac's own Show/Hide Sidebar and Show/Hide Inspector (``Meta`` is ⌃ there).
+LIBRARY_KEY: Final = "Ctrl+Meta+S"
+INSPECTOR_KEY: Final = "Ctrl+Alt+I"
 
 
 def key_text(key: QKeySequence | QKeySequence.StandardKey | str) -> str:
@@ -177,12 +180,27 @@ def recording_commands(studio: StudioModel) -> list[Command | None]:
 
 
 def view_commands(studio: StudioModel) -> list[Command | None]:
-    """The View menu: the script's reading size."""
+    """The View menu: the panes, then the script's reading size."""
 
     def on(can: Callable[[], bool]) -> Callable[[], bool]:
         return lambda: bool(studio.commandsEnabled) and can()
 
     return [
+        Command(
+            "library",
+            lambda: "Hide Library" if studio.libraryShown else "Show Library",
+            studio.toggleLibrary,
+            on(lambda: True),
+            QKeySequence(LIBRARY_KEY),
+        ),
+        Command(
+            "inspector",
+            lambda: "Hide Inspector" if studio.inspectorShown else "Show Inspector",
+            studio.toggleInspector,
+            on(lambda: bool(studio.inspectorRoom)),
+            QKeySequence(INSPECTOR_KEY),
+        ),
+        None,
         Command(
             "bigger",
             _fixed("Bigger Text"),
@@ -260,6 +278,12 @@ def shortcut_rows() -> list[dict[str, Any]]:
             "separator": " ",
             "description": "Bigger, smaller or standard reading size",
         },
+        {
+            "group": "View",
+            "keys": [key_text(LIBRARY_KEY), key_text(INSPECTOR_KEY)],
+            "separator": " / ",
+            "description": "Hide or show the library (Focus) or the inspector",
+        },
         {"group": "View", "keys": [key_text(SHORTCUTS_KEY)], "description": "These shortcuts"},
     ]
 
@@ -335,6 +359,7 @@ class MenuBar(QObject):
                 studio.libraryChanged,
                 studio.rowsChanged,
                 studio.viewChanged,
+                studio.roomChanged,
                 studio.commandsChanged,
                 studio.take_review.takesChanged,
                 studio.take_review.playChanged,
