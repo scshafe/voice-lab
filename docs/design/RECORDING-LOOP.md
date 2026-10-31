@@ -50,7 +50,7 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 - [x] 5: Show's Flagged here, Failed PC QC and Drafts only; Next Flagged; badges; the flagged pass
 - [x] 6: the pace strip ("So far · …"), the break hint, the match line (off by default)
 - [x] 7: the sync badge, the take's caption, Record's blocker; Settings (⌘,)
-- [ ] 8
+- [x] 8: the inspector (⌥⌘I) and the library that folds away (⌃⌘S, Focus)
 - [ ] 9
 - [ ] 10
 - [ ] 11
@@ -103,3 +103,9 @@ Filled in by each PR; the last one hands the whole list to the owner.
   3. ⌘, opens Settings, on the pane last used, from the app's menu as well;
   4. on a fresh install, the Uploads pane's *Send takes to the PC* and Approve reach a synced
      take without editing a file.
+- **The layout (8).** At the smallest window and at full screen:
+  1. ⌥⌘I and ⌃⌘S (and the header's two buttons) hide and show the inspector and the library,
+     the View menu says which, and both stay as left after a relaunch;
+  2. with both shown on the smallest window, the footer and the header still read whole;
+  3. the core loop is no slower with the inspector shown: the keys, the focus and Return work
+     as before.

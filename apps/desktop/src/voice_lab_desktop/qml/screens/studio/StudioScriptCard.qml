@@ -11,6 +11,10 @@
 // that (no window the app allows, for any catalog prompt) scrolls. Only the card's size and
 // the prompt decide the size, never the transport. A small card tightens its margins and its
 // guidance row. The scroll position resets only for a new prompt.
+//
+// With the inspector shown (D-058, `notesElsewhere`), a spoken prompt's instructions are its
+// delivery notes there, and the prompt has the whole card. A silent prompt's instructions are
+// what it is: they stay.
 import QtQuick
 import Scshafe.Ui
 import VoiceLab.StandIn
@@ -20,6 +24,7 @@ Rectangle {
     objectName: "studioScriptCard"
 
     required property var rec
+    property bool notesElsewhere: false
     readonly property bool compact: height < 240
     readonly property int pad: compact ? SuiTheme.spaceMd : SuiTheme.spaceLg
     readonly property int spacing: compact ? 6 : SuiTheme.spaceSm
@@ -31,7 +36,7 @@ Rectangle {
     readonly property real bodyTop: pad + (bannerText.visible ? headingHeight + spacing : 0)
     readonly property real instructionsNatural: headingHeight + SuiTheme.spaceXs
         + (rec.instructions !== "" ? instructionsText.implicitHeight : 0) + guidanceHeight
-    readonly property real instructionsHeight: !hasPrompt ? 0
+    readonly property real instructionsHeight: !hasPrompt || (spoken && notesElsewhere) ? 0
         : spoken ? Math.min(instructionsNatural, (height - 2 * pad) * 0.4)
         : Math.max(0, height - pad - (bodyTop + headingHeight + spacing))
     // The reading sizes, largest first (from the header's choice); the prompt takes the
@@ -157,7 +162,7 @@ Rectangle {
         y: promptSection.y + promptSection.height + card.spacing
         width: card.width - 2 * card.pad
         height: card.instructionsHeight
-        visible: card.hasPrompt
+        visible: card.hasPrompt && card.instructionsHeight > 0
         Accessible.name: "Instructions, do not read aloud"
         Heading {
             width: parent.width

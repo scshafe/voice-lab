@@ -34,6 +34,10 @@ Flagged**; a row's badge for a prompt recorded in this run once it is flagged; a
 run's flagged pass (``reviewFlagged``), which Save & Next walks. Pacing (item 6): the strip
 ("So far · …") and a quiet break hint (``studio/pacing.py``), and the match line, off by
 default (``matchLine``: Check Input compares its line with the first reading of it).
+The layout (D-058, D): an inspector on the right (⌥⌘I, ``toggleInspector``) holds the take's
+history and picking, the flags' details, the delivery notes, the pace and the sync, so the
+centre keeps the prompt, the waveform and Record, Retake and Save & Next; the library on the
+left folds away (⌃⌘S, ``toggleLibrary``: Focus). Both are kept in the view file.
 
 Every connection made here goes to a declared ``@Slot`` (#41): QML reads this object.
 """
@@ -126,6 +130,7 @@ class StudioModel(ViewModel):
     deviceChanged = Signal()
     commandsChanged = Signal()
     paceChanged = Signal()
+    roomChanged = Signal()
     #: The menu's Keyboard Shortcuts (⌘/): the screen opens its overlay.
     shortcutsRequested = Signal()
 
@@ -203,6 +208,11 @@ class StudioModel(ViewModel):
     #: The quality flags' calibrated levels (item 9: Settings → Recording).
     lowSnrDb = qproperty(float, "lowSnrDb", viewChanged)
     driftDb = qproperty(float, "driftDb", viewChanged)
+    #: The panes (D-058, D): the library on the left, the inspector on the right.
+    libraryShown = qproperty(bool, "libraryShown", viewChanged)
+    inspectorShown = qproperty(bool, "inspectorShown", viewChanged)
+    #: The window has room for the inspector beside the centre (its QML says so).
+    inspectorRoom = qproperty(bool, "inspectorRoom", roomChanged)
     # -- the session's pace (D-058, item 6)
     sessionText = qproperty(str, "sessionText", paceChanged)
     breakHint = qproperty(str, "breakHint", paceChanged)
@@ -306,6 +316,9 @@ class StudioModel(ViewModel):
                 "matchLine": False,
                 "lowSnrDb": quality.LOW_SNR_DB,
                 "driftDb": quality.DRIFT_DB,
+                "libraryShown": True,
+                "inspectorShown": True,
+                "inspectorRoom": True,
                 "sessionText": "",
                 "breakHint": "",
                 "commandsEnabled": False,
@@ -319,6 +332,7 @@ class StudioModel(ViewModel):
         self._v["readingSize"] = view["reading_size"]
         self._v["matchLine"] = view["match_line"]
         levels: quality.Thresholds = view["quality"]
+        self._v["libraryShown"], self._v["inspectorShown"] = view["library"], view["inspector"]
         self._v["lowSnrDb"], self._v["driftDb"] = levels.low_snr_db, levels.drift_db
         #: This sitting's pace; its clock is a test's to set. It is read again with each take
         #: (a sitting is takes): no timer runs for it.
@@ -1443,7 +1457,9 @@ class StudioModel(ViewModel):
         match = data.get("match_line")
         levels = data.get("quality")
         levels = levels if isinstance(levels, dict) else {}
+        panes = {key: data.get(key) for key in ("library", "inspector")}
         return {
+            **{key: shown if isinstance(shown, bool) else True for key, shown in panes.items()},
             "reading_size": size
             if isinstance(size, int) and size in READING_SIZES
             else READING_SIZES[0],
@@ -1481,6 +1497,26 @@ class StudioModel(ViewModel):
             os.replace(temporary, path)
         except OSError as exc:
             self.toast.emit(f"Your view settings are not kept: {exc}", "warn")
+
+    @Slot()
+    def toggleLibrary(self) -> None:  # noqa: N802
+        """⌃⌘S: fold the library away (Focus) or bring it back; kept for the next start."""
+        shown = not self._v["libraryShown"]
+        self._set(self.viewChanged, libraryShown=shown)
+        self._save_view(library=shown)
+
+    @Slot(bool)
+    def setInspectorRoom(self, room: bool) -> None:  # noqa: N802
+        """The screen says whether the inspector fits beside the centre (the View menu's item
+        waits while it does not)."""
+        self._set(self.roomChanged, inspectorRoom=bool(room))
+
+    @Slot()
+    def toggleInspector(self) -> None:  # noqa: N802
+        """⌥⌘I: hide or show the inspector; kept for the next start."""
+        shown = not self._v["inspectorShown"]
+        self._set(self.viewChanged, inspectorShown=shown)
+        self._save_view(inspector=shown)
 
     @Slot(bool)
     def setMatchLine(self, enabled: bool) -> None:  # noqa: N802

@@ -52,49 +52,6 @@ Rectangle {
                 Accessible.name: library.rec.coverageSpoken
             }
         }
-        // The pace (D-058, item 6): kept, redone, minutes, what is left and its reading time,
-        // and after half an hour a quiet hint to take a break (never a dialog). Both keep their
-        // places, so the library below never moves.
-        SuiText {
-            objectName: "studioSessionText"
-            Layout.fillWidth: true
-            Layout.preferredHeight: 34
-            Layout.maximumHeight: 34
-            text: library.rec.sessionText
-            variant: "caption"
-            wrapMode: Text.Wrap
-            maximumLineCount: 2
-            elide: Text.ElideRight
-        }
-        RowLayout {
-            objectName: "studioBreakRow"
-            readonly property bool shown: library.rec.breakHint !== ""
-            Layout.fillWidth: true
-            Layout.preferredHeight: 24
-            Layout.maximumHeight: 24
-            spacing: SuiTheme.spaceXs
-            SuiText {
-                objectName: "studioBreakHint"
-                Layout.fillWidth: true
-                visible: parent.shown
-                text: library.rec.breakHint
-                variant: "caption"
-                tone: "info"
-                wrapMode: Text.NoWrap
-                maximumLineCount: 1
-                elide: Text.ElideRight
-            }
-            SuiButton {
-                visible: parent.shown
-                objectName: "studioDismissBreak"
-                Layout.preferredHeight: 24
-                topPadding: 0
-                bottomPadding: 0
-                variant: "ghost"
-                text: "OK"
-                onClicked: library.rec.dismissBreak()
-            }
-        }
         SuiText {
             objectName: "studioCoverageSource"
             Layout.fillWidth: true
@@ -115,40 +72,6 @@ Rectangle {
             enabled: library.rec.canContinueMissing
             Accessible.description: library.rec.continueHelp
             onClicked: library.rec.continueMissing()
-        }
-        // The flagged prompts recorded since the app started (D-058, item 5): a quiet line,
-        // never a dialog; Review now walks them (Save & Next and Next Flagged go on). Its
-        // place is kept when it is empty, so the library below never moves.
-        RowLayout {
-            objectName: "studioFlaggedRow"
-            readonly property bool shown: library.rec.flaggedText !== "" || library.rec.passText !== ""
-            Layout.fillWidth: true
-            Layout.preferredHeight: 24
-            Layout.maximumHeight: 24
-            spacing: SuiTheme.spaceXs
-            SuiText {
-                objectName: "studioFlaggedText"
-                Layout.fillWidth: true
-                visible: parent.shown
-                text: library.rec.passText !== "" ? library.rec.passText : library.rec.flaggedText
-                variant: "caption"
-                tone: "warn"
-                wrapMode: Text.NoWrap
-                maximumLineCount: 1
-                elide: Text.ElideRight
-            }
-            SuiButton {
-                visible: parent.shown
-                objectName: library.rec.passText !== "" ? "studioEndPass" : "studioReviewFlagged"
-                Layout.preferredHeight: 24
-                topPadding: 0
-                bottomPadding: 0
-                variant: "ghost"
-                text: library.rec.passText !== "" ? "End" : "Review now"
-                enabled: library.rec.canNavigate
-                onClicked: library.rec.passText !== "" ? library.rec.endPass()
-                                                       : library.rec.reviewFlagged()
-            }
         }
         SuiSearchField {
             id: search

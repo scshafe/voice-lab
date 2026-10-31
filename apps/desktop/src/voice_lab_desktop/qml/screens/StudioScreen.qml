@@ -41,7 +41,10 @@ Item {
     // aside: a menu item is a click, and ⌘ keys work in a field as in any Mac app).
     readonly property bool commandsOn: shown && visible && !menuOpen
     onCommandsOnChanged: rec.setCommandsEnabled(commandsOn)
-    Component.onCompleted: rec.setCommandsEnabled(commandsOn)
+    Component.onCompleted: {
+        rec.setCommandsEnabled(commandsOn)
+        rec.setInspectorRoom(inspectorRoom)
+    }
 
     Shortcut {
         objectName: "studioKeyRecord"
@@ -120,6 +123,21 @@ Item {
         autoRepeat: false
         enabled: studio.keysEnabled
         onActivated: studio.rec.setReadingSize(studio.rec.readingSizes[0])
+    }
+    // ⌃⌘S folds the library away (Focus); ⌥⌘I hides or shows the inspector (D-058).
+    Shortcut {
+        objectName: "studioKeyLibrary"
+        sequence: "Ctrl+Meta+S"
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.toggleLibrary()
+    }
+    Shortcut {
+        objectName: "studioKeyInspector"
+        sequence: "Ctrl+Alt+I"
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.toggleInspector()
     }
     // ⌘/ opens the shortcuts (Escape closes them: the overlay is a dialog).
     Shortcut {
@@ -355,13 +373,27 @@ Item {
     }
 
     // Layout tokens: an 8-point scale, 16-point insets, a 280-point library (240 below a
-    // 1,000-point screen), a 56-point Record/Stop target.
+    // 1,000-point screen) that folds away, a 56-point Record/Stop target.
+    //
+    // The inspector (D-058's layout: 300 points, 260 below 1,100) takes its width only where
+    // the centre keeps at least `centreMin` beside it: there it holds the take's picker, Save
+    // and Discard, and the trim, and the centre keeps the prompt, the waveform and Record,
+    // Retake and Save & Next. Hidden, or with no room for it (the smallest window), those come
+    // back to the centre, where the reference layout has them. One of each, moved between the
+    // two places, so a control is always the same control.
     readonly property int inset: SuiTheme.spaceLg
     readonly property int gap: SuiTheme.spaceSm
     readonly property int sidebarWidth: width >= 1000 ? 280 : 240
+    readonly property int libraryWidth: rec.libraryShown ? sidebarWidth : 0
+    readonly property int inspectorBase: width >= 1100 ? 300 : 260
+    readonly property int centreMin: 440
+    readonly property bool inspectorRoom: width - libraryWidth - inspectorBase - 2 * inset >= centreMin
+    readonly property bool inspectorOn: rec.inspectorShown && inspectorRoom
+    onInspectorRoomChanged: rec.setInspectorRoom(inspectorRoom)
+    readonly property int inspectorWidth: inspectorOn ? inspectorBase : 0
     readonly property int headerHeight: 48
-    readonly property int pickerHeight: 24
-    readonly property int trimHeight: 24
+    readonly property int pickerHeight: inspectorOn ? 0 : 24
+    readonly property int trimHeight: inspectorOn ? 0 : 24
     readonly property int timerHeight: 24
     readonly property int playbackHeight: 32
     readonly property int footerHeight: 56
@@ -371,7 +403,7 @@ Item {
     readonly property int scriptFloor: 160
     readonly property int waveformFloor: 64
     readonly property int fixedHeight: headerHeight + pickerHeight + trimHeight + timerHeight
-        + playbackHeight + footerHeight + statusHeight + 8 * gap + 2 * inset
+        + playbackHeight + footerHeight + statusHeight + (inspectorOn ? 6 : 8) * gap + 2 * inset
     // Height beyond the workspace's base goes 70% to the script and 30% to the waveform.
     // Below the base the prompt comes first: the waveform gives way down to its floor, then
     // the script down to its own; a window shorter still scrolls.
@@ -381,15 +413,15 @@ Item {
         : Math.max(scriptFloor, scriptBase + extra + waveformGives)
     readonly property real waveformHeight: extra >= 0 ? waveformBase + 0.3 * extra
                                                       : waveformBase - waveformGives
-    readonly property real contentX: sidebarWidth + inset
-    readonly property real contentWidth: Math.max(0, width - contentX - inset)
+    readonly property real contentX: libraryWidth + inset
+    readonly property real contentWidth: Math.max(0, width - libraryWidth - inspectorWidth - 2 * inset)
 
     readonly property real headerY: inset
     readonly property real scriptY: headerY + headerHeight + gap
     readonly property real pickerY: scriptY + scriptHeight + gap
-    readonly property real waveformY: pickerY + pickerHeight + gap
+    readonly property real waveformY: pickerY + pickerHeight + (inspectorOn ? 0 : gap)
     readonly property real trimY: waveformY + waveformHeight + gap
-    readonly property real timerY: trimY + trimHeight + gap
+    readonly property real timerY: trimY + trimHeight + (inspectorOn ? 0 : gap)
     readonly property real playbackY: timerY + timerHeight + gap
     readonly property real footerY: playbackY + playbackHeight + gap
     readonly property real statusY: footerY + footerHeight + gap
@@ -400,28 +432,79 @@ Item {
     readonly property bool live: rec.phase === "starting" || rec.phase === "recording"
     readonly property bool recordingTime: live || rec.phase === "stopping"
 
-    component CompactButton: SuiButton {
-        Layout.preferredHeight: 24
-        topPadding: 0
-        bottomPadding: 0
-        variant: "ghost"
-    }
-
     StudioLibrary {
         id: libraryPane
         x: 0
         y: 0
         width: studio.sidebarWidth
         height: studio.height
+        visible: studio.rec.libraryShown
         rec: studio.rec
+    }
+
+    StudioInspector {
+        id: inspectorPane
+        x: studio.width - studio.inspectorBase
+        y: 0
+        width: studio.inspectorBase
+        height: studio.height
+        visible: studio.inspectorOn
+        rec: studio.rec
+    }
+
+    // The take's picker, its Save and Discard, its trim: in the inspector while it shows, else
+    // in the centre (see the layout tokens).
+    StudioTakePicker {
+        id: takePicker
+        objectName: "studioTakePicker"
+        parent: studio.inspectorOn ? inspectorPane.takeSlot : workspace.contentItem
+        x: studio.inspectorOn ? 0 : studio.inset
+        y: studio.inspectorOn ? 0 : studio.pickerY
+        width: studio.inspectorOn ? parent.width : studio.contentWidth
+        height: studio.inspectorOn ? implicitHeight : studio.pickerHeight
+        stacked: studio.inspectorOn
+        takes: studio.takes
+        busy: studio.busy
+    }
+    Row {
+        id: saveButtons
+        objectName: "studioSaveButtons"
+        parent: studio.inspectorOn ? inspectorPane.saveSlot : footerSaveSlot
+        spacing: SuiTheme.spaceSm
+        SuiButton {
+            objectName: "studioDiscard"
+            width: 84
+            text: "Discard"
+            variant: "ghost"
+            enabled: studio.rec.canDiscard
+            onClicked: studio.rec.discard()
+        }
+        StudioKeyButton {
+            objectName: "studioSave"
+            text: "Save"
+            key: studio.rec.keys.save
+            enabled: studio.rec.canSave
+            onClicked: studio.rec.save()
+        }
+    }
+    StudioTrimRow {
+        id: trimRow
+        objectName: "studioTrimRow"
+        parent: studio.inspectorOn ? inspectorPane.trimSlot : workspace.contentItem
+        x: studio.inspectorOn ? 0 : studio.inset
+        y: studio.inspectorOn ? 0 : studio.trimY
+        width: studio.inspectorOn ? parent.width : studio.contentWidth
+        height: studio.inspectorOn ? implicitHeight : studio.trimHeight
+        compact: studio.inspectorOn
+        takes: studio.takes
     }
 
     Flickable {
         id: workspace
         objectName: "studioWorkspace"
-        x: studio.sidebarWidth
+        x: studio.libraryWidth
         y: 0
-        width: studio.width - studio.sidebarWidth
+        width: studio.width - studio.libraryWidth - studio.inspectorWidth
         height: studio.height
         contentWidth: width
         contentHeight: Math.max(height, studio.workspaceHeight)
@@ -436,10 +519,23 @@ Item {
             y: studio.headerY
             width: studio.contentWidth
             height: studio.headerHeight
+            SuiIconButton {
+                id: libraryToggle
+                objectName: "studioLibraryToggle"
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                icon.name: "panel-left"
+                label: studio.rec.libraryShown ? "Hide library" : "Show library"
+                checkable: true
+                checked: studio.rec.libraryShown
+                focusPolicy: Qt.NoFocus
+                onClicked: studio.rec.toggleLibrary()
+            }
             SuiText {
                 objectName: "studioPromptTitle"
-                anchors.left: parent.left
-                anchors.right: checkButton.left
+                anchors.left: libraryToggle.right
+                anchors.leftMargin: SuiTheme.spaceSm
+                anchors.right: sizeSelect.left
                 anchors.rightMargin: SuiTheme.spaceMd
                 y: 2
                 text: studio.rec.promptTitle
@@ -447,29 +543,15 @@ Item {
                 elide: Text.ElideRight
             }
             StudioLabelChips {
-                anchors.left: parent.left
-                anchors.right: checkButton.left
+                anchors.left: libraryToggle.right
+                anchors.leftMargin: SuiTheme.spaceSm
+                anchors.right: sizeSelect.left
                 anchors.rightMargin: SuiTheme.spaceMd
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 2
                 titles: studio.rec.labelChips
                 pinned: studio.rec.pinnedChips
                 spokenLabel: studio.rec.labelsSpoken
-            }
-            SuiButton {
-                id: checkButton
-                objectName: "studioCheckInput"
-                anchors.right: sizeSelect.left
-                anchors.rightMargin: SuiTheme.spaceSm
-                anchors.verticalCenter: parent.verticalCenter
-                height: 24
-                topPadding: 0
-                bottomPadding: 0
-                text: "Check input"
-                variant: "ghost"
-                focusPolicy: Qt.NoFocus
-                enabled: studio.rec.canCheck
-                onClicked: studio.rec.openCheck()
             }
             // The reading size (§5's text-size choice), kept per viewer.
             T.ComboBox {
@@ -551,10 +633,25 @@ Item {
                     }
                 }
             }
+            SuiIconButton {
+                id: inspectorToggle
+                objectName: "studioInspectorToggle"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                icon.name: "panel-right"
+                label: !studio.inspectorRoom ? "The window is too narrow for the inspector"
+                       : studio.rec.inspectorShown ? "Hide inspector" : "Show inspector"
+                checkable: true
+                checked: studio.inspectorOn
+                enabled: studio.inspectorRoom
+                focusPolicy: Qt.NoFocus
+                onClicked: studio.rec.toggleInspector()
+            }
             SuiChip {
                 id: deviceChip
                 objectName: "studioDevice"
-                anchors.right: parent.right
+                anchors.right: inspectorToggle.left
+                anchors.rightMargin: SuiTheme.spaceSm
                 anchors.verticalCenter: parent.verticalCenter
                 width: 120
                 text: studio.rec.deviceOk ? "UMIK-1" : "No microphone"
@@ -575,19 +672,11 @@ Item {
             width: studio.contentWidth
             height: studio.scriptHeight
             rec: studio.rec
+            notesElsewhere: studio.inspectorOn
         }
 
-        // -- the take picker, the waveform, the trim row (step 6b) ---------------------------
-        StudioTakePicker {
-            id: takePicker
-            objectName: "studioTakePicker"
-            x: studio.inset
-            y: studio.pickerY
-            width: studio.contentWidth
-            height: studio.pickerHeight
-            takes: studio.takes
-            busy: studio.busy
-        }
+        // -- the waveform (step 6b); its picker and trim row are above, moved here or into the
+        // inspector -------------------------------------------------------------------------
         Rectangle {
             objectName: "studioWaveform"
             x: studio.inset
@@ -703,84 +792,6 @@ Item {
                 }
             }
         }
-        // In and Out from the playhead, Save trim, Reset. The take under review keeps its edit
-        // until Save; a take recorded elsewhere shows its trim.
-        Item {
-            id: trimRow
-            objectName: "studioTrimRow"
-            x: studio.inset
-            y: studio.trimY
-            width: studio.contentWidth
-            height: studio.trimHeight
-            // The In and Out captions only where the row has room for them (they depend on
-            // the window's size alone): on the smallest window, Set In and Set Out name the
-            // times beside them.
-            readonly property bool captions: width >= 520
-            RowLayout {
-                anchors.fill: parent
-                spacing: SuiTheme.spaceXs
-                SuiText { text: "In"; variant: "caption"; visible: trimRow.captions }
-                SuiText {
-                    objectName: "studioTrimIn"
-                    text: studio.takes.inText
-                    variant: "code"
-                    tone: studio.takes.trimDirty ? "warn" : ""
-                    Accessible.name: "In " + text
-                }
-                CompactButton {
-                    objectName: "studioSetIn"
-                    text: "Set In"
-                    enabled: studio.takes.canEditTrim
-                    onClicked: studio.takes.setIn()
-                }
-                SuiText {
-                    Layout.leftMargin: SuiTheme.spaceSm
-                    text: "Out"
-                    variant: "caption"
-                    visible: trimRow.captions
-                }
-                SuiText {
-                    objectName: "studioTrimOut"
-                    Layout.leftMargin: trimRow.captions ? 0 : SuiTheme.spaceSm
-                    text: studio.takes.outText
-                    variant: "code"
-                    tone: studio.takes.trimDirty ? "warn" : ""
-                    Accessible.name: "Out " + text
-                }
-                CompactButton {
-                    objectName: "studioSetOut"
-                    text: "Set Out"
-                    enabled: studio.takes.canEditTrim
-                    onClicked: studio.takes.setOut()
-                }
-                Item { id: trimGap; Layout.fillWidth: true }
-                CompactButton {
-                    objectName: "studioSaveTrim"
-                    text: "Save trim"
-                    variant: "secondary"
-                    enabled: studio.takes.canSaveTrim
-                    onClicked: studio.takes.saveTrim()
-                }
-                CompactButton {
-                    objectName: "studioResetTrim"
-                    text: "Reset"
-                    enabled: studio.takes.canResetTrim
-                    onClicked: studio.takes.resetTrim()
-                }
-            }
-            // "edited" sits in the gap and never takes room from the row: shown when it
-            // fits there (the times turn amber either way).
-            SuiText {
-                objectName: "studioTrimEdited"
-                x: trimGap.x + Math.round((trimGap.width - width) / 2)
-                anchors.verticalCenter: parent.verticalCenter
-                text: "edited"
-                variant: "caption"
-                tone: "warn"
-                visible: studio.takes.trimDirty && trimGap.width >= width + 2 * SuiTheme.spaceXs
-            }
-        }
-
         // -- the timer: the take's confirmed frames while recording (D-014), else the playhead
         Item {
             objectName: "studioTimer"
@@ -990,20 +1001,11 @@ Item {
                     enabled: studio.rec.canRetake
                     onClicked: studio.rec.retake()
                 }
-                SuiButton {
-                    objectName: "studioDiscard"
-                    width: 84
-                    text: "Discard"
-                    variant: "ghost"
-                    enabled: studio.rec.canDiscard
-                    onClicked: studio.rec.discard()
-                }
-                StudioKeyButton {
-                    objectName: "studioSave"
-                    text: "Save"
-                    key: studio.rec.keys.save
-                    enabled: studio.rec.canSave
-                    onClicked: studio.rec.save()
+                Item {
+                    id: footerSaveSlot
+                    visible: !studio.inspectorOn
+                    width: saveButtons.width
+                    height: saveButtons.height
                 }
                 StudioKeyButton {
                     objectName: "studioSaveNext"
