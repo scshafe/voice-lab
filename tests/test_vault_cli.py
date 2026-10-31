@@ -40,6 +40,7 @@ from vault_binding_fixtures import (
     install_vault_seams,
     restore_permissions,
     running_vault,
+    settle,
     store_vault_token,
 )
 
@@ -787,6 +788,7 @@ def test_a_library_is_copied_over_the_tailnet_and_the_two_logs_agree(
         assert cli.json("vault", "status", "--asset-root", str(root), "--json")["state"] == (
             "up-to-date"
         )
+        settle(server.server)  # a worker writes its line after it answers
 
         audit = cli.json(
             "vault", "audit", "--asset-root", str(root), "--access-log", str(server.access_log)
@@ -845,6 +847,8 @@ def test_an_audit_fails_on_a_read_the_mac_never_asked_for(
         )
         assert connection.getresponse().status == 200
         connection.close()
+        # The worker writes the read's line only after it answers: a slow host audited first.
+        settle(server.server)
 
         audit = cli.failed(
             "vault", "audit", "--asset-root", str(root), "--access-log", str(server.access_log)
