@@ -246,6 +246,12 @@ def shortcut_rows() -> list[dict[str, Any]]:
         },
         {
             "group": "Recording",
+            "keys": ["1", "9"],
+            "separator": "–",
+            "description": "Audition this prompt's takes, newest first; Return keeps it",
+        },
+        {
+            "group": "Recording",
             "keys": [key_text(QKeySequence.StandardKey.Undo)],
             "description": "Undo the last Save or Retake: the take is a draft again",
         },

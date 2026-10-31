@@ -236,6 +236,8 @@ class TakeReviewModel(ViewModel):
         self._pending_seek: int | None = None
         self._closed = False
         self._live_reading = False
+        #: The take to play once it is loaded (keys 1–9: audition).
+        self._play_on_load = ""
         #: Told each PC history read (prompt id, library tag, history): the studio's status.
         self.on_history: Callable[[str, str | None, TakeHistory], None] | None = None
         #: Where verdicts are kept (the studio sets it: ``<data dir>/studio/quality.json``).
@@ -427,11 +429,52 @@ class TakeReviewModel(ViewModel):
         return self._range_or_whole(edit, review.frames)
 
     def selected_draft(self) -> str:
-        """The selected saved take when it is an undecided draft (Save keeps it)."""
+        """The selected saved take when Save may keep it: an undecided draft, or an attempt a
+        retake set aside (D-058, items 2 and 8: the take folder's attempts)."""
         entry = self._selected
-        if entry is not None and entry.decidable and entry.decision == "draft":
+        if entry is not None and self._keepable(entry) and entry.key != REVIEW:
             return entry.take_id
         return ""
+
+    def selected_superseded(self) -> bool:
+        """The selected take is an attempt a retake set aside."""
+        return self._selected is not None and self._selected.superseded
+
+    @staticmethod
+    def _keepable(entry: TakeEntry) -> bool:
+        """Return or Save may keep it: the take under review, a draft, or an attempt set aside."""
+        if entry.key == REVIEW:
+            return True
+        return entry.decidable and (entry.decision == "draft" or entry.superseded)
+
+    def other_attempts(self, keep: str) -> list[str]:
+        """This prompt's other undecided attempts recorded here (drafts) when ``keep`` is kept:
+        the retire step of item 2 applies to them (D-058, item 8)."""
+        return [
+            entry.take_id
+            for entry in self._entries
+            if entry.key not in (REVIEW, keep)
+            and entry.decision == "draft"
+            and entry.local is not None
+            and not entry.local.remote
+        ]
+
+    @Slot(int)
+    def audition(self, number: int) -> None:
+        """Keys 1–9: select this prompt's ``number``th take, newest first, and play it."""
+        if self.busy() or not 1 <= number <= min(9, len(self._entries)):
+            return
+        entry = self._entries[number - 1]
+        if self._selected is not None and entry.key == self._selected.key:
+            if self._samples_key == entry.key and self._samples is not None:
+                self.togglePlay()
+            return
+
+        def go() -> None:
+            self._play_on_load = entry.key
+            self._select(entry)
+
+        self.guard(go)
 
     def take_id_for_change(self, entry: TakeEntry) -> str:
         """The spool's take for a change of ``entry``: a take recorded elsewhere is noted
@@ -511,8 +554,12 @@ class TakeReviewModel(ViewModel):
     def _history_row(self, entry: TakeEntry) -> dict[str, Any]:
         selected = self._selected is not None and self._selected.key == entry.key
         verdict = self._verdict(entry)
+        place = next((i for i, e in enumerate(self._entries) if e.key == entry.key), 9)
         return {
             "key": entry.key,
+            # Its key, 1–9 (newest first), and whether Return would keep it (D-058, item 8).
+            "number": place + 1 if place < 9 else 0,
+            "willKeep": selected and self._keepable(entry) and not self.busy(),
             "label": self._label(entry),
             "flags": ", ".join(flag.title for flag in verdict.flags) if verdict else "",
             "when": entry.when,
@@ -669,6 +716,9 @@ class TakeReviewModel(ViewModel):
         self._view(0, frames, note="dB display scale")
         self._update_trim()
         self._update_play()
+        if self._play_on_load == entry.key:
+            self._play_on_load = ""
+            self.togglePlay()
 
     def _clear_wave(self, note: str) -> None:
         self._set(
