@@ -214,6 +214,27 @@ def pc_findings(wav: bytes, *, spoken: bool) -> tuple[tuple[str, ...], int]:
     return tuple(metrics.findings), int(metrics.clipped_samples)
 
 
+@dataclass(frozen=True)
+class Thresholds:
+    """The two levels the operator calibrates (Settings → Recording; kept in the studio's view
+    file): Low SNR under ``low_snr_db``, Inconsistent over ``drift_db``."""
+
+    low_snr_db: float = LOW_SNR_DB
+    drift_db: float = DRIFT_DB
+
+    @classmethod
+    def of(cls, low_snr_db: object, drift_db: object) -> Thresholds:
+        """Valid values, else the defaults: an SNR level in (0, 60] dB, a drift in (0, 30] dB."""
+
+        def valid(value: object, top: float, default: float) -> float:
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if math.isfinite(value) and 0 < value <= top:
+                    return float(value)
+            return default
+
+        return cls(valid(low_snr_db, 60.0, LOW_SNR_DB), valid(drift_db, 30.0, DRIFT_DB))
+
+
 def judge(
     levels: Levels,
     findings: Sequence[str],
@@ -222,10 +243,11 @@ def judge(
     spoken: bool,
     expected_seconds: float,
     recent: Sequence[float] = (),
+    thresholds: Thresholds = Thresholds(),  # noqa: B008 (frozen)
 ) -> tuple[Flag, ...]:
     """The flags of a take with these ``levels`` and PC QC ``findings`` (``clipped``: samples
-    at full scale), for a spoken prompt or not, against the catalog's ``expected_seconds`` and
-    the speech levels of this session's ``recent`` kept takes (oldest first)."""
+    at full scale), for a spoken prompt or not, against the catalog's ``expected_seconds``, the
+    speech levels of this run's ``recent`` kept takes (oldest first) and the ``thresholds``."""
     flags: list[Flag] = []
     if clipped or levels.peak_dbfs >= NEAR_CLIP_DBFS:
         detail = (
@@ -248,20 +270,20 @@ def judge(
                     "speech, or no pause to measure the room by.",
                 )
             )
-        elif levels.snr_db < LOW_SNR_DB:
+        elif levels.snr_db < thresholds.low_snr_db:
             flags.append(
                 Flag(
                     "low-snr",
                     "Low SNR",
                     f"The speech stands {levels.snr_db:.0f} dB over the room's floor "
-                    f"(under {LOW_SNR_DB:.0f}).",
+                    f"(under {thresholds.low_snr_db:g}).",
                 )
             )
         window = list(recent)[-RECENT_TAKES:]
         if levels.speech_dbfs is not None and len(window) >= MIN_RECENT:
             median = float(np.median(window))
             drift = levels.speech_dbfs - median
-            if abs(drift) > DRIFT_DB:
+            if abs(drift) > thresholds.drift_db:
                 way = "louder" if drift > 0 else "quieter"
                 flags.append(
                     Flag(
@@ -322,6 +344,7 @@ def check(
     spoken: bool,
     expected_seconds: float,
     recent: Sequence[float] = (),
+    thresholds: Thresholds = Thresholds(),  # noqa: B008 (frozen)
 ) -> Verdict:
     """The verdict of the take whose WAV is ``wav``, its ``samples`` decoded (``judge``'s
     other arguments). Raises: what ``pc_findings`` raises."""
@@ -334,6 +357,7 @@ def check(
         spoken=spoken,
         expected_seconds=expected_seconds,
         recent=recent,
+        thresholds=thresholds,
     )
     return Verdict(levels, findings, flags)
 

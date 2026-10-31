@@ -4,7 +4,7 @@
 // Record: prompts is the prompt studio, whose model is `app.studioModel`, or with
 // `prompts_mode = "sessions"` phase 4c's screen over `app.promptsModel`), and `approval`:
 // Approve uploads to my PC, whose one dialog lives here (Status, Uploads and the studio open it).
-// This file lays out scshafe-qt's shell around them.
+// This file lays out scshafe-qt's shell around them, and holds the Settings window (⌘,).
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
@@ -22,8 +22,22 @@ Window {
     color: SuiTheme.bg
     title: "voice-lab"
 
+    // Settings (⌘,; D-058, item 9): a window of its own, on the pane last used.
+    SettingsWindow {
+        id: settingsWindow
+        transientParent: root
+    }
+    Shortcut {
+        objectName: "settingsKey"
+        sequences: [StandardKey.Preferences, "Ctrl+,"]
+        onActivated: app.openSettings()
+    }
     Connections {
         target: app
+        function onSettingsRequested() {
+            settingsWindow.show()
+            settingsWindow.requestActivate()
+        }
         function onToast(text, tone) { toasts.show(text, { tone: tone }) }
         function onCloseApproved() {
             root.closeApproved = true

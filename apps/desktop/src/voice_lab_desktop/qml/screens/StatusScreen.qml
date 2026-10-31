@@ -19,7 +19,7 @@ ScreenPage {
         tone: "warn"
         title: "Set up the server"
         text: "Set the voice-lab server and the Pocket ID issuer before signing in."
-        SuiButton { text: "Settings…"; variant: "secondary"; onClicked: settings.open() }
+        SuiButton { text: "Settings…"; variant: "secondary"; onClicked: app.openSettings() }
     }
 
     Card {
@@ -50,7 +50,7 @@ ScreenPage {
                 objectName: "settingsButton"
                 text: "Settings…"
                 variant: "ghost"
-                onClicked: settings.open()
+                onClicked: app.openSettings()
             }
         }
         SuiText {
@@ -190,64 +190,5 @@ ScreenPage {
             enabled: app.configured
             onClicked: app.openReport()
         }
-    }
-
-    SuiDialog {
-        id: settings
-        objectName: "settingsDialog"
-        parent: page
-        title: "Settings"
-        description: "Where the app finds the voice-lab server and Pocket ID. Values set in the environment win and cannot be changed here."
-        onOpened: {
-            serverField.text = app.server
-            issuerField.text = app.issuer
-            clientField.text = app.clientId
-            distanceField.text = String(app.distanceCm)
-        }
-        ColumnLayout {
-            spacing: SuiTheme.spaceSm
-            SuiText { text: "Server (https://voice-lab.<tailnet>.ts.net)"; variant: "label" }
-            SuiTextField {
-                id: serverField
-                objectName: "serverField"
-                Layout.fillWidth: true
-                label: "Server"
-                enabled: app.lockedSettings.indexOf("server_url") < 0
-            }
-            SuiText { text: "Pocket ID issuer (https://id.<tailnet>.ts.net)"; variant: "label" }
-            SuiTextField {
-                id: issuerField
-                objectName: "issuerField"
-                Layout.fillWidth: true
-                label: "Issuer"
-                enabled: app.lockedSettings.indexOf("issuer") < 0
-            }
-            SuiText { text: "Pocket ID client"; variant: "label" }
-            SuiTextField {
-                id: clientField
-                objectName: "clientField"
-                Layout.fillWidth: true
-                label: "Client"
-                enabled: app.lockedSettings.indexOf("client_id") < 0
-            }
-            SuiText { text: "Measurement: mouth to capsule distance, cm"; variant: "label" }
-            SuiTextField {
-                id: distanceField
-                objectName: "distanceField"
-                Layout.fillWidth: true
-                label: "Distance in centimetres"
-                inputMethodHints: Qt.ImhDigitsOnly
-            }
-        }
-        actions: [
-            SuiButton { text: "Cancel"; onClicked: settings.reject() },
-            SuiButton {
-                objectName: "saveSettings"
-                text: "Save"
-                variant: "primary"
-                onClicked: if (app.saveSettings(serverField.text, issuerField.text, clientField.text,
-                                                parseInt(distanceField.text) || 0)) settings.accept()
-            }
-        ]
     }
 }

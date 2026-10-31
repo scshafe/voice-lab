@@ -155,10 +155,9 @@ def test_a_notice_stays_until_it_is_dismissed(
     qtbot.waitUntil(lambda: studio.noticeId != "", timeout=5000)
     assert studio.syncText == "Reference Neutral 01: changed elsewhere"
     assert studio.syncTone == "warn"
-    # Details shows the client's whole notice, and dismisses it.
-    details = studio_window.find("studioDetails")
-    qtbot.waitUntil(lambda: details.property("visible"), timeout=5000)
-    click(studio_window, "studioDetails")
+    # The badge shows the client's whole notice, and Dismiss dismisses it.
+    qtbot.waitUntil(lambda: studio.syncBadge == "A notice", timeout=5000)
+    click(studio_window, "studioSyncBadge")
     popup = studio_window.find("studioDetailsPopup")
     qtbot.waitUntil(lambda: popup.property("visible"), timeout=5000)
     assert studio_window.items("studioDetailsText")[0].property("text") == (
@@ -168,4 +167,4 @@ def test_a_notice_stays_until_it_is_dismissed(
     qtbot.waitUntil(lambda: studio.noticeId == "", timeout=5000)
     assert studio.client.notices() == ()
     assert studio.syncText.startswith("Uploads off until S-1 passes")
-    assert not popup.property("visible") and not details.property("visible")
+    assert not popup.property("visible") and studio.syncBadge == "Uploads off"

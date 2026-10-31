@@ -45,7 +45,7 @@ def test_uploads_need_your_ok_then_approve_sends_the_take(
             assert (studio.syncText, studio.syncTone) == ("Uploads need your OK", "warn")
             approve = window.find("studioApprove")
             assert approve.property("visible") and approve.property("enabled")
-            assert not window.find("studioDetails").property("visible")
+            assert studio.syncBadge == "Needs your OK"
             assert not window.find("studioSyncNow").property("visible")
             # While a take is recorded, Approve waits.
             click(window, "studioRecord")
@@ -63,8 +63,7 @@ def test_uploads_need_your_ok_then_approve_sends_the_take(
                 lambda: studio.syncText == "Uploads need your OK · 2 queued", timeout=10000
             )
             sync = window.find("studioSyncText")
-            qtbot.waitUntil(lambda: sync.property("text") == studio.syncText, timeout=5000)
-            assert not sync.property("truncated")
+            qtbot.waitUntil(lambda: sync.property("text") == "Needs your OK", timeout=5000)
             calls: list[str] = []
             sync_now = studio.client.sync_now
 

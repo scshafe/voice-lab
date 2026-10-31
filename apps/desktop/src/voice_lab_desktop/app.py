@@ -9,14 +9,20 @@ studio, or with ``prompts_mode = "sessions"`` phase 4c's ``app.promptsModel``). 
 owns the sign-in (Pocket ID, PKCE, a loopback
 redirect; ``auth.py``) and the settings (``config.py``), and it navigates: a screen's model is
 activated when its screen is shown, which loads its data the first time, and deactivated when
-another is (the measurement screen stops scanning the audio devices).
+another is (the measurement screen stops scanning the audio devices). Settings (⌘,; D-058,
+the recording UX review's item 9) is a window of its own (``SettingsWindow.qml``), opened on
+the pane last used (``settingsPane``, kept in ``<data dir>/window.json``), with corpus sync
+(``setCorpusSync``) beside the server and Pocket ID.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import webbrowser
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Final
 
 import httpx
@@ -28,6 +34,7 @@ from .auth import AuthError, Session, sign_in
 from .capture.types import TakeRecorder
 from .config import Config, ConfigError, save_settings
 from .corpus.client import CorpusClient
+from .corpus.files import private_dir
 from .measurement.controller import Controller
 from .measurement.devices import AudioBackend
 from .measurement.levels import LevelReader
@@ -61,6 +68,10 @@ SCREENS: Final = (
 )
 SCREEN_KEYS: Final = tuple(key for key, *_ in SCREENS)
 SIDEBAR_ROLES: Final = ("key", "section", "text", "iconName", "count", "status")
+#: The Settings window's panes, in order; the first is where it opens the first time.
+SETTINGS_PANES: Final = ("general", "uploads", "recording")
+#: Under the data dir: what the windows keep between runs (the Settings pane).
+WINDOW_FILE: Final = "window.json"
 
 
 class QuitGuard(QObject):
@@ -83,6 +94,9 @@ class QuitGuard(QObject):
 class AppModel(ViewModel):
     #: The window may close now (the studio's unsaved trim edit was saved or discarded).
     closeApproved = Signal()
+    #: ⌘, (or Status → Settings…): the Settings window comes forward.
+    settingsRequested = Signal()
+    paneChanged = Signal()
     accountChanged = Signal()
     settingsChanged = Signal()
     navigationChanged = Signal()
@@ -98,6 +112,8 @@ class AppModel(ViewModel):
     issuer = qproperty(str, "issuer", settingsChanged)
     clientId = qproperty(str, "clientId", settingsChanged)
     distanceCm = qproperty(int, "distanceCm", settingsChanged)
+    corpusSync = qproperty(bool, "corpusSync", settingsChanged)
+    settingsPane = qproperty(str, "settingsPane", paneChanged)
     settingsSource = qproperty(str, "settingsSource", settingsChanged)
     lockedSettings = qproperty("QVariantList", "lockedSettings", settingsChanged)
     version = qproperty(str, "version", settingsChanged)
@@ -229,6 +245,7 @@ class AppModel(ViewModel):
             screenIndex=SCREEN_KEYS.index(start),
             sidebar=[],
             version=__version__,
+            settingsPane=self._load_pane(),
         )
         self._apply_config(config)
         self._sidebar_rows = RoleRows(SIDEBAR_ROLES, self)
@@ -444,6 +461,7 @@ class AppModel(ViewModel):
             issuer=config.issuer,
             clientId=config.client_id,
             distanceCm=config.distance_cm,
+            corpusSync=config.corpus_sync,
             settingsSource=config.source,
             lockedSettings=list(config.env_keys),
         )
@@ -482,6 +500,66 @@ class AppModel(ViewModel):
         self.toast.emit("Settings saved.", "ok")
         self.status.refresh()
         return True
+
+    # -- the Settings window (D-058, item 9) --------------------------------------------------
+
+    @Slot()
+    def openSettings(self) -> None:  # noqa: N802
+        """⌘,: the Settings window, on the pane last used."""
+        self.settingsRequested.emit()
+
+    def _window_file(self) -> Path:
+        return Path(self.context.config.data_dir) / WINDOW_FILE
+
+    def _load_pane(self) -> str:
+        try:
+            data = json.loads(self._window_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return SETTINGS_PANES[0]
+        pane = data.get("settings_pane") if isinstance(data, dict) else None
+        return pane if pane in SETTINGS_PANES else SETTINGS_PANES[0]
+
+    @Slot(str)
+    def setSettingsPane(self, pane: str) -> None:  # noqa: N802
+        """Show a pane, and open on it next time."""
+        if pane not in SETTINGS_PANES or pane == self._v["settingsPane"]:
+            return
+        self._set(self.paneChanged, settingsPane=pane)
+        path = self._window_file()
+        try:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            data = {**(data if isinstance(data, dict) else {}), "settings_pane": pane}
+            private_dir(path.parent)
+            temporary = path.with_name(f".{path.name}.tmp")
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(data, stream)
+            os.replace(temporary, path)
+        except OSError as exc:
+            self.toast.emit(f"The Settings pane is not kept: {exc}", "warn")
+
+    @Slot(bool)
+    def setCorpusSync(self, enabled: bool) -> None:  # noqa: N802
+        """Corpus sync on or off (``corpus_sync`` in the settings file): on, the studio's
+        corpus client sends what waits at once."""
+        config = self.context.config
+        enabled = bool(enabled)
+        if enabled == config.corpus_sync:
+            return
+        try:
+            saved = save_settings(config, {"corpus_sync": enabled})
+        except ConfigError as exc:
+            self.toast.emit(f"Corpus sync not changed: {exc}", "danger")
+            self._apply_config(config)
+            return
+        self.context.set_config(saved)
+        self._apply_config(saved)
+        if self.studio is not None:
+            self.studio.syncNow()
+        self.toast.emit("Takes go to the PC." if enabled else "Takes stay on this machine.", "ok")
 
     @Slot()
     def openReport(self) -> None:  # noqa: N802

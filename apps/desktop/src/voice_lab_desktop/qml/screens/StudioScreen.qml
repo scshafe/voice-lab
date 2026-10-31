@@ -789,6 +789,7 @@ Item {
             width: studio.contentWidth
             height: studio.timerHeight
             Text {
+                id: elapsedLabel
                 objectName: "studioElapsed"
                 anchors.centerIn: parent
                 textFormat: Text.PlainText
@@ -800,13 +801,19 @@ Item {
                 font.features: { "tnum": 1 }
                 Accessible.name: (studio.recordingTime ? "Elapsed " : "Position ") + text
             }
+            // The take's own caption (D-058, item 9): what it is, then the scale; errors are
+            // the status line's and never take its place.
             SuiText {
                 objectName: "studioWaveNote"
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                visible: studio.takes.bins.length > 0
-                text: studio.takes.waveNote
+                width: Math.max(0, parent.width / 2 - elapsedLabel.width / 2 - SuiTheme.spaceSm)
+                visible: studio.takes.bins.length > 0 || studio.takes.takeCaption !== ""
+                text: studio.takes.takeCaption !== ""
+                      ? studio.takes.takeCaption + " · " + studio.takes.waveNote
+                      : studio.takes.waveNote
                 variant: "caption"
+                elide: Text.ElideRight
             }
             SuiLevelMeter {
                 objectName: "studioLevel"
@@ -915,6 +922,30 @@ Item {
                 stopping: studio.live || studio.rec.phase === "stopping"
                 enabled: studio.rec.canRecord || studio.rec.canStop
                 onClicked: studio.rec.toggleRecord()
+                Accessible.description: studio.rec.recordBlocker
+                // Disabled, it says why (D-058, item 9; the Swift app's transport does).
+                HoverHandler {
+                    id: recordHover
+                }
+                T.ToolTip {
+                    id: recordTip
+                    objectName: "studioRecordTip"
+                    parent: recordButton
+                    visible: recordHover.hovered && studio.rec.recordBlocker !== ""
+                    delay: 400
+                    y: -implicitHeight - SuiTheme.spaceXs
+                    padding: SuiTheme.spaceSm
+                    contentItem: SuiText {
+                        text: studio.rec.recordBlocker
+                        variant: "caption"
+                    }
+                    background: Rectangle {
+                        radius: SuiTheme.radiusSm
+                        color: SuiTheme.popover
+                        border.width: 1
+                        border.color: SuiTheme.borderStrong
+                    }
+                }
             }
             // As wide as its widest word, so R beside it never moves with the transport.
             FontMetrics {
@@ -1003,7 +1034,8 @@ Item {
                 objectName: "studioStatusText"
                 anchors.left: parent.left
                 anchors.top: parent.top
-                width: Math.floor(parent.width * 0.40)
+                // The room the sync badge and its action leave.
+                width: Math.max(0, syncActions.x - SuiTheme.spaceMd)
                 height: parent.height
                 text: studio.rec.statusText
                 tone: studio.rec.statusTone === "neutral" ? "" : studio.rec.statusTone
@@ -1013,29 +1045,34 @@ Item {
                 elide: Text.ElideRight
                 verticalAlignment: Text.AlignVCenter
             }
-            SuiText {
-                objectName: "studioSyncText"
-                anchors.right: syncActions.left
-                anchors.rightMargin: syncActions.width > 0 ? SuiTheme.spaceXs : 0
-                anchors.top: parent.top
-                width: Math.floor(parent.width * 0.60) - SuiTheme.spaceSm
-                    - (syncActions.width > 0 ? syncActions.width + SuiTheme.spaceXs : 0)
-                height: parent.height
-                horizontalAlignment: Text.AlignRight
-                verticalAlignment: Text.AlignVCenter
-                text: studio.rec.syncText
-                tone: studio.rec.syncTone === "neutral" ? "muted" : studio.rec.syncTone
-                variant: "caption"
-                wrapMode: Text.Wrap
-                maximumLineCount: 2
-                elide: Text.ElideRight
-            }
             Row {
                 id: syncActions
                 objectName: "studioSyncActions"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: SuiTheme.spaceXs
+                // The sync badge (D-058, item 9): always there, a word or two; a click shows
+                // the whole line (and a notice's Dismiss).
+                T.AbstractButton {
+                    id: syncBadge
+                    objectName: "studioSyncBadge"
+                    anchors.verticalCenter: parent.verticalCenter
+                    implicitWidth: implicitContentWidth
+                    implicitHeight: implicitContentHeight
+                    padding: 0
+                    focusPolicy: Qt.NoFocus
+                    visible: studio.rec.syncBadge !== ""
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Sync: " + studio.rec.syncBadge
+                    Accessible.description: studio.rec.syncText
+                    onClicked: detailsPopup.open()
+                    contentItem: SuiChip {
+                        objectName: "studioSyncText"
+                        text: studio.rec.syncBadge
+                        tone: studio.rec.syncTone
+                        dot: true
+                    }
+                }
                 SuiButton {
                     objectName: "studioApprove"
                     text: "Approve"
@@ -1043,14 +1080,6 @@ Item {
                     visible: studio.rec.syncAction === "approve"
                     enabled: !approval.busy && !studio.busy
                     onClicked: approval.begin()
-                }
-                SuiButton {
-                    id: details
-                    objectName: "studioDetails"
-                    text: "Details"
-                    variant: "ghost"
-                    visible: studio.rec.syncDetail !== ""
-                    onClicked: detailsPopup.open()
                 }
                 SuiButton {
                     objectName: "studioSyncNow"
@@ -1079,9 +1108,18 @@ Item {
                 contentItem: ColumnLayout {
                     spacing: SuiTheme.spaceSm
                     SuiText {
+                        objectName: "studioDetailsLine"
+                        Layout.fillWidth: true
+                        text: studio.rec.syncText
+                        tone: studio.rec.syncTone === "neutral" ? "" : studio.rec.syncTone
+                        wrapMode: Text.Wrap
+                    }
+                    SuiText {
                         objectName: "studioDetailsText"
                         Layout.fillWidth: true
+                        visible: text !== ""
                         text: studio.rec.syncDetail
+                        variant: "caption"
                         wrapMode: Text.Wrap
                     }
                     RowLayout {

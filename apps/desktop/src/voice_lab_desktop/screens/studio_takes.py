@@ -87,6 +87,7 @@ class _Judging:
     recent: tuple[float, ...]
     #: The take under review: judged now, never read from the store.
     fresh: bool
+    thresholds: quality.Thresholds
 
 
 def clock(frames: int) -> str:
@@ -126,6 +127,9 @@ class TakeReviewModel(ViewModel):
     frameCount = qproperty(int, "frameCount", waveChanged)
     live = qproperty(bool, "live", waveChanged)
     waveNote = qproperty(str, "waveNote", waveChanged)
+    #: The waveform's own caption: what the selected take is (D-058, item 9: errors never
+    #: take its place; they are the status line's).
+    takeCaption = qproperty(str, "takeCaption", takesChanged)
     canZoomIn = qproperty(bool, "canZoomIn", waveChanged)
     canZoomOut = qproperty(bool, "canZoomOut", waveChanged)
     #: The live take's peak in dBFS (``audio.FLOOR_DB`` for none), for SuiLevelMeter.
@@ -167,6 +171,7 @@ class TakeReviewModel(ViewModel):
             context,
             {
                 "takeOptions": [],
+                "takeCaption": "",
                 "selectedKey": "",
                 "history": [],
                 "historyNote": "",
@@ -250,6 +255,8 @@ class TakeReviewModel(ViewModel):
         self.recent_levels: list[float] = []
         #: Check Input's room floor this session, shown beside a take's levels.
         self.room_floor_dbfs: float | None = None
+        #: The levels the operator calibrated (Settings → Recording), for new verdicts.
+        self.thresholds = quality.Thresholds()
         player = context.player
         player.changed.connect(self._player_changed)
         player.positionChanged.connect(self._player_position)
@@ -317,6 +324,7 @@ class TakeReviewModel(ViewModel):
         self.stop_playback()
         self._select(None, load=False)
         self._live = audio.LiveWaveform(path)
+        self._set(self.takesChanged, takeCaption=self._caption())
         self._set(
             self.waveChanged,
             live=True,
@@ -373,6 +381,7 @@ class TakeReviewModel(ViewModel):
         if self._live is None:
             return
         self._live = None
+        self._set(self.takesChanged, takeCaption=self._caption())
         self._set(self.waveChanged, live=False, levelPeakDb=audio.FLOOR_DB, levelText="")
         if self._selected is None:
             self._clear_wave("No take selected")
@@ -474,6 +483,7 @@ class TakeReviewModel(ViewModel):
             takeOptions=[{"value": e.key, "label": self._label(e)} for e in entries],
             history=[self._history_row(e) for e in entries],
             takeCount=len(entries),
+            takeCaption=self._caption(),
         )
         self._update_actions()
         self._update_trim()
@@ -484,6 +494,17 @@ class TakeReviewModel(ViewModel):
         verdict = self._verdict(entry)
         count = len(verdict.flags) if verdict is not None else 0
         return entry.label + (f" · {count} flag{'' if count == 1 else 's'}" if count else "")
+
+    def _caption(self) -> str:
+        """What the selected take is, for the waveform's caption."""
+        if self._live is not None:
+            return "Recording"
+        entry = self._selected
+        if entry is None:
+            return ""
+        if entry.key == REVIEW:
+            return "Not saved yet"
+        return f"{entry.status} · {entry.where_title}"
 
     def _history_row(self, entry: TakeEntry) -> dict[str, Any]:
         selected = self._selected is not None and self._selected.key == entry.key
@@ -582,6 +603,7 @@ class TakeReviewModel(ViewModel):
             self.takesChanged,
             selectedKey=entry.key if entry is not None else "",
             history=[self._history_row(e) for e in self._entries],
+            takeCaption=self._caption(),
         )
         self._update_actions()
         if entry is None:
@@ -689,6 +711,7 @@ class TakeReviewModel(ViewModel):
             expected_seconds=self._expected_seconds,
             recent=tuple(self.recent_levels) if review else (),
             fresh=review,
+            thresholds=self.thresholds,
         )
         self._update_quality()
         self._judge_next()
@@ -714,6 +737,7 @@ class TakeReviewModel(ViewModel):
                     spoken=job.spoken,
                     expected_seconds=job.expected_seconds,
                     recent=job.recent,
+                    thresholds=job.thresholds,
                 )
             except ContractError:
                 return None  # not a PCM WAV: the take's own checks say so elsewhere

@@ -274,6 +274,18 @@ class MenuBar(QObject):
         self._items: list[tuple[QAction, Command]] = []
         studio = model.studio
         file_menu = self.bar.addMenu("File")
+        # macOS moves it into the app's menu, where Settings… belongs (⌘,).
+        settings = self._add(
+            file_menu,
+            Command(
+                "settings",
+                _fixed("Settings…"),
+                model.openSettings,
+                lambda: True,
+                QKeySequence(QKeySequence.StandardKey.Preferences),
+            ),
+        )
+        settings.setMenuRole(QAction.MenuRole.PreferencesRole)
         if window is not None:
             self._add(
                 file_menu,
@@ -341,7 +353,7 @@ class MenuBar(QObject):
             else:
                 self._add(menu, command)
 
-    def _add(self, menu: QMenu, command: Command) -> None:
+    def _add(self, menu: QMenu, command: Command) -> QAction:
         action = QAction(command.title(), menu)
         action.setObjectName(f"menu-{command.name}")
         # A key is shown, never fired by Qt: it is the studio's Shortcut's (see above).
@@ -352,6 +364,7 @@ class MenuBar(QObject):
         action.triggered.connect(command.run)
         menu.addAction(action)
         self._items.append((action, command))
+        return action
 
     @property
     def actions(self) -> dict[str, QAction]:

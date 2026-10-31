@@ -180,6 +180,8 @@ class StudioModel(ViewModel):
     canSaveNext = qproperty(bool, "canSaveNext", transportChanged)
     canDiscard = qproperty(bool, "canDiscard", transportChanged)
     canNavigate = qproperty(bool, "canNavigate", transportChanged)
+    #: Why Record cannot start now ("" when it can, or stops): its tooltip (D-058, item 9).
+    recordBlocker = qproperty(str, "recordBlocker", transportChanged)
     #: Check Input may open the microphone now (between takes, with a UMIK-1).
     canCheck = qproperty(bool, "canCheck", transportChanged)
     # -- the status line
@@ -189,6 +191,8 @@ class StudioModel(ViewModel):
     syncTone = qproperty(str, "syncTone", statusChanged)
     syncDetail = qproperty(str, "syncDetail", statusChanged)
     syncAction = qproperty(str, "syncAction", statusChanged)
+    #: The sync badge's word or two (D-058, item 9); the whole line is ``syncText``.
+    syncBadge = qproperty(str, "syncBadge", statusChanged)
     problemText = qproperty(str, "problemText", statusChanged)
     noticeId = qproperty(str, "noticeId", statusChanged)
     # -- the reading size (kept per viewer)
@@ -196,6 +200,9 @@ class StudioModel(ViewModel):
     readingSizes = qproperty("QVariantList", "readingSizes", viewChanged)
     #: The match line (D-058, item 6; off by default, kept per viewer).
     matchLine = qproperty(bool, "matchLine", viewChanged)
+    #: The quality flags' calibrated levels (item 9: Settings → Recording).
+    lowSnrDb = qproperty(float, "lowSnrDb", viewChanged)
+    driftDb = qproperty(float, "driftDb", viewChanged)
     # -- the session's pace (D-058, item 6)
     sessionText = qproperty(str, "sessionText", paceChanged)
     breakHint = qproperty(str, "breakHint", paceChanged)
@@ -281,6 +288,7 @@ class StudioModel(ViewModel):
                 "canSaveNext": False,
                 "canDiscard": False,
                 "canNavigate": False,
+                "recordBlocker": "",
                 "canCheck": False,
                 "statusText": "",
                 "statusTone": "neutral",
@@ -288,6 +296,7 @@ class StudioModel(ViewModel):
                 "syncTone": "neutral",
                 "syncDetail": "",
                 "syncAction": "",
+                "syncBadge": "",
                 "problemText": "",
                 "noticeId": "",
                 "deviceOk": False,
@@ -295,6 +304,8 @@ class StudioModel(ViewModel):
                 "readingSize": READING_SIZES[0],
                 "readingSizes": list(READING_SIZES),
                 "matchLine": False,
+                "lowSnrDb": quality.LOW_SNR_DB,
+                "driftDb": quality.DRIFT_DB,
                 "sessionText": "",
                 "breakHint": "",
                 "commandsEnabled": False,
@@ -307,6 +318,8 @@ class StudioModel(ViewModel):
         view = self._load_view()
         self._v["readingSize"] = view["reading_size"]
         self._v["matchLine"] = view["match_line"]
+        levels: quality.Thresholds = view["quality"]
+        self._v["lowSnrDb"], self._v["driftDb"] = levels.low_snr_db, levels.drift_db
         #: This sitting's pace; its clock is a test's to set. It is read again with each take
         #: (a sitting is takes): no timer runs for it.
         self.pacing = pacing.Pacing(time.monotonic)
@@ -343,6 +356,7 @@ class StudioModel(ViewModel):
         # The takes' quality verdicts (D-058), read off the GUI thread.
         self.quality_store = quality.QualityStore(studio_dir / quality.STORE_FILE)
         self.take_review.quality_store = self.quality_store
+        self.take_review.thresholds = levels
         self.take_review.verdictsChanged.connect(self._verdicts_changed)
         context.tasks.submit(self.quality_store.warm, self._quality_read)
         self.input_check = InputCheckModel(
@@ -1010,12 +1024,34 @@ class StudioModel(ViewModel):
             canStop=phase in ("starting", "recording"),
             canRetake=ready and phase in ("review", "failed") and not checking,
             canCheck=self._v["deviceOk"] and phase not in BUSY and not checking,
+            recordBlocker=self._record_blocker(ready=ready, checking=checking),
             canSave=saveable,
             canSaveNext=saveable,
             canDiscard=phase == "failed",  # a good take is never deleted
             canNavigate=self._navigable(),
         )
         self._update_navigation()
+
+    def _record_blocker(self, *, ready: bool, checking: bool) -> str:
+        """Why Record cannot start now, in a few words (``""``: it can, or it stops)."""
+        phase = self._v["phase"]
+        if phase in ("starting", "recording"):
+            return ""
+        if phase == "stopping":
+            return "The take is being checked"
+        if phase == "saving":
+            return "The take is being saved"
+        if checking:
+            return "Check Input has the microphone"
+        if ready:
+            return ""
+        if self._pinned is None:
+            return "No catalog yet: the PC has not answered"
+        if not self.client.ready:
+            return "This machine's takes are being checked"
+        if not self._v["deviceOk"]:
+            return "No microphone: plug the UMIK-1 in, then click its chip"
+        return "Select a prompt"
 
     def _phase(self, phase: Phase, **values: Any) -> None:
         self._set(self.transportChanged, phase=phase, **values)
@@ -1405,12 +1441,32 @@ class StudioModel(ViewModel):
         data = self._read_view()
         size = data.get("reading_size")
         match = data.get("match_line")
+        levels = data.get("quality")
+        levels = levels if isinstance(levels, dict) else {}
         return {
             "reading_size": size
             if isinstance(size, int) and size in READING_SIZES
             else READING_SIZES[0],
             "match_line": match if isinstance(match, bool) else False,
+            "quality": quality.Thresholds.of(levels.get("low_snr_db"), levels.get("drift_db")),
         }
+
+    @Slot(float, float)
+    def setQualityLevels(self, low_snr_db: float, drift_db: float) -> None:  # noqa: N802
+        """Settings → Recording: Low SNR under ``low_snr_db``, Inconsistent over ``drift_db``,
+        for the takes judged from now on (a value out of range keeps the one before)."""
+        levels = quality.Thresholds.of(low_snr_db, drift_db)
+        current = self.take_review.thresholds
+        levels = quality.Thresholds(
+            low_snr_db if levels.low_snr_db == low_snr_db else current.low_snr_db,
+            drift_db if levels.drift_db == drift_db else current.drift_db,
+        )
+        if levels == current:
+            self._set(self.viewChanged, lowSnrDb=current.low_snr_db, driftDb=current.drift_db)
+            return
+        self.take_review.thresholds = levels
+        self._set(self.viewChanged, lowSnrDb=levels.low_snr_db, driftDb=levels.drift_db)
+        self._save_view(quality={"low_snr_db": levels.low_snr_db, "drift_db": levels.drift_db})
 
     def _save_view(self, **changes: Any) -> None:
         """Keep these choices with the others the file holds."""
@@ -1527,6 +1583,7 @@ class StudioModel(ViewModel):
             syncTone=line.tone,
             syncDetail=line.detail,
             syncAction=line.action,
+            syncBadge=line.badge or line.text,
             problemText=transport.detail,
             noticeId=sync.notices[-1].notice_id if sync.notices else "",
         )

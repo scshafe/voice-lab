@@ -1,9 +1,9 @@
 """The status line's words for each ``SyncStatus`` the corpus client reports: queued and sent
 counts, offline, the takes waiting for the PC's state, damaged takes and unsaved recordings,
 the notices (changed elsewhere, change blocked), uploads waiting for the home-host approval,
-and sending held until S-1 as a plain statement, not an error; and the one button each line
-offers (Approve, Sync now or Details). Then the same lines in the window, from the client's
-status, each whole on the smallest window."""
+and sending held until S-1 as a plain statement, not an error; the sync badge's word or two
+(D-058, item 9) and the one action beside it (Approve or Sync now; the badge itself shows the
+whole line). Then the same in the window, from the client's status, on the smallest window."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ from voice_lab_desktop.studio import status
 from voice_lab_desktop.studio.status import Line
 
 from cole_voice_lab.recording_contracts import CatalogReference
+
+from .test_studio_screen import click
 
 MOMENT = datetime(2026, 10, 12, 9, 30, tzinfo=UTC)
 TAKE = "take-" + "a" * 64
@@ -82,84 +84,114 @@ def notice(kind: str, text: str, number: int = 1) -> Notice:
     )
 
 
+def plain_sync(value: SyncStatus) -> Line:
+    """The sync line without its badge (the badges: ``test_the_sync_badge_for_each_state``)."""
+    return dataclasses.replace(status.sync_line(value), badge="")
+
+
+def plain_notice(notices: tuple[Notice, ...], titles: dict[str, str]) -> Line | None:
+    line = status.notice_line(notices, titles)
+    return None if line is None else dataclasses.replace(line, badge="")
+
+
+def test_the_sync_badge_for_each_state() -> None:
+    """The badge's word or two (D-058, item 9), the whole line behind it."""
+    badges = [
+        (BASE, "Up to date"),
+        (given(queued=3), "3 queued"),
+        (given(queued=3, busy=True), "Syncing"),
+        (given(offline=True, queued=2), "Offline"),
+        (given(refreshing=1, queued=1), "Waiting for the PC"),
+        (given(queued=1, upload_blocked="the settings name another server"), "Uploads blocked"),
+        (given(sign_in_required=True), "Signed out"),
+        (given(upload_needs_approval=True), "Needs your OK"),
+        (given(enabled=False, held=HELD_FOR_S1), "Uploads off"),
+        (given(unsaved_recordings=("rec-1",)), "Not saved"),
+        (given(damaged=(TAKE,)), "Damaged takes"),
+    ]
+    assert [status.sync_line(value).badge for value, _ in badges] == [b for _, b in badges]
+    one = notice("changed-elsewhere", "Changed elsewhere.", 1)
+    two = notice("change-blocked", "The PC cannot read this change.", 2)
+    assert status.notice_line((one,), {}).badge == "A notice"  # type: ignore[union-attr]
+    assert status.notice_line((one, two), {}).badge == "2 notices"  # type: ignore[union-attr]
+
+
 def test_the_sync_line_for_each_state() -> None:
     clock = MOMENT.astimezone().strftime("%H:%M")
-    assert status.sync_line(BASE) == Line("Up to date · 6 sent", "ok")
+    assert plain_sync(BASE) == Line("Up to date · 6 sent", "ok")
     # Sync now beside what waits for a pass: queued operations, offline, refreshing.
-    assert status.sync_line(given(queued=3)) == Line(
+    assert plain_sync(given(queued=3)) == Line(
         "Waiting to sync · 3 queued · 6 sent", "info", action="sync"
     )
-    assert status.sync_line(given(queued=3, busy=True)) == Line(
-        "Syncing · 3 queued · 6 sent", "info"
-    )
-    assert status.sync_line(given(local_only=2)) == Line("Up to date · 6 sent · 2 local-only", "ok")
-    assert status.sync_line(given(offline=True, queued=2)) == Line(
+    assert plain_sync(given(queued=3, busy=True)) == Line("Syncing · 3 queued · 6 sent", "info")
+    assert plain_sync(given(local_only=2)) == Line("Up to date · 6 sent · 2 local-only", "ok")
+    assert plain_sync(given(offline=True, queued=2)) == Line(
         f"Offline · 2 queued · 6 sent · last synced {clock}", "neutral", action="sync"
     )
-    assert status.sync_line(given(offline=True, sent=0, last_sync_at=None)) == Line(
+    assert plain_sync(given(offline=True, sent=0, last_sync_at=None)) == Line(
         "Offline", action="sync"
     )
-    assert status.sync_line(given(refreshing=1, queued=1)) == Line(
+    assert plain_sync(given(refreshing=1, queued=1)) == Line(
         "1 take waiting for the PC's state · 1 queued · 6 sent", "info", action="sync"
     )
     # A long cause: the line says what, its detail says why, whole.
     blocked = "no home-host approval is bound on this machine yet; approve the home host once"
-    assert status.sync_line(given(queued=1, upload_blocked=blocked)) == Line(
+    assert plain_sync(given(queued=1, upload_blocked=blocked)) == Line(
         "Uploads cannot start", "warn", f"Uploads cannot start: {blocked}"
     )
-    assert status.sync_line(given(sign_in_required=True)) == Line(
+    assert plain_sync(given(sign_in_required=True)) == Line(
         "Sign in on the Status screen to sync with the PC", "warn"
     )
     # Uploads wait for the home-host approval: said plainly, queued or not, with Approve in
     # Details' place (the approval dialog says the rest).
     unbound = given(upload_needs_approval=True, upload_blocked=blocked)
-    assert status.sync_line(unbound) == Line("Uploads need your OK · 6 sent", "warn", "", "approve")
-    assert status.sync_line(dataclasses.replace(unbound, queued=2)).text == (
+    assert plain_sync(unbound) == Line("Uploads need your OK · 6 sent", "warn", "", "approve")
+    assert plain_sync(dataclasses.replace(unbound, queued=2)).text == (
         "Uploads need your OK · 2 queued · 6 sent"
     )
     # Held until S-1, or offline, comes first: nothing would be sent anyway (offline offers
     # Sync now).
-    assert status.sync_line(dataclasses.replace(unbound, enabled=False)).action == ""
-    assert status.sync_line(dataclasses.replace(unbound, offline=True)).action == "sync"
+    assert plain_sync(dataclasses.replace(unbound, enabled=False)).action == ""
+    assert plain_sync(dataclasses.replace(unbound, offline=True)).action == "sync"
     # Held until S-1: said plainly, with what stays here, whatever else is true.
     held = given(enabled=False, held=HELD_FOR_S1, queued=4, offline=True)
-    assert status.sync_line(held) == Line(
+    assert plain_sync(held) == Line(
         "Offline · Uploads off until S-1 passes (corpus_sync) · 4 takes here",
         "neutral",
     )
-    assert status.sync_line(given(enabled=False, held=HELD_FOR_S1)) == Line(
+    assert plain_sync(given(enabled=False, held=HELD_FOR_S1)) == Line(
         "Uploads off until S-1 passes (corpus_sync) · 4 takes here", "neutral"
     )
-    assert status.sync_line(given(enabled=False, takes=1)).text.endswith("1 take here")
+    assert plain_sync(given(enabled=False, takes=1)).text.endswith("1 take here")
     # What cannot be read or saved comes first.
-    assert status.sync_line(given(unsaved_recordings=("rec-1", "rec-2"))) == Line(
+    assert plain_sync(given(unsaved_recordings=("rec-1", "rec-2"))) == Line(
         "2 recordings from an earlier run could not be saved: kept on disk", "warn"
     )
-    assert status.sync_line(given(damaged=(TAKE,), unsaved_recordings=("rec-1",))) == Line(
+    assert plain_sync(given(damaged=(TAKE,), unsaved_recordings=("rec-1",))) == Line(
         "1 take here cannot be read: kept, never sent", "danger"
     )
 
 
 def test_notices_show_the_newest_until_dismissed() -> None:
     titles = {"neutral-01": "Neutral 01"}
-    assert status.notice_line((), titles) is None
+    assert plain_notice((), titles) is None
     elsewhere = notice(
         "changed-elsewhere", "Changed elsewhere: this take now shows the PC's state."
     )
-    assert status.notice_line((elsewhere,), titles) == Line(
+    assert plain_notice((elsewhere,), titles) == Line(
         "Neutral 01: changed elsewhere",
         "warn",
         "Neutral 01: Changed elsewhere: this take now shows the PC's state.",
     )
     blocked = notice("change-blocked", "The PC cannot read this change (invalid_request).", 2)
-    line = status.notice_line((elsewhere, blocked), titles)
+    line = plain_notice((elsewhere, blocked), titles)
     assert line == Line(
         "Neutral 01: a change waits: the PC cannot read it (+1 more)",
         "warn",
         "Neutral 01: The PC cannot read this change (invalid_request).",
     )
     refused = notice("take-refused", "The PC refused this take: refused_by_intake", 3)
-    assert status.notice_line((refused,), {}) == Line(
+    assert plain_notice((refused,), {}) == Line(
         "neutral-01: the PC refused this take",
         "danger",
         "neutral-01: The PC refused this take: refused_by_intake",
@@ -170,7 +202,7 @@ def test_notices_show_the_newest_until_dismissed() -> None:
         "read again before anything more is sent; 2 queued change(s) were dropped.",
         4,
     )
-    line = status.notice_line((change,), titles)
+    line = plain_notice((change,), titles)
     assert line is not None
     assert line.text == "Neutral 01: the PC refused a change (trim_out_of_bounds)"
     assert line.detail.endswith("2 queued change(s) were dropped.")
@@ -197,7 +229,8 @@ def test_the_window_shows_the_clients_status(qtbot: Any, studio_window: Window) 
     studio = studio_window.model.studio
     client = studio.client
     sync = studio_window.find("studioSyncText")
-    qtbot.waitUntil(lambda: sync.property("text") == studio.syncText, timeout=5000)
+    qtbot.waitUntil(lambda: sync.property("text") == studio.syncBadge, timeout=5000)
+    assert studio.syncBadge == "Uploads off"
     assert studio.syncText.startswith("Uploads off until S-1 passes")
     assert studio.syncTone == "neutral"  # a plain statement, not an error
 
@@ -234,36 +267,39 @@ def test_the_window_shows_the_clients_status(qtbot: Any, studio_window: Window) 
             expected.tone,
             expected.detail,
         )
-        qtbot.waitUntil(lambda e=expected: sync.property("text") == e.text, timeout=5000)
-        # One button beside the line: Approve, Sync now or Details (a notice in the line's
-        # place offers Details only).
+        qtbot.waitUntil(lambda e=expected: sync.property("text") == e.badge, timeout=5000)
+        # One action beside the badge at most: Approve or Sync now (the badge shows the rest).
         assert studio.syncAction == expected.action
-        assert buttons(studio_window) == BUTTON_FOR[expected.action or bool(expected.detail)]
+        assert buttons(studio_window) == BUTTON_FOR[expected.action]
 
 
-#: The button beside each line: by its action, or Details for a line with a detail.
-BUTTON_FOR: dict[str | bool, list[str]] = {
+#: The button beside the badge, by the line's action.
+BUTTON_FOR: dict[str, list[str]] = {
     "approve": ["studioApprove"],
     "sync": ["studioSyncNow"],
-    True: ["studioDetails"],
-    False: [],
+    "": [],
 }
 
 
 def buttons(window: Window) -> list[str]:
-    """The buttons shown beside the sync line."""
-    names = ("studioApprove", "studioDetails", "studioSyncNow")
+    """The action shown beside the sync badge."""
+    names = ("studioApprove", "studioSyncNow")
     return [name for name in names if window.find(name).property("visible")]
 
 
 def test_every_sync_line_is_whole_on_the_smallest_window(qtbot: Any, studio_window: Window) -> None:
-    """PROMPT-STUDIO.md: each half of the status line is two lines at most, never cut short,
-    on the smallest window (960 × 600), with the button beside it."""
-    from .test_studio_screen import drawn, resize
+    """PROMPT-STUDIO.md: the sync badge and its action fit beside the take's line on the
+    smallest window (960 × 600), and the badge shows the whole line, never cut short."""
+    from .test_studio_screen import drawn, resize, scene_rect
 
     studio = studio_window.model.studio
     client = studio.client
     sync = studio_window.find("studioSyncText")
+    line = studio_window.find("studioStatusText")
+    actions = studio_window.find("studioSyncActions")
+    row = studio_window.find("studioStatus")
+    popup = studio_window.find("studioDetailsPopup")
+    whole = studio_window.find("studioDetailsLine")
     resize(qtbot, studio_window, 960, 600)
     many = {"queued": 12, "sent": 1234}
     blocked = "no home-host approval is bound on this machine yet"
@@ -304,11 +340,18 @@ def test_every_sync_line_is_whole_on_the_smallest_window(qtbot: Any, studio_wind
         studio._client_changed()
         expected = status.notice_line(value.notices, {"neutral-01": "Neutral 01"})
         expected = expected or status.sync_line(value)
-        qtbot.waitUntil(lambda e=expected: sync.property("text") == e.text, timeout=5000)
+        qtbot.waitUntil(lambda e=expected: sync.property("text") == e.badge, timeout=5000)
         drawn(qtbot, studio_window)
-        assert buttons(studio_window) == BUTTON_FOR[expected.action or bool(expected.detail)]
-        assert sync.property("truncated") is False, (expected.text, sync.width())
-        assert sync.property("lineCount") <= 2, expected.text
+        assert buttons(studio_window) == BUTTON_FOR[expected.action]
+        left, right, whole_row = scene_rect(line), scene_rect(actions), scene_rect(row)
+        assert left[0] + left[2] <= right[0], (expected.badge, left, right)
+        assert right[0] + right[2] <= whole_row[0] + whole_row[2], expected.badge
+        # The badge opens the whole line.
+        click(studio_window, "studioSyncBadge")
+        qtbot.waitUntil(lambda: popup.property("visible"), timeout=5000)
+        assert whole.property("text") == expected.text and not whole.property("truncated")
+        popup.close()
+        qtbot.waitUntil(lambda: not popup.property("visible"), timeout=5000)
 
 
 def test_a_toast_never_covers_the_status_line(qtbot: Any, studio_window: Window) -> None:
