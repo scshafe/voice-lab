@@ -15,6 +15,7 @@ fake Keychain, resolver and connection factory in place of the module-level seam
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -317,6 +318,23 @@ class RunningVault:
     def access_records(self) -> tuple[VaultAccessRecord, ...]:
         lines = self.access_log.read_bytes().decode("utf-8").splitlines()
         return tuple(VaultAccessRecord.model_validate_json(line) for line in lines)
+
+
+def settle(server: VaultServer, timeout: float = 5.0) -> None:
+    """Wait until none of ``server``'s workers is busy; fail after ``timeout`` seconds.
+
+    It holds every free worker while it waits, so a connection that arrives meanwhile is
+    refused as if all were busy: never settle while another request is meant to be served."""
+    deadline = time.monotonic() + timeout
+    held = 0
+    try:
+        for _ in range(server.config.max_workers):
+            if not server._slots.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                pytest.fail(f"a vault worker was still busy after {timeout} s")
+            held += 1
+    finally:
+        for _ in range(held):
+            server._slots.release()
 
 
 @contextmanager

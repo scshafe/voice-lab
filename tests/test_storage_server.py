@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from vault_binding_fixtures import settle
 
 from cole_voice_lab import storage_server
 from cole_voice_lab.canonical import canonical_json_bytes
@@ -112,23 +113,6 @@ class Vault:
         """
         settle(self.server)
         return read_access_log(self.access_log)
-
-
-def settle(server: VaultServer, timeout: float = 5.0) -> None:
-    """Wait until none of ``server``'s workers is busy; fail after ``timeout`` seconds.
-
-    It holds every free worker while it waits, so a connection that arrives meanwhile is
-    refused as if all were busy: never settle while another request is meant to be served."""
-    deadline = time.monotonic() + timeout
-    held = 0
-    try:
-        for _ in range(server.config.max_workers):
-            if not server._slots.acquire(timeout=max(0.0, deadline - time.monotonic())):
-                pytest.fail(f"a vault worker was still busy after {timeout} s")
-            held += 1
-    finally:
-        for _ in range(held):
-            server._slots.release()
 
 
 def namespace_configuration(
