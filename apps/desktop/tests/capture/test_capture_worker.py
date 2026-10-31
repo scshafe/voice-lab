@@ -321,17 +321,21 @@ def test_a_worker_take_that_reaches_its_maximum_duration(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("spec", "match"),
+    ("spec", "queue_blocks", "match"),
     [
-        ({"gap_at_block": 2}, "block 2: discontinuity"),
-        ({"overflow_at_block": 1}, "input overflow"),
-        ({"zero_adc_at_block": 1}, "no ADC time"),
-        ({"speed": 0, "writer_delay": 0.05}, "fell 1 blocks behind"),
+        # The device's defects, with the writer's usual queue: a loaded host's late writer
+        # must not fail the take first (one block of queue at 100x speed did, once).
+        ({"gap_at_block": 2}, None, "block 2: discontinuity"),
+        ({"overflow_at_block": 1}, None, "input overflow"),
+        ({"zero_adc_at_block": 1}, None, "no ADC time"),
+        # The writer's own lag, with a queue of one block.
+        ({"speed": 0, "writer_delay": 0.05}, 1, "fell 1 blocks behind"),
     ],
 )
-def test_a_failed_worker_take_is_kept_not_published(tmp_path, spec, match):
+def test_a_failed_worker_take_is_kept_not_published(tmp_path, spec, queue_blocks, match):
     take_dir = private(tmp_path / "take")
-    take = WorkerRecorder(simulated={**FAST, **spec}, queue_blocks=1, max_seconds=5).start(take_dir)
+    recorder = WorkerRecorder(simulated={**FAST, **spec}, queue_blocks=queue_blocks, max_seconds=5)
+    take = recorder.start(take_dir)
     with pytest.raises(CaptureFailed, match=match) as caught:
         take.wait(timeout=30)
     assert caught.value.partial == take_dir / PARTIAL_NAME
