@@ -115,12 +115,28 @@ Item {
                 contentItem: ColumnLayout {
                     id: entryColumn
                     spacing: 0
-                    SuiText {
+                    RowLayout {
                         Layout.fillWidth: true
-                        text: entry.modelData.when + " · " + entry.modelData.length
-                        font.weight: entry.modelData.selected ? SuiTheme.fontWeightStrong
-                                                              : SuiTheme.fontWeightNormal
-                        wrapMode: Text.Wrap
+                        spacing: SuiTheme.spaceXs
+                        // Its key (1–9: audition it), and Return's mark (D-058, item 8).
+                        SuiKbd {
+                            objectName: "studioHistoryKey"
+                            visible: entry.modelData.number > 0
+                            text: String(entry.modelData.number)
+                        }
+                        SuiText {
+                            Layout.fillWidth: true
+                            text: entry.modelData.when + " · " + entry.modelData.length
+                            font.weight: entry.modelData.selected ? SuiTheme.fontWeightStrong
+                                                                  : SuiTheme.fontWeightNormal
+                            wrapMode: Text.Wrap
+                        }
+                        SuiChip {
+                            objectName: "studioHistoryWillKeep"
+                            visible: entry.modelData.willKeep
+                            text: "Return keeps"
+                            tone: "info"
+                        }
                     }
                     SuiText {
                         objectName: "studioHistoryStatus"

@@ -36,7 +36,10 @@ run's flagged pass (``reviewFlagged``), which Save & Next walks. Pacing (item 6)
 default (``matchLine``: Check Input compares its line with the first reading of it).
 Redo (D-058, item 2): R in review (or Retake) records again, and the attempt under review is
 saved and rejected as ``SUPERSEDED``, with no dialog and no typing; ⌘Z (``undo``) reverses the
-last keep or retake: the take is a draft again, on its prompt, selected.
+last keep or retake: the take is as it was, on its prompt, selected. Picking (item 8): keys
+1–9 audition the prompt's takes, newest first; Save and Save & Next keep the selected one (the
+take under review, a draft, or an attempt a retake set aside), and the prompt's other
+undecided attempts here are set aside as a retake would.
 The layout (D-058, D): an inspector on the right (⌥⌘I, ``toggleInspector``) holds the take's
 history and picking, the flags' details, the delivery notes, the pace and the sync, so the
 centre keeps the prompt, the waveform and Record, Retake and Save & Next; the library on the
@@ -123,6 +126,10 @@ class _Undo:
     kind: Literal["keep", "supersede"]
     take_id: str
     prompt_id: str
+    #: Its decision before (a kept take may have been an attempt set aside).
+    before: Literal["draft", "rejected"] = "draft"
+    #: The other attempts a keep set aside with it (undone with it: drafts again).
+    also: tuple[str, ...] = ()
 
 
 def elapsed_text(frames: int) -> str:
@@ -1054,9 +1061,11 @@ class StudioModel(ViewModel):
             and self._v["deviceOk"]
             and self.client.ready
         )
+        # Save keeps the selected take: the one under review, or a draft or an attempt set
+        # aside (D-058, item 8), also while a take is under review.
         selected = self.take_review.selectedKey
-        saveable = (phase == "review" and selected == "review") or (
-            phase == "ready" and self.take_review.selected_draft() != ""
+        saveable = phase in ("ready", "review") and (
+            (phase == "review" and selected == "review") or self.take_review.selected_draft() != ""
         )
         checking = self.input_check.running  # the microphone is the check's
         self._set(
@@ -1103,8 +1112,16 @@ class StudioModel(ViewModel):
 
     # -- ⌘Z (D-058, item 2) ---------------------------------------------------------------------
 
-    def _push_undo(self, kind: Literal["keep", "supersede"], take_id: str, prompt_id: str) -> None:
-        self._undo.append(_Undo(kind, take_id, prompt_id))
+    def _push_undo(
+        self,
+        kind: Literal["keep", "supersede"],
+        take_id: str,
+        prompt_id: str,
+        *,
+        before: Literal["draft", "rejected"] = "draft",
+        also: tuple[str, ...] = (),
+    ) -> None:
+        self._undo.append(_Undo(kind, take_id, prompt_id, before, also))
         del self._undo[:-UNDO_DEPTH]
         self._update_undo()
 
@@ -1129,7 +1146,12 @@ class StudioModel(ViewModel):
                 return
             self._undo.pop()
             try:
-                self.client.decide(step.take_id, "draft")
+                if step.before == "rejected":
+                    self.client.decide(step.take_id, "rejected", SUPERSEDED)
+                else:
+                    self.client.decide(step.take_id, "draft")
+                for other in step.also:
+                    self.client.decide(other, "draft")
             except SpoolError as exc:
                 self._outcome = status.Line("Not undone", "danger", f"Not undone: {exc}")
                 self._update_status()
@@ -1141,8 +1163,13 @@ class StudioModel(ViewModel):
             self._refresh()
             if self._v["phase"] != "review":
                 self.take_review.selectTake(step.take_id)
-            what = "kept" if step.kind == "keep" else "set aside"
-            self._outcome = status.Line(f"Undone: the take {what} is a draft again", "info")
+            if step.kind == "supersede":
+                text = "Undone: the take set aside is a draft again"
+            elif step.before == "rejected":
+                text = "Undone: the take kept is set aside again"
+            else:
+                text = "Undone: the take kept is a draft again"
+            self._outcome = status.Line(text, "info")
             self._update_status()
             self._update_undo()
 
@@ -1365,8 +1392,20 @@ class StudioModel(ViewModel):
             return
         if self._pending is None or self._captured is None:
             return
+        if self.take_review.selectedKey != "review":
+            # An earlier take is picked (keys 1–9): it is kept, and the take under review is
+            # set aside, as a retake would (D-058, item 8).
+            keep = self.take_review.selectedKey
+            pending, captured = self._pending, self._captured
+            self._pending = self._captured = None
+            self._keep_draft(pending, captured, self.take_review.pending_trim(), supersede=True)
+            self.take_review.clear_review(select=keep)
+            self._phase("ready", elapsedText=elapsed_text(0))
+            self._keep_selected(advance=advance)
+            return
         pending, captured, client = self._pending, self._captured, self.client
         trim = self.take_review.pending_trim()
+        others = self.take_review.other_attempts("")
         self._phase("saving")
 
         def work() -> tuple[SpooledTake, str]:
@@ -1375,6 +1414,8 @@ class StudioModel(ViewModel):
                 if trim is not None:
                     take = client.set_trim(take.take_id, *trim)
                 take = client.decide(take.take_id, "kept")
+                for other in others:  # the prompt's other attempts, set aside (item 8)
+                    client.decide(other, "rejected", SUPERSEDED)
             except SpoolError as exc:
                 return take, str(exc)
             return take, ""
@@ -1398,7 +1439,7 @@ class StudioModel(ViewModel):
             self.take_review.clear_review(select=saved.take_id)
             if not problem:
                 self.take_review.note_kept(saved.take_id)
-                self._push_undo("keep", saved.take_id, saved.prompt_id)
+                self._push_undo("keep", saved.take_id, saved.prompt_id, also=tuple(others))
             if problem:
                 self._outcome = status.Line(
                     "Saved as a draft, not kept", "warn", f"Saved as a draft, not kept: {problem}"
@@ -1413,16 +1454,23 @@ class StudioModel(ViewModel):
         self.context.tasks.submit(work, done)
 
     def _keep_selected(self, *, advance: bool) -> None:
-        """Save on a selected draft: kept (with its edited trim). A draft recorded
-        elsewhere is noted in the spool first."""
+        """Save on a selected draft, or an attempt a retake set aside: kept (with its edited
+        trim), and the prompt's other attempts here set aside. A draft recorded elsewhere is
+        noted in the spool first."""
         if not self.take_review.selected_draft():
             return
         trim = self.take_review.selected_edit()
+        before: Literal["draft", "rejected"] = (
+            "rejected" if self.take_review.selected_superseded() else "draft"
+        )
         try:
             take_id = self.take_review.selected_take_for_change()
+            others = self.take_review.other_attempts(take_id)
             if trim is not None:
                 self.client.set_trim(take_id, *trim)
             self.client.decide(take_id, "kept")
+            for other in others:
+                self.client.decide(other, "rejected", SUPERSEDED)
         except SpoolError as exc:
             self._outcome = status.Line("Not kept", "danger", f"Not kept: {exc}")
             self._update_status()
@@ -1431,7 +1479,7 @@ class StudioModel(ViewModel):
         self.pacing.kept += 1
         if self._current is not None:
             self._session[take_id] = self._current
-            self._push_undo("keep", take_id, self._current)
+            self._push_undo("keep", take_id, self._current, before=before, also=tuple(others))
         self._outcome = status.Line("Saved · kept on this machine", "ok")
         self._refresh()
         if advance:

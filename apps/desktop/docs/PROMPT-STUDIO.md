@@ -80,9 +80,15 @@ has them. They are the same controls, moved between the two places.
    left by closing the app stays on disk and is saved at the next start. A draft does not
    count as coverage: its prompt shows *Draft* under Needs attention.
 5. **⌘Z** undoes the last keep or retake, up to twenty back (Edit → Undo Save, Undo Retake):
-   the take is a draft again, on its prompt, selected; the status line says so. A take under
-   review stays under review meanwhile.
-6. A take that fails (a continuity break, a worker that stopped) says why in the status line.
+   the take is as it was before (a draft, or an attempt set aside), on its prompt, selected;
+   the status line says so. A take under review stays under review meanwhile.
+6. **Keys 1–9** audition this prompt's takes, newest first (the take under review is 1): each
+   selects its take and plays it (D-058; the review's item 8). **Return** and **⌘S** keep the
+   selected take, not only the newest: the take under review, a draft, or an attempt a retake
+   set aside. The picker marks it (*Return keeps*) and numbers its takes. Keeping one sets the
+   prompt's other undecided attempts here aside, as a retake would (a take under review
+   included), so the prompt counts once; ⌘Z undoes it.
+7. A take that fails (a continuity break, a worker that stopped) says why in the status line.
    **Discard** removes it. Retake, or selecting another prompt, discards a failed take too.
    Discard is for a failed take only: a good take is never discarded. To set one aside,
    save it (or let Retake keep it as a draft), then **Remove** it.
@@ -232,7 +238,8 @@ prompt, not leave it in a mixed bin (D-058; the review's item 5).
 | Space | Stop while recording; otherwise play or pause the selected take. It never starts a recording (the Swift app's rule: Space never opens the microphone) |
 | Return, Enter | Save & Next; typed ahead while the take is checked, done when it is ready |
 | Ctrl+S (⌘S on macOS) | Save; typed ahead the same way |
-| ⌘Z | Undo the last Save or Retake: the take is a draft again |
+| 1–9 | Audition this prompt's takes, newest first (Return keeps the one picked) |
+| ⌘Z | Undo the last Save or Retake: the take is as it was before |
 | ⌘J | Continue Missing |
 | ⇧⌘J | Next Flagged |
 | ⌘↑ / ⌘↓ | The prompt before or after in the list as it shows (its search and filters), without saving: a take under review is kept as a draft, as when another prompt is selected |
@@ -471,6 +478,9 @@ These differences from the Swift app remain, all deliberate:
 - **Redo** (D-058, item 2): R in review records again, and Retake sets the attempt it replaces
   aside as *superseded by retake* instead of keeping it as a draft; ⌘Z undoes it. The Swift
   app ignores R in review and keeps the replaced take. `test_studio_redo.py`.
+- **Keeping the picked take** (D-058, item 8): keys 1–9 audition the prompt's takes, and Save
+  and Save & Next keep the selected one, also while a newer take is under review (it is then
+  set aside); the Swift app saves only the newest. `test_studio_pick.py`.
 - **The layout** (D-058): while the inspector shows, the take's picker, its trim, Save and
   Discard sit in it, not between the script and the footer, and a spoken prompt's
   instructions are its delivery notes. Hidden, or on the smallest window, the reference layout

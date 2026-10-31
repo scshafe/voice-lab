@@ -10,6 +10,7 @@
 // the workspace scrolls instead. The take picker, waveform, trim and playback regions are
 // held at their final size for step 6b; keys are step 6c's (the model's toggleRecord,
 // save and saveNext are what they call).
+import QtQml
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Templates as T
@@ -73,6 +74,18 @@ Item {
         autoRepeat: false
         enabled: studio.keysEnabled
         onActivated: studio.rec.save()
+    }
+    // Keys 1–9 audition this prompt's takes, newest first (D-058, item 8).
+    Instantiator {
+        model: 9
+        delegate: Shortcut {
+            required property int index
+            objectName: "studioKeyTake" + (index + 1)
+            sequence: String(index + 1)
+            autoRepeat: false
+            enabled: studio.keysEnabled
+            onActivated: studio.takes.audition(index + 1)
+        }
     }
     // ⌘Z undoes the last Save or Retake (D-058, item 2).
     Shortcut {

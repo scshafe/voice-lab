@@ -52,7 +52,7 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 - [x] 7: the sync badge, the take's caption, Record's blocker; Settings (⌘,)
 - [x] 8: the inspector (⌥⌘I) and the library that folds away (⌃⌘S, Focus)
 - [x] 9: R in review is Redo (the attempt set aside, no dialog); ⌘Z reverses
-- [ ] 10
+- [x] 10: keys 1–9 audition the prompt's takes; Return keeps the one picked
 - [ ] 11
 - [ ] 12
 
@@ -114,3 +114,6 @@ Filled in by each PR; the last one hands the whole list to the owner.
   2. no reason was asked for;
   3. the prompt is not under Needs attention;
   4. ⌘Z brings the kept take back as a draft, and ⌘Z again the one set aside.
+- **Keys 1–9 (10).** Record three attempts of one prompt (R, R three times), press 2, then
+  Return: attempt 2 is the kept take, the other two are set aside, the picker had marked
+  attempt 2 (*Return keeps*) and coverage counts the prompt once. Each key plays its take.
