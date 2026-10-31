@@ -46,7 +46,7 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 - [x] 1: the review, D-058, this plan, the stale documents
 - [x] 2: the core loop's acceptance test; a Save typed ahead before the seal
 - [x] 3: quality flags at review; Check Input
-- [ ] 4
+- [x] 4: the menu bar, key hints, ⌘/; ⌘J, ⌘↑ and ⌘↓; the View menu's text sizes
 - [ ] 5
 - [ ] 6
 - [ ] 7
@@ -74,3 +74,15 @@ Filled in by each PR; the last one hands the whole list to the owner.
   3. On purpose: one take turned away from the microphone (*Low SNR*), one with a knock near
      the capsule (*Clipped*), one started mid-word (*Cut start*). Each gets its flag.
   4. After they sync, the PC's verdicts agree with the local *PC QC* and *Clipped* flags.
+- **The menu bar (4).**
+  1. The menu bar reads File, View, Recording, Window, Help (after the app's menu), each
+     Recording item with its key, and each item enables and disables correctly through
+     Ready → Recording → Stopping → Review.
+  2. With Full Keyboard Access on (System Settings → Keyboard), the whole loop runs from the
+     menus: Record, Stop, Save & Next. VoiceOver reads the items.
+  3. A key remapped under System Settings → Keyboard → Keyboard Shortcuts → App Shortcuts
+     (for example Save & Next) runs its item.
+  4. Every key runs its command once, never twice: R records (it does not record and stop at
+     once), ⌘S saves once, ⌘↓ moves one prompt. Typing R or Return in the library's search
+     never records or saves.
+  5. ⌘/ shows the shortcuts; the buttons show their keys (⌘S, ↩).

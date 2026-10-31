@@ -103,6 +103,8 @@ class TakeReviewModel(ViewModel):
     confirmChanged = Signal()
     restoreChanged = Signal()
     qualityChanged = Signal()
+    #: The menu's Reject Take…: the picker opens its dialog (a reason is required).
+    rejectRequested = Signal()
 
     # -- the picker and the history
     takeOptions = qproperty("QVariantList", "takeOptions", takesChanged)
@@ -820,6 +822,12 @@ class TakeReviewModel(ViewModel):
         """Remove the selected take (reversible: Restore brings it back)."""
         if self._v["canRemove"]:
             self._decide(lambda take_id: self.client.decide(take_id, "removed"), "Take removed")
+
+    @Slot()
+    def askReject(self) -> None:  # noqa: N802
+        """Reject Take… from the menu: the picker asks for the reason."""
+        if self._v["canReject"]:
+            self.rejectRequested.emit()
 
     @Slot(str, result=bool)
     def reject(self, reason: str) -> bool:

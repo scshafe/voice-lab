@@ -27,7 +27,7 @@ Item {
     readonly property bool menuOpen: libraryPane.menuOpen || detailsPopup.visible
                                      || takePicker.menuOpen || trimConfirm.visible
                                      || restoreAsk.visible || checkDialog.visible
-                                     || flagsPopup.visible
+                                     || flagsPopup.visible || shortcutOverlay.visible
                                      || sizeSelect.popup.visible || approval.dialogOpen
     // Typing in a field (the search, a dialog's) keeps the keys for the field.
     readonly property bool typing: {
@@ -37,6 +37,11 @@ Item {
     // The page's keys (§5): on this screen only, never while typing, with a menu or dialog
     // open, or on a held key's repeats.
     readonly property bool keysEnabled: shown && visible && !menuOpen && !typing
+    // The menu bar's commands (menus.py): on this screen, with nothing of its own open (typing
+    // aside: a menu item is a click, and ⌘ keys work in a field as in any Mac app).
+    readonly property bool commandsOn: shown && visible && !menuOpen
+    onCommandsOnChanged: rec.setCommandsEnabled(commandsOn)
+    Component.onCompleted: rec.setCommandsEnabled(commandsOn)
 
     Shortcut {
         objectName: "studioKeyRecord"
@@ -65,6 +70,67 @@ Item {
         autoRepeat: false
         enabled: studio.keysEnabled
         onActivated: studio.rec.save()
+    }
+    // The Recording and View menus' keys (D-058, item 4): the menu shows them; these take them.
+    Shortcut {
+        objectName: "studioKeyContinue"
+        sequence: "Ctrl+J"
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.continueMissing()
+    }
+    Shortcut {
+        objectName: "studioKeyPrevious"
+        sequence: "Ctrl+Up"
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.previousPrompt()
+    }
+    Shortcut {
+        objectName: "studioKeyNext"
+        sequence: "Ctrl+Down"
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.nextPrompt()
+    }
+    Shortcut {
+        objectName: "studioKeyBigger"
+        sequences: ["Ctrl+=", "Ctrl++"]
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.stepReadingSize(1)
+    }
+    Shortcut {
+        objectName: "studioKeySmaller"
+        sequence: "Ctrl+-"
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.stepReadingSize(-1)
+    }
+    Shortcut {
+        objectName: "studioKeyStandardSize"
+        sequence: "Ctrl+0"
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.setReadingSize(studio.rec.readingSizes[0])
+    }
+    // ⌘/ opens the shortcuts (Escape closes them: the overlay is a dialog).
+    Shortcut {
+        objectName: "studioKeyShortcuts"
+        sequence: "Ctrl+/"
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: shortcutOverlay.open()
+    }
+    Connections {
+        target: studio.rec
+        function onShortcutsRequested() { shortcutOverlay.open() }
+    }
+    SuiShortcutOverlay {
+        id: shortcutOverlay
+        objectName: "studioShortcuts"
+        shortcuts: studio.rec.shortcuts
+        toggleShortcut: ""
     }
 
     // Leaving a saved take with a trim edit not saved: asked first.
@@ -766,10 +832,12 @@ Item {
                     enabled: studio.takes.canPlay
                     onClicked: studio.takes.stepBack()
                 }
-                SuiButton {
+                StudioKeyButton {
                     objectName: "studioPlay"
-                    Layout.preferredWidth: 72
+                    Layout.preferredWidth: implicitWidth
                     text: studio.takes.playing ? "Pause" : "Play"
+                    texts: ["Play", "Pause"]
+                    key: studio.rec.keys.play
                     variant: "secondary"
                     enabled: studio.takes.canPlay
                     onClicked: studio.takes.togglePlay()
@@ -805,13 +873,21 @@ Item {
                 enabled: studio.rec.canRecord || studio.rec.canStop
                 onClicked: studio.rec.toggleRecord()
             }
+            // As wide as its widest word, so R beside it never moves with the transport.
+            FontMetrics {
+                id: recordMetrics
+                font: recordLabel.font
+            }
             SuiText {
+                id: recordLabel
                 objectName: "studioRecordLabel"
                 anchors.left: recordButton.right
                 anchors.leftMargin: SuiTheme.spaceMd
-                anchors.right: actions.left
-                anchors.rightMargin: SuiTheme.spaceSm
                 anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(
+                    Math.ceil(Math.max(...["Record", "Stop", "Starting", "Stopping", "Saving"]
+                                       .map((t) => recordMetrics.advanceWidth(t)))),
+                    actions.x - x - recordKey.width - 2 * SuiTheme.spaceSm)
                 text: studio.rec.phase === "recording" ? "Stop"
                     : studio.rec.phase === "starting" ? "Starting"
                     : studio.rec.phase === "stopping" ? "Stopping"
@@ -819,15 +895,24 @@ Item {
                 variant: "subheading"
                 elide: Text.ElideRight
             }
+            // R records and stops (its key, D-058).
+            SuiKbd {
+                id: recordKey
+                objectName: "studioRecordKey"
+                anchors.left: recordLabel.right
+                anchors.leftMargin: SuiTheme.spaceXs
+                anchors.verticalCenter: parent.verticalCenter
+                text: studio.rec.keys.record
+            }
             Row {
                 id: actions
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: SuiTheme.spaceSm
-                SuiButton {
+                StudioKeyButton {
                     objectName: "studioRetake"
-                    width: 84
                     text: "Retake"
+                    key: studio.rec.keys.record
                     enabled: studio.rec.canRetake
                     onClicked: studio.rec.retake()
                 }
@@ -839,17 +924,17 @@ Item {
                     enabled: studio.rec.canDiscard
                     onClicked: studio.rec.discard()
                 }
-                SuiButton {
+                StudioKeyButton {
                     objectName: "studioSave"
-                    width: 72
                     text: "Save"
+                    key: studio.rec.keys.save
                     enabled: studio.rec.canSave
                     onClicked: studio.rec.save()
                 }
-                SuiButton {
+                StudioKeyButton {
                     objectName: "studioSaveNext"
-                    width: 112
                     text: "Save & Next"
+                    key: studio.rec.keys.saveNext
                     variant: "primary"
                     enabled: studio.rec.canSaveNext
                     onClicked: studio.rec.saveNext()

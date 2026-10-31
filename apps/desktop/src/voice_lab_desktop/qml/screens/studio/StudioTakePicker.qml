@@ -194,6 +194,14 @@ Item {
         }
     }
 
+    // The menu's Reject Take… asks here too.
+    Connections {
+        target: picker.takes
+        function onRejectRequested() {
+            reason.text = ""
+            rejectDialog.open()
+        }
+    }
     // Reject needs its reason: the button stays off until one is written.
     SuiDialog {
         id: rejectDialog
