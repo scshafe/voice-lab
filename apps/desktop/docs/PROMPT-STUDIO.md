@@ -61,6 +61,14 @@ has them. They are the same controls, moved between the two places.
 
 ## Recording
 
+Signed in, with a catalog cached, the app opens here (D-058; the review's item 7), where you
+left off: the prompt you were on (else the first missing), the library's Show, search and
+labels, the reading size, the panes, and the window's last frame (a frame off every screen
+keeps only its size). The keyboard is the studio's at once: R records with no click first. The
+window is titled with the prompt's id (the screen's name on other screens). The prompt and the
+filters are kept in `<data dir>/studio/view.json` as the app closes, the frame in
+`<data dir>/window.json`: nothing is written while you record.
+
 1. Select a prompt in the library, or press **Continue Missing**. Selecting is locked while
    a take is recorded or saved.
 2. **Record** starts the capture worker (D-039) into a new take directory bound to that
@@ -484,6 +492,9 @@ These differences from the Swift app remain, all deliberate:
 - **Redo** (D-058, item 2): R in review records again, and Retake sets the attempt it replaces
   aside as *superseded by retake* instead of keeping it as a draft; ⌘Z undoes it. The Swift
   app ignores R in review and keeps the replaced take. `test_studio_redo.py`.
+- **Opening where you left off** (D-058, item 7): the Swift app restores its prompt and take
+  through its service's cursor; the studio now does too, with its window's frame and filters.
+  `test_studio_launch.py`.
 - **Speak and the tail** (D-058, item 3): the Speak cue and the held tail; the Swift app has
   neither. `test_studio_edges.py`.
 - **Keeping the picked take** (D-058, item 8): keys 1–9 audition the prompt's takes, and Save
