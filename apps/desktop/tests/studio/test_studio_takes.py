@@ -99,7 +99,9 @@ def test_the_picker_lists_this_machines_and_the_pcs_takes(
             local = studio.client.takes()[0].take_id
             assert takes.selectedKey == local
             labels = {o["value"]: o["label"] for o in takes.takeOptions}
-            assert labels[local].endswith("· Kept · here")
+            # (The stand-in's tone is flagged, test_studio_quality.py says how: its count ends
+            # the line.)
+            assert " · Kept · here" in labels[local]
             assert [row["where"] for row in takes.history] == ["the PC", "this machine"]
             assert all(row["when"] and row["length"].endswith(" s") for row in takes.history)
             assert takes.canRemove and takes.canReject and takes.actionNote == ""

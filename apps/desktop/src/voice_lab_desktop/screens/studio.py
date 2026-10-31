@@ -26,6 +26,10 @@ model's (``screens/studio_takes.py``, step 6b; ``takes`` here); Save follows its
 (the take under review, or a draft of this machine). Keys are 6c's (``toggleRecord``,
 ``saveNext`` and ``save`` are what R, Return and Ctrl+S call).
 
+Quality (D-058, item 1): each take here gets flags that never block (``studio/quality.py``,
+judged by the takes model between takes), and **Check Input** (``check``,
+``screens/studio_check.py``) measures the room and a spoken line on demand, never a take.
+
 Every connection made here goes to a declared ``@Slot`` (#41): QML reads this object.
 """
 
@@ -53,12 +57,13 @@ from ..corpus.client import CorpusClient, PendingTake
 from ..corpus.files import private_dir
 from ..corpus.spool import SpooledTake, SpoolError
 from ..corpus.status import SyncStatus
-from ..studio import library, presentation, status
+from ..studio import library, presentation, quality, status
 from ..studio.library import PromptState
 from ..studio.presentation import PromptView
 from ..tablemodel import RoleRows
 from ..viewmodel import AppContext, ViewModel, qproperty
 from .prompts import default_recorder
+from .studio_check import CHECK_DIR, NOT_RECORDING, InputCheckModel
 from .studio_takes import TakeReviewModel
 
 #: How often a running take's confirmed frames are read.
@@ -155,6 +160,8 @@ class StudioModel(ViewModel):
     canSaveNext = qproperty(bool, "canSaveNext", transportChanged)
     canDiscard = qproperty(bool, "canDiscard", transportChanged)
     canNavigate = qproperty(bool, "canNavigate", transportChanged)
+    #: Check Input may open the microphone now (between takes, with a UMIK-1).
+    canCheck = qproperty(bool, "canCheck", transportChanged)
     # -- the status line
     statusText = qproperty(str, "statusText", statusChanged)
     statusTone = qproperty(str, "statusTone", statusChanged)
@@ -182,6 +189,12 @@ class StudioModel(ViewModel):
 
     # The selected prompt's takes: the picker, waveform, trim and playback (step 6b).
     takes = Property(QObject, _get_takes, constant=True)
+
+    def _get_check(self) -> InputCheckModel:
+        return self.input_check
+
+    # Check Input (D-058): the room and a spoken line measured on demand, never a take.
+    check = Property(QObject, _get_check, constant=True)
 
     def __init__(
         self,
@@ -234,6 +247,7 @@ class StudioModel(ViewModel):
                 "canSaveNext": False,
                 "canDiscard": False,
                 "canNavigate": False,
+                "canCheck": False,
                 "statusText": "",
                 "statusTone": "neutral",
                 "syncText": "",
@@ -280,6 +294,14 @@ class StudioModel(ViewModel):
         self.take_review.takesChanged.connect(self._takes_changed)
         self.take_review.toast.connect(self.toast)
         self.take_review.on_history = self.history_read
+        studio_dir = Path(context.config.data_dir) / "studio"
+        # The takes' quality verdicts (D-058), read off the GUI thread.
+        self.quality_store = quality.QualityStore(studio_dir / quality.STORE_FILE)
+        self.take_review.quality_store = self.quality_store
+        context.tasks.submit(self.quality_store.warm, self._quality_read)
+        self.input_check = InputCheckModel(context, studio_dir / CHECK_DIR)
+        self.input_check.setParent(self)
+        self.input_check.checkChanged.connect(self._check_changed)
         #: The PC's history of prompts whose status needs it (#3), per read of its library.
         self._histories: dict[str, tuple[str | None, tuple[LibraryTake, ...]]] = {}
         self._history_queue: list[str] = []
@@ -318,6 +340,7 @@ class StudioModel(ViewModel):
         stays; the client saves or counts it at the next start)."""
         self._closed = True
         self._poll.stop()
+        self.input_check.shutdown()
         self.take_review.stop_playback()
         self.take_review.shutdown()
         self.client.remove_listener(self._client_changed)
@@ -664,7 +687,14 @@ class StudioModel(ViewModel):
 
     def _prompt_takes(self, *, latest: bool) -> None:
         current = self._current
-        self.take_review.set_prompt(current, self._digests.get(current or "", ""), latest=latest)
+        view = self._by_id.get(current or "")
+        self.take_review.set_prompt(
+            current,
+            self._digests.get(current or "", ""),
+            latest=latest,
+            spoken=view is None or view.prompt.spoken,
+            expected_seconds=view.prompt.expected_seconds if view is not None else 0.0,
+        )
         self.take_review.refresh(self._takes, self.client.notices())
 
     @Slot()
@@ -739,11 +769,13 @@ class StudioModel(ViewModel):
         saveable = (phase == "review" and selected == "review") or (
             phase == "ready" and self.take_review.selected_draft() != ""
         )
+        checking = self.input_check.running  # the microphone is the check's
         self._set(
             self.transportChanged,
-            canRecord=ready and phase in ("ready", "review", "failed"),
+            canRecord=ready and phase in ("ready", "review", "failed") and not checking,
             canStop=phase in ("starting", "recording"),
-            canRetake=ready and phase in ("review", "failed"),
+            canRetake=ready and phase in ("review", "failed") and not checking,
+            canCheck=self._v["deviceOk"] and phase not in BUSY and not checking,
             canSave=saveable,
             canSaveNext=saveable,
             canDiscard=phase == "failed",  # a good take is never deleted
@@ -986,6 +1018,8 @@ class StudioModel(ViewModel):
             saved, problem = result
             self._pending = self._captured = None
             self.take_review.clear_review(select=saved.take_id)
+            if not problem:
+                self.take_review.note_kept(saved.take_id)
             if problem:
                 self._outcome = status.Line(
                     "Saved as a draft, not kept", "warn", f"Saved as a draft, not kept: {problem}"
@@ -1014,6 +1048,7 @@ class StudioModel(ViewModel):
             self._outcome = status.Line("Not kept", "danger", f"Not kept: {exc}")
             self._update_status()
             return
+        self.take_review.note_kept(take_id)
         self._outcome = status.Line("Saved · kept on this machine", "ok")
         self._refresh()
         if advance:
@@ -1030,6 +1065,39 @@ class StudioModel(ViewModel):
         outcome = self._outcome
         self._select(target)
         self._outcome = outcome
+        self._update_status()
+
+    # -- Check Input (D-058) -------------------------------------------------------------------
+
+    def _quality_read(self, _result: object, error: BaseException | None) -> None:
+        if error is not None:
+            raise error
+        if not self._closed:
+            self.take_review.quality_read()
+
+    @Slot()
+    def openCheck(self) -> None:  # noqa: N802
+        """Check Input's window; the microphone opens only on its Start."""
+        if self._v["phase"] not in BUSY:
+            self.input_check.open()
+
+    @Slot()
+    def startCheck(self) -> None:  # noqa: N802
+        """Open the UMIK-1 for the check (between takes only; never a take)."""
+        if not self._v["canCheck"]:
+            return
+        recorder = self._recorder_or_none()
+        if recorder is not None:
+            self.input_check.start(recorder)
+
+    @Slot()
+    def _check_changed(self) -> None:
+        if self._closed:
+            return
+        levels = self.input_check.levels
+        if levels is not None and self.input_check.stage == "done":
+            self.take_review.room_checked(levels.floor_dbfs)
+        self._update_transport()
         self._update_status()
 
     # -- the catalog version ------------------------------------------------------------------
@@ -1105,6 +1173,8 @@ class StudioModel(ViewModel):
 
     def _transport_line(self, sync: SyncStatus) -> status.Line:
         phase = self._v["phase"]
+        if self.input_check.running:
+            return status.Line(NOT_RECORDING, "info")
         if phase == "blocked":
             return status.Line("No catalog yet: nothing can be recorded", "warn")
         if phase == "failed":
