@@ -41,10 +41,10 @@ depend on the fonts installed, so no test pins them.
 | **Take picker** | The selected take in a short line (`12 Oct 07:01 · 2.0 s · Kept · here`), whole on the smallest window. Open, it is the history: every take of the prompt, newest first, from this machine and the PC, with date and time, length, status (trimmed, changed elsewhere, imported from the Mac) and where it lives. Then **Remove**, **Reject…** and **Restore**. |
 | **Waveform** | The selected take on the dB display scale, its kept frames between the trim handles, the playhead. In its top right corner, the take's quality flags (below). While recording: the live waveform, in red. When a take fails or does not start, or there is no microphone, the whole message shows here instead. |
 | **Trim row** | **In** and **Out**, set from the playhead (**Set In**, **Set Out**) or by dragging the handles; **Save trim**; **Reset**. |
-| **Timer** | While recording, the take's length from the frames the worker confirmed (D-014), never a clock, and the peak level. Otherwise the playhead within the kept frames, and their length. |
+| **Timer** | While recording, the take's length from the frames the worker confirmed (D-014), never a clock, and the peak level. Otherwise the playhead within the kept frames, and their length. On its left, the take's own caption: what it is (*Not saved yet*, *Kept · this machine*, …) and the scale. |
 | **Playback row** | **−** and **+** (Zoom) and **Fit**; **−0.1 s**, **Play**/**Pause**, **+0.1 s**. |
-| **Footer** | The 56-point Record/Stop control, then **Retake**, **Discard**, **Save** and **Save & Next**. Actions that do not apply stay in place, greyed out. |
-| **Status line** | Two lines at most on each side, never cut short. On the left, what the take is doing. On the right, the sync, or a notice. |
+| **Footer** | The 56-point Record/Stop control, then **Retake**, **Discard**, **Save** and **Save & Next**. Actions that do not apply stay in place, greyed out. A Record that cannot start says why in its tooltip (*No microphone: plug the UMIK-1 in, then click its chip*, *Check Input has the microphone*, …). |
+| **Status line** | On the left, what the take is doing, in two lines at most. On the right, the sync badge (a word or two) with at most one action beside it; a click on the badge shows the whole sync line, or a notice. |
 
 ## Recording
 
@@ -299,7 +299,14 @@ catalog yet* until the PC has answered once.
 
 ## The status line
 
-The right half reads the corpus client's `SyncStatus`:
+The status line's left half says what the take is doing; errors and outcomes go there, never
+into the take's caption. The sync is a badge of its own on the right (D-058; the review's item
+9), always there: a word or two (*Up to date*, *3 queued*, *Offline*, *Needs your OK*,
+*Uploads off*, *Waiting for the PC*, *Uploads blocked*, *Damaged takes*, *A notice*), with at
+most one action beside it, **Approve** or **Sync now**. A click on the badge shows the whole
+line below, with the client's message and, for a notice, **Dismiss**.
+
+The badge's line reads the corpus client's `SyncStatus`:
 
 - `Uploads off until S-1 passes (corpus_sync) · N takes here` while sending is held
   (`corpus_sync = false`, the default). This is a statement, not an error.
@@ -313,16 +320,30 @@ The right half reads the corpus client's `SyncStatus`:
 - Damaged takes and recordings an earlier run could not save come first.
 - Otherwise `Waiting to sync`, `Syncing` or `Up to date`, with the queued and sent counts.
 
-A notice from the client takes the right half, in a few words that name its cause: *changed
-elsewhere*, *a change waits: the PC cannot read it*, *the PC refused a change
-(trim_out_of_bounds)*, *the PC refused this take*. **Details** opens the client's whole
-message, with **Dismiss**. A line that leaves something out (for example why uploads cannot
-start) has the same **Details**. **Sync now** runs a pass now, operations waiting out a
-backoff included; it is beside the line while operations wait, the PC did not answer, or
-takes wait for its state. The line has one button at most (**Approve**, **Sync now** or
-**Details**), so every line stays whole, in two lines at most, on the smallest window
+A notice from the client takes the badge (*A notice*), its line in a few words that name its
+cause: *changed elsewhere*, *a change waits: the PC cannot read it*, *the PC refused a change
+(trim_out_of_bounds)*, *the PC refused this take*; the badge shows the client's whole message,
+with **Dismiss**. A line that leaves something out (for example why uploads cannot start)
+shows the rest there too. **Sync now** runs a pass now, operations waiting out a backoff
+included; it is beside the badge while operations wait, the PC did not answer, or takes wait
+for its state. The badge and its one action fit beside the take's line on the smallest window
 (`test_every_sync_line_is_whole_on_the_smallest_window`). **Approve** and **Sync now** wait
 while a take is being recorded or saved.
+
+## Settings
+
+**Settings** (⌘,, or Status → Settings…; on macOS in the app's menu) is a window of its own
+(D-058; the review's item 9) that opens on the pane last used (`<data dir>/window.json`):
+
+- **General**: the server, Pocket ID's issuer and client, and the measurement's mouth to
+  capsule distance (what Status → Settings… held). Values the environment sets win and cannot
+  be changed here.
+- **Uploads**: **Send takes to the PC** (`corpus_sync`, written to the settings file: no file
+  to edit by hand), **Approve uploads to my PC…** (the approval dialog), and the sync line.
+- **Recording**: the microphone and **Look again**, **Check Input…**, the match line, and the
+  quality flags' two levels to calibrate on the first real takes: *Low SNR under* (20 dB) and
+  *Inconsistent over* (6 dB), kept in `<data dir>/studio/view.json` and used for the takes
+  judged from then on (a value out of range keeps the one before).
 
 ## Switching back to the session flow
 
@@ -414,6 +435,8 @@ Additions beyond the Swift app (D-058), which change nothing it does:
 - **Flagged prompts: Show's three filters, Next Flagged, the badges, the flagged pass** (item 5):
   `test_studio_flagged.py`.
 - **The pace strip, the break hint and the match line** (item 6): `test_studio_pacing.py`.
+- **The sync badge, the take's caption, Record's blocker, Settings (⌘,)** (item 9):
+  `test_studio_status.py`, `test_studio_settings.py`.
 - **A Save typed ahead while the take seals** is done when it seals: `test_studio_core_loop.py`.
 
 Two differences from the Swift app remain, both deliberate:

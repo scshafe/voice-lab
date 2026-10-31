@@ -439,21 +439,25 @@ def geometry(
 
 
 def with_details(qtbot: Any, window: Window, idle: dict[str, Any]) -> dict[str, Any]:
-    """Make the sync line show a notice: Details appears beside it. Every region stays as in
-    ``idle``; only the sync text narrows to make room, in place, at the same height."""
+    """Make the sync badge show a notice (its word changes). Every region stays as in
+    ``idle``; only the badge's width follows its word, in place: its right edge and its height
+    stay."""
     model = window.model.studio
-    details = window.find("studioDetails")
-    assert not details.property("visible")
+    assert model.syncBadge == "Uploads off"
     model.client.spool._notice(
         model.client.takes()[0], "changed-elsewhere", "Changed elsewhere: the PC's state."
     )
     model.client.sync_now()
-    qtbot.waitUntil(lambda: details.property("visible"), timeout=5000)
+    qtbot.waitUntil(lambda: model.syncBadge == "A notice", timeout=5000)
     found = geometry(qtbot, window)
     sync, before = found["studioSyncText"], idle["studioSyncText"]
-    assert {**found, "studioSyncText": before} == idle
-    assert (sync[0], sync[1], sync[3]) == (before[0], before[1], before[3])
-    assert sync[2] < before[2] and sync[0] + sync[2] <= scene_rect(details)[0]
+    line, was = found["studioStatusText"], idle["studioStatusText"]
+    assert {**found, "studioSyncText": before, "studioStatusText": was} == idle
+    assert (sync[1], sync[3]) == (before[1], before[3])
+    assert sync[0] + sync[2] == before[0] + before[2]
+    # The take's line keeps its place and takes the room the badge leaves it.
+    assert (line[0], line[1], line[3]) == (was[0], was[1], was[3])
+    assert line[0] + line[2] <= sync[0]
     return found
 
 
@@ -652,7 +656,6 @@ def test_nothing_is_cut_off_on_the_smallest_window(
                 "studioSwitchNotice",
                 "studioCoverageSource",
                 "studioStatusText",
-                "studioSyncText",
             )
 
             def whole() -> None:

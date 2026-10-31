@@ -49,7 +49,7 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 - [x] 4: the menu bar, key hints, ⌘/; ⌘J, ⌘↑ and ⌘↓; the View menu's text sizes
 - [x] 5: Show's Flagged here, Failed PC QC and Drafts only; Next Flagged; badges; the flagged pass
 - [x] 6: the pace strip ("So far · …"), the break hint, the match line (off by default)
-- [ ] 7
+- [x] 7: the sync badge, the take's caption, Record's blocker; Settings (⌘,)
 - [ ] 8
 - [ ] 9
 - [ ] 10
@@ -97,3 +97,9 @@ Filled in by each PR; the last one hands the whole list to the owner.
   2. the break hint appears once, quietly, and OK puts it away;
   3. with the match line on, the next day's Check Input reports a level within the
      consistency tolerance (6 dB) of the first day's reference, and Play reference plays it.
+- **Say why, and Settings (9).** With the approval revoked, record a take, then:
+  1. the sync badge alone explains the queue (*Needs your OK*) and offers Approve;
+  2. errors never overwrite the take's caption under the waveform;
+  3. ⌘, opens Settings, on the pane last used, from the app's menu as well;
+  4. on a fresh install, the Uploads pane's *Send takes to the PC* and Approve reach a synced
+     take without editing a file.

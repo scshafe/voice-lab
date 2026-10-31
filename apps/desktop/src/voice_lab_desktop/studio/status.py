@@ -18,9 +18,12 @@ refusal) is shown instead until it is dismissed, the newest first.
 
 Each half wraps to two lines at most, so a line says its cause in a few words; what it
 leaves out is its ``detail`` (the client's whole message), which the screen shows on request
-(the sync half's Details) or in the take's place (the take half). Beside the sync half there
-is at most one button, so every line stays whole on the smallest window (960 × 600): Approve
-(``APPROVE``), Sync now while operations wait or the PC did not answer (``SYNC``), or Details.
+or in the take's place (the take half).
+
+The sync is a badge of its own (D-058; the recording UX review's item 9), apart from the take's
+line: its ``badge`` is a word or two (*Up to date*, *3 queued*, *Needs your OK*), a click on it
+shows the whole line and its detail, and beside it there is at most one action: Approve
+(``APPROVE``), or Sync now while operations wait or the PC did not answer (``SYNC``).
 """
 
 from __future__ import annotations
@@ -64,13 +67,15 @@ _CODE: Final = re.compile(r"\(([a-z_]+)\)")
 @dataclass(frozen=True)
 class Line:
     """A short line (``text``, at most two lines on the smallest window), when it leaves
-    something out the whole message (``detail``), and the action it offers beside it
-    (``action``: ``APPROVE``, ``SYNC``, or ``""``; never with a ``detail``)."""
+    something out the whole message (``detail``), the action it offers beside it
+    (``action``: ``APPROVE``, ``SYNC``, or ``""``; never with a ``detail``), and for the sync,
+    its badge's word or two (``badge``)."""
 
     text: str
     tone: Tone = "neutral"
     detail: str = ""
     action: str = ""
+    badge: str = ""
 
 
 def _count(count: int, one: str, many: str | None = None) -> str:
@@ -85,12 +90,18 @@ def sync_line(status: SyncStatus) -> Line:
     """The sync half of the status line."""
     if status.damaged:
         unreadable = _count(len(status.damaged), "take")
-        return Line(f"{unreadable} here cannot be read: kept, never sent", "danger")
+        return Line(
+            f"{unreadable} here cannot be read: kept, never sent", "danger", badge="Damaged takes"
+        )
     if status.unsaved_recordings:
         left = _count(len(status.unsaved_recordings), "recording")
-        return Line(f"{left} from an earlier run could not be saved: kept on disk", "warn")
+        return Line(
+            f"{left} from an earlier run could not be saved: kept on disk",
+            "warn",
+            badge="Not saved",
+        )
     if status.sign_in_required:
-        return Line("Sign in on the Status screen to sync with the PC", "warn")
+        return Line("Sign in on the Status screen to sync with the PC", "warn", badge="Signed out")
     counts: list[str] = []
     if status.queued:
         counts.append(f"{status.queued:,} queued")
@@ -99,27 +110,34 @@ def sync_line(status: SyncStatus) -> Line:
     if not status.enabled:
         here = _count(status.takes, "take") + " here"
         offline = ["Offline"] if status.offline else []
-        return Line(" · ".join([*offline, HELD, here]), "neutral")
+        return Line(" · ".join([*offline, HELD, here]), "neutral", badge="Uploads off")
     if status.offline:
         parts = ["Offline", *counts]
         if status.last_sync_at is not None:
             parts.append(f"last synced {_clock(status.last_sync_at)}")
-        return Line(" · ".join(parts), "neutral", action=SYNC)
+        return Line(" · ".join(parts), "neutral", action=SYNC, badge="Offline")
     if status.upload_needs_approval:
-        return Line(" · ".join([NEEDS_APPROVAL, *counts]), "warn", action=APPROVE)
+        return Line(
+            " · ".join([NEEDS_APPROVAL, *counts]), "warn", action=APPROVE, badge="Needs your OK"
+        )
     if status.refreshing:
         parts = [_count(status.refreshing, "take") + " waiting for the PC's state", *counts]
-        return Line(" · ".join(parts), "info", action=SYNC)
+        return Line(" · ".join(parts), "info", action=SYNC, badge="Waiting for the PC")
     if status.upload_blocked and status.queued:
         return Line(
-            "Uploads cannot start", "warn", f"Uploads cannot start: {status.upload_blocked}"
+            "Uploads cannot start",
+            "warn",
+            f"Uploads cannot start: {status.upload_blocked}",
+            badge="Uploads blocked",
         )
     lead = "Syncing" if status.busy else ("Waiting to sync" if status.queued else "Up to date")
     parts = [lead, *counts]
     if status.local_only:
         parts.append(f"{status.local_only:,} local-only")
     action = SYNC if lead == "Waiting to sync" else ""
-    return Line(" · ".join(parts), "ok" if lead == "Up to date" else "info", action=action)
+    badge = f"{status.queued:,} queued" if lead == "Waiting to sync" else lead
+    tone: Tone = "ok" if lead == "Up to date" else "info"
+    return Line(" · ".join(parts), tone, action=action, badge=badge)
 
 
 def notice_line(notices: tuple[Notice, ...], title_of: dict[str, str]) -> Line | None:
@@ -134,7 +152,8 @@ def notice_line(notices: tuple[Notice, ...], title_of: dict[str, str]) -> Line |
         summary += f" ({code[1]})"
     more = f" (+{len(notices) - 1} more)" if len(notices) > 1 else ""
     tone = NOTICE_TONES.get(notice.kind, "warn")
-    return Line(f"{title}: {summary}{more}", tone, f"{title}: {notice.text}")
+    badge = "A notice" if len(notices) == 1 else f"{len(notices)} notices"
+    return Line(f"{title}: {summary}{more}", tone, f"{title}: {notice.text}", badge=badge)
 
 
 def catalog_line(status: SyncStatus) -> Line:
