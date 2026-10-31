@@ -11,15 +11,24 @@ It shows the room's floor, the speech's level and peak, the SNR, clipping, and t
 same speech would have after the training copies' gain (FINETUNE.md; ``quality.training_gain_db``),
 with a one-line verdict. The floor is the session's reference beside each take's flags.
 
+**The match line** (D-058, item 6), off by default (the studio's ``matchLine``): the first
+check with it on keeps its reading of the line as the reference, in ``<data dir>/studio/match/``
+(0600, never sent, never a take: the catalog holds no non-prompt material, D-017). Each later
+check compares its level, SNR and length with it on the spot, to keep the voice the same on
+day three as on day one; **Play reference** plays it, and **Forget reference** deletes it.
+
 Every connection goes to a declared ``@Slot`` (#41).
 """
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from PySide6.QtCore import QTimer, Signal, Slot
 
@@ -42,6 +51,10 @@ POLL_MS: Final = 50
 STOP_TIMEOUT_S: Final = 30.0
 #: Under ``<data dir>/studio/``: what a check's worker writes, deleted once measured.
 CHECK_DIR: Final = "check"
+#: Under ``<data dir>/studio/``: the match line's reference reading and its levels.
+MATCH_DIR: Final = "match"
+REFERENCE_WAV: Final = "reference.wav"
+REFERENCE_JSON: Final = "reference.json"
 #: The status line while the microphone is open for a check.
 NOT_RECORDING: Final = "Checking input · not recording"
 
@@ -62,8 +75,10 @@ class InputCheckModel(ViewModel):
     remainingText = qproperty(str, "remainingText", levelChanged)
     levelPeakDb = qproperty(float, "levelPeakDb", levelChanged)
     levelFloorDb = qproperty(float, "levelFloorDb", levelChanged)
+    #: The match line's reference: "Your reference: 30 Oct 18:02", or "" (none).
+    referenceText = qproperty(str, "referenceText", checkChanged)
 
-    def __init__(self, context: AppContext, root: Path) -> None:
+    def __init__(self, context: AppContext, root: Path, *, match_root: Path) -> None:
         super().__init__(
             context,
             {
@@ -78,9 +93,13 @@ class InputCheckModel(ViewModel):
                 "remainingText": "",
                 "levelPeakDb": audio.FLOOR_DB,
                 "levelFloorDb": audio.FLOOR_DB,
+                "referenceText": "",
             },
         )
         self.root = root
+        self.match_root = match_root
+        #: The match line is on (the studio's ``matchLine``, off by default).
+        self.match_enabled = False
         #: The last check's levels this run (the session's reference), or ``None``.
         self.levels: quality.CheckLevels | None = None
         self._running: RunningTake | None = None
@@ -97,7 +116,59 @@ class InputCheckModel(ViewModel):
 
     def open(self) -> None:
         """The dialog, idle (or with the last results); the microphone stays closed."""
-        self._set(self.checkChanged, dialogOpen=True)
+        self._set(self.checkChanged, dialogOpen=True, referenceText=self._reference_text())
+
+    # -- the match line -----------------------------------------------------------------------
+
+    def _reference(self) -> tuple[quality.CheckLevels, datetime] | None:
+        """The match line's reference levels and when it was read, or ``None``."""
+        try:
+            data = json.loads((self.match_root / REFERENCE_JSON).read_text(encoding="utf-8"))
+            levels = quality.CheckLevels.from_json(data["levels"])
+            at = datetime.fromisoformat(data["at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        return levels, at
+
+    def _reference_text(self) -> str:
+        known = self._reference()
+        if known is None:
+            return ""
+        return "Your reference: " + known[1].astimezone().strftime("%-d %b %H:%M")
+
+    def _keep_reference(self, wav: Path, levels: quality.CheckLevels) -> None:
+        """This reading becomes the match line's reference (a worker's call)."""
+        private_dir(self.match_root)
+        shutil.copyfile(wav, self.match_root / REFERENCE_WAV)
+        os.chmod(self.match_root / REFERENCE_WAV, 0o600)
+        record = {"levels": levels.to_json(), "at": datetime.now().astimezone().isoformat()}
+        target = self.match_root / REFERENCE_JSON
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(record, stream)
+
+    @Slot()
+    def playReference(self) -> None:  # noqa: N802
+        """Play the reference reading of the line (from the end of its quiet)."""
+        path = self.match_root / REFERENCE_WAV
+        if not path.is_file() or self._v["running"]:
+            return
+        start = round(QUIET_SECONDS * SAMPLE_RATE)
+
+        def load() -> Any:
+            samples = audio.read_take(path)
+            return audio.clip(samples, min(start, int(samples.shape[0]) - 1), int(samples.shape[0]))
+
+        self.context.player.play_clip("check:reference", load)
+
+    @Slot()
+    def forgetReference(self) -> None:  # noqa: N802
+        """Delete the reference: the next check with the match line on keeps a new one."""
+        if self._v["running"]:
+            return
+        self.context.player.stop()
+        shutil.rmtree(self.match_root, ignore_errors=True)
+        self._set(self.checkChanged, referenceText="")
 
     def shutdown(self) -> None:
         self._closed = True
@@ -206,31 +277,51 @@ class InputCheckModel(ViewModel):
 
     def _finish(self, running: RunningTake) -> None:
         directory, cancelled = self._directory, self._v["stage"] == "idle"
+        matching = self.match_enabled
 
-        def work() -> quality.CheckLevels | None:
+        def work() -> tuple[quality.CheckLevels, list[dict[str, str]]] | None:
             try:
                 captured = running.wait(STOP_TIMEOUT_S)
                 if cancelled:
                     return None
-                return quality.check_levels(
+                levels = quality.check_levels(
                     audio.read_take(captured.path),
                     quiet_seconds=QUIET_SECONDS,
                     settle_seconds=SETTLE_SECONDS,
                 )
+                rows = levels.rows()
+                if matching:
+                    reference = self._reference()
+                    if reference is None:
+                        self._keep_reference(captured.path, levels)
+                        rows.append(
+                            {
+                                "label": "Match line",
+                                "value": "kept as your reference (on this machine only)",
+                                "tone": "",
+                            }
+                        )
+                    else:
+                        rows.extend(quality.match_rows(levels, reference[0]))
+                return levels, rows
             finally:
                 if directory is not None:
                     shutil.rmtree(directory, ignore_errors=True)
 
-        def done(levels: quality.CheckLevels | None, error: BaseException | None) -> None:
+        def done(
+            result: tuple[quality.CheckLevels, list[dict[str, str]]] | None,
+            error: BaseException | None,
+        ) -> None:
             self._running = self._live = None
             if self._closed:
                 return
             if error is not None:
                 self._failed(f"The check failed: {error}")
                 return
-            if levels is None:  # cancelled
+            if result is None:  # cancelled
                 self._set(self.checkChanged, running=False, stage="idle", instruction="")
                 return
+            levels, rows = result
             self.levels = levels
             summary, tone = levels.verdict()
             self._set(
@@ -238,9 +329,10 @@ class InputCheckModel(ViewModel):
                 running=False,
                 stage="done",
                 instruction="",
-                results=levels.rows(),
+                results=rows,
                 summary=summary,
                 summaryTone=tone,
+                referenceText=self._reference_text(),
             )
             self._set(self.levelChanged, remainingText="", levelPeakDb=audio.FLOOR_DB)
 

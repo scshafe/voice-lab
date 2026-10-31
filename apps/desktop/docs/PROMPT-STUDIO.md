@@ -35,7 +35,7 @@ depend on the fonts installed, so no test pins them.
 
 | Region | What |
 | --- | --- |
-| **Library** (left, 280 points; 240 below a 1,000-point screen) | `Library` with the covered count (`n / 1,886`), and where it comes from. Then **Continue Missing**, this session's flagged prompts (below), the search, **Show** (All prompts, Missing, Needs attention, Flagged here, Failed PC QC, Drafts only) and **Labels**. Then the catalog version this run records against, and the switch the next session makes. Then every prompt, with its status. |
+| **Library** (left, 280 points; 240 below a 1,000-point screen) | `Library` with the covered count (`n / 1,886`), and where it comes from. Then the pace and the break hint (below), **Continue Missing**, the flagged prompts (below), the search, **Show** (All prompts, Missing, Needs attention, Flagged here, Failed PC QC, Drafts only) and **Labels**. Then the catalog version this run records against, and the switch the next session makes. Then every prompt, with its status. |
 | **Header** | The prompt's title and its label chips. Chips that do not fit collapse into `+N`, but the category always shows. On the right: **Check input** (below), the reading size (**Aa 24**, 28 or 32, kept for you in `<data dir>/studio/view.json`) and the microphone. |
 | **Script card** | For a spoken prompt, `PROMPT · READ ALOUD` and the text, whole (see above). For room tone or a test step, a banner and "No spoken prompt" instead. The `INSTRUCTIONS · NOT READ ALOUD` section is always there, with the guidance and the duration. |
 | **Take picker** | The selected take in a short line (`12 Oct 07:01 · 2.0 s · Kept · here`), whole on the smallest window. Open, it is the history: every take of the prompt, newest first, from this machine and the PC, with date and time, length, status (trimmed, changed elsewhere, imported from the Mac) and where it lives. Then **Remove**, **Reject…** and **Restore**. |
@@ -160,6 +160,27 @@ level the training gain would give, with one line: *Good to record*, *Good enoug
 a quieter room would help*, *The room is loud for this level*, *No speech stood over the
 room* or *Clipping: move back*. The capture worker writes into `<data dir>/studio/check/`,
 which is deleted once measured; **Stop** (or Escape) ends it and keeps nothing.
+
+## Pace, breaks and the match line
+
+Recording the rest of the catalog takes several sittings, so the studio paces them (D-058; the
+review's item 6). Nothing here starts a recording or opens a dialog.
+
+- **The strip**, at the top of the library: *So far · 42 kept · 3 redone · 31 min · 1,610 left
+  ≈ 1 h 58 min reading*: the takes kept and recorded again since the app started, the minutes
+  of this sitting, and the prompts not recorded yet with their reading time (the catalog's
+  expected durations). It says no "session": the studio is corpus-first (D-018).
+- **A break hint**, a quiet line under it from the first take after 30 minutes of a sitting
+  (*30 minutes in · a short break keeps the voice even*), with **OK**; it comes back after
+  another half hour. Ten minutes without a take is a break: the next take starts the clock
+  again. The strip is read again with each take: no timer runs for it.
+- **The match line** (off by default): in Check Input's window, *Compare with my match line*.
+  With it on, the first check keeps its reading of the line as your reference, in
+  `<data dir>/studio/match/` (0600; on this machine only, never sent, never a take: the
+  catalog holds no other material, D-017). Each later check compares its level (6 dB is
+  Inconsistent's tolerance), its SNR and its length with the reference, on the spot.
+  **Play reference** plays it; **Forget reference** deletes it, and the next check keeps a new
+  one. The choice is kept in `<data dir>/studio/view.json` with the reading size.
 
 ## Flagged prompts
 
@@ -392,6 +413,7 @@ Additions beyond the Swift app (D-058), which change nothing it does:
 - **The menu bar, key hints, ⌘/, ⌘J, ⌘↑ and ⌘↓, ⌘+ ⌘− ⌘0** (item 4): `test_studio_menus.py`.
 - **Flagged prompts: Show's three filters, Next Flagged, the badges, the flagged pass** (item 5):
   `test_studio_flagged.py`.
+- **The pace strip, the break hint and the match line** (item 6): `test_studio_pacing.py`.
 - **A Save typed ahead while the take seals** is done when it seals: `test_studio_core_loop.py`.
 
 Two differences from the Swift app remain, both deliberate:
