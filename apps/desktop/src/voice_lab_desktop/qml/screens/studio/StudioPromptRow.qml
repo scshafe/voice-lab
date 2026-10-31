@@ -1,6 +1,8 @@
 // One prompt in the studio's library: its title and status (and "Silent" or "Step" for a
-// prompt that is not read aloud). Selecting it makes it the recording target; rows stay
-// put while a take is recorded or saved, and only the current one is enabled then.
+// prompt that is not read aloud), and, for a prompt recorded since the app started that is
+// flagged, a badge (D-058, item 5: "Flagged" here, or "Failed PC QC" once the PC's verdict
+// lands). Selecting it makes it the recording target; rows stay put while a take is recorded
+// or saved, and only the current one is enabled then.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Templates as T
@@ -15,6 +17,7 @@ T.ItemDelegate {
     required property string statusTitle
     required property string kind
     required property bool current
+    required property string flag
     property var rec
 
     implicitHeight: Math.max(44, implicitContentHeight + topPadding + bottomPadding)
@@ -30,7 +33,7 @@ T.ItemDelegate {
                                         : row.kind === "procedure" ? "Step · " : ""
 
     Accessible.role: Accessible.ListItem
-    Accessible.name: row.title + ", " + row.statusTitle
+    Accessible.name: row.title + ", " + row.statusTitle + (row.flag !== "" ? ", " + row.flag : "")
     Accessible.selected: row.current
 
     onClicked: row.rec.selectPrompt(row.promptId)
@@ -49,11 +52,21 @@ T.ItemDelegate {
             maximumLineCount: 2
             elide: Text.ElideRight
         }
-        SuiText {
+        RowLayout {
             Layout.fillWidth: true
-            text: row.kindTitle + row.statusTitle
-            variant: "caption"
-            elide: Text.ElideRight
+            spacing: SuiTheme.spaceXs
+            SuiText {
+                Layout.fillWidth: true
+                text: row.kindTitle + row.statusTitle
+                variant: "caption"
+                elide: Text.ElideRight
+            }
+            SuiChip {
+                objectName: "studioRowFlag"
+                visible: row.flag !== ""
+                text: row.flag
+                tone: row.flag === "Failed PC QC" ? "danger" : "warn"
+            }
         }
     }
 }

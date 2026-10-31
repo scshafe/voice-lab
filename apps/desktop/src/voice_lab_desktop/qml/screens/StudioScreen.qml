@@ -80,6 +80,13 @@ Item {
         onActivated: studio.rec.continueMissing()
     }
     Shortcut {
+        objectName: "studioKeyNextFlagged"
+        sequence: "Ctrl+Shift+J"
+        autoRepeat: false
+        enabled: studio.keysEnabled
+        onActivated: studio.rec.nextFlagged()
+    }
+    Shortcut {
         objectName: "studioKeyPrevious"
         sequence: "Ctrl+Up"
         autoRepeat: false

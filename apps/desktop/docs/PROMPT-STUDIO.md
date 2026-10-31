@@ -35,7 +35,7 @@ depend on the fonts installed, so no test pins them.
 
 | Region | What |
 | --- | --- |
-| **Library** (left, 280 points; 240 below a 1,000-point screen) | `Library` with the covered count (`n / 1,886`), and where it comes from. Then **Continue Missing**, the search, **Show** (All prompts, Missing, Needs attention) and **Labels**. Then the catalog version this run records against, and the switch the next session makes. Then every prompt, with its status. |
+| **Library** (left, 280 points; 240 below a 1,000-point screen) | `Library` with the covered count (`n / 1,886`), and where it comes from. Then **Continue Missing**, this session's flagged prompts (below), the search, **Show** (All prompts, Missing, Needs attention, Flagged here, Failed PC QC, Drafts only) and **Labels**. Then the catalog version this run records against, and the switch the next session makes. Then every prompt, with its status. |
 | **Header** | The prompt's title and its label chips. Chips that do not fit collapse into `+N`, but the category always shows. On the right: **Check input** (below), the reading size (**Aa 24**, 28 or 32, kept for you in `<data dir>/studio/view.json`) and the microphone. |
 | **Script card** | For a spoken prompt, `PROMPT · READ ALOUD` and the text, whole (see above). For room tone or a test step, a banner and "No spoken prompt" instead. The `INSTRUCTIONS · NOT READ ALOUD` section is always there, with the guidance and the duration. |
 | **Take picker** | The selected take in a short line (`12 Oct 07:01 · 2.0 s · Kept · here`), whole on the smallest window. Open, it is the history: every take of the prompt, newest first, from this machine and the PC, with date and time, length, status (trimmed, changed elsewhere, imported from the Mac) and where it lives. Then **Remove**, **Reject…** and **Restore**. |
@@ -161,6 +161,28 @@ a quieter room would help*, *The room is loud for this level*, *No speech stood 
 room* or *Clipping: move back*. The capture worker writes into `<data dir>/studio/check/`,
 which is deleted once measured; **Stop** (or Escape) ends it and keeps nothing.
 
+## Flagged prompts
+
+A flag found at review (above) or the PC's QC arriving after sync should bring you back to the
+prompt, not leave it in a mixed bin (D-058; the review's item 5).
+
+- **Show** splits Needs attention three ways: **Flagged here** (the take that stands for the
+  prompt on this machine, its newest kept take or else its newest draft, has flags),
+  **Failed PC QC** (its kept takes all failed the PC's QC: *Needs review*) and **Drafts
+  only**. Needs attention stays, as the Swift app has it.
+- **Next Flagged** (⇧⌘J, and the Recording menu) goes to the next prompt flagged here or
+  failed by the PC's QC, in catalog order, wrapping once, its takes shown with the flagged
+  one selected.
+- A prompt recorded since the app started gets a badge in the library once it is flagged:
+  *Flagged*, or *Failed PC QC* when the PC's verdict lands.
+- Under Continue Missing, a quiet line counts the flagged prompts recorded since the app
+  started (*2 prompts flagged since you started*; the studio has no sessions, D-018), never a
+  dialog, with **Review now**: it selects the first, and the
+  usual loop walks them (R, R, Return: Save & Next goes to the next flagged prompt of the pass,
+  as does Next Flagged). The line says *Flagged pass · 1 of 2* meanwhile; **End** stops it,
+  and the last Return says *the flagged pass is done*. A prompt whose new kept take has no
+  flags is no longer flagged: the pass skips it.
+
 ## Keys
 
 | Key | What |
@@ -170,6 +192,7 @@ which is deleted once measured; **Stop** (or Escape) ends it and keeps nothing.
 | Return, Enter | Save & Next; typed ahead while the take is checked, done when it is ready |
 | Ctrl+S (⌘S on macOS) | Save; typed ahead the same way |
 | ⌘J | Continue Missing |
+| ⇧⌘J | Next Flagged |
 | ⌘↑ / ⌘↓ | The prompt before or after in the list as it shows (its search and filters), without saving: a take under review is kept as a draft, as when another prompt is selected |
 | ⌘+ / ⌘− / ⌘0 | A bigger, smaller or the standard reading size |
 | ⌘/ | The keyboard shortcuts (Escape closes them) |
@@ -191,7 +214,8 @@ HIG's order: File (Close Window), View (Bigger Text, Smaller Text, Standard Text
 **Recording**, Window (Minimize, Zoom) and Help (Keyboard Shortcuts). The Recording menu
 holds every recording command with its key: Record (Stop while recording, Retake in review)
 R; Play or Pause, Space; Save ⌘S; Save & Next ↩; Discard Take; Remove Take, Reject Take… and
-Restore Take; Check Input…; Continue Missing ⌘J; Previous Prompt ⌘↑ and Next Prompt ⌘↓. An
+Restore Take; Check Input…; Continue Missing ⌘J; Next Flagged ⇧⌘J; Previous Prompt ⌘↑ and
+Next Prompt ⌘↓. An
 item that cannot run now is disabled, never hidden, and every item is disabled while a
 dialog or menu of the studio is open and on other screens. So VoiceOver reads the commands,
 Full Keyboard Access drives the whole loop from the menus, and System Settings can remap a
@@ -222,6 +246,9 @@ status comes from the best-known state of **each take**:
   the PC's history shows the take at a newer revision (another client changed it), the PC's
   state stands instead.
 - A take only the PC knows stands with the PC's state.
+- QC is the PC's alone. When the PC's library says none of a prompt's kept takes passed, a
+  kept take here that the PC has, with no change of it waiting to be sent, is one that failed:
+  the prompt reads *Needs review* (Failed PC QC, below) without reading its history.
 
 The PC's library (each sync pass reads it; it is cached on disk, so offline you still see
 what the PC had) gives only a status and a count per prompt. It is used alone only for takes
@@ -363,6 +390,8 @@ Additions beyond the Swift app (D-058), which change nothing it does:
 
 - **Quality flags at review and Check Input** (the review's item 1): `test_studio_quality.py`.
 - **The menu bar, key hints, ⌘/, ⌘J, ⌘↑ and ⌘↓, ⌘+ ⌘− ⌘0** (item 4): `test_studio_menus.py`.
+- **Flagged prompts: Show's three filters, Next Flagged, the badges, the flagged pass** (item 5):
+  `test_studio_flagged.py`.
 - **A Save typed ahead while the take seals** is done when it seals: `test_studio_core_loop.py`.
 
 Two differences from the Swift app remain, both deliberate:

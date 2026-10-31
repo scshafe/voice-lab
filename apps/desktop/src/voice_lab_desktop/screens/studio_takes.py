@@ -105,6 +105,8 @@ class TakeReviewModel(ViewModel):
     qualityChanged = Signal()
     #: The menu's Reject Take…: the picker opens its dialog (a reason is required).
     rejectRequested = Signal()
+    #: A take was judged (any take, selected or not): the library's flagged prompts follow.
+    verdictsChanged = Signal()
 
     # -- the picker and the history
     takeOptions = qproperty("QVariantList", "takeOptions", takesChanged)
@@ -736,6 +738,8 @@ class TakeReviewModel(ViewModel):
                     self._add_level(verdict)
             self._rebuild()
             self._update_quality()
+            if verdict is not None:
+                self.verdictsChanged.emit()
             self._judge_next()
 
         self.context.tasks.submit(work, done)
@@ -781,6 +785,7 @@ class TakeReviewModel(ViewModel):
         """The store was read: the takes' flags show."""
         self._rebuild()
         self._update_quality()
+        self.verdictsChanged.emit()
 
     def room_checked(self, floor_dbfs: float) -> None:
         """Check Input measured the room: its floor is shown beside a take's levels."""
