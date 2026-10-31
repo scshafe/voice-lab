@@ -85,7 +85,10 @@ def record_and_save(
     wait_phase(qtbot, studio, "review")
     studio.saveNext()
     if moves:
-        qtbot.waitUntil(lambda: studio.promptId != prompt, timeout=5000)
+        # Saving a take of real samples packages it, and the packaging reads the WAV four
+        # times in Python while the take's quality judgement still runs (about 1.4 s for
+        # these 13 s on the PC): a hosted runner took more than 5 s.
+        qtbot.waitUntil(lambda: studio.promptId != prompt, timeout=20000)
     else:
         wait_phase(qtbot, studio, "ready")
     return prompt
