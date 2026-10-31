@@ -12,7 +12,10 @@ activated when its screen is shown, which loads its data the first time, and dea
 another is (the measurement screen stops scanning the audio devices). Settings (⌘,; D-058,
 the recording UX review's item 9) is a window of its own (``SettingsWindow.qml``), opened on
 the pane last used (``settingsPane``, kept in ``<data dir>/window.json``), with corpus sync
-(``setCorpusSync``) beside the server and Pocket ID.
+(``setCorpusSync``) beside the server and Pocket ID. Signed in, with a catalog cached, the app
+opens on Record → Prompts where you left off (D-058, item 7), in the window's last frame
+(``windowGeometry``, kept by ``saveWindow`` as the window closes); the window is titled with
+the prompt's id there, and with the screen's name elsewhere (``windowTitle``).
 """
 
 from __future__ import annotations
@@ -67,6 +70,7 @@ SCREENS: Final = (
     ("referee", "Referee", "Referee", "check"),
 )
 SCREEN_KEYS: Final = tuple(key for key, *_ in SCREENS)
+SCREEN_TITLES: Final = {key: label for key, _section, label, _icon in SCREENS}
 SIDEBAR_ROLES: Final = ("key", "section", "text", "iconName", "count", "status")
 #: The Settings window's panes, in order; the first is where it opens the first time.
 SETTINGS_PANES: Final = ("general", "uploads", "recording")
@@ -114,6 +118,9 @@ class AppModel(ViewModel):
     distanceCm = qproperty(int, "distanceCm", settingsChanged)
     corpusSync = qproperty(bool, "corpusSync", settingsChanged)
     settingsPane = qproperty(str, "settingsPane", paneChanged)
+    #: The window's last frame: {x, y, width, height, maximized}, or {} (D-058, item 7).
+    windowGeometry = qproperty("QVariantMap", "windowGeometry", paneChanged)
+    screenTitle = qproperty(str, "screenTitle", navigationChanged)
     settingsSource = qproperty(str, "settingsSource", settingsChanged)
     lockedSettings = qproperty("QVariantList", "lockedSettings", settingsChanged)
     version = qproperty(str, "version", settingsChanged)
@@ -234,7 +241,7 @@ class AppModel(ViewModel):
         if self.studio is not None:
             self.studio.transportChanged.connect(self._refresh_sidebar)
         context.signInRequired.connect(self._signed_out_elsewhere)
-        start = start_screen or ("corpus" if config.configured and session.signed_in else "status")
+        start = start_screen or self._start_screen(config, session)
         if start not in SCREEN_KEYS:
             raise ValueError(f"no screen {start!r}")
         self._v.update(
@@ -243,9 +250,11 @@ class AppModel(ViewModel):
             authBusy=False,
             screen=start,
             screenIndex=SCREEN_KEYS.index(start),
+            screenTitle=SCREEN_TITLES[start],
             sidebar=[],
             version=__version__,
             settingsPane=self._load_pane(),
+            windowGeometry=self._load_window(),
         )
         self._apply_config(config)
         self._sidebar_rows = RoleRows(SIDEBAR_ROLES, self)
@@ -309,7 +318,12 @@ class AppModel(ViewModel):
 
     def _navigate(self, key: str) -> None:
         previous = self._v["screen"]
-        self._set(self.navigationChanged, screen=key, screenIndex=SCREEN_KEYS.index(key))
+        self._set(
+            self.navigationChanged,
+            screen=key,
+            screenIndex=SCREEN_KEYS.index(key),
+            screenTitle=SCREEN_TITLES[key],
+        )
         if previous != key:
             deactivate = getattr(self.models[previous], "deactivate", None)
             if deactivate is not None:
@@ -508,16 +522,53 @@ class AppModel(ViewModel):
         """⌘,: the Settings window, on the pane last used."""
         self.settingsRequested.emit()
 
+    def _start_screen(self, config: Config, session: Session) -> str:
+        """Where the app opens: Record → Prompts, where you left off, when signed in with a
+        catalog cached (D-058, item 7); else the Corpus when signed in, else Status."""
+        if not (config.configured and session.signed_in):
+            return "status"
+        if self.studio is not None and self.studio.client.pinned is not None:
+            return "prompts"
+        return "corpus"
+
     def _window_file(self) -> Path:
         return Path(self.context.config.data_dir) / WINDOW_FILE
 
-    def _load_pane(self) -> str:
+    def _read_window(self) -> dict[str, Any]:
         try:
             data = json.loads(self._window_file().read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return SETTINGS_PANES[0]
-        pane = data.get("settings_pane") if isinstance(data, dict) else None
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _load_pane(self) -> str:
+        pane = self._read_window().get("settings_pane")
         return pane if pane in SETTINGS_PANES else SETTINGS_PANES[0]
+
+    def _load_window(self) -> dict[str, Any]:
+        frame = self._read_window().get("frame")
+        if not isinstance(frame, dict):
+            return {}
+        sizes = [frame.get(key) for key in ("x", "y", "width", "height")]
+        numbers = [v for v in sizes if isinstance(v, int) and not isinstance(v, bool)]
+        if len(numbers) != len(sizes):
+            return {}
+        x, y, width, height = numbers
+        if width < 960 or height < 600:  # the window's minimum
+            return {}
+        return {
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "maximized": frame.get("maximized") is True,
+        }
+
+    @Slot(int, int, int, int, bool)
+    def saveWindow(self, x: int, y: int, width: int, height: int, maximized: bool) -> None:  # noqa: N802
+        """The window's frame as it closes, for the next start."""
+        frame = {"x": x, "y": y, "width": width, "height": height, "maximized": bool(maximized)}
+        self._write_window(frame=frame)
 
     @Slot(str)
     def setSettingsPane(self, pane: str) -> None:  # noqa: N802
@@ -525,13 +576,12 @@ class AppModel(ViewModel):
         if pane not in SETTINGS_PANES or pane == self._v["settingsPane"]:
             return
         self._set(self.paneChanged, settingsPane=pane)
+        self._write_window(settings_pane=pane)
+
+    def _write_window(self, **changes: Any) -> None:
         path = self._window_file()
         try:
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                data = {}
-            data = {**(data if isinstance(data, dict) else {}), "settings_pane": pane}
+            data = {**self._read_window(), **changes}
             private_dir(path.parent)
             temporary = path.with_name(f".{path.name}.tmp")
             descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -539,7 +589,7 @@ class AppModel(ViewModel):
                 json.dump(data, stream)
             os.replace(temporary, path)
         except OSError as exc:
-            self.toast.emit(f"The Settings pane is not kept: {exc}", "warn")
+            self.toast.emit(f"The window's settings are not kept: {exc}", "warn")
 
     @Slot(bool)
     def setCorpusSync(self, enabled: bool) -> None:  # noqa: N802

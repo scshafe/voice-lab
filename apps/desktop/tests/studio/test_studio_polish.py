@@ -50,7 +50,7 @@ def test_the_text_size_is_chosen_and_kept(
         model.shutdown()
     # Kept for this viewer (this machine's account), private.
     view = data_dir / "studio" / "view.json"
-    assert json.loads(view.read_text()) == {"reading_size": 32}
+    assert json.loads(view.read_text())["reading_size"] == 32
     assert stat.S_IMODE(view.stat().st_mode) == 0o600
     assert stat.S_IMODE(view.parent.stat().st_mode) == 0o700
     again = studio_app(data_dir, tmp_path, pc, recorder)

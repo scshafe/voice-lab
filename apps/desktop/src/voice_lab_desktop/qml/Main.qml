@@ -20,7 +20,28 @@ Window {
     minimumHeight: 600
     visible: true
     color: SuiTheme.bg
-    title: "voice-lab"
+    // Titled with what it shows (the HIG: not the app's name): the prompt's id in the studio,
+    // the screen's name elsewhere (D-058, item 7).
+    title: app.screen === "prompts" && app.studioModel !== null && app.studioModel.promptId !== ""
+           ? app.studioModel.promptId : app.screenTitle
+
+    // The last frame, where it still fits a screen (D-058, item 7).
+    Component.onCompleted: {
+        const frame = app.windowGeometry
+        if (frame.width === undefined)
+            return
+        const fits = Qt.application.screens.some((s) =>
+            frame.x + 80 > s.virtualX && frame.x < s.virtualX + s.width - 80
+            && frame.y >= s.virtualY - 40 && frame.y < s.virtualY + s.height - 80)
+        if (fits) {
+            root.x = frame.x
+            root.y = frame.y
+        }
+        root.width = frame.width
+        root.height = frame.height
+        if (frame.maximized)
+            root.showMaximized()
+    }
 
     // Settings (⌘,; D-058, item 9): a window of its own, on the pane last used.
     SettingsWindow {
@@ -48,8 +69,12 @@ Window {
     // Closing (the window, or Quit) asks first about an unsaved trim edit in the studio.
     property bool closeApproved: false
     onClosing: (close) => {
-        if (!root.closeApproved && !app.mayClose())
+        if (!root.closeApproved && !app.mayClose()) {
             close.accepted = false
+            return
+        }
+        const maximized = root.visibility === Window.Maximized
+        app.saveWindow(root.x, root.y, root.width, root.height, maximized)
     }
 
     SuiAppShell {

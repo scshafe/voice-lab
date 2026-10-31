@@ -54,7 +54,7 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 - [x] 9: R in review is Redo (the attempt set aside, no dialog); ⌘Z reverses
 - [x] 10: keys 1–9 audition the prompt's takes; Return keeps the one picked
 - [x] 11: the Speak cue at 200 ms confirmed; a voiced tail held 300 ms at Stop
-- [ ] 12
+- [x] 12: open on Record → Prompts where you left off, the window restored
 
 ## What the Mac must check
 
@@ -124,3 +124,6 @@ Filled in by each PR; the last one hands the whole list to the owner.
   2. stopping while still saying the last word keeps it whole (the take runs about 300 ms
      past the key), and stopping after a pause stops at once;
   3. the measured stop-to-review time with a pause before R (the usual case) is unchanged.
+- **Where you left off (12).** Quit mid-session and relaunch: the same prompt, window frame and
+  filter, with zero clicks before R; again after a reboot. The window's title is the prompt's
+  id.

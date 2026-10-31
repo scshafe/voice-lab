@@ -44,6 +44,9 @@ last keep or retake: the take is as it was, on its prompt, selected. Picking (it
 1–9 audition the prompt's takes, newest first; Save and Save & Next keep the selected one (the
 take under review, a draft, or an attempt a retake set aside), and the prompt's other
 undecided attempts here are set aside as a retake would.
+Where you left off (D-058, item 7): the prompt selected and the library's Show, search and
+labels are kept when the app closes (``remember``) and restored at the next start; the window's
+frame is the app's (``AppModel``).
 The layout (D-058, D): an inspector on the right (⌥⌘I, ``toggleInspector``) holds the take's
 history and picking, the flags' details, the delivery notes, the pace and the sync, so the
 centre keeps the prompt, the waveform and Record, Retake and Save & Next; the library on the
@@ -373,6 +376,9 @@ class StudioModel(ViewModel):
         self.client = client
         self.recorder_factory = recorder_factory
         view = self._load_view()
+        #: Where the last run left off, restored once the catalog is in (``_recount``).
+        self._restore_prompt: str = view["last_prompt"]
+        self._v["show"], self._v["searchText"] = view["show"], view["search"]
         self._v["readingSize"] = view["reading_size"]
         self._v["matchLine"] = view["match_line"]
         levels: quality.Thresholds = view["quality"]
@@ -390,7 +396,7 @@ class StudioModel(ViewModel):
         self._digests: dict[str, str] = {}
         self._states: dict[str, PromptState] = {}
         self._takes: list[SpooledTake] = []
-        self._labels: set[str] = set()
+        self._labels: set[str] = set(view["labels"])
         self._current: str | None = None
         self._pending: PendingTake | None = None
         self._captured: CapturedTake | None = None
@@ -469,6 +475,7 @@ class StudioModel(ViewModel):
     def shutdown(self) -> None:
         """The app is closing: a take being recorded is stopped (its recording directory
         stays; the client saves or counts it at the next start)."""
+        self.remember()
         self._closed = True
         self._poll.stop()
         self.input_check.shutdown()
@@ -613,11 +620,15 @@ class StudioModel(ViewModel):
             self._ask_histories(answer.needs_history)
         self._flagged = self._count_flagged()
         if self._current is None:
-            if self._order:
+            restored = self._restore_prompt in self._by_id
+            if restored:
+                self._current = self._restore_prompt  # where the last run left off
+            elif self._order:
                 first = library.next_missing(self._order, self._states, None)
                 self._current = first or self._order[0]
+            self._restore_prompt = ""
             self._show_prompt()
-            self._prompt_takes(latest=False)
+            self._prompt_takes(latest=restored)
         self._update_library()
         self._update_rows()
         self._update_prompt_status()
@@ -1620,6 +1631,9 @@ class StudioModel(ViewModel):
         data = self._read_view()
         size = data.get("reading_size")
         match = data.get("match_line")
+        show = data.get("show")
+        labels = data.get("labels")
+        last, search = data.get("last_prompt"), data.get("search")
         levels = data.get("quality")
         levels = levels if isinstance(levels, dict) else {}
         panes = {key: data.get(key) for key in ("library", "inspector")}
@@ -1630,7 +1644,25 @@ class StudioModel(ViewModel):
             else READING_SIZES[0],
             "match_line": match if isinstance(match, bool) else False,
             "quality": quality.Thresholds.of(levels.get("low_snr_db"), levels.get("drift_db")),
+            "last_prompt": last if isinstance(last, str) else "",
+            "show": show if show in {option["value"] for option in library.SHOW_OPTIONS} else "all",
+            "search": search if isinstance(search, str) else "",
+            "labels": [token for token in labels if isinstance(token, str)]
+            if isinstance(labels, list)
+            else [],
         }
+
+    def remember(self) -> None:
+        """Keep where you are for the next start (D-058, item 7): the prompt, and the
+        library's Show, search and labels. Once, as the app closes: the loop pays nothing."""
+        if self._closed or self._pinned is None:
+            return
+        self._save_view(
+            last_prompt=self._current or "",
+            show=self._v["show"],
+            search=self._v["searchText"],
+            labels=sorted(self._labels),
+        )
 
     @Slot(float, float)
     def setQualityLevels(self, low_snr_db: float, drift_db: float) -> None:  # noqa: N802
