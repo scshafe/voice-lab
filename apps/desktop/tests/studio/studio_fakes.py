@@ -3,11 +3,13 @@
 (``corpus_rig.capture``), so the corpus client saves it as it would a real take. No device,
 no process, no person's voice. Each take's tone is its own (``seed``), so each has its own
 take id. ``simulated`` (default) marks it as the simulated device's: it stays on this machine;
-``simulated=False`` makes a take the PC accepts."""
+``simulated=False`` makes a take the PC accepts. ``hold_seal`` keeps each take's check (the
+worker's wait) running until the test calls ``seal``, as a slow stop would."""
 
 from __future__ import annotations
 
 import itertools
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +31,8 @@ class StudioTake:
     _done: bool = False
     _captured: CapturedTake | None = None
     stops: int = 0
+    #: Set: the worker's check is done (``None``: at once, when stopped).
+    sealed: threading.Event | None = None
 
     @property
     def confirmed_frames(self) -> int:
@@ -67,6 +71,8 @@ class StudioTake:
     def wait(self, timeout: float | None = None) -> CapturedTake:
         if not self._done:
             raise TimeoutError("the fake take is still running")
+        if self.sealed is not None and not self.sealed.wait(timeout):
+            raise TimeoutError("the fake take's check did not finish")
         if self.fail is not None:
             raise CaptureFailed(self.fail)
         assert self._captured is not None
@@ -76,13 +82,15 @@ class StudioTake:
 @dataclass
 class StudioRecorder:
     """Takes of ``seconds`` each; ``fail_next`` fails the next take with that message;
-    ``start_error`` makes ``start`` fail; ``refused`` makes the device check refuse."""
+    ``start_error`` makes ``start`` fail; ``refused`` makes the device check refuse;
+    ``hold_seal`` holds each take's check until ``seal``."""
 
     seconds: float = 0.25
     simulated: bool = True
     fail_next: str | None = None
     start_error: str | None = None
     refused: str | None = None
+    hold_seal: bool = False
     takes: list[StudioTake] = field(default_factory=list)
 
     def device_label(self) -> str:
@@ -98,6 +106,8 @@ class StudioRecorder:
         assert take_dir.is_dir() and not any(take_dir.iterdir())
         assert (take_dir.stat().st_mode & 0o777) == 0o700
         take = StudioTake(take_dir, self.seconds, self.simulated, fail=self.fail_next)
+        if self.hold_seal:
+            take.sealed = threading.Event()
         self.fail_next = None
         self.takes.append(take)
         return take
@@ -105,3 +115,8 @@ class StudioRecorder:
     @property
     def last(self) -> StudioTake:
         return self.takes[-1]
+
+    def seal(self) -> None:
+        """The last take's check is done (with ``hold_seal``)."""
+        assert self.last.sealed is not None
+        self.last.sealed.set()

@@ -44,7 +44,7 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 ## Progress
 
 - [x] 1: the review, D-058, this plan, the stale documents
-- [ ] 2
+- [x] 2: the core loop's acceptance test; a Save typed ahead before the seal
 - [ ] 3
 - [ ] 4
 - [ ] 5
@@ -59,3 +59,8 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 ## What the Mac must check
 
 Filled in by each PR; the last one hands the whole list to the owner.
+
+- **The core loop (2).** With the UMIK-1 and the real worker: R, read, R, Return as fast as
+  you can, ten prompts in a row. Each Return pressed within about 100 ms of the stop saves and
+  goes on (the status line says *Stopping · will save when ready* while it waits); no prompt
+  is skipped and none is saved twice.
