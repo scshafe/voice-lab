@@ -110,16 +110,24 @@ def test_search_matches_title_id_text_instructions_guidance_and_labels() -> None
 
 
 def take(
-    prompt: Prompt, decision: str, take_id: str, *, upload: str = "pending", revision: int = 0
+    prompt: Prompt,
+    decision: str,
+    take_id: str,
+    *,
+    upload: str = "pending",
+    revision: int = 0,
+    outbox: tuple[Any, ...] = (),
 ) -> Any:
     """A take of this machine as the merge reads it: its prompt, its decision here at its
-    revision, and whether the PC has it (``accepted`` or ``remote``)."""
+    revision, whether the PC has it (``accepted`` or ``remote``) and what waits to be sent."""
     return SimpleNamespace(
         take_id=take_id,
         prompt_id=prompt.prompt_id,
         record=SimpleNamespace(prompt=prompt),
         sync=SimpleNamespace(
-            decision=SimpleNamespace(decision=decision, revision=revision), upload=upload
+            decision=SimpleNamespace(decision=decision, revision=revision),
+            upload=upload,
+            outbox=outbox,
         ),
         counts_for=lambda snapshot: snapshot.current_prompt_for(prompt),
     )
@@ -277,3 +285,24 @@ def test_show_labels_and_search_combine_with_and() -> None:
     assert not shown(kept, labels=frozenset({"technical"}))
     assert not shown(missing, show="missing", search="kettle")
     assert shown(missing, show="missing", search="quiet", labels=frozenset({"reference"}))
+
+
+def test_a_take_here_that_failed_the_pcs_qc_needs_review() -> None:
+    """QC is the PC's alone: when its row says none of its kept takes passed, a kept take
+    here that the PC has, with no change waiting, failed it (D-058, item 5: Failed PC QC)."""
+    by_id = {p.prompt_id: p for p in pilot().prompts}
+    a, b, c = by_id["neutral-01"], by_id["neutral-02"], by_id["neutral-03"]
+    rows = (row(a, "needs-attention"), row(b, "needs-attention"), row(c, "kept"))
+    takes = [
+        take(a, "kept", "take-a", upload="accepted"),
+        take(b, "kept", "take-b", upload="accepted", outbox=("a trim waits",)),
+        take(c, "kept", "take-c", upload="accepted"),
+    ]
+    states = merge(rows=rows, takes=takes).states
+    assert states["neutral-01"] == PromptState("needs-attention", takes=1)
+    # A change waits: what the PC judged may not be this take as it stands here.
+    assert states["neutral-02"].status == "kept"
+    assert states["neutral-03"].status == "kept"
+    # A kept take the PC does not have yet is not judged: it stands.
+    pending = merge(rows=rows[:1], takes=[*takes[:1], take(a, "kept", "take-a2")]).states
+    assert pending["neutral-01"].status == "kept"

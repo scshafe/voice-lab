@@ -45,6 +45,7 @@ SAVE_NEXT_KEY: Final = "Return"
 PREVIOUS_PROMPT_KEY: Final = "Ctrl+Up"
 NEXT_PROMPT_KEY: Final = "Ctrl+Down"
 CONTINUE_MISSING_KEY: Final = "Ctrl+J"
+NEXT_FLAGGED_KEY: Final = "Ctrl+Shift+J"
 SHORTCUTS_KEY: Final = "Ctrl+/"
 BIGGER_KEY: Final = "Ctrl+="
 SMALLER_KEY: Final = "Ctrl+-"
@@ -152,6 +153,13 @@ def recording_commands(studio: StudioModel) -> list[Command | None]:
             QKeySequence(CONTINUE_MISSING_KEY),
         ),
         Command(
+            "next-flagged",
+            _fixed("Next Flagged"),
+            studio.nextFlagged,
+            on(lambda: bool(studio.canNextFlagged)),
+            QKeySequence(NEXT_FLAGGED_KEY),
+        ),
+        Command(
             "previous-prompt",
             _fixed("Previous Prompt"),
             studio.previousPrompt,
@@ -222,6 +230,11 @@ def shortcut_rows() -> list[dict[str, Any]]:
             "group": "Prompts",
             "keys": [key_text(CONTINUE_MISSING_KEY)],
             "description": "Continue Missing",
+        },
+        {
+            "group": "Prompts",
+            "keys": [key_text(NEXT_FLAGGED_KEY)],
+            "description": "Next Flagged: flagged here, or failed the PC's QC",
         },
         {
             "group": "Prompts",

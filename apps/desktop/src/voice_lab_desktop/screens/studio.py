@@ -29,6 +29,9 @@ model's (``screens/studio_takes.py``, step 6b; ``takes`` here); Save follows its
 Quality (D-058, item 1): each take here gets flags that never block (``studio/quality.py``,
 judged by the takes model between takes), and **Check Input** (``check``,
 ``screens/studio_check.py``) measures the room and a spoken line on demand, never a take.
+Flagged prompts (item 5): Show's Flagged here, Failed PC QC and Drafts only; **Next
+Flagged**; a row's badge for a prompt recorded in this run once it is flagged; and the
+session's flagged pass (``reviewFlagged``), which Save & Next walks.
 
 Every connection made here goes to a declared ``@Slot`` (#41): QML reads this object.
 """
@@ -71,7 +74,9 @@ from .studio_takes import TakeReviewModel
 POLL_MS: Final = 50
 #: How long the worker may take to stop and validate a take.
 STOP_TIMEOUT_S: Final = 30.0
-ROW_ROLES: Final = ("promptId", "title", "status", "statusTitle", "kind", "current")
+ROW_ROLES: Final = ("promptId", "title", "status", "statusTitle", "kind", "current", "flag")
+#: A row's badge, for a prompt recorded in this run that is flagged.
+FLAG_TITLES: Final[dict[str, str]] = {"here": "Flagged", "pc": "Failed PC QC"}
 #: The phases of the transport. ``blocked``: no catalog to record against.
 type Phase = Literal[
     "blocked", "ready", "starting", "recording", "stopping", "review", "failed", "saving"
@@ -128,6 +133,13 @@ class StudioModel(ViewModel):
     switchText = qproperty(str, "switchText", libraryChanged)
     canSwitch = qproperty(bool, "canSwitch", libraryChanged)
     canContinueMissing = qproperty(bool, "canContinueMissing", libraryChanged)
+    # -- flagged prompts (D-058, item 5)
+    canNextFlagged = qproperty(bool, "canNextFlagged", libraryChanged)
+    #: The flagged prompts recorded since the app started: "3 prompts flagged since you
+    #: started", or "". (The studio says no "session": it is corpus-first, D-018.)
+    flaggedText = qproperty(str, "flaggedText", libraryChanged)
+    #: The flagged pass under way: "Flagged pass · 2 of 7", or "".
+    passText = qproperty(str, "passText", libraryChanged)
     continueHelp = qproperty(str, "continueHelp", libraryChanged)
     searchText = qproperty(str, "searchText", libraryChanged)
     show = qproperty(str, "show", libraryChanged)
@@ -223,6 +235,9 @@ class StudioModel(ViewModel):
                 "switchText": "",
                 "canSwitch": False,
                 "canContinueMissing": False,
+                "canNextFlagged": False,
+                "flaggedText": "",
+                "passText": "",
                 "continueHelp": CONTINUE_HELP,
                 "searchText": "",
                 "show": "all",
@@ -311,6 +326,7 @@ class StudioModel(ViewModel):
         # The takes' quality verdicts (D-058), read off the GUI thread.
         self.quality_store = quality.QualityStore(studio_dir / quality.STORE_FILE)
         self.take_review.quality_store = self.quality_store
+        self.take_review.verdictsChanged.connect(self._verdicts_changed)
         context.tasks.submit(self.quality_store.warm, self._quality_read)
         self.input_check = InputCheckModel(context, studio_dir / CHECK_DIR)
         self.input_check.setParent(self)
@@ -320,6 +336,12 @@ class StudioModel(ViewModel):
         self._history_queue: list[str] = []
         self._history_busy = False
         self._unlisted = ""  # why this machine's takes could not be listed at start
+        #: The prompts flagged here (their standing take's flags), as last counted.
+        self._flagged: frozenset[str] = frozenset()
+        #: This session's takes (saved in this run, kept or draft): take id → prompt id.
+        self._session: dict[str, str] = {}
+        #: The flagged pass under way: its prompts in catalog order (``None``: none).
+        self._pass: list[str] | None = None
         client.add_listener(self._client_changed)
         if not client.ready:
             # Listing this machine's takes recovers what an earlier run left (it may copy
@@ -468,6 +490,7 @@ class StudioModel(ViewModel):
             )
             self._states = answer.states
             self._ask_histories(answer.needs_history)
+        self._flagged = self._count_flagged()
         if self._current is None:
             if self._order:
                 first = library.next_missing(self._order, self._states, None)
@@ -520,6 +543,104 @@ class StudioModel(ViewModel):
     def _state(self, prompt_id: str) -> PromptState:
         return self._states.get(prompt_id, library.MISSING)
 
+    # -- flagged prompts (D-058, item 5) ----------------------------------------------------
+
+    def _count_flagged(self) -> frozenset[str]:
+        """The prompts whose standing take here has flags (the store's verdicts, as read)."""
+        store = self.quality_store
+        standing = library.standing_takes(self._takes)
+        return frozenset(
+            prompt_id
+            for prompt_id, take_id in standing.items()
+            if (verdict := store.peek(take_id)) is not None and verdict.flagged
+        )
+
+    def _session_flag(self, prompt_id: str) -> str:
+        """``here`` or ``pc`` for a prompt recorded in this run that is flagged, else ``""``."""
+        if prompt_id not in self._session.values():
+            return ""
+        if self._state(prompt_id).status == "needs-attention":
+            return "pc"
+        return "here" if prompt_id in self._flagged else ""
+
+    def _session_flagged(self) -> list[str]:
+        """This session's flagged prompts, in catalog order."""
+        recorded = set(self._session.values())
+        return [p for p in self._order if p in recorded and self._session_flag(p)]
+
+    @Slot()
+    def _verdicts_changed(self) -> None:
+        """A take was judged: the flagged prompts may have changed."""
+        if self._closed:
+            return
+        flagged = self._count_flagged()
+        if flagged != self._flagged:
+            self._flagged = flagged
+            self._update_library()
+            self._update_rows()
+
+    @Slot()
+    def nextFlagged(self) -> None:  # noqa: N802
+        """⇧⌘J: the next flagged prompt (flagged here, or failed the PC's QC) after the
+        selected one in catalog order, wrapping once; within the flagged pass, its next."""
+        if not self._navigable():
+            return
+        target = (
+            self._next_in_pass()
+            if self._pass is not None
+            else library.next_flagged(self._order, self._flagged, self._states, self._current)
+        )
+        if target is None:
+            self._end_pass("No prompt is flagged")
+            return
+        if target == self._current:
+            return
+
+        def go() -> None:
+            if self._navigable():
+                self._leave_take()
+                self._select(target, latest=True)
+
+        self.take_review.guard(go)
+
+    @Slot()
+    def reviewFlagged(self) -> None:  # noqa: N802
+        """Review now: walk this run's flagged prompts, the first selected; Save & Next
+        and Next Flagged go on through them."""
+        prompts = self._session_flagged()
+        if not prompts or not self._navigable():
+            return
+        self._pass = prompts
+        self._update_library()
+        if prompts[0] != self._current:
+
+            def go() -> None:
+                if self._navigable():
+                    self._leave_take()
+                    self._select(prompts[0], latest=True)
+
+            self.take_review.guard(go)
+
+    @Slot()
+    def endPass(self) -> None:  # noqa: N802
+        self._end_pass("")
+
+    def _end_pass(self, text: str) -> None:
+        self._pass = None
+        if text:
+            self._outcome = status.Line(text, "info")
+            self._update_status()
+        self._update_library()
+
+    def _next_in_pass(self) -> str | None:
+        """The flagged pass's next prompt after the selected one that is still flagged."""
+        assert self._pass is not None
+        start = self._pass.index(self._current) + 1 if self._current in self._pass else 0
+        for prompt_id in self._pass[start:]:
+            if library.is_flagged(prompt_id, self._flagged, self._states):
+                return prompt_id
+        return None
+
     def _update_library(self) -> None:
         sync = self.client.status(wait=False)
         total = len(self._views)
@@ -552,7 +673,26 @@ class StudioModel(ViewModel):
             labelsTitle=presentation.labels_menu_title(selected),
             labelsButton=presentation.labels_button_text(selected),
         )
+        self._update_pass()
         self._update_navigation()
+
+    def _update_pass(self) -> None:
+        """The flagged line: how many were flagged since the app started, or the pass."""
+        count = len(self._session_flagged())
+        if self._pass is not None:
+            place = self._pass.index(self._current) + 1 if self._current in self._pass else 0
+            pass_text = f"Flagged pass · {place} of {len(self._pass)}"
+        else:
+            pass_text = ""
+        self._set(
+            self.libraryChanged,
+            flaggedText=(
+                f"{count} prompt{'' if count == 1 else 's'} flagged since you started"
+                if count
+                else ""
+            ),
+            passText=pass_text,
+        )
 
     def _coverage_source(self) -> str:
         cache = self.client.library
@@ -576,7 +716,9 @@ class StudioModel(ViewModel):
         rows: list[dict[str, Any]] = []
         for view in self._views:
             state = self._state(view.prompt_id)
-            if library.shows(view, state, search=search, show=show, labels=labels):
+            if library.shows(
+                view, state, search=search, show=show, labels=labels, flagged=self._flagged
+            ):
                 rows.append(self._row(view, state))
         current = self._current
         outside = current is not None and not any(row["promptId"] == current for row in rows)
@@ -608,6 +750,7 @@ class StudioModel(ViewModel):
             "statusTitle": state.title,
             "kind": view.kind,
             "current": view.prompt_id == self._current,
+            "flag": FLAG_TITLES.get(self._session_flag(view.prompt_id), ""),
         }
 
     # -- the library's controls ---------------------------------------------------------------
@@ -650,7 +793,10 @@ class StudioModel(ViewModel):
         can = self._navigable() and any(
             state.status in library.UNCOVERED for state in self._states.values()
         )
-        self._set(self.libraryChanged, canContinueMissing=can)
+        flagged = self._navigable() and any(
+            library.is_flagged(prompt_id, self._flagged, self._states) for prompt_id in self._order
+        )
+        self._set(self.libraryChanged, canContinueMissing=can, canNextFlagged=flagged)
 
     @Slot(str)
     def selectPrompt(self, prompt_id: str) -> None:  # noqa: N802
@@ -724,6 +870,7 @@ class StudioModel(ViewModel):
         self._show_prompt()
         self._prompt_takes(latest=latest)
         self._update_rows()
+        self._update_pass()
         self._update_transport()
         self._update_status()
 
@@ -993,9 +1140,11 @@ class StudioModel(ViewModel):
                 take = client.set_trim(take.take_id, *trim)
             return take
 
-        def done(_take: SpooledTake | None, error: BaseException | None) -> None:
+        def done(take: SpooledTake | None, error: BaseException | None) -> None:
             if self._closed:
                 return
+            if take is not None:
+                self._session[take.take_id] = take.prompt_id
             if error is not None:
                 if not isinstance(error, (SpoolError, OSError)):
                     raise error
@@ -1058,6 +1207,7 @@ class StudioModel(ViewModel):
                 self._phase("review")
                 return
             saved, problem = result
+            self._session[saved.take_id] = saved.prompt_id
             self._pending = self._captured = None
             self.take_review.clear_review(select=saved.take_id)
             if not problem:
@@ -1091,6 +1241,8 @@ class StudioModel(ViewModel):
             self._update_status()
             return
         self.take_review.note_kept(take_id)
+        if self._current is not None:
+            self._session[take_id] = self._current
         self._outcome = status.Line("Saved · kept on this machine", "ok")
         self._refresh()
         if advance:
@@ -1099,6 +1251,17 @@ class StudioModel(ViewModel):
             self._update_status()
 
     def _advance(self) -> None:
+        if self._pass is not None:
+            target = self._next_in_pass()
+            if target is None:
+                self._end_pass("Saved · the flagged pass is done")
+                return
+            outcome = self._outcome
+            self._select(target, latest=True)
+            self._outcome = outcome
+            self._update_library()
+            self._update_status()
+            return
         target = library.next_missing(self._order, self._states, self._current)
         if target is None:
             self._outcome = status.Line("Saved · every prompt is recorded", "ok")

@@ -47,7 +47,7 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 - [x] 2: the core loop's acceptance test; a Save typed ahead before the seal
 - [x] 3: quality flags at review; Check Input
 - [x] 4: the menu bar, key hints, ⌘/; ⌘J, ⌘↑ and ⌘↓; the View menu's text sizes
-- [ ] 5
+- [x] 5: Show's Flagged here, Failed PC QC and Drafts only; Next Flagged; badges; the flagged pass
 - [ ] 6
 - [ ] 7
 - [ ] 8
@@ -86,3 +86,9 @@ Filled in by each PR; the last one hands the whole list to the owner.
      once), ⌘S saves once, ⌘↓ moves one prompt. Typing R or Return in the library's search
      never records or saves.
   5. ⌘/ shows the shortcuts; the buttons show their keys (⌘S, ↩).
+- **Flagged prompts (5).** Record a session that includes a deliberately bad take (one the
+  PC's QC fails: turned away, or very quiet), let it sync, and check:
+  1. its row gets the *Failed PC QC* badge, and Show → Failed PC QC lists it;
+  2. Next Flagged (⇧⌘J) reaches it;
+  3. a redo and Return clear it from the list, and the line *N prompts flagged since you
+     started · Review now* walks the rest with R, R, Return.

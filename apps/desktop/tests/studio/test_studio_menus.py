@@ -34,6 +34,7 @@ RECORDING = [
     "restore",
     "check",
     "continue-missing",
+    "next-flagged",
     "previous-prompt",
     "next-prompt",
 ]

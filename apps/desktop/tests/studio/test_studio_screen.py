@@ -356,6 +356,8 @@ def test_a_good_take_is_never_discarded(
     qtbot.waitUntil(lambda: len(studio.client.takes()) == 1, timeout=5000)
     (draft,) = studio.client.takes()
     assert draft.sync.decision.decision == "draft"
+    # The new take has started (its worker starts off the GUI thread): only now is it last.
+    qtbot.waitUntil(lambda: len(recorder.takes) == 2, timeout=5000)
     recorder.last.advance(4_800)
     wait_phase(qtbot, studio, "recording")
     studio.toggleRecord()

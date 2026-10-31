@@ -73,6 +73,40 @@ Rectangle {
             Accessible.description: library.rec.continueHelp
             onClicked: library.rec.continueMissing()
         }
+        // The flagged prompts recorded since the app started (D-058, item 5): a quiet line,
+        // never a dialog; Review now walks them (Save & Next and Next Flagged go on). Its
+        // place is kept when it is empty, so the library below never moves.
+        RowLayout {
+            objectName: "studioFlaggedRow"
+            readonly property bool shown: library.rec.flaggedText !== "" || library.rec.passText !== ""
+            Layout.fillWidth: true
+            Layout.preferredHeight: 24
+            Layout.maximumHeight: 24
+            spacing: SuiTheme.spaceXs
+            SuiText {
+                objectName: "studioFlaggedText"
+                Layout.fillWidth: true
+                visible: parent.shown
+                text: library.rec.passText !== "" ? library.rec.passText : library.rec.flaggedText
+                variant: "caption"
+                tone: "warn"
+                wrapMode: Text.NoWrap
+                maximumLineCount: 1
+                elide: Text.ElideRight
+            }
+            SuiButton {
+                visible: parent.shown
+                objectName: library.rec.passText !== "" ? "studioEndPass" : "studioReviewFlagged"
+                Layout.preferredHeight: 24
+                topPadding: 0
+                bottomPadding: 0
+                variant: "ghost"
+                text: library.rec.passText !== "" ? "End" : "Review now"
+                enabled: library.rec.canNavigate
+                onClicked: library.rec.passText !== "" ? library.rec.endPass()
+                                                       : library.rec.reviewFlagged()
+            }
+        }
         SuiSearchField {
             id: search
             objectName: "studioSearch"
@@ -163,6 +197,7 @@ Rectangle {
                 title: library.rec.currentRow.title || ""
                 statusTitle: library.rec.currentRow.statusTitle || ""
                 kind: library.rec.currentRow.kind || "spoken"
+                flag: library.rec.currentRow.flag || ""
                 current: true
             }
         }
