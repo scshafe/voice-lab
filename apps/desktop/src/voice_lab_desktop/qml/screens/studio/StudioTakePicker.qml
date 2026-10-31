@@ -100,6 +100,7 @@ Item {
                 highlighted: combo.highlightedIndex === index
                 Accessible.role: Accessible.ListItem
                 Accessible.name: modelData.when + ", " + modelData.status + ", " + modelData.where
+                                 + (modelData.flags !== "" ? ", flags: " + modelData.flags : "")
                 contentItem: ColumnLayout {
                     id: entryColumn
                     spacing: 0
@@ -116,6 +117,16 @@ Item {
                         text: entry.modelData.status + " · " + entry.modelData.where
                         variant: "caption"
                         tone: entry.modelData.changedElsewhere ? "warn" : "muted"
+                        wrapMode: Text.Wrap
+                    }
+                    // Its quality flags (D-058), in words.
+                    SuiText {
+                        objectName: "studioHistoryFlags"
+                        Layout.fillWidth: true
+                        visible: entry.modelData.flags !== ""
+                        text: "Flags: " + entry.modelData.flags
+                        variant: "caption"
+                        tone: "warn"
                         wrapMode: Text.Wrap
                     }
                 }

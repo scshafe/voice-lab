@@ -45,7 +45,7 @@ One PR each, verified (`scripts/verify`, `dev check .`), CI green, merged with
 
 - [x] 1: the review, D-058, this plan, the stale documents
 - [x] 2: the core loop's acceptance test; a Save typed ahead before the seal
-- [ ] 3
+- [x] 3: quality flags at review; Check Input
 - [ ] 4
 - [ ] 5
 - [ ] 6
@@ -64,3 +64,13 @@ Filled in by each PR; the last one hands the whole list to the owner.
   you can, ten prompts in a row. Each Return pressed within about 100 ms of the stop saves and
   goes on (the status line says *Stopping · will save when ready* while it waits); no prompt
   is skipped and none is saved twice.
+- **Quality flags and Check Input (3).** In the normal recording position:
+  1. Check input: the room's floor and the SNR are stable over two or three checks, and the
+     verdict reads *Good to record* (or says why not).
+  2. Record 20 ordinary prompts: none is flagged. A flag that fires on ordinary takes is a
+     threshold to calibrate (`studio/quality.py`), not a fault in the take. If *PC QC* fires
+     for the PC's −35 dBFS peak on ordinary takes, that is the PC's own threshold: the owner
+     decides whether the PC should change it.
+  3. On purpose: one take turned away from the microphone (*Low SNR*), one with a knock near
+     the capsule (*Clipped*), one started mid-word (*Cut start*). Each gets its flag.
+  4. After they sync, the PC's verdicts agree with the local *PC QC* and *Clipped* flags.

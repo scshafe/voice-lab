@@ -22,6 +22,10 @@ QML reads it as ``app.studioModel.takes``.
   Record, another screen) asks first: Save trim, Discard edit or Cancel (``guard``).
 - **Playback** through the app's one player: the preview plays exactly the trimmed frames
   (D-012), with ±0.1 s steps; never while a take is recorded.
+- **Quality flags** (D-058, ``studio/quality.py``): each take here gets a verdict, off the GUI
+  thread and only between takes (never while one is recorded or saved), kept by take id in
+  ``<data dir>/studio/quality.json``. The take under review is judged against this session's
+  recent kept takes (``note_kept``). Flags never block anything.
 
 Every connection goes to a declared ``@Slot`` (#41).
 """
@@ -29,6 +33,7 @@ Every connection goes to a declared ``@Slot`` (#41).
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal
 
@@ -36,6 +41,8 @@ from PySide6.QtCore import Signal, Slot
 
 from cole_voice_lab.api.corpus_contracts import TakeHistory
 from cole_voice_lab.corpus_read_model import LibraryTake
+from cole_voice_lab.corpus_takes import take_id_for
+from cole_voice_lab.errors import ContractError
 
 from ..api import ApiError
 from ..auth import AuthError
@@ -45,7 +52,7 @@ from ..corpus.client import CorpusClient
 from ..corpus.records import Notice
 from ..corpus.spool import SpooledTake, SpoolError
 from ..playback import PlaybackError
-from ..studio import audio, takes
+from ..studio import audio, quality, takes
 from ..studio.takes import REVIEW, TakeEntry
 from ..viewmodel import AppContext, ViewModel, qproperty
 
@@ -59,8 +66,27 @@ PC_UNREACHED: Final = "The PC's takes of this prompt could not be read"
 HERE_UNREAD: Final = "This machine's takes could not be compared with the PC's"
 
 
+#: The session's kept takes whose speech levels Inconsistent compares against (at most).
+SESSION_LEVELS: Final = 50
+
+
 class _HereUnread(Exception):
     """The PC's history came, but this machine's takes could not be read to compare it."""
+
+
+@dataclass(frozen=True)
+class _Judging:
+    """A take waiting for its verdict: its WAV and samples in memory (the take under review
+    moves when it is saved), and what it is judged against."""
+
+    prompt_id: str
+    wav: bytes
+    samples: audio.Samples
+    spoken: bool
+    expected_seconds: float
+    recent: tuple[float, ...]
+    #: The take under review: judged now, never read from the store.
+    fresh: bool
 
 
 def clock(frames: int) -> str:
@@ -76,6 +102,7 @@ class TakeReviewModel(ViewModel):
     playChanged = Signal()
     confirmChanged = Signal()
     restoreChanged = Signal()
+    qualityChanged = Signal()
 
     # -- the picker and the history
     takeOptions = qproperty("QVariantList", "takeOptions", takesChanged)
@@ -119,6 +146,11 @@ class TakeReviewModel(ViewModel):
     confirmOpen = qproperty(bool, "confirmOpen", confirmChanged)
     # -- Restore's question when what came before is not known here
     restoreAskOpen = qproperty(bool, "restoreAskOpen", restoreChanged)
+    # -- the selected take's quality flags (D-058): each {code, title, detail, tone}
+    flags = qproperty("QVariantList", "flags", qualityChanged)
+    #: "" (none: no take, or a take only the PC has), "checking" or "checked".
+    qualityState = qproperty(str, "qualityState", qualityChanged)
+    qualityDetail = qproperty(str, "qualityDetail", qualityChanged)
 
     def __init__(
         self,
@@ -165,6 +197,9 @@ class TakeReviewModel(ViewModel):
                 "canPlay": False,
                 "confirmOpen": False,
                 "restoreAskOpen": False,
+                "flags": [],
+                "qualityState": "",
+                "qualityDetail": "",
             },
         )
         self.client = client
@@ -194,6 +229,23 @@ class TakeReviewModel(ViewModel):
         self._live_reading = False
         #: Told each PC history read (prompt id, library tag, history): the studio's status.
         self.on_history: Callable[[str, str | None, TakeHistory], None] | None = None
+        #: Where verdicts are kept (the studio sets it: ``<data dir>/studio/quality.json``).
+        self.quality_store: quality.QualityStore | None = None
+        #: Verdicts of takes here, by take id: this run's, and the store's as they are read.
+        self._verdicts: dict[str, quality.Verdict] = {}
+        #: Takes waiting for a verdict, oldest first (judged one at a time, between takes).
+        self._wanted: dict[str, _Judging] = {}
+        self._judging = ""
+        #: Kept this session before their verdict came (their level joins it then).
+        self._kept_unjudged: set[str] = set()
+        #: The take under review's id (``take-<sha256>``: what Save will call it).
+        self._review_id = ""
+        self._spoken = True
+        self._expected_seconds = 0.0
+        #: The speech levels of this session's kept takes, oldest first (Inconsistent).
+        self.recent_levels: list[float] = []
+        #: Check Input's room floor this session, shown beside a take's levels.
+        self.room_floor_dbfs: float | None = None
         player = context.player
         player.changed.connect(self._player_changed)
         player.positionChanged.connect(self._player_position)
@@ -217,11 +269,21 @@ class TakeReviewModel(ViewModel):
 
     # -- what the studio tells it ------------------------------------------------------------
 
-    def set_prompt(self, prompt_id: str | None, prompt_sha256: str, *, latest: bool) -> None:
+    def set_prompt(
+        self,
+        prompt_id: str | None,
+        prompt_sha256: str,
+        *,
+        latest: bool,
+        spoken: bool = True,
+        expected_seconds: float = 0.0,
+    ) -> None:
         """A new prompt (``latest``: select its latest kept take, as an explicit selection
-        does; Continue Missing, Save & Next and Retake select none)."""
+        does; Continue Missing, Save & Next and Retake select none). ``spoken`` and
+        ``expected_seconds``: what its takes' flags are judged against."""
         self.stop_playback()
         self._prompt, self._prompt_sha256 = prompt_id, prompt_sha256
+        self._spoken, self._expected_seconds = spoken, expected_seconds
         self._pc, self._pc_tag = None, None
         # An answer for the prompt before is ignored when it comes.
         self._pc_generation += 1
@@ -263,6 +325,7 @@ class TakeReviewModel(ViewModel):
             canZoomIn=False,
             canZoomOut=False,
         )
+        self._update_quality()
 
     def poll_live(self) -> None:
         """Read what the worker wrote since (off the GUI thread, one read at a time)."""
@@ -309,6 +372,7 @@ class TakeReviewModel(ViewModel):
         self._set(self.waveChanged, live=False, levelPeakDb=audio.FLOOR_DB, levelText="")
         if self._selected is None:
             self._clear_wave("No take selected")
+        self._update_quality()
 
     def review(self, captured: CapturedTake) -> None:
         """The worker's take, under review until Save (it comes first, selected)."""
@@ -323,6 +387,7 @@ class TakeReviewModel(ViewModel):
             where="unsaved",
         )
         self._review_path = captured.path
+        self._review_id = take_id_for(captured.sha256)
         self._edits.pop(REVIEW, None)
         self._rebuild()
         self._select(self._review)
@@ -334,6 +399,7 @@ class TakeReviewModel(ViewModel):
             self.stop_playback()
         self._review = None
         self._review_path = None
+        self._review_id = ""
         self._edits.pop(REVIEW, None)
         self._rebuild()
         target = next((e for e in self._entries if e.key == select), None) if select else None
@@ -380,6 +446,7 @@ class TakeReviewModel(ViewModel):
         self._update_actions()
         self._update_trim()
         self._update_play()
+        self._judge_next()  # a verdict that waited for the take to be saved
 
     # -- the takes ----------------------------------------------------------------------------
 
@@ -400,7 +467,7 @@ class TakeReviewModel(ViewModel):
                     self._edit = None  # the take's trim changed under the edit
         self._set(
             self.takesChanged,
-            takeOptions=[{"value": e.key, "label": e.label} for e in entries],
+            takeOptions=[{"value": e.key, "label": self._label(e)} for e in entries],
             history=[self._history_row(e) for e in entries],
             takeCount=len(entries),
         )
@@ -408,11 +475,19 @@ class TakeReviewModel(ViewModel):
         self._update_trim()
         self._update_play()
 
+    def _label(self, entry: TakeEntry) -> str:
+        """The picker's short line, with its flags' count when it has any."""
+        verdict = self._verdict(entry)
+        count = len(verdict.flags) if verdict is not None else 0
+        return entry.label + (f" · {count} flag{'' if count == 1 else 's'}" if count else "")
+
     def _history_row(self, entry: TakeEntry) -> dict[str, Any]:
         selected = self._selected is not None and self._selected.key == entry.key
+        verdict = self._verdict(entry)
         return {
             "key": entry.key,
-            "label": entry.label,
+            "label": self._label(entry),
+            "flags": ", ".join(flag.title for flag in verdict.flags) if verdict else "",
             "when": entry.when,
             "length": f"{entry.seconds:.1f} s",
             "status": entry.status,
@@ -513,6 +588,7 @@ class TakeReviewModel(ViewModel):
             self._load(entry)
         self._update_trim()
         self._update_play()
+        self._update_quality()
 
     def _load(self, entry: TakeEntry) -> None:
         if self._samples_key == entry.key and self._samples is not None:
@@ -529,24 +605,30 @@ class TakeReviewModel(ViewModel):
         elif entry.audio_here and entry.local is not None:
             path = entry.local.audio
 
-        def work() -> audio.Samples:
+        def work() -> tuple[audio.Samples, bytes | None]:
             if path is not None:
-                return audio.read_take(path)
-            return audio.read_take_bytes(client.take_audio(entry.take_id))
+                wav = path.read_bytes()  # kept for its verdict (the PC's QC reads bytes)
+                return audio.read_take_bytes(wav), wav
+            return audio.read_take_bytes(client.take_audio(entry.take_id)), None
 
-        def done(samples: audio.Samples | None, error: BaseException | None) -> None:
+        def done(
+            result: tuple[audio.Samples, bytes | None] | None, error: BaseException | None
+        ) -> None:
             if self._closed or generation != self._load_generation:
                 return
-            if error is not None or samples is None:
+            if error is not None or result is None:
                 known = (PlaybackError, ApiError, AuthError, ConfigError, OSError)
                 if error is not None and not isinstance(error, known):
                     raise error
                 self._clear_wave(f"The take cannot be shown: {error}")
                 return
+            samples, wav = result
             self._samples, self._samples_key = samples, entry.key
             selected = self._selected
             if selected is not None and selected.key == entry.key:
                 self._show_samples(selected)
+            if wav is not None:
+                self._want(entry, wav, samples)
 
         self.context.tasks.submit(work, done)
 
@@ -571,6 +653,137 @@ class TakeReviewModel(ViewModel):
             canZoomIn=False,
             canZoomOut=False,
         )
+
+    # -- quality flags (D-058) ----------------------------------------------------------------
+
+    def _verdict_id(self, entry: TakeEntry) -> str:
+        return self._review_id if entry.key == REVIEW else entry.take_id
+
+    def _verdict(self, entry: TakeEntry) -> quality.Verdict | None:
+        """The take's verdict when known (this run's, or the store's once it was read)."""
+        take_id = self._verdict_id(entry)
+        known = self._verdicts.get(take_id)
+        if known is None and take_id and entry.key != REVIEW and self.quality_store is not None:
+            known = self.quality_store.peek(take_id)
+            if known is not None:
+                self._verdicts[take_id] = known
+        return known
+
+    def _want(self, entry: TakeEntry, wav: bytes, samples: audio.Samples) -> None:
+        """Judge a take here whose verdict is not known (once loaded)."""
+        take_id = self._verdict_id(entry)
+        if not take_id or self._prompt is None or self._verdict(entry) is not None:
+            return
+        if take_id in self._wanted or take_id == self._judging:
+            return
+        review = entry.key == REVIEW
+        self._wanted[take_id] = _Judging(
+            prompt_id=self._prompt,
+            wav=wav,
+            samples=samples,
+            spoken=self._spoken,
+            expected_seconds=self._expected_seconds,
+            recent=tuple(self.recent_levels) if review else (),
+            fresh=review,
+        )
+        self._update_quality()
+        self._judge_next()
+
+    def _judge_next(self) -> None:
+        """Judge the oldest take waiting, never while a take is recorded or saved (the PC's
+        QC measures every sample in Python: Save & Next never waits on it)."""
+        if self._judging or not self._wanted or self._closed or self.busy():
+            return
+        take_id, job = next(iter(self._wanted.items()))
+        self._judging = take_id
+        store = self.quality_store
+
+        def work() -> quality.Verdict | None:
+            if store is not None and not job.fresh:
+                known = store.get(take_id)
+                if known is not None:
+                    return known
+            try:
+                verdict = quality.check(
+                    job.wav,
+                    job.samples,
+                    spoken=job.spoken,
+                    expected_seconds=job.expected_seconds,
+                    recent=job.recent,
+                )
+            except ContractError:
+                return None  # not a PCM WAV: the take's own checks say so elsewhere
+            if store is not None:
+                try:
+                    store.put(take_id, job.prompt_id, verdict)
+                except OSError:
+                    pass  # kept for this run only
+            return verdict
+
+        def done(verdict: quality.Verdict | None, error: BaseException | None) -> None:
+            self._judging = ""
+            self._wanted.pop(take_id, None)
+            if self._closed:
+                return
+            if error is not None:
+                raise error
+            if verdict is not None:
+                self._verdicts[take_id] = verdict
+                if take_id in self._kept_unjudged:
+                    self._kept_unjudged.discard(take_id)
+                    self._add_level(verdict)
+            self._rebuild()
+            self._update_quality()
+            self._judge_next()
+
+        self.context.tasks.submit(work, done)
+
+    def note_kept(self, take_id: str) -> None:
+        """A take was kept this session: its speech level joins those Inconsistent compares
+        against (when its verdict comes, if it has not yet)."""
+        verdict = self._verdicts.get(take_id)
+        if verdict is None:
+            self._kept_unjudged.add(take_id)
+        else:
+            self._add_level(verdict)
+
+    def _add_level(self, verdict: quality.Verdict) -> None:
+        level = verdict.levels.speech_dbfs
+        if level is not None and verdict.levels.snr_db is not None:
+            self.recent_levels.append(level)
+            del self.recent_levels[:-SESSION_LEVELS]
+
+    def _update_quality(self) -> None:
+        entry = self._selected
+        if entry is None or self._live is not None:
+            self._set(self.qualityChanged, flags=[], qualityState="", qualityDetail="")
+            return
+        verdict = self._verdict(entry)
+        if verdict is None:
+            take_id = self._verdict_id(entry)
+            waiting = take_id in self._wanted or (take_id != "" and take_id == self._judging)
+            state = "checking" if waiting else ""
+            self._set(self.qualityChanged, flags=[], qualityState=state, qualityDetail="")
+            return
+        self._set(
+            self.qualityChanged,
+            flags=[
+                {"code": f.code, "title": f.title, "detail": f.detail, "tone": f.tone}
+                for f in verdict.flags
+            ],
+            qualityState="checked",
+            qualityDetail=quality.describe(verdict, room_floor_dbfs=self.room_floor_dbfs),
+        )
+
+    def quality_read(self) -> None:
+        """The store was read: the takes' flags show."""
+        self._rebuild()
+        self._update_quality()
+
+    def room_checked(self, floor_dbfs: float) -> None:
+        """Check Input measured the room: its floor is shown beside a take's levels."""
+        self.room_floor_dbfs = floor_dbfs
+        self._update_quality()
 
     # -- decisions ----------------------------------------------------------------------------
 

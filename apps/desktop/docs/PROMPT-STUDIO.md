@@ -36,10 +36,10 @@ depend on the fonts installed, so no test pins them.
 | Region | What |
 | --- | --- |
 | **Library** (left, 280 points; 240 below a 1,000-point screen) | `Library` with the covered count (`n / 1,886`), and where it comes from. Then **Continue Missing**, the search, **Show** (All prompts, Missing, Needs attention) and **Labels**. Then the catalog version this run records against, and the switch the next session makes. Then every prompt, with its status. |
-| **Header** | The prompt's title and its label chips. Chips that do not fit collapse into `+N`, but the category always shows. On the right: the reading size (**Aa 24**, 28 or 32, kept for you in `<data dir>/studio/view.json`) and the microphone. |
+| **Header** | The prompt's title and its label chips. Chips that do not fit collapse into `+N`, but the category always shows. On the right: **Check input** (below), the reading size (**Aa 24**, 28 or 32, kept for you in `<data dir>/studio/view.json`) and the microphone. |
 | **Script card** | For a spoken prompt, `PROMPT · READ ALOUD` and the text, whole (see above). For room tone or a test step, a banner and "No spoken prompt" instead. The `INSTRUCTIONS · NOT READ ALOUD` section is always there, with the guidance and the duration. |
 | **Take picker** | The selected take in a short line (`12 Oct 07:01 · 2.0 s · Kept · here`), whole on the smallest window. Open, it is the history: every take of the prompt, newest first, from this machine and the PC, with date and time, length, status (trimmed, changed elsewhere, imported from the Mac) and where it lives. Then **Remove**, **Reject…** and **Restore**. |
-| **Waveform** | The selected take on the dB display scale, its kept frames between the trim handles, the playhead. While recording: the live waveform, in red. When a take fails or does not start, or there is no microphone, the whole message shows here instead. |
+| **Waveform** | The selected take on the dB display scale, its kept frames between the trim handles, the playhead. In its top right corner, the take's quality flags (below). While recording: the live waveform, in red. When a take fails or does not start, or there is no microphone, the whole message shows here instead. |
 | **Trim row** | **In** and **Out**, set from the playhead (**Set In**, **Set Out**) or by dragging the handles; **Save trim**; **Reset**. |
 | **Timer** | While recording, the take's length from the frames the worker confirmed (D-014), never a clock, and the peak level. Otherwise the playhead within the kept frames, and their length. |
 | **Playback row** | **−** and **+** (Zoom) and **Fit**; **−0.1 s**, **Play**/**Pause**, **+0.1 s**. |
@@ -118,6 +118,48 @@ Click the chip to look again after plugging the UMIK-1 in.
 - **Playback** plays exactly the kept frames (D-012) through the app's one player, from the
   playhead. **−0.1 s** and **+0.1 s** move the playhead within the kept frames, also while
   playing. Nothing plays while a take is recorded.
+
+## Quality flags and Check Input
+
+The studio checks every take on this machine and flags what it finds (D-058; the recording
+UX review's item 1). The flags never block: Save, Save & Next and Retake work the same with or
+without them. They show as chips in the waveform's corner, each in words (*Clipped*, *PC QC*,
+*Low SNR*, *Inconsistent*, *Short*, *Long*, *Cut start*, *Cut end*, *Cut edges*), or *No
+flags*; a click lists why, with the take's levels. The picker's line counts them, and the
+history names them.
+
+| Flag | When |
+| --- | --- |
+| Clipped | A sample at full scale (the PC's rule), or a peak within 1 dB of it |
+| PC QC | The PC's own QC (`cole_voice_lab.audio`'s `qc_metrics`, run here on the same WAV) has a finding: a peak under −35 dBFS, a DC offset, a dropout, buffer-boundary discontinuities. The PC will mark the take *Needs review* |
+| Low SNR | The speech stands less than 20 dB over the take's own floor: its quietest tenth of a second (the start before the voice, a pause) |
+| Inconsistent | The speech's level is more than 6 dB from the median of this session's last ten kept takes (from the third) |
+| Short, Long | Under half the catalog's expected duration, or over twice it plus 2 s |
+| Cut start, Cut end | Speech in the first or the last 0.1 s |
+
+The levels are judged against the room and the session, never against a loudness target: the
+UMIK-1's fixed gain puts speech near −50 dBFS, and the training copies get a linear gain
+(FINETUNE.md). Only the PC's own rule speaks of a level (its −35 dBFS peak), because the PC
+will. Room tone and procedure steps get the PC's QC (quiet allowed, as there), Clipped and the
+length. The thresholds beyond the PC's are starting points, to calibrate on the first hundred
+takes on the Mac.
+
+A take is judged off the GUI thread, after its waveform shows, and never while a take is
+recorded or saved: the PC's QC measures every sample in Python (about 19 ms a second of
+audio), and Save & Next never waits on it. A take saved at once (Return typed ahead) is judged
+just after. Verdicts are kept by take id in `<data dir>/studio/quality.json` (0600, this
+machine's notes, never sent), so a take keeps the verdict of its review. A take reviewed before
+the file existed is judged when it is first shown, without the session's levels.
+
+**Check input** (in the header) measures the UMIK-1 on demand, never as a take. Its window
+explains, and the microphone opens only on **Start**: two seconds of quiet, then a line read
+aloud (Aesop's *The North Wind and the Sun*), and it closes by itself after nine seconds.
+The status line says *Checking input · not recording*, and Record waits. It shows the room's
+floor, the speech's level and peak, the SNR (good at 35 dB, low under 20), clipping and the
+level the training gain would give, with one line: *Good to record*, *Good enough to record;
+a quieter room would help*, *The room is loud for this level*, *No speech stood over the
+room* or *Clipping: move back*. The capture worker writes into `<data dir>/studio/check/`,
+which is deleted once measured; **Stop** (or Escape) ends it and keeps nothing.
 
 ## Keys
 
@@ -228,7 +270,9 @@ two keep their data apart: the studio in `<data dir>/corpus/`, the sessions in
 | Where | What |
 | --- | --- |
 | `screens/studio.py` | `StudioModel`, the screen's model over a `CorpusClient`. Every connection goes to a declared `@Slot` (#41). |
-| `screens/studio_takes.py` | `TakeReviewModel` (`app.studioModel.takes`): the picker, the decisions, the waveform, trims and playback. |
+| `screens/studio_takes.py` | `TakeReviewModel` (`app.studioModel.takes`): the picker, the decisions, the waveform, trims and playback, and each take's quality flags. |
+| `screens/studio_check.py` | `InputCheckModel` (`app.studioModel.check`): Check Input. |
+| `studio/quality.py` | The flags, their thresholds, the store of verdicts, Check Input's levels. |
 | `studio/takes.py` | A prompt's takes from the spool and the PC, merged, with their status and where they live. |
 | `studio/audio.py` | Samples in memory, the dB display bins, exact clips, the live waveform. |
 | `studio/presentation.py` | How a prompt is shown: kind, banner, sections, labels, search. |
@@ -252,7 +296,9 @@ Tests: `tests/studio/` drives the screen offscreen over the PC rig
 covers 6b: the picker over local and PC takes, each decision through the client, Reject's
 reason, trims with the preview's exact frames, Zoom and Fit, the steps, the live waveform,
 the geometry across states, and changed elsewhere. 6c: `test_studio_remote.py`,
-`test_studio_keys.py`, `test_studio_confirm.py`, `test_studio_polish.py`. The layout tests
+`test_studio_keys.py`, `test_studio_confirm.py`, `test_studio_polish.py`. D-058:
+`test_studio_core_loop.py` (the core loop), `test_studio_quality.py` (the flags, on synthetic
+voices from `studio_fakes.voice_samples`, and Check Input). The layout tests
 (`geometry`) read every region only after the window has drawn a frame, then again after the
 next, and fail unless the two agree.
 
@@ -285,6 +331,11 @@ parity off in step 10, on the real Mac, after S-1 (step 8).
 | The core loop, rapid fire; a Save typed ahead before the seal (D-058) | yes | `test_the_core_loop_rapid_fire`, `test_a_save_typed_ahead_stays_and_a_failed_take_drops_it` |
 | Keys ignored while typing, in dialogs, on auto-repeat | yes | `test_keys_are_ignored_while_typing_in_menus_dialogs_and_elsewhere`, `test_the_waveform_keys`. The page's shortcuts are checked to refuse repeats (`autoRepeat: false`): QtTest cannot send a repeat through the window's shortcut map |
 | Corpus-first: no sessions, groups or packages; Continue Missing walks the whole catalog in order | yes | `test_the_workspace_loads…`, `test_continue_missing_walks_the_catalog_in_order` |
+
+Additions beyond the Swift app (D-058), which change nothing it does:
+
+- **Quality flags at review and Check Input** (the review's item 1): `test_studio_quality.py`.
+- **A Save typed ahead while the take seals** is done when it seals: `test_studio_core_loop.py`.
 
 Two differences from the Swift app remain, both deliberate:
 

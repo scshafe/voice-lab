@@ -26,7 +26,8 @@ Item {
     readonly property bool shown: app.screen === "prompts"
     readonly property bool menuOpen: libraryPane.menuOpen || detailsPopup.visible
                                      || takePicker.menuOpen || trimConfirm.visible
-                                     || restoreAsk.visible
+                                     || restoreAsk.visible || checkDialog.visible
+                                     || flagsPopup.visible
                                      || sizeSelect.popup.visible || approval.dialogOpen
     // Typing in a field (the search, a dialog's) keeps the keys for the field.
     readonly property bool typing: {
@@ -140,6 +141,110 @@ Item {
         ]
     }
 
+    // Check Input (D-058): the room and a spoken line measured on demand. The microphone
+    // opens on Start only, closes by itself, and nothing enters the corpus.
+    readonly property var check: rec.check
+    Connections {
+        target: studio.check
+        function onCheckChanged() {
+            // open() reverses a closing dialog (RowDetailSheet.qml says why).
+            if (studio.check.dialogOpen)
+                checkDialog.open()
+            else if (checkDialog.visible)
+                checkDialog.close()
+        }
+    }
+    SuiDialog {
+        id: checkDialog
+        objectName: "studioCheckDialog"
+        title: "Check input"
+        description: "About ten seconds: two of quiet, then the line below read aloud, as you"
+                     + " would read a prompt. Not a take: the audio is measured, then deleted."
+        dismissOnOutsideClick: false
+        onRejected: if (studio.check.dialogOpen) studio.check.cancel()
+        ColumnLayout {
+            width: checkDialog.availableWidth
+            spacing: SuiTheme.spaceSm
+            SuiText {
+                objectName: "studioCheckInstruction"
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: studio.check.instruction
+                variant: "subheading"
+            }
+            SuiText {
+                objectName: "studioCheckLine"
+                Layout.fillWidth: true
+                text: "“" + studio.check.line + "”"
+                tone: studio.check.stage === "speak" ? "" : "muted"
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                visible: studio.check.running
+                spacing: SuiTheme.spaceSm
+                SuiLevelMeter {
+                    objectName: "studioCheckLevel"
+                    Layout.fillWidth: true
+                    label: "Input level"
+                    from: studio.check.levelFloorDb
+                    level: studio.check.levelPeakDb
+                    showScale: false
+                    showValue: false
+                    showClip: false
+                }
+                SuiText {
+                    objectName: "studioCheckRemaining"
+                    text: studio.check.remainingText
+                    variant: "caption"
+                }
+            }
+            Repeater {
+                model: studio.check.results
+                delegate: RowLayout {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    spacing: SuiTheme.spaceSm
+                    SuiText {
+                        Layout.preferredWidth: 168
+                        text: modelData.label
+                        variant: "label"
+                    }
+                    SuiText {
+                        objectName: "studioCheckResult"
+                        Layout.fillWidth: true
+                        text: modelData.value
+                        tone: modelData.tone
+                        wrapMode: Text.Wrap
+                    }
+                }
+            }
+            SuiText {
+                objectName: "studioCheckSummary"
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: studio.check.summary
+                tone: studio.check.summaryTone === "neutral" ? "" : studio.check.summaryTone
+                wrapMode: Text.Wrap
+            }
+        }
+        actions: [
+            SuiButton {
+                objectName: "studioCheckClose"
+                text: studio.check.running ? "Stop" : "Close"
+                onClicked: studio.check.cancel()
+            },
+            SuiButton {
+                objectName: "studioCheckStart"
+                text: studio.check.stage === "done" || studio.check.stage === "failed"
+                      ? "Check again" : "Start"
+                variant: "primary"
+                enabled: !studio.check.running && studio.rec.canCheck
+                onClicked: studio.rec.startCheck()
+            }
+        ]
+    }
+
     // Layout tokens: an 8-point scale, 16-point insets, a 280-point library (240 below a
     // 1,000-point screen), a 56-point Record/Stop target.
     readonly property int inset: SuiTheme.spaceLg
@@ -225,7 +330,7 @@ Item {
             SuiText {
                 objectName: "studioPromptTitle"
                 anchors.left: parent.left
-                anchors.right: sizeSelect.left
+                anchors.right: checkButton.left
                 anchors.rightMargin: SuiTheme.spaceMd
                 y: 2
                 text: studio.rec.promptTitle
@@ -234,13 +339,28 @@ Item {
             }
             StudioLabelChips {
                 anchors.left: parent.left
-                anchors.right: sizeSelect.left
+                anchors.right: checkButton.left
                 anchors.rightMargin: SuiTheme.spaceMd
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 2
                 titles: studio.rec.labelChips
                 pinned: studio.rec.pinnedChips
                 spokenLabel: studio.rec.labelsSpoken
+            }
+            SuiButton {
+                id: checkButton
+                objectName: "studioCheckInput"
+                anchors.right: sizeSelect.left
+                anchors.rightMargin: SuiTheme.spaceSm
+                anchors.verticalCenter: parent.verticalCenter
+                height: 24
+                topPadding: 0
+                bottomPadding: 0
+                text: "Check input"
+                variant: "ghost"
+                focusPolicy: Qt.NoFocus
+                enabled: studio.rec.canCheck
+                onClicked: studio.rec.openCheck()
             }
             // The reading size (§5's text-size choice), kept per viewer.
             T.ComboBox {
@@ -392,6 +512,64 @@ Item {
                 onPlayRequested: studio.takes.togglePlay()
                 onStepRequested: (frames) => studio.takes.seekBy(frames)
                 onEdgeRequested: (end) => end ? studio.takes.seekToEnd() : studio.takes.seekToStart()
+            }
+            // The take's quality flags (D-058): a chip each, in words (never colour alone), in
+            // the waveform's corner, never in the way; a click says why, with the levels.
+            T.AbstractButton {
+                id: flagsBadge
+                objectName: "studioFlags"
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.margins: SuiTheme.spaceXs
+                visible: studio.takes.qualityState !== "" && studio.rec.problemText === ""
+                enabled: studio.takes.qualityState === "checked"
+                focusPolicy: Qt.NoFocus
+                implicitWidth: implicitContentWidth + leftPadding + rightPadding
+                implicitHeight: implicitContentHeight + topPadding + bottomPadding
+                padding: 0
+                Accessible.role: Accessible.Button
+                Accessible.name: studio.takes.flags.length === 0 ? flagsNone.text
+                    : "Flags: " + studio.takes.flags.map((flag) => flag.title).join(", ")
+                onClicked: flagsPopup.open()
+                contentItem: Row {
+                    spacing: SuiTheme.spaceXs
+                    Repeater {
+                        model: studio.takes.flags
+                        delegate: SuiChip {
+                            required property var modelData
+                            objectName: "studioFlag-" + modelData.code
+                            text: modelData.title
+                            tone: modelData.tone
+                            dot: true
+                        }
+                    }
+                    SuiChip {
+                        id: flagsNone
+                        objectName: "studioFlagsNone"
+                        visible: studio.takes.flags.length === 0
+                        text: studio.takes.qualityState === "checking" ? "Checking…" : "No flags"
+                    }
+                }
+                T.Popup {
+                    id: flagsPopup
+                    objectName: "studioFlagsPopup"
+                    x: flagsBadge.width - width
+                    y: flagsBadge.height + SuiTheme.spaceXs
+                    width: 400
+                    padding: SuiTheme.spaceMd
+                    closePolicy: T.Popup.CloseOnEscape | T.Popup.CloseOnPressOutside
+                    background: Rectangle {
+                        radius: SuiTheme.radiusMd
+                        color: SuiTheme.popover
+                        border.width: 1
+                        border.color: SuiTheme.borderStrong
+                    }
+                    contentItem: SuiText {
+                        objectName: "studioFlagsDetail"
+                        text: studio.takes.qualityDetail
+                        wrapMode: Text.Wrap
+                    }
+                }
             }
             // What went wrong with the take, whole, in the take's place.
             Flickable {
