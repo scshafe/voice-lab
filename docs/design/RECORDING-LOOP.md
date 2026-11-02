@@ -106,7 +106,9 @@ Filled in by each PR; the last one hands the whole list to the owner.
 - **The layout (8).** At the smallest window and at full screen:
   1. ⌥⌘I and ⌃⌘S (and the header's two buttons) hide and show the inspector and the library,
      the View menu says which, and both stay as left after a relaunch;
-  2. with both shown on the smallest window, the footer and the header still read whole;
+  2. with both shown on the smallest window, the footer and the header still read whole, and
+     so does the take's line with its flags' count (Remove, Reject… and Restore are then
+     under ⋯, and work from there);
   3. the core loop is no slower with the inspector shown: the keys, the focus and Return work
      as before.
 - **Redo and ⌘Z (9).** On one prompt, R, R, R, R, Return:

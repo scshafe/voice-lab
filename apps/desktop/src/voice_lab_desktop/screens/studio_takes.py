@@ -111,6 +111,8 @@ class TakeReviewModel(ViewModel):
 
     # -- the picker and the history
     takeOptions = qproperty("QVariantList", "takeOptions", takesChanged)
+    #: The widest line a take can have (``studio/takes.py``): what the picker keeps room for.
+    widestLabel = qproperty(str, "widestLabel", takesChanged)
     selectedKey = qproperty(str, "selectedKey", takesChanged)
     history = qproperty("QVariantList", "history", takesChanged)
     historyNote = qproperty(str, "historyNote", takesChanged)
@@ -171,6 +173,7 @@ class TakeReviewModel(ViewModel):
             context,
             {
                 "takeOptions": [],
+                "widestLabel": takes.WIDEST_LABEL,
                 "takeCaption": "",
                 "selectedKey": "",
                 "history": [],
@@ -542,8 +545,7 @@ class TakeReviewModel(ViewModel):
     def _label(self, entry: TakeEntry) -> str:
         """The picker's short line, with its flags' count when it has any."""
         verdict = self._verdict(entry)
-        count = len(verdict.flags) if verdict is not None else 0
-        return entry.label + (f" · {count} flag{'' if count == 1 else 's'}" if count else "")
+        return takes.with_flags(entry.label, len(verdict.flags) if verdict is not None else 0)
 
     def _caption(self) -> str:
         """What the selected take is, for the waveform's caption."""

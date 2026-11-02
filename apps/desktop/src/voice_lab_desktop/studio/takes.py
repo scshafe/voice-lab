@@ -54,6 +54,8 @@ WHERE_SHORT: Final[dict[str, str]] = {
     "both": "here + PC",
     "unsaved": "here",
 }
+#: Where the picker's line places a take imported from the Mac.
+MAC_IMPORT: Final = "Mac import"
 ORIGIN_TITLES: Final[dict[str, str]] = {"imported": "imported from the Mac"}
 
 
@@ -140,7 +142,7 @@ class TakeEntry:
         """The picker's short line (it fits the smallest window): when, how long, the
         decision, where (``Mac`` for a take imported from it). History has the rest."""
         when = "now" if self.requested_at is None else self._short_when()
-        where = "Mac import" if self.origin == "imported" else WHERE_SHORT[self.where]
+        where = MAC_IMPORT if self.origin == "imported" else WHERE_SHORT[self.where]
         decision = DECISION_TITLES.get(self.decision, self.decision)
         return f"{when} · {self.seconds:.1f} s · {decision} · {where}"
 
@@ -148,6 +150,27 @@ class TakeEntry:
         assert self.requested_at is not None
         local = self.requested_at.astimezone()
         return f"{local.day} {local.strftime('%b %H:%M')}"
+
+
+def with_flags(label: str, count: int) -> str:
+    """The picker's line of a take with ``count`` quality flags: their count when it has any."""
+    return label + (f" · {count} flag{'' if count == 1 else 's'}" if count else "")
+
+
+#: The widest line the picker can show, every part at its widest (a two-digit day and hour,
+#: a take of 999.9 s, the longest decision and place, more flags than a take gets). The picker
+#: keeps this much for its line, measured in the host's font: the Mac's is wider than the PC's.
+WIDEST_LABEL: Final = with_flags(
+    " · ".join(
+        (
+            "28 May 23:59",
+            "999.9 s",
+            max(DECISION_TITLES.values(), key=len),
+            max([*WHERE_SHORT.values(), MAC_IMPORT], key=len),
+        )
+    ),
+    9,
+)
 
 
 def origin_of(pc: LibraryTake | None) -> str:
