@@ -4,6 +4,7 @@ clipping a prompt; the take picker's short line, whole on the smallest window.""
 from __future__ import annotations
 
 import json
+import math
 import stat
 import threading
 from pathlib import Path
@@ -65,12 +66,28 @@ def test_the_text_size_is_chosen_and_kept(
 def test_the_pickers_line_is_whole_on_the_smallest_window(
     qtbot: Any, studio_window: Window, recorder: StudioRecorder
 ) -> None:
+    """Every take's line shows whole at 960 × 600, its flags' count included, in this host's
+    font: the row keeps room for the widest line a take can have (the Mac's font is wider than
+    the PC's), and there its three buttons fold into one menu."""
     takes = studio_window.model.studio.takes
     recorder.seconds = 2.0
+    # The opening window holds the line and the three buttons.
+    assert studio_window.find("studioRemoveTake").isVisible()
+    assert not studio_window.find("studioTakeActions").isVisible()
     resize(qtbot, studio_window, 960, 600)
+    assert studio_window.find("studioTakeActions").isVisible()
+    for name in ("studioRemoveTake", "studioRejectTake", "studioRestoreTake"):
+        assert not studio_window.find(name).isVisible(), name
     line = studio_window.find("studioTakeSelectText")
+    widest = math.ceil(studio_window.find("studioTakeLineWidest").property("advanceWidth"))
+    assert line.width() >= widest
     saved(qtbot, studio_window, recorder)
-    recorded(qtbot, studio_window, recorder)  # "… · Not saved · here", the longest
+    recorded(qtbot, studio_window, recorder)
+    # Both judged (the stand-in's takes are short and quiet): each line counts two flags.
+    qtbot.waitUntil(
+        lambda: [o["label"].endswith(" · 2 flags") for o in takes.takeOptions] == [True, True],
+        timeout=10000,
+    )
     for key in [row["key"] for row in takes.history]:
         takes.selectTake(key)
         qtbot.waitUntil(lambda key=key: takes.selectedKey == key, timeout=5000)
@@ -84,7 +101,56 @@ def test_the_pickers_line_is_whole_on_the_smallest_window(
             timeout=5000,
         )
         assert line.property("truncated") is False, line.property("text")
-    assert "· 2.0 s · Not saved · here" in takes.takeOptions[0]["label"]
+        assert line.property("implicitWidth") <= widest, line.property("text")
+    assert takes.takeOptions[0]["label"].endswith(" · 2.0 s · Not saved · here · 2 flags")
+    assert " · 2.0 s · Kept · here · 2 flags" in takes.takeOptions[1]["label"]
+    # The library folded away, the row holds the line and the three buttons again.
+    studio_window.model.studio.toggleLibrary()
+    qtbot.waitUntil(lambda: studio_window.find("studioRemoveTake").isVisible(), timeout=5000)
+    assert not studio_window.find("studioTakeActions").isVisible()
+    assert line.property("truncated") is False
+
+
+def test_the_folded_take_actions_decide_as_the_buttons_do(
+    qtbot: Any, studio_window: Window, recorder: StudioRecorder
+) -> None:
+    studio = studio_window.model.studio
+    screen = studio_window.find("studioScreen")
+    resize(qtbot, studio_window, 960, 600)
+    assert not studio_window.find("studioTakeActions").isEnabled()  # no take: nothing applies
+    take_id = saved(qtbot, studio_window, recorder)
+    menu = studio_window.find("studioTakeActionsMenu")
+
+    def decision() -> str:
+        return str(studio.client.spool.take(take_id).sync.decision.decision)
+
+    def choose(name: str) -> None:
+        click(studio_window, "studioTakeActions")
+        qtbot.waitUntil(lambda: menu.property("visible"), timeout=5000)
+        assert screen.property("menuOpen") and not screen.property("keysEnabled")
+        click(studio_window, name)
+        qtbot.waitUntil(lambda: not menu.property("visible"), timeout=5000)
+
+    def on() -> list[bool]:
+        return [
+            studio_window.find(f"studioTakeAction{name}").isEnabled()
+            for name in ("Remove", "Reject", "Restore")
+        ]
+
+    assert on() == [True, True, False]
+    choose("studioTakeActionRemove")
+    qtbot.waitUntil(lambda: decision() == "removed", timeout=5000)
+    assert on() == [False, False, True]
+    choose("studioTakeActionRestore")
+    qtbot.waitUntil(lambda: decision() == "kept", timeout=5000)
+    # Reject… asks why, as the button does.
+    choose("studioTakeActionReject")
+    dialog = studio_window.find("studioRejectDialog")
+    qtbot.waitUntil(lambda: dialog.property("visible"), timeout=5000)
+    studio_window.items("studioRejectReason")[0].setProperty("text", "a chair creaked")
+    studio_window.items("studioConfirmReject")[0].clicked.emit()
+    qtbot.waitUntil(lambda: not dialog.property("visible"), timeout=5000)
+    assert decision() == "rejected"
 
 
 def test_recovery_and_reads_at_start_run_off_the_gui_thread(

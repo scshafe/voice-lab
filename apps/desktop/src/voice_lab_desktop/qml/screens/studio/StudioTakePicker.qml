@@ -4,7 +4,10 @@
 // first, with its date, length, status (changed elsewhere, imported from the Mac) and where
 // it lives; then the selected take's actions: Remove, Reject (with a reason) and Restore.
 // The model is the studio's `takes` (screens/studio_takes.py). In the inspector (D-058's
-// layout) it is `stacked`: the line above its actions.
+// layout) it is `stacked`: the line above its actions. In the centre the line keeps room for
+// the widest line a take can have (`widestLabel`, measured in this host's font); where the row
+// cannot hold that and the three buttons too (the smallest window), they fold into one Take
+// actions menu (⋯), as the Swift app holds them.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Templates as T
@@ -19,7 +22,26 @@ Item {
     property bool busy: false
     property bool stacked: false
     implicitHeight: pickerGrid.implicitHeight
-    readonly property bool menuOpen: combo.popup.visible || rejectDialog.visible
+    readonly property bool menuOpen: combo.popup.visible || actionsMenu.visible
+                                     || rejectDialog.visible
+    readonly property real lineRoom: Math.ceil(widest.advanceWidth) + combo.leftPadding
+                                     + combo.rightPadding
+    readonly property real wordsWidth: removeButton.implicitWidth + rejectButton.implicitWidth
+        + restoreButton.implicitWidth + 2 * actions.spacing
+    readonly property bool folded: !stacked
+        && width < lineRoom + pickerGrid.columnSpacing + wordsWidth
+
+    TextMetrics {
+        id: widest
+        objectName: "studioTakeLineWidest"
+        font: combo.font
+        text: picker.takes.widestLabel
+    }
+
+    function askReject() {
+        reason.text = ""
+        rejectDialog.open()
+    }
 
     function indexOf(key) {
         const rows = takes.history
@@ -33,6 +55,29 @@ Item {
         topPadding: 0
         bottomPadding: 0
         variant: "ghost"
+    }
+
+    // One of the folded menu's actions.
+    component ActionItem: T.MenuItem {
+        id: action
+        implicitWidth: implicitContentWidth + leftPadding + rightPadding
+        implicitHeight: 24
+        leftPadding: SuiTheme.spaceSm
+        rightPadding: SuiTheme.spaceSm
+        font.pixelSize: SuiTheme.fontSizeSm
+        Accessible.description: picker.takes.actionNote
+        contentItem: Text {
+            textFormat: Text.PlainText
+            text: action.text
+            font: action.font
+            color: SuiTheme.text
+            opacity: action.enabled ? 1 : SuiTheme.disabledOpacity
+            verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+            radius: SuiTheme.radiusSm
+            color: action.highlighted && action.enabled ? SuiTheme.bgHover : "transparent"
+        }
     }
 
     GridLayout {
@@ -197,30 +242,89 @@ Item {
             }
         }
         RowLayout {
+        id: actions
         spacing: SuiTheme.spaceXs
         RowButton {
+            id: removeButton
             objectName: "studioRemoveTake"
+            visible: !picker.folded
             text: "Remove"
             enabled: picker.takes.canRemove
             Accessible.description: picker.takes.actionNote
             onClicked: picker.takes.remove()
         }
         RowButton {
+            id: rejectButton
             objectName: "studioRejectTake"
+            visible: !picker.folded
             text: "Reject…"
             enabled: picker.takes.canReject
             Accessible.description: picker.takes.actionNote
-            onClicked: {
-                reason.text = ""
-                rejectDialog.open()
-            }
+            onClicked: picker.askReject()
         }
         RowButton {
+            id: restoreButton
             objectName: "studioRestoreTake"
+            visible: !picker.folded
             text: "Restore"
             enabled: picker.takes.canRestore
             Accessible.description: picker.takes.actionNote
             onClicked: picker.takes.restore()
+        }
+        // Folded: the same three in a menu, each on while its button would be.
+        SuiIconButton {
+            id: actionsButton
+            objectName: "studioTakeActions"
+            visible: picker.folded
+            Layout.preferredWidth: 24
+            Layout.preferredHeight: 24
+            padding: (24 - iconSize) / 2
+            icon.name: "more"
+            label: "Take actions"
+            enabled: picker.takes.canRemove || picker.takes.canReject || picker.takes.canRestore
+            Accessible.description: picker.takes.actionNote
+            onClicked: actionsMenu.open()
+
+            T.Menu {
+                id: actionsMenu
+                objectName: "studioTakeActionsMenu"
+                x: actionsButton.width - width
+                y: actionsButton.height + 2
+                padding: 2
+                implicitWidth: Math.max(implicitBackgroundWidth, contentWidth + leftPadding + rightPadding)
+                implicitHeight: contentHeight + topPadding + bottomPadding
+                contentItem: ListView {
+                    implicitHeight: contentHeight
+                    model: actionsMenu.contentModel
+                    interactive: false
+                    currentIndex: actionsMenu.currentIndex
+                }
+                background: Rectangle {
+                    implicitWidth: 120
+                    radius: SuiTheme.radiusSm
+                    color: SuiTheme.popover
+                    border.width: 1
+                    border.color: SuiTheme.borderStrong
+                }
+                ActionItem {
+                    objectName: "studioTakeActionRemove"
+                    text: "Remove"
+                    enabled: picker.takes.canRemove
+                    onTriggered: picker.takes.remove()
+                }
+                ActionItem {
+                    objectName: "studioTakeActionReject"
+                    text: "Reject…"
+                    enabled: picker.takes.canReject
+                    onTriggered: picker.askReject()
+                }
+                ActionItem {
+                    objectName: "studioTakeActionRestore"
+                    text: "Restore"
+                    enabled: picker.takes.canRestore
+                    onTriggered: picker.takes.restore()
+                }
+            }
         }
         }
     }
@@ -229,8 +333,7 @@ Item {
     Connections {
         target: picker.takes
         function onRejectRequested() {
-            reason.text = ""
-            rejectDialog.open()
+            picker.askReject()
         }
     }
     // Reject needs its reason: the button stays off until one is written.

@@ -355,6 +355,7 @@ SIX_B = (
     "studioRemoveTake",
     "studioRejectTake",
     "studioRestoreTake",
+    "studioTakeActions",
     "studioWave",
     "studioSetIn",
     "studioSetOut",
@@ -384,9 +385,11 @@ def test_transport_and_review_never_move_the_layout(
     for size in ((1440, 900), (960, 600)):
         resize(qtbot, studio_window, *size)
         idle = geometry(qtbot, studio_window)
-        # Inside the content area (the 16-point inset), the trim row's last button included.
+        # Inside the content area (the 16-point inset), the trim row's last button included;
+        # on the smallest window the picker's three buttons are folded into its menu (⋯).
         right = size[0] - 16
-        assert all(x + w <= right for x, _y, w, _h in idle.values()), idle
+        shown = {name: at for name, at in idle.items() if studio_window.find(name).isVisible()}
+        assert all(x + w <= right for x, _y, w, _h in shown.values()), shown
         seen = {}
         count = len(recorder.takes)
         studio.toggleRecord()
