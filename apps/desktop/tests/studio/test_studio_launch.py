@@ -123,3 +123,19 @@ def test_a_frame_that_cannot_be_used_is_ignored(
         assert model.windowGeometry == {}
     finally:
         model.shutdown()
+
+
+def test_a_hidden_screens_list_stays_hidden_at_the_next_start(
+    qtbot: Any, data_dir: Path, tmp_path: Path, pc: PC, recorder: StudioRecorder
+) -> None:
+    (data_dir / "window.json").write_text(json.dumps({"screens": False}))
+    model = studio_app(data_dir, tmp_path, pc, recorder)
+    try:
+        assert not model.screensShown
+        with open_studio(qtbot, model, tmp_path) as window:
+            shell = window.find("shell")
+            assert not shell.property("sidebarOpen") and not window.find("sidebarList").isVisible()
+            # The prompt library is the studio's own, and stays.
+            assert window.find("studioLibrary").isVisible()
+    finally:
+        model.shutdown()

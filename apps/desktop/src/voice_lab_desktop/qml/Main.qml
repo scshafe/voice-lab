@@ -20,6 +20,12 @@ Window {
     minimumHeight: 600
     visible: true
     color: SuiTheme.bg
+    // Like Notes (D-059): on macOS the content runs under the title bar, so the screens list
+    // runs the window's full height with the traffic lights inside its top; every screen
+    // starts below the title bar (SafeArea), and the list's hot zone is there too.
+    flags: Qt.platform.os === "osx" ? Qt.Window | Qt.ExpandedClientAreaHint
+                                      | Qt.NoTitleBarBackgroundHint
+                                    : Qt.Window
     // Titled with what it shows (the HIG: not the app's name): the prompt's id in the studio,
     // the screen's name elsewhere (D-058, item 7).
     title: app.screen === "prompts" && app.studioModel !== null && app.studioModel.promptId !== ""
@@ -79,15 +85,24 @@ Window {
 
     SuiAppShell {
         id: shell
+        objectName: "shell"
         anchors.fill: parent
         sidebarLabel: "Screens"
         contentLabel: "Screen"
+        // The screens list hides like Notes' sidebar (D-059): its pin, View → Hide Screens
+        // List, and the pointer resting at the top-left shows it over the content. The
+        // prompt library keeps ⌃⌘S.
+        sidebarHideable: true
+        pinLabel: "Keep the screens list shown"
+        // The app's (kept for the next start), also after the pin has set it itself.
+        Binding on sidebarOpen { value: app.screensShown }
+        onSidebarOpenChanged: app.setScreensShown(sidebarOpen)
 
         sidebar: Rectangle {
             color: SuiTheme.panel
             ColumnLayout {
                 anchors.fill: parent
-                anchors.topMargin: SuiTheme.spaceMd
+                anchors.topMargin: SuiTheme.spaceMd + parent.SafeArea.margins.top
                 spacing: SuiTheme.spaceSm
                 SuiText {
                     Layout.leftMargin: SuiTheme.spaceLg
@@ -116,21 +131,25 @@ Window {
             }
         }
 
-        content: StackLayout {
-            objectName: "screens"
-            currentIndex: app.screenIndex
-            StatusScreen {}
-            UploadsScreen {}
-            Loader {
-                objectName: "recordPrompts"
-                source: app.promptsMode === "studio" ? "screens/StudioScreen.qml"
-                                                     : "screens/PromptsScreen.qml"
+        content: Item {
+            StackLayout {
+                objectName: "screens"
+                anchors.fill: parent
+                anchors.topMargin: parent.SafeArea.margins.top
+                currentIndex: app.screenIndex
+                StatusScreen {}
+                UploadsScreen {}
+                Loader {
+                    objectName: "recordPrompts"
+                    source: app.promptsMode === "studio" ? "screens/StudioScreen.qml"
+                                                         : "screens/PromptsScreen.qml"
+                }
+                MeasurementScreen {}
+                CorpusScreen {}
+                JourneyScreen {}
+                PracticeScreen {}
+                RefereeScreen {}
             }
-            MeasurementScreen {}
-            CorpusScreen {}
-            JourneyScreen {}
-            PracticeScreen {}
-            RefereeScreen {}
         }
     }
 

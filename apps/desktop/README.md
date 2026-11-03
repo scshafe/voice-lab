@@ -11,6 +11,12 @@ First time? See [docs/FIRST-RUN.md](docs/FIRST-RUN.md).
 
 ## Screens
 
+The screens list on the left hides like the sidebar of macOS Notes (D-059). Its pin, or View →
+Hide Screens List, hides it. Hidden, it slides in over the screen while the pointer rests at
+the window's top-left, and goes when the pointer leaves. The choice is kept in
+`<data dir>/window.json`. On macOS the list runs the window's full height, with the window's
+buttons inside its top.
+
 | Screen | What |
 | --- | --- |
 | **Status** | Sign-in, the settings, the server (build, API versions, the minimum client version), the upload approval (**Approve uploads to my PC**), its gates (playback, transcript text, feature detail), the job runner, the local spool, the evidence report (opens the web view's in the browser) |
