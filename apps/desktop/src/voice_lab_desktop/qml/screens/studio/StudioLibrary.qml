@@ -1,12 +1,12 @@
 // The prompt studio's library sidebar (NATIVE_RECORDING_UX.md §4, "library filters"): the
-// covered count, Continue Missing above the search (it ignores search and filters), the
-// search, Show and Labels, the catalog version this run records against, and every prompt
-// of it with its status. The model is the studio's (screens/studio.py).
+// covered count (the catalog and where the count comes from behind its ⓘ, D-059), Continue
+// Missing above the search (it ignores search and filters), the search with its filters (Show
+// and Labels behind the funnel), the switch the next session makes, and every prompt of the
+// catalog with its status. The model is the studio's (screens/studio.py).
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Templates as T
 import Scshafe.Ui
-import VoiceLab.StandIn
 import VoiceLab.Controls
 
 Rectangle {
@@ -14,7 +14,14 @@ Rectangle {
     objectName: "studioLibrary"
 
     required property var rec
-    readonly property bool menuOpen: labelsPopup.visible || showSelect.popupOpen
+    // The filter menu holds the focus while it is open; an ⓘ's popover never takes it.
+    readonly property bool menuOpen: {
+        for (let item = library.Window.activeFocusItem; item !== null; item = item.parent) {
+            if (item === T.Overlay.overlay)
+                return true
+        }
+        return false
+    }
 
     color: SuiTheme.panel
 
@@ -25,14 +32,6 @@ Rectangle {
         color: SuiTheme.line
     }
 
-    component Caption: Text {
-        textFormat: Text.PlainText
-        color: SuiTheme.muted
-        font.pixelSize: SuiTheme.fontSizeXs
-        font.weight: SuiTheme.fontWeightStrong
-        Accessible.ignored: true
-    }
-
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: SuiTheme.spaceLg
@@ -41,26 +40,22 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: SuiTheme.spaceSm
+            spacing: SuiTheme.spaceXs
             SuiText { text: "Library"; variant: "title" }
             Item { Layout.fillWidth: true }
+            // Warn: the count is this machine's takes only, or the PC is rebuilding its library.
             SuiText {
                 objectName: "studioCoverage"
                 text: library.rec.coverageText
                 tabular: true
-                tone: "muted"
+                tone: library.rec.coveragePartial ? "warn" : "muted"
                 Accessible.name: library.rec.coverageSpoken
             }
-        }
-        SuiText {
-            objectName: "studioCoverageSource"
-            Layout.fillWidth: true
-            Layout.preferredHeight: 36
-            text: library.rec.coverageSource
-            variant: "caption"
-            wrapMode: Text.Wrap
-            maximumLineCount: 2
-            elide: Text.ElideRight
+            InfoTip {
+                objectName: "studioLibraryInfo"
+                title: "Library"
+                text: [library.rec.catalogText, library.rec.coverageSource].filter(line => line !== "").join("\n")
+            }
         }
         StudioKeyButton {
             objectName: "studioContinueMissing"
@@ -73,79 +68,60 @@ Rectangle {
             Accessible.description: library.rec.continueHelp
             onClicked: library.rec.continueMissing()
         }
-        SuiSearchField {
-            id: search
-            objectName: "studioSearch"
+        // The search, and Show and Labels behind the funnel: an exclusive Show (none chosen is
+        // all prompts) and the labels (OR among themselves); Clear resets both, not the search.
+        SuiListHeader {
+            id: header
+            objectName: "studioLibraryHeader"
             Layout.fillWidth: true
-            label: "Search library prompts"
+            label: "Search and filter the library"
+            searchLabel: "Search library prompts"
             placeholderText: "Search prompts"
+            searchField.objectName: "studioSearch"
+            filterLabel: "Filter prompts"
+            filters: library.rec.filters
+            activeFilters: library.rec.activeFilters
             onTextEdited: library.rec.setSearch(text)
             onCleared: library.rec.setSearch("")
-        }
-        SelectField {
-            id: showSelect
-            objectName: "studioShow"
-            Layout.fillWidth: true
-            label: "Show"
-            options: library.rec.showOptions
-            value: library.rec.show
-            onValueSelected: (value) => library.rec.setShow(value)
-        }
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 2
-            Caption { text: "Labels" }
-            SuiButton {
-                id: labelsButton
-                objectName: "studioLabels"
-                Layout.fillWidth: true
-                implicitHeight: SuiTheme.controlHeight
-                text: library.rec.labelsButton
-                Accessible.name: library.rec.labelsTitle
-                onClicked: labelsPopup.visible ? labelsPopup.close() : labelsPopup.open()
-            }
-        }
-        // The catalog version this run records against, and the switch the next session
-        // makes (or why nothing can be recorded): a line and a notice of up to two lines,
-        // always there.
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 58
-            spacing: 2
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 20
-                spacing: SuiTheme.spaceXs
-                SuiText {
-                    objectName: "studioCatalog"
-                    Layout.fillWidth: true
-                    text: library.rec.catalogText
-                    variant: "caption"
-                    elide: Text.ElideRight
-                }
-                SuiButton {
-                    objectName: "studioSwitch"
-                    Layout.preferredHeight: 20
-                    topPadding: 0
-                    bottomPadding: 0
-                    text: "Switch now"
-                    variant: "ghost"
-                    visible: library.rec.canSwitch
-                    enabled: library.rec.phase === "ready"
-                    onClicked: library.rec.switchCatalog()
+            // The header sets its activeFilters as you choose: the model's, bound again after.
+            onFilterToggled: library.applyFilters()
+            onFiltersCleared: library.applyFilters()
+            // The search the model holds (the last run's, D-058 item 7) shows in the field.
+            Component.onCompleted: text = library.rec.searchText
+            Connections {
+                target: library.rec
+                function onLibraryChanged() {
+                    if (header.text !== library.rec.searchText)
+                        header.text = library.rec.searchText
                 }
             }
+        }
+        // Only while it has something to say: the switch the next session makes, or why
+        // nothing can be recorded yet.
+        ColumnLayout {
+            objectName: "studioSwitchRow"
+            Layout.fillWidth: true
+            visible: library.rec.switchText !== ""
+            spacing: 2
             SuiText {
                 objectName: "studioSwitchNotice"
                 Layout.fillWidth: true
-                Layout.preferredHeight: 36
-                verticalAlignment: Text.AlignTop
                 text: library.rec.switchText
                 variant: "caption"
                 tone: library.rec.canSwitch ? "info" : (library.rec.phase === "blocked" ? "warn" : "muted")
+                // Whole, however many lines a host's font needs: it no longer reserves a fixed two.
                 wrapMode: Text.Wrap
-                maximumLineCount: 2
-                elide: Text.ElideRight
+            }
+            SuiButton {
+                objectName: "studioSwitch"
+                Layout.preferredHeight: 20
+                topPadding: 0
+                bottomPadding: 0
+                text: "Switch now"
+                variant: "ghost"
+                visible: library.rec.canSwitch
+                enabled: library.rec.phase === "ready"
+                onClicked: library.rec.switchCatalog()
             }
         }
         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: SuiTheme.line }
@@ -203,51 +179,8 @@ Rectangle {
         }
     }
 
-    // Labels: one toggle per label in first-appearance catalog order (combined with OR),
-    // and "Show all labels". Catalog-derived titles render verbatim.
-    T.Popup {
-        id: labelsPopup
-        objectName: "studioLabelsPopup"
-        parent: labelsButton
-        y: labelsButton.height + 2
-        width: Math.max(labelsButton.width, 220)
-        padding: SuiTheme.spaceXs
-        implicitHeight: Math.min(labelsColumn.implicitHeight + 2 * padding, 360)
-        closePolicy: T.Popup.CloseOnEscape | T.Popup.CloseOnPressOutsideParent
-        background: Rectangle {
-            radius: SuiTheme.radiusSm
-            color: SuiTheme.popover
-            border.width: 1
-            border.color: SuiTheme.borderStrong
-        }
-        contentItem: Flickable {
-            clip: true
-            contentHeight: labelsColumn.implicitHeight
-            boundsBehavior: Flickable.StopAtBounds
-            ColumnLayout {
-                id: labelsColumn
-                width: parent.width
-                spacing: 0
-                Repeater {
-                    model: library.rec.labelOptions
-                    delegate: SuiCheckBox {
-                        required property var modelData
-                        objectName: "studioLabel-" + modelData.token
-                        Layout.fillWidth: true
-                        text: modelData.title
-                        checked: modelData.selected
-                        onToggled: library.rec.setLabel(modelData.token, checked)
-                    }
-                }
-                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: SuiTheme.line }
-                SuiButton {
-                    objectName: "studioAllLabels"
-                    Layout.fillWidth: true
-                    text: "Show all labels"
-                    variant: "ghost"
-                    onClicked: library.rec.showAllLabels()
-                }
-            }
-        }
+    function applyFilters() {
+        library.rec.setFilters(header.activeFilters)
+        header.activeFilters = Qt.binding(() => library.rec.activeFilters)
     }
 }

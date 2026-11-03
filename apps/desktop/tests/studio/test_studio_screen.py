@@ -9,10 +9,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import info_tips
 import pytest
 from conftest import Window
 from corpus_rig import PC, bind_library, client, record
 from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QAccessible
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (root objects come back as QQuickWindow)
 from PySide6.QtTest import QTest
 from studio_fakes import StudioRecorder
@@ -144,6 +146,7 @@ def test_continue_missing_walks_the_catalog_in_order(
             # Filters never change where it goes: hide everything but one label.
             studio.setShow("missing")
             studio.setSearch("technical")
+            drawn(qtbot, window)  # the selected prompt pinned above the list, laid out
             click(window, "studioContinueMissing")
             assert studio.promptId == ids[4]  # 2 and 3 are recorded
             click(window, "studioContinueMissing")
@@ -159,18 +162,65 @@ def test_continue_missing_walks_the_catalog_in_order(
         model.shutdown()
 
 
+def press(qtbot: Any, window: Window, item: Any) -> None:
+    """A left click in the middle of ``item`` (one of a popup's, say), once it shows."""
+    qtbot.waitUntil(lambda: item.isVisible(), timeout=5000)
+    centre = item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
+    QTest.mouseClick(window.root, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre)
+
+
+def choose_filter(qtbot: Any, window: Window, key: str) -> None:
+    """In the library header, the funnel, then the filter ``key`` (``show:missing``,
+    ``label:technical``, or ``clear``): the menu closes after the choice."""
+    click(window, "filterButton")
+    menu = window.find("filterMenu")
+    qtbot.waitUntil(lambda: menu.property("opened"), timeout=5000)
+    name = "clearFilters" if key == "clear" else "filterOption_" + key
+    (option,) = [
+        item for item in window.items(name, menu.property("contentItem")) if item.isVisible()
+    ]
+    # The menu scrolls past its height: to the option first, as the arrow keys go.
+    options = menu.property("contentItem")
+    index = menu.property("count") - 1 if key == "clear" else option.property("index")
+    menu.setProperty("currentIndex", index)
+
+    def shown() -> bool:
+        top, bottom = (options.mapToScene(QPointF(0, y)).y() for y in (0, options.height()))
+        place = option.mapToScene(QPointF(0, 0)).y()
+        return top <= place and place + option.height() <= bottom
+
+    qtbot.waitUntil(shown, timeout=5000)
+    press(qtbot, window, option)
+    qtbot.waitUntil(lambda: not menu.property("visible"), timeout=5000)
+
+
 def test_the_filters_and_the_search(qtbot: Any, studio_window: Window, pc: PC) -> None:
     studio = studio_window.model.studio
     ids = prompt_ids(pc)
-    assert studio.rowCount == 34 and studio.labelsTitle == "Labels: Any"
-    tokens = [option["token"] for option in studio.labelOptions]
-    assert tokens[:2] == ["reference", "reference-candidate"] and "technical" in tokens
-    # Labels: OR among themselves.
-    studio.setLabel("reference-candidate", True)
-    assert studio.labelsTitle == "Labels: Reference Candidate"
+    header = studio_window.find("studioLibraryHeader")
+    funnel = studio_window.find("filterButton")
+    assert studio.rowCount == 34 and studio.activeFilters == []
+    keys = [option["key"] for option in studio.filters]
+    sections = [option["section"] for option in studio.filters]
+    # Show first (one choice; none is all prompts), then the labels in catalog order.
+    assert keys[:5] == [
+        "show:missing", "show:attention", "show:flagged", "show:failed", "show:drafts",
+    ]  # fmt: skip
+    assert sections == ["Show"] * 5 + ["Labels"] * (len(keys) - 5)
+    assert keys[5:7] == ["label:reference", "label:reference-candidate"]
+    assert "label:technical" in keys
+    assert studio.filters[6]["text"] == "Reference Candidate"
+    # Labels: OR among themselves; the funnel shows how many filters are on.
+    choose_filter(qtbot, studio_window, "label:reference-candidate")
+    assert studio.activeFilters == ["label:reference-candidate"]
     assert rows(studio_window) == ids[:4]
-    studio.setLabel("technical", True)
-    assert studio.labelsTitle == "Labels: Reference Candidate, Technical"
+    assert header.property("filterCount") == 1
+    assert studio_window.find("filterBadge").property("visible")
+    spoken = QAccessible.queryAccessibleInterface(funnel)
+    assert spoken.text(QAccessible.Text.Name) == "Filter prompts"
+    assert spoken.text(QAccessible.Text.Description) == "1 active: Reference Candidate"
+    choose_filter(qtbot, studio_window, "label:technical")
+    assert studio.activeFilters == ["label:reference-candidate", "label:technical"]
     assert len(rows(studio_window)) == 9
     # Search: AND with the labels; case-insensitive over the title, id, text and guidance.
     search = studio_window.find("studioSearch")
@@ -185,32 +235,34 @@ def test_the_filters_and_the_search(qtbot: Any, studio_window: Window, pc: PC) -
     search.textEdited.emit()
     assert studio.rowCount == 0
     assert studio_window.find("studioLibraryEmpty").property("visible")
-    studio.showAllLabels()
-    assert studio.labelsTitle == "Labels: Any" and studio.rowCount == 0
+    # Clear filters: Show and the labels, never the search.
+    choose_filter(qtbot, studio_window, "clear")
+    assert studio.activeFilters == [] and studio.rowCount == 0
+    assert search.property("text") == "kettle" and not studio_window.find("filterBadge").isVisible()
     search.setProperty("text", "")
     search.textEdited.emit()
     assert studio.rowCount == 34
-    # Show: Missing, Needs attention (a draft), All.
+    # Show: Missing, Needs attention (a draft), All; one at a time.
     studio.selectPrompt(ids[3])
     assert studio.promptId == ids[3] and not studio.currentOutside
-    studio.setShow("attention")
+    choose_filter(qtbot, studio_window, "show:missing")
+    choose_filter(qtbot, studio_window, "show:attention")
+    assert studio.show == "attention" and studio.activeFilters == ["show:attention"]
     assert studio.rowCount == 0
     assert studio.currentOutside and studio.currentRow["promptId"] == ids[3]
     assert studio_window.find("studioCurrentOutside").property("visible")
+    choose_filter(qtbot, studio_window, "show:attention")  # chosen again: off, all prompts
+    assert studio.show == "all" and studio.rowCount == 34 and not studio.currentOutside
+    # The model's Show and labels, set elsewhere (a flagged pass, the last run's), show too.
     studio.setShow("missing")
-    assert studio.rowCount == 34 and not studio.currentOutside
+    studio.setLabel("technical", True)
+    assert header.property("activeFilters") == ["show:missing", "label:technical"]
     studio.setShow("nonsense")
     assert studio.show == "missing"
-    # The Labels menu: a toggle per label, and Show all labels.
-    click(studio_window, "studioLabels")
-    popup = studio_window.find("studioLabelsPopup")
-    qtbot.waitUntil(lambda: popup.property("visible"), timeout=5000)
-    box = studio_window.items("studioLabel-technical")[0]
-    box.setProperty("checked", True)
-    box.toggled.emit()
-    assert studio.labelsTitle == "Labels: Technical" and studio.rowCount == 5
-    studio_window.items("studioAllLabels")[0].clicked.emit()
-    assert studio.labelsTitle == "Labels: Any" and studio.rowCount == 34
+    studio.setFilters(["show:drafts", "label:nonsense", "show:nonsense"])
+    assert studio.show == "drafts" and studio.activeFilters == ["show:drafts"]
+    studio.setFilters([])
+    assert studio.rowCount == 34
 
 
 def test_record_stop_save_keeps_a_local_take(
@@ -383,14 +435,32 @@ def test_a_good_take_is_never_discarded(
     assert len(studio.client.takes()) == 2
 
 
+def test_the_librarys_info_tip_holds_the_catalog_and_where_the_count_comes_from(
+    qtbot: Any, studio_window: Window
+) -> None:
+    """D-059: the catalog line and the count's source left the library for its ⓘ, beside the
+    count."""
+    studio = studio_window.model.studio
+    tip = studio_window.find("studioLibraryInfo")
+    assert studio.catalogText == "cole-corpus · v1"
+    assert studio.coverageSource.startswith("The PC's library (read ")
+    assert info_tips.body(tip) == "cole-corpus · v1\n" + studio.coverageSource
+    assert tip.property("title") == "Library"
+    assert not studio.coveragePartial
+    assert studio_window.find("studioCoverage").property("tone") == "muted"
+    info_tips.opens_on_hover_click_and_keys(qtbot, studio_window, tip)
+    # Nothing it explains is left in the library's own lines.
+    texts = visible_texts(studio_window.find("studioLibrary"))
+    assert "cole-corpus · v1" not in texts and studio.coverageSource not in texts
+
+
 REGIONS = (
     "studioLibrary",
     "studioCoverage",
     "studioContinueMissing",
+    "studioLibraryInfo",
     "studioSearch",
-    "studioShow",
-    "studioLabels",
-    "studioCatalog",
+    "studioLibraryHeader",
     "studioLibraryList",
     "studioHeader",
     "studioPromptTitle",
@@ -666,22 +736,16 @@ def test_nothing_is_cut_off_on_the_smallest_window(
             ready(qtbot, model)
             studio = model.studio
             resize(qtbot, window, 960, 600)
-            lines = (
-                "studioLabels",
-                "studioCatalog",
-                "studioSwitchNotice",
-                "studioCoverageSource",
-                "studioStatusText",
-            )
+            # The catalog and where the count comes from are the library's ⓘ (D-059), which
+            # wraps; the funnel has no words.
+            lines = ("studioSwitchNotice", "studioStatusText")
 
             def whole() -> None:
+                drawn(qtbot, window)  # a line that just appeared, laid out
                 for name in lines:
                     item = window.find(name)
-                    if name == "studioLabels":  # a button: its label
-                        item = item.property("contentItem")
                     assert item.property("truncated") is False, (name, item.property("text"))
 
-            studio.setLabel("reference-candidate", True)
             # Sending held until S-1, with a take here.
             take_one(qtbot, window, recorder)
             studio.save()

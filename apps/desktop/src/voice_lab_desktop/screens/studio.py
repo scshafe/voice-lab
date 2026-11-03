@@ -177,6 +177,8 @@ class StudioModel(ViewModel):
     coverageText = qproperty(str, "coverageText", libraryChanged)
     coverageSpoken = qproperty(str, "coverageSpoken", libraryChanged)
     coverageSource = qproperty(str, "coverageSource", libraryChanged)
+    #: The count is this machine's takes only, or the PC is rebuilding its library.
+    coveragePartial = qproperty(bool, "coveragePartial", libraryChanged)
     catalogText = qproperty(str, "catalogText", libraryChanged)
     switchText = qproperty(str, "switchText", libraryChanged)
     canSwitch = qproperty(bool, "canSwitch", libraryChanged)
@@ -191,10 +193,9 @@ class StudioModel(ViewModel):
     continueHelp = qproperty(str, "continueHelp", libraryChanged)
     searchText = qproperty(str, "searchText", libraryChanged)
     show = qproperty(str, "show", libraryChanged)
-    showOptions = qproperty("QVariantList", "showOptions", libraryChanged)
-    labelOptions = qproperty("QVariantList", "labelOptions", libraryChanged)
-    labelsTitle = qproperty(str, "labelsTitle", libraryChanged)
-    labelsButton = qproperty(str, "labelsButton", libraryChanged)
+    #: The library header's filters (Show, then the labels) and the active ones' keys (D-059).
+    filters = qproperty("QVariantList", "filters", libraryChanged)
+    activeFilters = qproperty("QVariantList", "activeFilters", libraryChanged)
     rowCount = qproperty(int, "rowCount", rowsChanged)
     emptyText = qproperty(str, "emptyText", rowsChanged)
     currentOutside = qproperty(bool, "currentOutside", rowsChanged)
@@ -301,6 +302,7 @@ class StudioModel(ViewModel):
                 "coverageText": "–",
                 "coverageSpoken": "",
                 "coverageSource": "",
+                "coveragePartial": False,
                 "catalogText": "",
                 "switchText": "",
                 "canSwitch": False,
@@ -311,10 +313,8 @@ class StudioModel(ViewModel):
                 "continueHelp": CONTINUE_HELP,
                 "searchText": "",
                 "show": "all",
-                "showOptions": list(library.SHOW_OPTIONS),
-                "labelOptions": [],
-                "labelsTitle": presentation.labels_menu_title(()),
-                "labelsButton": presentation.labels_button_text(()),
+                "filters": library.filters(()),
+                "activeFilters": [],
                 "rowCount": 0,
                 "emptyText": "",
                 "currentOutside": False,
@@ -779,32 +779,25 @@ class StudioModel(ViewModel):
         total = len(self._views)
         catalog = status.catalog_line(sync)
         if self._pinned is None:
-            coverage, spoken, source = "–", "No catalog", ""
+            coverage, spoken, source, partial = "–", "No catalog", "", False
         else:
             recorded = library.covered(self._states)
             coverage = f"{recorded:,} / {total:,}"
             spoken = f"{recorded:,} of {total:,} prompts recorded"
-            source = self._coverage_source()
+            source, partial = self._coverage_source()
         options = presentation.label_options(self._views)
-        selected = tuple(token for token in options if token in self._labels)
+        selected = [token for token in options if token in self._labels]
         self._set(
             self.libraryChanged,
             coverageText=coverage,
             coverageSpoken=spoken,
             coverageSource=source,
+            coveragePartial=partial,
             catalogText=catalog.text,
             switchText=status.switch_line(sync),
             canSwitch=sync.switch_pending,
-            labelOptions=[
-                {
-                    "token": token,
-                    "title": presentation.label_title(token),
-                    "selected": token in self._labels,
-                }
-                for token in options
-            ],
-            labelsTitle=presentation.labels_menu_title(selected),
-            labelsButton=presentation.labels_button_text(selected),
+            filters=library.filters(options),
+            activeFilters=library.active_filters(self._v["show"], selected),
         )
         self._update_pass()
         self._update_navigation()
@@ -827,11 +820,12 @@ class StudioModel(ViewModel):
             passText=pass_text,
         )
 
-    def _coverage_source(self) -> str:
+    def _coverage_source(self) -> tuple[str, bool]:
+        """Where the covered count comes from, and whether that is short of the PC's library."""
         cache = self.client.library
         cached = cache.peek()
         if cached is None:
-            return "This machine's takes only: the PC's library has not been read yet"
+            return "This machine's takes only: the PC's library has not been read yet", True
         pinned = self._pinned
         version = cached.library.catalog.catalog_version
         read = _when(cache.checked_at or cached.fetched_at)
@@ -841,7 +835,7 @@ class StudioModel(ViewModel):
             text = f"The PC's library of version {version} (read {read}) and this machine's takes"
         if cache.unavailable:
             text += " · the PC is rebuilding its library"
-        return text
+        return text, cache.unavailable
 
     def _update_rows(self) -> None:
         search, show = self._v["searchText"], self._v["show"]
@@ -898,6 +892,7 @@ class StudioModel(ViewModel):
         if value not in {option["value"] for option in library.SHOW_OPTIONS}:
             return
         self._set(self.libraryChanged, show=value)
+        self._update_library()
         self._update_rows()
 
     @Slot(str, bool)
@@ -911,9 +906,14 @@ class StudioModel(ViewModel):
         self._update_library()
         self._update_rows()
 
-    @Slot()
-    def showAllLabels(self) -> None:  # noqa: N802
-        self._labels.clear()
+    @Slot("QVariantList")
+    def setFilters(self, keys: list[str]) -> None:  # noqa: N802
+        """The library header's active filters (``library.chosen``): Show and the labels at once."""
+        show, labels = library.chosen(keys, presentation.label_options(self._views))
+        if show == self._v["show"] and set(labels) == self._labels:
+            return
+        self._labels = set(labels)
+        self._set(self.libraryChanged, show=show)
         self._update_library()
         self._update_rows()
 

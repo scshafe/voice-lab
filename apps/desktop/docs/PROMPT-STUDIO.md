@@ -47,7 +47,7 @@ has them. They are the same controls, moved between the two places.
 
 | Region | What |
 | --- | --- |
-| **Library** (left, 280 points; 240 below a 1,000-point screen; folds away) | `Library` with the covered count (`n / 1,886`), and where it comes from. Then **Continue Missing**, the search, **Show** (All prompts, Missing, Needs attention, Flagged here, Failed PC QC, Drafts only) and **Labels**. Then the catalog version this run records against, and the switch the next session makes. Then every prompt, with its status. |
+| **Library** (left, 280 points; 240 below a 1,000-point screen; folds away) | `Library` with the covered count (`n / 1,886`) and its ⓘ (D-059): the catalog version this run records against, and where the count comes from. The count is tinted while it is this machine's takes alone, or while the PC rebuilds its library. Then **Continue Missing**. Then the search (⌘F) with a funnel beside it. The funnel holds **Show** (Missing, Needs attention, Flagged here, Failed PC QC or Drafts only; none chosen is all prompts), the **Labels** and **Clear filters**; it carries the count of active filters. Then, only while there is one, the switch the next session makes. Then every prompt, with its status. |
 | **Header** | The library's button, the prompt's title and its label chips. Chips that do not fit collapse into `+N`, but the category always shows. On the right: the reading size (**Aa 24**, 28 or 32, kept for you in `<data dir>/studio/view.json`), the microphone and the inspector's button. |
 | **Script card** | For a spoken prompt, `PROMPT · READ ALOUD` and the text, whole (see above); its instructions are the inspector's delivery notes while the inspector shows, and otherwise the card's `INSTRUCTIONS · NOT READ ALOUD` section, with the guidance and the duration. For room tone or a test step, a banner, "No spoken prompt" and its instructions, always. |
 | **Take picker** (in the inspector while it shows) | The selected take in a short line (`12 Oct 07:01 · 2.0 s · Kept · here`, then its flags' count), whole on the smallest window. Open, it is the history: every take of the prompt, newest first, from this machine and the PC, with date and time, length, status (trimmed, changed elsewhere, imported from the Mac) and where it lives. Then **Remove**, **Reject…** and **Restore**. The line keeps room for the widest line a take can have, measured in the host's font (the Mac's is wider than the PC's); where the row cannot hold that and the three buttons too (the smallest window, with the library shown), they fold into one **Take actions** menu (⋯), as the Swift app holds them. |
@@ -259,6 +259,7 @@ prompt, not leave it in a mixed bin (D-058; the review's item 5).
 | ⌘↑ / ⌘↓ | The prompt before or after in the list as it shows (its search and filters), without saving: a take under review is kept as a draft, as when another prompt is selected |
 | ⌘+ / ⌘− / ⌘0 | A bigger, smaller or the standard reading size |
 | ⌘/ | The keyboard shortcuts (Escape closes them) |
+| ⌘F | Search the library (Escape clears the search) |
 | ⌃⌘S / ⌥⌘I | Fold the library away (Focus) or bring it back / hide or show the inspector |
 | ← / → (waveform focused) | The playhead a tenth of a second back or on, within the kept frames |
 | Home / End (waveform focused) | The playhead to the kept frames' start or end |
@@ -452,7 +453,7 @@ parity off in step 10, on the real Mac, after S-1 (step 8).
 | --- | --- | --- |
 | Library sidebar with coverage (`n / 1,886`) | yes | `test_the_workspace_loads_the_pinned_catalog_and_its_coverage` |
 | A prominent Continue Missing | yes | `test_continue_missing_walks_the_catalog_in_order` |
-| Search; Show (All / Missing / Needs attention); Labels | yes | `test_the_filters_and_the_search`, `test_show_labels_and_search_combine_with_and` |
+| Search; Show (All / Missing / Needs attention); Labels | yes | `test_the_filters_and_the_search` (the funnel, D-059), `test_show_labels_and_search_combine_with_and`, `test_ctrl_f_searches_the_library` |
 | Per-prompt status | yes | `test_the_workspace_loads…`, `test_record_stop_save_keeps_a_local_take`, `test_a_prompt_stands_on_the_best_known_state_of_each_take`, `test_the_pcs_count_never_makes_a_take_removed_here_kept`, `test_a_removal_here_is_never_hidden_by_the_pcs_kept` |
 | Header with label chips | yes | `test_the_workspace_loads…`, `test_labels_are_in_effective_order_and_titled_verbatim` |
 | A text-size choice | yes | `test_the_text_size_is_chosen_and_kept` |

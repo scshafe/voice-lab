@@ -1,2 +1,3 @@
 module VoiceLab.Controls
+InfoTip 1.0 InfoTip.qml
 SelectField 1.0 SelectField.qml

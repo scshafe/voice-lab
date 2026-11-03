@@ -93,7 +93,33 @@ Each page's PR adds tests:
   three; the Uploads banner keeps its title while the approval row says why.
 - [x] 3. scshafe-qt 0.10.0 (`SuiInfoTip`, `SuiListHeader`, and `SuiAppShell`'s hideable
   sidebar). The lock's sha256s match the release's `SHA256SUMS`.
-- [ ] 4–11.
+- [ ] 4. Record → Prompts.
+  - [x] The library header (`SuiListHeader`): the search (⌘F) and the funnel, which holds Show
+    and Labels, with Clear filters. Clear leaves the search.
+  - [x] The library's ⓘ (`InfoTip`, `VoiceLab.Controls`): the catalog line and the count's
+    source. The count is tinted *warn* while it is partial, since `SuiInfoTip` has no tone.
+    The switch notice shows only while it has something to say.
+  - [ ] The waveform's legend, the inspector and Check Input.
+  - [ ] The Swift app's filter menu.
+  - [ ] The hideable sidebar (after the owner's answer).
+- [ ] 5–11.
+
+`InfoTip` is `SuiInfoTip` with plain text by default (a tip often shows server or catalog
+strings) and Space and Return claimed while it has the focus. `SuiInfoTip` takes them as key
+presses. A window `Shortcut` gets those first unless the focused item claims them as a
+shortcut override, and the studio's Space and Return are window shortcuts. A click never focuses
+the tip, so this costs the loop nothing. The funnel (`SuiListHeader`'s filter button) claims
+nothing: after a mouse choice the focus returns to it, and Space and Return must stay the
+studio's. From the keyboard, ↓ opens it.
+
+What 0.10 has, against the ask above:
+- There is no hand-off from one open tip to the next.
+- There is no tone.
+- There is no `info` property on other controls, so a page puts an `InfoTip` beside the
+  control.
+- The filter menu scrolls with no scroll bar.
+
+The app needs none of these to adopt the components.
 
 ## Open question for the owner
 

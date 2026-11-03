@@ -56,7 +56,7 @@ Flow {
         spacing: 2
         Item { implicitHeight: SuiTheme.fontSizeXs + 4; implicitWidth: 1 }
         SuiButton {
-            objectName: "clearFilters"
+            objectName: "corpusClearFilters"
             text: "Clear filters"
             variant: "ghost"
             onClicked: corpus.clearFilters()
