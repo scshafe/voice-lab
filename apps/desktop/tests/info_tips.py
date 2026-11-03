@@ -41,16 +41,16 @@ def _centre(tip: Any) -> QPoint:
     return tip.mapToScene(QPointF(tip.width() / 2, tip.height() / 2)).toPoint()
 
 
-def _key(window: Window, which: Qt.Key) -> None:
-    QTest.keyClick(window.root, which)
-
-
-def opens_on_hover_click_and_keys(qtbot: Any, window: Window, tip: Any) -> None:
+def opens_on_hover_click_and_keys(qtbot: Any, window: Window | Any, tip: Any) -> None:
     """``tip`` opens on hover and closes when the pointer leaves; a click pins it open and
     leaves the focus where it was; with the focus (Tab), Space and Return open it and Esc
-    closes it. It ends closed, with the focus back where it was."""
-    root = window.root
+    closes it. It ends closed, with the focus back where it was. ``window``: the main
+    window's ``Window``, or the window the tip is in (Settings, say)."""
+    root = window.root if isinstance(window, Window) else window
     assert tip.isVisible() and tip.isEnabled() and body(tip) != ""
+    # Laid out first: a page that just showed may not have placed the tip yet.
+    with qtbot.waitSignal(root.frameSwapped, timeout=5000):
+        root.update()
     was = root.activeFocusItem()
     # Hover.
     QTest.mouseMove(root, _centre(tip))
@@ -70,9 +70,9 @@ def opens_on_hover_click_and_keys(qtbot: Any, window: Window, tip: Any) -> None:
     qtbot.waitUntil(lambda: tip.property("activeFocus"), timeout=3000)
     keys = ((Qt.Key.Key_Space, Qt.Key.Key_Escape), (Qt.Key.Key_Return, Qt.Key.Key_Return))
     for opens, closes in keys:
-        _key(window, opens)
+        QTest.keyClick(root, opens)
         qtbot.waitUntil(lambda: tip.property("opened"), timeout=3000)
-        _key(window, closes)
+        QTest.keyClick(root, closes)
         qtbot.waitUntil(lambda: not tip.property("opened"), timeout=3000)
     if was is not None:
         was.forceActiveFocus()

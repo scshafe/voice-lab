@@ -9,6 +9,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Templates as T
 import Scshafe.Ui
+import VoiceLab.Controls
 
 Window {
     id: win
@@ -28,6 +29,16 @@ Window {
         { key: "recording", title: "Recording" }
     ]
     readonly property int paneIndex: Math.max(0, panes.findIndex((p) => p.key === app.settingsPane))
+
+    // A label, or a control, with its explanation behind an ⓘ beside it (D-059).
+    component Explained: RowLayout {
+        default property alias content: slot.data
+        property alias info: tip
+        spacing: SuiTheme.spaceXs
+        RowLayout { id: slot; spacing: 0 }
+        InfoTip { id: tip }
+        Item { Layout.fillWidth: true }
+    }
 
     function load() {
         serverField.text = app.server
@@ -99,14 +110,15 @@ Window {
             ColumnLayout {
                 objectName: "settingsGeneral"
                 spacing: SuiTheme.spaceSm
-                SuiText {
+                Explained {
                     Layout.fillWidth: true
-                    text: "Where the app finds the voice-lab server and Pocket ID. Values set in"
-                          + " the environment win and cannot be changed here."
-                    variant: "caption"
-                    wrapMode: Text.Wrap
+                    info.objectName: "settingsServerInfo"
+                    info.title: "Server"
+                    info.text: "Where the app finds the voice-lab server, as"
+                               + " https://voice-lab.<tailnet>.ts.net, and Pocket ID below it. Values set"
+                               + " in the environment win and cannot be changed here."
+                    SuiText { text: "Server"; variant: "label" }
                 }
-                SuiText { text: "Server (https://voice-lab.<tailnet>.ts.net)"; variant: "label" }
                 SuiTextField {
                     id: serverField
                     objectName: "serverField"
@@ -114,7 +126,13 @@ Window {
                     label: "Server"
                     enabled: app.lockedSettings.indexOf("server_url") < 0
                 }
-                SuiText { text: "Pocket ID issuer (https://id.<tailnet>.ts.net)"; variant: "label" }
+                Explained {
+                    Layout.fillWidth: true
+                    info.objectName: "settingsIssuerInfo"
+                    info.title: "Pocket ID issuer"
+                    info.text: "Pocket ID's address, as https://id.<tailnet>.ts.net."
+                    SuiText { text: "Pocket ID issuer"; variant: "label" }
+                }
                 SuiTextField {
                     id: issuerField
                     objectName: "issuerField"
@@ -153,28 +171,33 @@ Window {
             ColumnLayout {
                 objectName: "settingsUploads"
                 spacing: SuiTheme.spaceMd
-                SuiCheckBox {
-                    objectName: "settingsCorpusSync"
+                Explained {
                     Layout.fillWidth: true
-                    text: "Send takes to the PC"
-                    description: "Takes, decisions and trims go to the PC's corpus (corpus_sync)."
-                                 + " Off, they stay on this machine until it is on."
-                    checked: app.corpusSync
-                    enabled: app.lockedSettings.indexOf("corpus_sync") < 0
-                    onToggled: app.setCorpusSync(checked)
+                    info.objectName: "settingsCorpusSyncInfo"
+                    info.title: "Send takes to the PC"
+                    info.text: "Takes, decisions and trims go to the PC's corpus (corpus_sync). Off,"
+                               + " they stay on this machine until it is on."
+                    SuiCheckBox {
+                        objectName: "settingsCorpusSync"
+                        text: "Send takes to the PC"
+                        checked: app.corpusSync
+                        enabled: app.lockedSettings.indexOf("corpus_sync") < 0
+                        onToggled: app.setCorpusSync(checked)
+                    }
                 }
-                SuiText {
+                Explained {
                     Layout.fillWidth: true
-                    text: "The PC accepts takes only under your approval for it (D-021): Approve"
-                          + " uploads to my PC writes it here, from Tailscale and these settings."
-                    variant: "caption"
-                    wrapMode: Text.Wrap
-                }
-                SuiButton {
-                    objectName: "settingsApprove"
-                    text: "Approve uploads to my PC…"
-                    enabled: !approval.busy
-                    onClicked: approval.begin()
+                    info.objectName: "settingsApproveInfo"
+                    info.title: "Approve uploads to my PC"
+                    info.text: "The PC accepts takes only under your approval for it (D-021): Approve"
+                               + " uploads to my PC writes it here, from Tailscale and these settings."
+                               + " The dialog shows what it writes before you approve."
+                    SuiButton {
+                        objectName: "settingsApprove"
+                        text: "Approve uploads to my PC…"
+                        enabled: !approval.busy
+                        onClicked: approval.begin()
+                    }
                 }
                 SuiText {
                     objectName: "settingsSyncLine"
@@ -217,16 +240,28 @@ Window {
                         }
                     }
                 }
-                SuiCheckBox {
-                    objectName: "settingsMatchLine"
+                Explained {
                     Layout.fillWidth: true
-                    text: "Compare Check Input with my match line"
-                    description: "Keeps your first reading of its line on this machine, never"
-                                 + " sent, and compares each later check with it."
-                    checked: win.studio !== null && win.studio.matchLine
-                    onToggled: win.studio.setMatchLine(checked)
+                    info.objectName: "settingsMatchLineInfo"
+                    info.title: "Match line"
+                    info.text: "Keeps your first reading of its line on this machine, never sent, and"
+                               + " compares each later check with it."
+                    SuiCheckBox {
+                        objectName: "settingsMatchLine"
+                        text: "Compare Check Input with my match line"
+                        checked: win.studio !== null && win.studio.matchLine
+                        onToggled: win.studio.setMatchLine(checked)
+                    }
                 }
-                SuiText { text: "Quality flags: starting levels, to calibrate on real takes"; variant: "label" }
+                Explained {
+                    Layout.fillWidth: true
+                    info.objectName: "settingsQualityInfo"
+                    info.title: "Quality flags"
+                    info.text: "Starting levels, to calibrate on real takes. Low SNR: the speech is less"
+                               + " than this far over the room. Inconsistent: the speech's level is more"
+                               + " than this far from the median of your last kept takes."
+                    SuiText { text: "Quality flags"; variant: "label" }
+                }
                 GridLayout {
                     columns: 2
                     columnSpacing: SuiTheme.spaceMd

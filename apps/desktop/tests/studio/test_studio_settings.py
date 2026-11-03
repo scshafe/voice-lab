@@ -168,3 +168,54 @@ def test_a_disabled_record_names_its_blocker(
             assert tip.property("contentItem").property("text") == studio.recordBlocker
     finally:
         model.shutdown()
+
+
+#: Each pane's explanations behind an ⓘ (D-059): the tip, and how its text begins.
+SETTINGS_TIPS = {
+    "general": {
+        "settingsServerInfo": "Where the app finds the voice-lab server, as https://voice-lab.",
+        "settingsIssuerInfo": "Pocket ID's address, as https://id.",
+    },
+    "uploads": {
+        "settingsCorpusSyncInfo": "Takes, decisions and trims go to the PC's corpus",
+        "settingsApproveInfo": "The PC accepts takes only under your approval for it (D-021)",
+    },
+    "recording": {
+        "settingsMatchLineInfo": "Keeps your first reading of its line on this machine",
+        "settingsQualityInfo": "Starting levels, to calibrate on real takes. Low SNR:",
+    },
+}
+
+
+def test_the_settings_explanations_are_info_tips(qtbot: Any, studio_window: Window) -> None:
+    """D-059: each pane keeps its labels and controls; what they mean is behind an ⓘ beside
+    each, which opens on hover, on a click and from the keyboard in the Settings window."""
+    import info_tips
+
+    app = studio_window.model
+    settings = settings_window(studio_window)
+    app.openSettings()
+    qtbot.waitUntil(lambda: settings.isVisible(), timeout=5000)
+    for pane, tips in SETTINGS_TIPS.items():
+        app.setSettingsPane(pane)
+        page = item_in(settings, "settings" + pane.capitalize())
+        qtbot.waitUntil(lambda page=page: page.isVisible(), timeout=5000)
+        for name, start in tips.items():
+            tip = item_in(settings, name)
+            assert info_tips.body(tip).startswith(start), name
+            info_tips.opens_on_hover_click_and_keys(qtbot, settings, tip)
+            assert settings.isVisible()  # Esc closed the tip, not the window
+        shown = info_tips.shown_texts(page)
+        assert shown, pane
+        assert not any(text.startswith(tuple(tips.values())) for text in shown), pane
+        assert not any("<tailnet>" in text for text in shown), pane  # the patterns are the tips'
+    # With the focus on a closed tip, Esc is the window's again: it closes Settings.
+    tip = item_in(settings, "settingsQualityInfo")
+    tip.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    QTest.keyClick(settings, Qt.Key.Key_Space)
+    qtbot.waitUntil(lambda: tip.property("opened"), timeout=5000)
+    QTest.keyClick(settings, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not tip.property("opened"), timeout=5000)
+    assert settings.isVisible()
+    QTest.keyClick(settings, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not settings.isVisible(), timeout=5000)

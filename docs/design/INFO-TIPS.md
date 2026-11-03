@@ -113,7 +113,11 @@ Each page's PR adds tests:
       start at the safe area.
     - Prompts and Measurement have icons of their own (`waveform`, `chart`).
     - The library is headed "Library" in bold, with its count muted under it.
-- [ ] 5–11.
+- [x] 5. The Settings window. Server and Pocket ID issuer are bare labels; the address patterns,
+  and the pane's note that the environment's values win, are behind their ⓘs. The explanations
+  of Send takes to the PC, Approve, the match line and Quality flags are behind ⓘs beside
+  them. The Approve dialog stays whole: it is the review (AP2, AP3).
+- [ ] 6–11.
 
 `InfoTip` is `SuiInfoTip` with plain text by default (a tip often shows server or catalog
 strings) and Space and Return claimed while it has the focus. `SuiInfoTip` takes them as key
