@@ -19,6 +19,24 @@ def body(tip: Any) -> str:
     return str(text.property("text"))
 
 
+def is_tip(item: Any) -> bool:
+    """An ⓘ: its ``text`` is its popover's, never drawn in the page."""
+    return item.property("opened") is not None and item.property("placement") is not None
+
+
+def shown_texts(item: Any) -> list[str]:
+    """The text every visible item under ``item`` draws, an ⓘ's popover text left out."""
+    if not item.isVisible() or is_tip(item):
+        return []
+    found = []
+    text = item.property("text")
+    if isinstance(text, str) and text:
+        found.append(text)
+    for child in item.childItems():
+        found.extend(shown_texts(child))
+    return found
+
+
 def _centre(tip: Any) -> QPoint:
     return tip.mapToScene(QPointF(tip.width() / 2, tip.height() / 2)).toPoint()
 

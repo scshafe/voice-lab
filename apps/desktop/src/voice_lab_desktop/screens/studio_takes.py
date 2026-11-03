@@ -340,7 +340,7 @@ class TakeReviewModel(ViewModel):
             bins=[],
             slots=audio.LIVE_SLOTS,
             frameCount=0,
-            waveNote="Waiting for the first frames · dB display scale",
+            waveNote="Waiting for the first frames",
             levelPeakDb=audio.FLOOR_DB,
             levelText="",
             canZoomIn=False,
@@ -373,7 +373,7 @@ class TakeReviewModel(ViewModel):
                 self._set(
                     self.waveChanged,
                     bins=bins,
-                    waveNote="Live · dB display scale",
+                    waveNote="Live",
                     levelPeakDb=peak,
                     levelText=f"{peak:.1f} dBFS",
                 )
@@ -720,7 +720,7 @@ class TakeReviewModel(ViewModel):
         frames = int(self._samples.shape[0])
         start, _end = self._trim_range(entry)
         self._set(self.playChanged, playhead=start)
-        self._view(0, frames, note="dB display scale")
+        self._view(0, frames, note="")
         self._update_trim()
         self._update_play()
         if self._play_on_load == entry.key:

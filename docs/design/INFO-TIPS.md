@@ -99,9 +99,12 @@ Each page's PR adds tests:
   - [x] The library's ⓘ (`InfoTip`, `VoiceLab.Controls`): the catalog line and the count's
     source. The count is tinted *warn* while it is partial, since `SuiInfoTip` has no tone.
     The switch notice shows only while it has something to say.
-  - [ ] The waveform's legend, the inspector and Check Input.
+  - [x] The waveform's legend (its scale, behind an ⓘ that keeps its place left of the
+    caption), the inspector (the flags by name; why and the levels behind the ⓘ beside
+    "Flags"; the sync's message behind the ⓘ beside "Sync") and Check Input (what it does,
+    beside its title; the match line, beside its checkbox).
   - [ ] The Swift app's filter menu.
-  - [ ] The hideable sidebar (after the owner's answer).
+  - [ ] The screens list hides, Notes-like (the owner's answer, below).
 - [ ] 5–11.
 
 `InfoTip` is `SuiInfoTip` with plain text by default (a tip often shows server or catalog
@@ -121,15 +124,43 @@ What 0.10 has, against the ask above:
 
 The app needs none of these to adopt the components.
 
-## Open question for the owner
+## The owner's answer: like Notes (2026-11-03)
 
-**Which "left sidebar" hides?** Record → Prompts has two:
+**Only the screens list hides.** That is the list of screens: Status, Uploads, Record and the rest. It comes back as an overlay while
+the pointer rests at the window's top-left. The prompt library stays, and keeps its own
+fold-away, ⌃⌘S included.
 
-- the app's screens list (Status, Uploads, Record…), at the window's top-left;
-- the prompt library, which ⌃⌘S folds away today (D-058).
+**The app should feel like macOS Notes.**
+- The screens list is Notes' folder sidebar, the prompt library its note list, and the
+  recording area its editor.
+- The sidebar runs the window's full height, with the window buttons and the sidebar toggle at
+  its top.
+- Its rows are an icon, a name and a muted, right-aligned count, with a rounded highlight on the
+  selected row and small, muted section headers.
+- The list column is headed by a bold name with a muted count under it.
+- The search is compact, and its magnifier carries a small chevron for its scope: our funnel.
+- The toolbar is a few grouped, rounded icon buttons.
 
-The proposal is both together. ⌃⌘S hides everything on the left. Hovering the window's
-top-left shows them as one overlay. Step 4 waits for the answer.
+**How step 4 takes it.**
+- **In the app, with Qt and scshafe-qt 0.10:**
+  - The screens list hides: `SuiAppShell`'s `sidebarHideable`, its pin, the hover reveal, and
+    the choice kept across launches.
+  - On macOS, the window's content extends under the title bar (Qt's
+    `ExpandedClientAreaHint`). The sidebar then runs the full height, with the window buttons
+    inside its top. The screens start below the title bar.
+  - Each screen gets an icon of its own.
+  - The library is headed "Library" in bold, with its count muted under it and the ⓘ beside it.
+- **Already as Notes:** the rounded highlight and the small, muted section headers
+  (`SuiSidebarList`).
+- **Asked of scshafe-qt, through the owner:**
+  - the toggle beside the window buttons, which stays while the sidebar is hidden;
+  - a translucent sidebar;
+  - a plain, muted count;
+  - the funnel as a chevron on the magnifier;
+  - a toolbar group;
+  - icons for recording and measuring.
+
+  The app adopts each as it is released.
 
 ## Inventory
 
