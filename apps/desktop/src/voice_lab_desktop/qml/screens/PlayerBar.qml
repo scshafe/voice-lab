@@ -1,12 +1,12 @@
 // One take's controls over the app's one player (`player`, playback.py): Play / Pause,
 // the position (a slider to seek) and the time. `key` names this place in the app
 // ("corpus:<id>", "referee:a", ...); starting it stops whatever else was playing.
-// Without playback (`available` false) the button is disabled and `unavailableText`
-// shows instead. `gainDb` and `lowpassHz` (0: none) shape the take (the referee).
+// Without playback (`available` false) the button is disabled and `unavailableText` says why
+// behind an ⓘ beside it (D-059). `gainDb` and `lowpassHz` (0: none) shape the take (the referee).
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
-import VoiceLab.StandIn
+import VoiceLab.Controls
 
 RowLayout {
     id: bar
@@ -39,6 +39,12 @@ RowLayout {
             else bar.start()
         }
     }
+    InfoTip {
+        objectName: "playerUnavailable"
+        visible: !bar.available && bar.unavailableText !== ""
+        title: "Playback"
+        text: bar.unavailableText
+    }
     SuiSlider {
         objectName: "playerPosition"
         Layout.fillWidth: true
@@ -61,14 +67,6 @@ RowLayout {
         visible: bar.playerState === "failed"
         text: player.error
         tone: "danger"
-        wrapMode: Text.Wrap
-    }
-    SuiText {
-        objectName: "playerUnavailable"
-        Layout.fillWidth: true
-        visible: !bar.available && bar.unavailableText !== ""
-        text: bar.unavailableText
-        variant: "caption"
         wrapMode: Text.Wrap
     }
 }

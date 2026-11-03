@@ -117,7 +117,23 @@ Each page's PR adds tests:
   and the pane's note that the environment's values win, are behind their ⓘs. The explanations
   of Send takes to the PC, Approve, the match line and Quality flags are behind ⓘs beside
   them. The Approve dialog stays whole: it is the review (AP2, AP3).
-- [ ] 6–11.
+- [x] 6. Status, Uploads, the sign-in placeholder and the player bar.
+  - Every screen's tagline is behind an ⓘ beside its title. `ScreenHeader` does it once for
+    all, so steps 7–11 have their taglines (ME1, CO1, JO1, PR1, RE1, LG1) already.
+  - `Card` gains `info`, an ⓘ beside its heading. `subheading` stays for a line that must stay
+    visible.
+  - Status: the setup banner's text, the settings' source, and the explanations of the
+    Uploads, gates, job runner, spool and report cards.
+  - Uploads:
+    - where uploads go, behind the Spool's ⓘ while they can;
+    - the whole cause, with the CLI's way, behind the not-ready banner's ⓘ while the approval
+      row says why;
+    - the Sessions card's explanation;
+    - on each row, the receipt's digests, the resume note or a held session's how-to, behind
+      an ⓘ beside its state. The cause stays.
+  - The placeholder's how-to when the app is not set up.
+  - The player's reason when playback is off.
+- [ ] 7–11.
 
 `InfoTip` is `SuiInfoTip` with plain text by default (a tip often shows server or catalog
 strings) and Space and Return claimed while it has the focus. `SuiInfoTip` takes them as key

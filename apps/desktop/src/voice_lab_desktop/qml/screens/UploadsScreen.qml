@@ -5,7 +5,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
-import VoiceLab.StandIn
+import VoiceLab.Controls
 
 ScreenPage {
     objectName: "uploadsScreen"
@@ -13,23 +13,25 @@ ScreenPage {
     tagline: "Sessions waiting for the server's receipt, and what it accepted."
 
     Card {
+        objectName: "uploadsSpoolCard"
         heading: "Spool"
+        // Where uploads go, and under which approval, while they can (D-059: behind the ⓘ).
+        info: uploads.ready ? uploads.readiness : ""
         SuiBanner {
             objectName: "uploadsNotReady"
             Layout.fillWidth: true
             visible: !uploads.ready && uploads.readiness !== ""
             tone: "warn"
             title: "This machine cannot upload yet"
-            // The approval row below says why, and offers Approve (D-059): not twice.
+            // The approval row below says why, and offers Approve (D-059): not twice. The
+            // whole of it, with the CLI's way, is behind the ⓘ.
             text: approval.needed ? "" : uploads.readiness
-        }
-        SuiText {
-            objectName: "uploadsReadiness"
-            Layout.fillWidth: true
-            visible: uploads.ready
-            text: uploads.readiness
-            variant: "caption"
-            wrapMode: Text.Wrap
+            InfoTip {
+                objectName: "uploadsNotReadyInfo"
+                visible: approval.needed
+                title: "This machine cannot upload yet"
+                text: uploads.readiness
+            }
         }
         RowLayout {
             objectName: "uploadsApproval"
@@ -80,13 +82,15 @@ ScreenPage {
     }
 
     Card {
+        objectName: "uploadsSessionsCard"
         heading: "Sessions"
+        info: "Measurement and prompted sessions recorded on this machine wait here until the server accepts them."
         SuiEmptyState {
+            objectName: "uploadsEmpty"
             Layout.fillWidth: true
             visible: uploads.rows.length === 0
             iconName: "inbox"
             title: "No local sessions"
-            description: "Measurement and prompted sessions recorded on this machine wait here until the server accepts them."
         }
         Repeater {
             objectName: "sessionRows"
@@ -109,6 +113,13 @@ ScreenPage {
                     }
                 }
                 SuiChip { objectName: "sessionState"; text: modelData.stateLabel; tone: modelData.tone; dot: true }
+                // The receipt's digests, the resume note, a held session's how-to (D-059).
+                InfoTip {
+                    objectName: "sessionMore"
+                    visible: modelData.more !== ""
+                    title: modelData.sessionId
+                    text: modelData.more
+                }
                 SuiButton {
                     objectName: "retry"
                     visible: modelData.canRetry

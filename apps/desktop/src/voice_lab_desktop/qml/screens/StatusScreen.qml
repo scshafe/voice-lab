@@ -4,7 +4,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
-import VoiceLab.StandIn
+import VoiceLab.Controls
 
 ScreenPage {
     id: page
@@ -18,7 +18,11 @@ ScreenPage {
         visible: !app.configured
         tone: "warn"
         title: "Set up the server"
-        text: "Set the voice-lab server and the Pocket ID issuer before signing in."
+        InfoTip {
+            objectName: "setupInfo"
+            title: "Set up the server"
+            text: "Set the voice-lab server and the Pocket ID issuer before signing in."
+        }
         SuiButton { text: "Settings…"; variant: "secondary"; onClicked: app.openSettings() }
     }
 
@@ -52,12 +56,11 @@ ScreenPage {
                 variant: "ghost"
                 onClicked: app.openSettings()
             }
-        }
-        SuiText {
-            Layout.fillWidth: true
-            text: "Settings from " + app.settingsSource + "."
-            variant: "caption"
-            wrapMode: Text.Wrap
+            InfoTip {
+                objectName: "settingsSourceInfo"
+                title: "Settings"
+                text: "Settings from " + app.settingsSource + "."
+            }
         }
     }
 
@@ -111,8 +114,9 @@ ScreenPage {
     }
 
     Card {
+        objectName: "statusUploadsCard"
         heading: "Uploads to the PC"
-        subheading: "Recordings go only to the PC you approve, for a year at most (D-021). The app looks the PC up in Tailscale; pressing Approve in its dialog is your review."
+        info: "Recordings go only to the PC you approve, for a year at most (D-021). The app looks the PC up in Tailscale; pressing Approve in its dialog is your review."
         RowLayout {
             spacing: SuiTheme.spaceSm
             SuiText {
@@ -133,8 +137,9 @@ ScreenPage {
     }
 
     Card {
+        objectName: "statusGatesCard"
         heading: "The server's gates"
-        subheading: "What the operator enabled on the server. Playback needs a recorded approval there; transcript text and feature detail need their local stores."
+        info: "What the operator enabled on the server. Playback needs a recorded approval there; transcript text and feature detail need their local stores."
         RowLayout {
             spacing: SuiTheme.spaceSm
             SuiChip {
@@ -159,8 +164,9 @@ ScreenPage {
     }
 
     Card {
+        objectName: "statusJobsCard"
         heading: "Job runner"
-        subheading: "The PC's journey pipeline (GET /api/v1/watch)."
+        info: "The PC's journey pipeline (GET /api/v1/watch)."
         Repeater {
             model: status.watchLines
             delegate: SuiText {
@@ -173,8 +179,9 @@ ScreenPage {
     }
 
     Card {
+        objectName: "statusSpoolCard"
         heading: "Spool"
-        subheading: "Measurement sessions stay on this machine until the server accepts them."
+        info: "Measurement sessions stay on this machine until the server accepts them."
         RowLayout {
             SuiText { objectName: "spoolText"; Layout.fillWidth: true; text: status.spoolText; wrapMode: Text.Wrap }
             SuiButton { text: "Open Uploads"; variant: "secondary"; onClicked: app.navigate("uploads") }
@@ -182,8 +189,9 @@ ScreenPage {
     }
 
     Card {
+        objectName: "statusReportCard"
         heading: "Evidence report"
-        subheading: "The web view renders the evidence report; it opens in your browser, behind the same sign-in."
+        info: "The web view renders the evidence report; it opens in your browser, behind the same sign-in."
         SuiButton {
             objectName: "openReport"
             text: "Open the evidence report"

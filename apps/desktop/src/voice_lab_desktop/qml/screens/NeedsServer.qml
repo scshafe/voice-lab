@@ -2,6 +2,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
+import VoiceLab.Controls
 
 SuiEmptyState {
     objectName: "needsServer"
@@ -10,7 +11,13 @@ SuiEmptyState {
     Layout.fillHeight: true
     iconName: app.configured ? "user" : "info"
     title: app.configured ? "Sign in to see " + what : "Set up the server first"
-    // Signed out, the title says it all (D-059); not set up, where the settings are.
-    description: app.configured ? "" : "Set the voice-lab server and the Pocket ID issuer in Settings."
+    // Signed out, the title says it all; not set up, where the settings are is behind the ⓘ
+    // (D-059).
     SuiButton { text: "Go to Status"; variant: "primary"; onClicked: app.navigate("status") }
+    InfoTip {
+        objectName: "needsServerInfo"
+        visible: !app.configured
+        title: "Set up the server"
+        text: "Set the voice-lab server and the Pocket ID issuer in Settings."
+    }
 }

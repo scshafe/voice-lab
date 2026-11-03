@@ -292,7 +292,7 @@ def test_finish_builds_the_package_and_uploads_hold_it(
     uploads = prompts_window.model.uploads
     rows = {row["sessionId"]: row for row in uploads.rows}
     assert rows[session_id]["state"] == "held" and rows[session_id]["kind"] == "prompted"
-    assert "until spike S-1 passes" in rows[session_id]["detail"]
+    assert "until spike S-1 passes" in rows[session_id]["more"]
     assert uploads.heldCount == 1 and uploads.pendingCount == 0
     # A new session.
     prompts_window.find("newPromptsSession").clicked.emit()
