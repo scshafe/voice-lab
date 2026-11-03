@@ -450,8 +450,8 @@ def test_the_librarys_info_tip_holds_the_catalog_and_where_the_count_comes_from(
     assert studio_window.find("studioCoverage").property("tone") == "muted"
     info_tips.opens_on_hover_click_and_keys(qtbot, studio_window, tip)
     # Nothing it explains is left in the library's own lines.
-    texts = visible_texts(studio_window.find("studioLibrary"))
-    assert "cole-corpus · v1" not in texts and studio.coverageSource not in texts
+    texts = info_tips.shown_texts(studio_window.find("studioLibrary"))
+    assert not any("cole-corpus" in text or "The PC's library" in text for text in texts)
 
 
 REGIONS = (

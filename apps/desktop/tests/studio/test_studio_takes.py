@@ -88,7 +88,7 @@ def test_the_picker_lists_this_machines_and_the_pcs_takes(
             # Recorded elsewhere, decided here all the same (noted in the spool when changed).
             assert takes.canRemove and takes.canReject and not takes.canRestore
             assert takes.actionNote == ""
-            assert takes.canPlay and takes.waveNote == "dB display scale"
+            assert takes.canPlay and takes.waveNote == ""
             # A take recorded here joins it; while under review it comes first, not saved.
             recorded(qtbot, window, recorder)
             assert takes.takeOptions[0]["value"] == "review"
@@ -335,7 +335,7 @@ def test_the_live_waveform_while_recording(
     for _ in range(5):
         recorder.last.advance(4_800, amplitude=0.25)
     qtbot.waitUntil(lambda: len(takes.bins) == 2 * 50, timeout=5000)
-    assert takes.waveNote == "Live · dB display scale"
+    assert takes.waveNote == "Live"
     assert takes.levelText == "-12.0 dBFS" and takes.levelPeakDb == pytest.approx(-12.0, abs=0.05)
     assert studio_window.find("studioLevel").property("level") == takes.levelPeakDb
     # The dB display scale: −12 dBFS draws at 80% of the half-height.

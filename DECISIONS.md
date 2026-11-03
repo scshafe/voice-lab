@@ -2196,6 +2196,10 @@ The plan, its inventory and its progress are in
 - **Record → Prompts.**
   - The left sidebar hides and reappears as an overlay when the pointer is at the very top-left
     of the window: below the title bar, never over the traffic lights. ⌃⌘S stays.
+  - *Answered 2026-11-03:* the sidebar that hides is the screens list. The prompt library stays
+    and keeps its own fold-away, ⌃⌘S included. The app is to feel like macOS Notes: the
+    screens list is its folder sidebar, the library its note list. INFO-TIPS.md says how step 4
+    takes it, and what waits for scshafe-qt.
   - In the library's header, a filter icon (funnel) as compact as the search field replaces
     Show. It shows when a filter is active and offers Clear.
   - The catalog line and the library's source line are hidden by default, behind an ⓘ.

@@ -131,14 +131,12 @@ def test_the_take_says_what_it_is_in_its_own_caption(
     studio, takes = studio_window.model.studio, studio_window.model.studio.takes
     caption = studio_window.find("studioWaveNote")
     record_take(qtbot, studio_window, recorder)
-    qtbot.waitUntil(
-        lambda: caption.property("text") == "Not saved yet · dB display scale", timeout=5000
-    )
+    qtbot.waitUntil(lambda: caption.property("text") == "Not saved yet", timeout=5000)
     studio.save()
     wait_phase(qtbot, studio, "ready")
     qtbot.waitUntil(lambda: takes.takeCaption == "Kept · this machine", timeout=5000)
     qtbot.waitUntil(
-        lambda: caption.property("text") == "Kept · this machine · dB display scale",
+        lambda: caption.property("text") == "Kept · this machine",
         timeout=5000,
     )
 

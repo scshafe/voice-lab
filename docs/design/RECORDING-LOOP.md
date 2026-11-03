@@ -137,9 +137,12 @@ Filled in by each PR; the last one hands the whole list to the owner.
      it; VoiceOver reads its name and then the explanation;
   3. on Record → Prompts, with a popover open by hover or by a click, R, R and Return still
      record, stop and save, and the focus stays where it was;
-  4. ⌃⌘S hides the left sidebar; the pointer at the window's top-left (below the title bar,
-     clear of the traffic lights) shows it as an overlay, which goes when the pointer leaves;
-     ⌃⌘S brings it back, and the choice survives a relaunch;
+  4. the screens list (not the library) hides with its pin. The pointer at the window's
+     top-left (below the title bar, clear of the traffic lights) shows it as an overlay, which
+     goes when the pointer leaves. The pin docks it again, and the choice survives a relaunch.
+     ⌃⌘S still folds the prompt library. Like Notes, the screens list runs the window's full
+     height with the traffic lights inside its top, and every screen starts below the title
+     bar;
   5. the library header is the search and the funnel. ⌘F focuses the search. The funnel opens
      on a click (or ↓ with the focus) and shows how many filters are on. Clear filters resets
      Show and the labels, never the search. R and Return typed in the search neither record nor

@@ -10,6 +10,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
+import VoiceLab.Controls
 
 Rectangle {
     id: inspector
@@ -35,6 +36,21 @@ Rectangle {
         Layout.topMargin: SuiTheme.spaceSm
         variant: "label"
         font.capitalization: Font.AllUppercase
+    }
+    // A heading with its explanation behind an ⓘ (D-059).
+    component InfoHeading: RowLayout {
+        property alias text: heading.text
+        property alias info: tip
+        Layout.fillWidth: true
+        Layout.topMargin: SuiTheme.spaceSm
+        spacing: SuiTheme.spaceXs
+        SuiText {
+            id: heading
+            variant: "label"
+            font.capitalization: Font.AllUppercase
+        }
+        InfoTip { id: tip; title: heading.text }
+        Item { Layout.fillWidth: true }
     }
     component CompactButton: SuiButton {
         Layout.preferredHeight: 24
@@ -107,14 +123,20 @@ Rectangle {
                 Layout.preferredHeight: childrenRect.height
             }
 
-            // -- the selected take's quality flags, and why --------------------------------
-            Heading { text: "Flags" }
+            // -- the selected take's quality flags; why, and its levels, behind the ⓘ ----------
+            InfoHeading {
+                text: "Flags"
+                info.objectName: "studioInspectorFlagsInfo"
+                info.visible: inspector.takes.qualityState === "checked"
+                info.text: inspector.takes.qualityDetail
+            }
             SuiText {
                 objectName: "studioInspectorFlags"
                 Layout.fillWidth: true
-                text: inspector.takes.qualityState === "checked" ? inspector.takes.qualityDetail
-                    : inspector.takes.qualityState === "checking" ? "Checking the take…"
-                    : "No take of this machine selected"
+                text: inspector.takes.qualityState === "checking" ? "Checking the take…"
+                    : inspector.takes.qualityState !== "checked" ? "No take of this machine selected"
+                    : inspector.takes.flags.length === 0 ? "No flags"
+                    : inspector.takes.flags.map((flag) => flag.title).join(" · ")
                 variant: "caption"
                 tone: inspector.takes.flags.length > 0 ? "warn" : "muted"
                 wrapMode: Text.Wrap
@@ -198,23 +220,19 @@ Rectangle {
                 }
             }
 
-            // -- the sync, whole --------------------------------------------------------------
-            Heading { text: "Sync" }
+            // -- the sync, whole; the client's message behind the ⓘ ------------------------------
+            InfoHeading {
+                text: "Sync"
+                info.objectName: "studioInspectorSyncInfo"
+                info.visible: inspector.rec.syncDetail !== ""
+                info.text: inspector.rec.syncDetail
+            }
             SuiText {
                 objectName: "studioInspectorSync"
                 Layout.fillWidth: true
                 text: inspector.rec.syncText
                 tone: inspector.rec.syncTone === "neutral" ? "" : inspector.rec.syncTone
                 variant: "caption"
-                wrapMode: Text.Wrap
-            }
-            SuiText {
-                objectName: "studioInspectorSyncDetail"
-                Layout.fillWidth: true
-                visible: text !== ""
-                text: inspector.rec.syncDetail
-                variant: "caption"
-                tone: "muted"
                 wrapMode: Text.Wrap
             }
         }

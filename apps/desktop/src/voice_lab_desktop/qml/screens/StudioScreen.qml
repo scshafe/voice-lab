@@ -16,6 +16,7 @@ import QtQuick.Layouts
 import QtQuick.Templates as T
 import Scshafe.Ui
 import VoiceLab.StandIn
+import VoiceLab.Controls
 import "studio"
 
 Item {
@@ -270,10 +271,32 @@ Item {
         id: checkDialog
         objectName: "studioCheckDialog"
         title: "Check input"
-        description: "About ten seconds: two of quiet, then the line below read aloud, as you"
-                     + " would read a prompt. Not a take: the audio is measured, then deleted."
         dismissOnOutsideClick: false
         onRejected: if (studio.check.dialogOpen) studio.check.cancel()
+        // SuiDialog's title, with what the check does behind an ⓘ beside it (D-059).
+        header: RowLayout {
+            spacing: SuiTheme.spaceXs
+            Text {
+                textFormat: Text.PlainText
+                objectName: "studioCheckTitle"
+                Layout.leftMargin: SuiTheme.spaceLg
+                Layout.topMargin: SuiTheme.spaceLg
+                text: checkDialog.title
+                font.pixelSize: SuiTheme.fontSizeLg
+                font.weight: SuiTheme.fontWeightStrong
+                color: SuiTheme.textStrong
+                Accessible.role: Accessible.Heading
+                Accessible.name: text
+            }
+            InfoTip {
+                objectName: "studioCheckInfo"
+                Layout.topMargin: SuiTheme.spaceLg
+                title: "Check input"
+                text: "About ten seconds: two of quiet, then the line below read aloud, as you"
+                      + " would read a prompt. Not a take: the audio is measured, then deleted."
+            }
+            Item { Layout.fillWidth: true }
+        }
         ColumnLayout {
             width: checkDialog.availableWidth
             spacing: SuiTheme.spaceSm
@@ -339,16 +362,24 @@ Item {
                 tone: studio.check.summaryTone === "neutral" ? "" : studio.check.summaryTone
                 wrapMode: Text.Wrap
             }
-            // The match line (D-058, item 6), off by default.
-            SuiCheckBox {
-                objectName: "studioMatchLine"
+            // The match line (D-058, item 6), off by default; what it keeps, behind an ⓘ.
+            RowLayout {
                 Layout.fillWidth: true
-                text: "Compare with my match line"
-                description: "Keeps your first reading of this line on this machine (never sent)"
-                             + " and compares each later check with it: level, SNR, length."
-                checked: studio.rec.matchLine
-                enabled: !studio.check.running
-                onToggled: studio.rec.setMatchLine(checked)
+                spacing: SuiTheme.spaceXs
+                SuiCheckBox {
+                    objectName: "studioMatchLine"
+                    text: "Compare with my match line"
+                    checked: studio.rec.matchLine
+                    enabled: !studio.check.running
+                    onToggled: studio.rec.setMatchLine(checked)
+                }
+                InfoTip {
+                    objectName: "studioMatchLineInfo"
+                    title: "Match line"
+                    text: "Keeps your first reading of this line on this machine (never sent) and"
+                          + " compares each later check with it: level, SNR, length."
+                }
+                Item { Layout.fillWidth: true }
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -845,17 +876,31 @@ Item {
                 font.features: { "tnum": 1 }
                 Accessible.name: (studio.recordingTime ? "Elapsed " : "Position ") + text
             }
-            // The take's own caption (D-058, item 9): what it is, then the scale; errors are
-            // the status line's and never take its place.
-            SuiText {
-                objectName: "studioWaveNote"
+            // The waveform's scale, behind an ⓘ (D-059) while a waveform is drawn; it keeps its
+            // place, so the caption beside it never moves.
+            InfoTip {
+                id: waveInfo
+                objectName: "studioWaveInfo"
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                width: Math.max(0, parent.width / 2 - elapsedLabel.width / 2 - SuiTheme.spaceSm)
+                visible: studio.takes.bins.length > 0
+                title: "Waveform"
+                text: "The dB display scale: 0 dBFS reaches the full height, −12 dBFS 80% of it,"
+                      + " −30 dBFS half, and −60 dBFS or quieter a hairline. It never"
+                      + " normalizes, so a take looks as loud as it is."
+            }
+            // The take's own caption (D-058, item 9): what it is; errors are the status
+            // line's and never take its place.
+            SuiText {
+                objectName: "studioWaveNote"
+                anchors.left: waveInfo.right
+                anchors.leftMargin: SuiTheme.spaceXs
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.max(0, parent.width / 2 - elapsedLabel.width / 2 - SuiTheme.spaceSm
+                                   - waveInfo.width - SuiTheme.spaceXs)
                 visible: studio.takes.bins.length > 0 || studio.takes.takeCaption !== ""
-                text: studio.takes.takeCaption !== ""
-                      ? studio.takes.takeCaption + " · " + studio.takes.waveNote
-                      : studio.takes.waveNote
+                text: [studio.takes.takeCaption, studio.takes.waveNote].filter((part) => part !== "")
+                                                                         .join(" · ")
                 variant: "caption"
                 elide: Text.ElideRight
             }
