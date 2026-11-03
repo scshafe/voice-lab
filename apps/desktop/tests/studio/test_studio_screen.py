@@ -741,6 +741,7 @@ def test_nothing_is_cut_off_on_the_smallest_window(
             lines = ("studioSwitchNotice", "studioStatusText")
 
             def whole() -> None:
+                drawn(qtbot, window)  # a line that just appeared, laid out
                 for name in lines:
                     item = window.find(name)
                     assert item.property("truncated") is False, (name, item.property("text"))

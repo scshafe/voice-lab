@@ -109,9 +109,8 @@ Rectangle {
                 text: library.rec.switchText
                 variant: "caption"
                 tone: library.rec.canSwitch ? "info" : (library.rec.phase === "blocked" ? "warn" : "muted")
+                // Whole, however many lines a host's font needs: it no longer reserves a fixed two.
                 wrapMode: Text.Wrap
-                maximumLineCount: 2
-                elide: Text.ElideRight
             }
             SuiButton {
                 objectName: "studioSwitch"
