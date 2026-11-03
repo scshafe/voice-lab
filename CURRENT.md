@@ -8,6 +8,9 @@ Qt prompt studio: voice-lab.app's Record → Prompts, in `apps/desktop`. Under D
 the Swift recorder (Cole Voice Recorder, `apps/macos`) once the owner signs off parity on the
 Mac. Until then the Swift recorder is the reference, and it is not changed. The work is
 tracked in [the studio's recording loop](docs/design/RECORDING-LOOP.md).
+On 2026-11-02 the owner asked for a less cluttered desktop app (D-059): explanations behind
+info icons, a hideable sidebar and a compact library header, all from scshafe-qt 0.10. That
+work is planned in [INFO-TIPS.md](docs/design/INFO-TIPS.md).
 Where the speech corpus, its catalog and coverage live is described in
 [RECORDING-V1.md](docs/design/RECORDING-V1.md) (D-051, D-052).
 
