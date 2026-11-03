@@ -296,6 +296,20 @@ struct RecordingWorkspaceTests {
         #expect(model.labelsMenuTitle == "Labels: Any")
     }
 
+    /// D-059: the filter menu counts what is on, says which, and Clear filters resets Show and the labels but never
+    /// the search.
+    @Test @MainActor func theFilterMenuCountsSaysAndClears() {
+        let model = RecordingWorkspaceModel(fixture: .init(), catalog: Self.libraryCatalog())
+        #expect(model.activeFilterCount == 0 && model.filtersSummary == "No filters")
+        model.libraryFilter = "missing"
+        #expect(model.activeFilterCount == 1 && model.filtersSummary == "Show: Missing")
+        model.selectedLabels = ["test", "room-tone"]; model.searchText = "Quick"
+        #expect(model.activeFilterCount == 3 && model.filtersSummary == "Show: Missing · Labels: Room Tone, Test")
+        model.clearFilters()
+        #expect(model.libraryFilter == "all" && model.selectedLabels.isEmpty && model.activeFilterCount == 0)
+        #expect(model.searchText == "Quick" && model.filtersSummary == "No filters")
+    }
+
     /// TU1 (§6.4): search and filters never affect Continue Missing, Save & Next or the covered count.
     @Test @MainActor func filtersNeverAffectContinueMissingSaveNextOrTheCoveredCount() {
         let model = RecordingWorkspaceModel(fixture: .init(), catalog: Self.libraryCatalog())
@@ -313,9 +327,10 @@ struct RecordingWorkspaceTests {
         #expect(!model.canContinueMissing, "clearing filters cannot enable Continue Missing without complete coverage")
     }
 
-    /// TU1 (§6.4): the sidebar hosts a prominent full-width Continue Missing above the search field, then the Show
-    /// picker and the Labels menu; the search field stays the first editable field and the menu is not editable.
-    @Test @MainActor func sidebarPlacesContinueMissingAboveSearchAndTheLabelMenuIsNotEditable() throws {
+    /// TU1 (§6.4): the sidebar hosts a prominent full-width Continue Missing above the search field, with the filter
+    /// menu (Show and the labels, D-059) beside it; the search field stays the first editable field and the menu is
+    /// not editable.
+    @Test @MainActor func sidebarPlacesContinueMissingAboveSearchAndTheFilterMenuIsNotEditable() throws {
         let model = RecordingWorkspaceModel(fixture: .init(), catalog: Self.libraryCatalog())
         model.selectedLabels = ["test", "room-tone"]
         let size = CGSize(width: 1060, height: 700)
@@ -329,19 +344,21 @@ struct RecordingWorkspaceTests {
         }
         func node(_ identifier: String) throws -> AccessibilityNode { try #require(nodes.first { $0.identifier == identifier }, "\(identifier)") }
         let continueMissing = try node("library.continueMissing"), search = try node("library.search")
-        let show = try node("library.filter"), labels = try node("library.labels")
+        let filters = try node("library.filters")
         #expect(continueMissing.texts.contains("Continue Missing"))
-        #expect(labels.texts.contains("Labels: Room Tone, Test"))
+        #expect(filters.texts.contains("Labels: Room Tone, Test"), "\(filters.texts)")
         // Screen frames grow upward, so a control above another has the larger minY.
         #expect(continueMissing.frame.minY >= search.frame.maxY - 1, "\(continueMissing.frame) above \(search.frame)")
-        #expect(search.frame.minY >= show.frame.maxY - 1 && show.frame.minY >= labels.frame.maxY - 1)
+        // The funnel sits beside the search, on its row.
+        #expect(filters.frame.minX >= search.frame.maxX - 1, "\(filters.frame) beside \(search.frame)")
+        #expect(abs(filters.frame.midY - search.frame.midY) <= search.frame.height / 2)
         #expect(continueMissing.frame.width >= RecordingLayout.sidebarWidth - 2 * RecordingLayout.inset - 1)
         #expect(continueMissing.frame.height > search.frame.height, "large control size")
         // The transport harness rule: the first editable NSTextField in view order is the search field, whose
         // SwiftUI node sits one point inside the field's bezel.
         let field = try #require(firstEditable)
         #expect(search.frame.insetBy(dx: -2, dy: -2).contains(field), "\(field) vs \(search.frame)")
-        #expect(!labels.frame.intersects(field.insetBy(dx: 1, dy: 1)))
+        #expect(!filters.frame.intersects(field.insetBy(dx: 1, dy: 1)))
         // Without a selected prompt the card shows only its placeholder; there is no empty Instructions heading.
         let unselected = Self.hosted(RecordingScriptCard(prompt: nil, scriptSize: 24))
         #expect(unselected.flatMap(\.texts).contains("Your selected prompt will appear here."))
@@ -422,8 +439,8 @@ struct RecordingWorkspaceTests {
         #expect(model.labelOptions == ["neutral", "**x**", "[a](b)"])
         model.selectedLabels = ["**x**", "[a](b)"]
         #expect(model.labelsMenuTitle == "Labels: **X**, [A](B)")
-        let labels = try #require(Self.hosted(RecordingWorkspace(model: model), size: CGSize(width: 1060, height: 700)).first { $0.identifier == "library.labels" })
-        #expect(labels.texts.contains("Labels: **X**, [A](B)"), "\(labels.texts)")
+        let filters = try #require(Self.hosted(RecordingWorkspace(model: model), size: CGSize(width: 1060, height: 700)).first { $0.identifier == "library.filters" })
+        #expect(filters.texts.contains("Labels: **X**, [A](B)"), "\(filters.texts)")
     }
 
     /// A synthetic physical-test catalog: a v1-shaped room tone, a spoken reference candidate, a procedure step and a

@@ -306,6 +306,17 @@ public final class RecordingWorkspaceModel: ObservableObject {
         if selected { selectedLabels.insert(token) } else { selectedLabels.remove(token) }
     }
     public func showAllLabels() { selectedLabels.removeAll() }
+    /// The filter menu (D-059): how many filters are on (Show other than all prompts, and each selected label).
+    public var activeFilterCount: Int { (libraryFilter == "all" ? 0 : 1) + labelOptions.filter(selectedLabels.contains).count }
+    /// The filter menu's help and accessibility value: "Show: Missing · Labels: Room Tone, Test", or "No filters".
+    public var filtersSummary: String {
+        let show = ["missing": "Missing", "attention": "Needs attention"][libraryFilter].map { "Show: " + $0 }
+        let labels = selectedLabels.isEmpty ? nil : labelsMenuTitle
+        let parts = [show, labels].compactMap { $0 }
+        return parts.isEmpty ? "No filters" : parts.joined(separator: " · ")
+    }
+    /// Clear filters: Show back to all prompts and no label; the search stays.
+    public func clearFilters() { libraryFilter = "all"; selectedLabels.removeAll() }
     public var waveformReady: Bool {
         guard let snapshot = waveform.snapshot, let frames = selectedFrames,
               state.takeID == snapshot.takeID, snapshot.processGeneration == recorderGeneration else { return false }

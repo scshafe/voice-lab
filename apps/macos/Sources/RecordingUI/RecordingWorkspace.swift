@@ -50,24 +50,35 @@ public struct RecordingWorkspace: View {
                 .buttonStyle(.borderedProminent).controlSize(.large).disabled(!model.canContinueMissing)
                 .help(model.state.historyCompleteness == "complete" ? "Selects the next missing prompt in catalog order; ignores search and filters." : "Waiting for complete library metadata")
                 .accessibilityIdentifier("library.continueMissing")
-            TextField("Search prompts", text: $model.searchText)
-                .textFieldStyle(.roundedBorder).accessibilityLabel("Search library prompts").accessibilityIdentifier("library.search")
-            Picker("Show", selection: $model.libraryFilter) {
-                Text("All prompts").tag("all")
-                Text("Missing").tag("missing")
-                Text("Needs attention").tag("attention")
-            }.pickerStyle(.menu).accessibilityIdentifier("library.filter")
-            // Label toggles combine with OR; catalog-derived titles render verbatim, never as Markdown.
-            Menu {
-                ForEach(model.labelOptions, id: \.self) { token in
-                    Toggle(isOn: Binding(get: { model.selectedLabels.contains(token) }, set: { model.setLabel(token, selected: $0) })) {
-                        Text(verbatim: RecordingPromptPresentation.labelTitle(token))
+            // The search, and Show and the labels in one menu behind the funnel beside it, as the Qt studio's
+            // library header (D-059). Label toggles combine with OR; catalog-derived titles render verbatim, never as
+            // Markdown. Clear filters leaves the search.
+            HStack(spacing: 6) {
+                TextField("Search prompts", text: $model.searchText)
+                    .textFieldStyle(.roundedBorder).accessibilityLabel("Search library prompts").accessibilityIdentifier("library.search")
+                Menu {
+                    Picker("Show", selection: $model.libraryFilter) {
+                        Text("All prompts").tag("all")
+                        Text("Missing").tag("missing")
+                        Text("Needs attention").tag("attention")
+                    }.pickerStyle(.inline)
+                    Section("Labels") {
+                        ForEach(model.labelOptions, id: \.self) { token in
+                            Toggle(isOn: Binding(get: { model.selectedLabels.contains(token) }, set: { model.setLabel(token, selected: $0) })) {
+                                Text(verbatim: RecordingPromptPresentation.labelTitle(token))
+                            }
+                        }
                     }
+                    Divider()
+                    Button("Clear filters") { model.clearFilters() }.disabled(model.activeFilterCount == 0)
+                } label: {
+                    Image(systemName: model.activeFilterCount > 0 ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                 }
-                Divider()
-                Button("Show all labels") { model.showAllLabels() }
-            } label: { Text(verbatim: model.labelsMenuTitle) }
-                .accessibilityIdentifier("library.labels")
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .help(Text(verbatim: model.filtersSummary))
+                .accessibilityLabel("Filter prompts").accessibilityValue(Text(verbatim: model.filtersSummary))
+                .accessibilityIdentifier("library.filters")
+            }
             Divider()
             if model.currentPromptFilteredOut, let current = model.state.prompt {
                 VStack(alignment: .leading, spacing: 4) {

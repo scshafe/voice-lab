@@ -9,7 +9,7 @@ extension RecordingHarness {
     /// The Speak page's controls, which the accessibility gate requires on that page only.
     static let speakIdentifiers = ["speak.text", "speak.model", "speak.reference", "speak.generate", "speak.cancel",
                                    "speak.play-pause", "speak.position", "speak.clips", "speak.save-as", "speak.status"]
-    static let recordIdentifiers = ["library.continueMissing", "library.search", "library.filter", "library.labels", "library.coverage", "library.vault-status", "trim.start", "trim.end", "playback.play-pause", "transport.record-stop", "transport.save-next", "transport.fine-tune", "recording.labels", "recording.script", "recording.instructions", "recording.status"]
+    static let recordIdentifiers = ["library.continueMissing", "library.search", "library.filters", "library.coverage", "library.vault-status", "trim.start", "trim.end", "playback.play-pause", "transport.record-stop", "transport.save-next", "transport.fine-tune", "recording.labels", "recording.script", "recording.instructions", "recording.status"]
 
     /// Hosts the window's page container: the Record page (its identifiers, labels, roles and
     /// region geometry), then the Speak page (its identifiers, no Record machinery), then the
@@ -67,14 +67,14 @@ extension RecordingHarness {
                   !ids.contains("transport.cancel-fine-tune") else {
                 throw RecordingContractError(code: "RECORDING.ACCESSIBILITY_HARNESS", message: "Fine-tune, status or coverage labels are missing: \(labels.filter { ["transport.fine-tune", "recording.status", "library.coverage"].contains($0.key) })")
             }
-            // §6.4: the Labels menu is never a text field, and the search field is the only text field among the
-            // library controls, so the search field stays the sidebar's first editable field.
+            // §6.4: the filter menu (Show and the labels, D-059) is never a text field, and the search field is the
+            // only text field among the library controls, so the search field stays the sidebar's first editable field.
             let libraryRoles = Dictionary(records.compactMap { record -> (String, String)? in
                 guard let identifier = record.object?["identifier"]?.string, identifier.hasPrefix("library."),
                       let role = record.object?["role"]?.string, !role.isEmpty else { return nil }
                 return (identifier, role)
             }, uniquingKeysWith: { first, _ in first })
-            guard let labelsRole = libraryRoles["library.labels"], !["AXTextField", "AXTextArea"].contains(labelsRole),
+            guard let filtersRole = libraryRoles["library.filters"], !["AXTextField", "AXTextArea"].contains(filtersRole),
                   Set(libraryRoles.filter { $0.value == "AXTextField" }.keys) == ["library.search"] else {
                 throw RecordingContractError(code: "RECORDING.ACCESSIBILITY_HARNESS", message: "Library controls expose unexpected roles: \(libraryRoles)")
             }

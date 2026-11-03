@@ -150,4 +150,8 @@ Filled in by each PR; the last one hands the whole list to the owner.
      scrolls when the labels outgrow it;
   6. each page reads less cluttered and nothing is lost: every moved text is in its ⓘ (the
      owner judges this in the build);
-  7. the Swift app's filter menu chooses Show and the labels as its picker and menu did.
+  7. the Swift app (`apps/macos`) builds and `swift test` passes. Its filter menu
+     (`library.filters`, a funnel beside the search) chooses Show and the labels as its picker
+     and menu did. The funnel is filled while a filter is on, and Clear filters leaves the
+     search. The accessibility harness passes with `library.filters` in place of
+     `library.filter` and `library.labels`.
