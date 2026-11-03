@@ -106,6 +106,12 @@ def test_uploads_say_when_this_machine_cannot_upload(
     assert "voice-lab home-host approve --asset-root" in uploads.readiness
     assert uploads_window.find("uploadsNotReady").property("visible")
     assert not uploads_window.find("uploadAll").property("enabled")
+    # The approval row says it and offers Approve: the banner keeps its title only.
+    approval = uploads_window.model.approval
+    approval.refresh()
+    qtbot.waitUntil(lambda: approval.needed, timeout=5000)
+    assert uploads_window.find("uploadsApproval").property("visible")
+    assert uploads_window.find("uploadsNotReady").property("text") == ""
 
 
 @pytest.mark.checklist("U-02", "U-04")

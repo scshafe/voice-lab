@@ -202,7 +202,7 @@ class UploadsModel(ViewModel):
         config = self.context.config
         if not config.server_url:
             self._classes = None
-            self._set(self.changed, ready=False, readiness="Set the server on the Status screen.")
+            self._set(self.changed, ready=False, readiness="Set the server in Settings.")
             return
         try:
             library = home_host.library_layout(config.library_dir)

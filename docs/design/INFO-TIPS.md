@@ -84,6 +84,15 @@ Each page's PR adds tests:
 - nothing it explains is lost;
 - the core loop's acceptance test (`test_the_core_loop_rapid_fire`) passes unchanged.
 
+## Progress
+
+- [x] 1. The plan (#141).
+- [x] 2. Drops and stale wording: the sign-in placeholder, the approval and Uploads ("in
+  Settings"), Measurement's distance, its level message when it matches the pin and its
+  empty state's first sentence, the Practice why chips and goals line, the legacy screen's
+  three; the Uploads banner keeps its title while the approval row says why.
+- [ ] 3–11. Wait for scshafe-qt 0.10.
+
 ## Open question for the owner
 
 **Which "left sidebar" hides?** Record → Prompts has two:

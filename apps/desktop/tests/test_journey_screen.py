@@ -238,6 +238,10 @@ def test_journey_needs_a_sign_in(qtbot: Any, tmp_path: Path, synthetic_root: Pat
         needs = w.find("journeyScreen").findChild(QObject, "needsServer")
         assert needs.property("visible")
         assert not w.find("statBand").property("visible")
+        # Signed out, its title says it all (D-059); set up, it never sends to the Status
+        # screen for settings, which are their own window.
+        assert needs.property("title") == "Sign in to see the journey"
+        assert needs.property("description") == ""
 
 
 # ---- J-02, J-03: the stat band and include-flagged -----------------------------------------

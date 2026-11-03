@@ -173,7 +173,10 @@ def test_practice_due_and_frontier(qtbot: Any, window: Window, monkeypatch: Any)
     assert first["why"][1] == "18 takes, 2019–2024"
     assert first["why"][2].startswith("in the same-song index (18 takes used)")
     assert not one(window, "dueEmpty").isVisible()
-    assert first["why"][0] in visible_texts(window, "whyChip")
+    # The chips are the reasons the row's columns do not already say (D-059).
+    chips = visible_texts(window, "whyChip")
+    assert first["why"][2] in chips
+    assert first["why"][0] not in chips and first["why"][1] not in chips
     assert "18 takes" in visible_texts(window, "dueTakes")
 
     frontier = {row["clusterId"]: row for row in practice.frontier}

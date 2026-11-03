@@ -804,7 +804,7 @@ class PromptsModel(ViewModel):
             self._set(
                 self.sessionChanged,
                 packageText=f"Packaged as {path.name} (manifest {digest[:12]}…). It waits in "
-                "Uploads; takes, trims and history stay on this machine.",
+                "Uploads.",
             )
             self._set(self.transportChanged, phase="packaged")
             self.toast.emit("Session packaged.", "ok")

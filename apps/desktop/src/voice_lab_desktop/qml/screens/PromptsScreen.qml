@@ -65,7 +65,7 @@ ScreenPage {
         objectName: "setupCard"
         visible: !page.inSession
         heading: "New session"
-        subheading: "Choose a catalog and the prompts to record. Every room tone of the catalog is recorded too."
+        subheading: "Choose a catalog and the prompts to record."
         RowLayout {
             Layout.fillWidth: true
             spacing: SuiTheme.spaceMd
@@ -328,7 +328,7 @@ ScreenPage {
                 heading: rec.reviewNumber > 0 ? "Take " + rec.reviewNumber + " · " + rec.reviewStatus : "No take yet"
                 subheading: rec.reviewNumber > 0
                     ? "The trim is kept here as a recipe; the package carries the take as recorded."
-                    : "Record a take of this prompt (R)."
+                    : ""
                 SuiWaveform {
                     id: waveform
                     objectName: "waveform"

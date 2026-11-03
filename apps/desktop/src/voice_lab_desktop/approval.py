@@ -173,7 +173,7 @@ def endpoint_of(server_url: str) -> str:
     on a tailnet (an IP address, ``localhost``)."""
     host = _host(server_url)
     if not host:
-        raise ApprovalRefused("Set the server on the Status screen first (Settings…).")
+        raise ApprovalRefused("Set the server in Settings first.")
     try:
         validate_tailnet_endpoint(host)
         validate_tailnet_endpoint(host.partition(".")[2])
@@ -420,7 +420,7 @@ def standing(library_dir: Path, server_url: str, *, now: datetime) -> Standing:
     that changed is not seen here: see the module's note)."""
     host = _host(server_url)
     if not host:
-        return Standing(False, False, "Set the server on the Status screen first (Settings…).")
+        return Standing(False, False, "Set the server in Settings first.")
     try:
         current, why = _current(library_dir, now=now)
     except (SecurityError, OSError) as exc:

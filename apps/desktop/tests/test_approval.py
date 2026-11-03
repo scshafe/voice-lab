@@ -208,7 +208,7 @@ def test_a_refused_lookup_leaves_a_library_as_it_was(library: Path) -> None:
 @pytest.mark.parametrize(
     ("server", "message"),
     [
-        ("", "Set the server on the Status screen first"),
+        ("", "Set the server in Settings first"),
         ("http://127.0.0.1:8080", "is not a name on the tailnet"),
         ("https://localhost", "is not a name on the tailnet"),
         ("https://voice-lab", "is not a name on the tailnet"),
@@ -328,7 +328,7 @@ def test_another_node_endpoint_or_class_is_replaced(
 
 def test_what_the_library_says_about_uploads(library: Path, tmp_path: Path) -> None:
     assert approval.standing(library, "", now=NOW) == Standing(
-        False, False, "Set the server on the Status screen first (Settings…)."
+        False, False, "Set the server in Settings first."
     )
     nothing = Standing(True, False, "Uploads need your OK: there is no approval here yet.")
     assert approval.standing(library, SERVER, now=NOW) == nothing

@@ -108,11 +108,11 @@ ScreenPage {
                     }
                 }
                 Note { objectName: "pinnedText"; text: measurement.pinnedText }
+                // Matching the pin, the chip says it (D-059): the message is for what to do.
                 Note {
                     objectName: "levelMessage"
-                    text: measurement.levelMessage
-                    tone: measurement.levelState === "ok" ? "muted"
-                          : measurement.levelState === "unpinned" ? "warn" : "danger"
+                    text: measurement.levelState === "ok" ? "" : measurement.levelMessage
+                    tone: measurement.levelState === "unpinned" ? "warn" : "danger"
                 }
             }
 
@@ -142,7 +142,7 @@ ScreenPage {
                 heading: "Session"
                 Note {
                     objectName: "distanceText"
-                    text: "Mouth to capsule: " + measurement.distanceCm + " cm (Status → Settings). Same corner, same distance, every session."
+                    text: "Mouth to capsule: " + measurement.distanceCm + " cm (Settings). Same corner, same distance, every session."
                 }
                 Flow {
                     Layout.fillWidth: true
@@ -190,7 +190,7 @@ ScreenPage {
                 visible: measurement.phase === "setup" || measurement.phase === "starting"
                 iconName: "info"
                 title: "No session yet"
-                description: "Plug in the UMIK-1, pin its input level once, import its cal file, then start a session. The ritual: room silence, (calibrator), /a/ soft and loud, a glide, the anchor song, free practice."
+                description: "The ritual: room silence, (calibrator), /a/ soft and loud, a glide, the anchor song, free practice."
             }
 
             ColumnLayout {
