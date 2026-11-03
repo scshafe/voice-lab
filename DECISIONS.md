@@ -2178,3 +2178,31 @@ relayed by the owner session. The plan and its progress are in
   CI green before each merge. The stale documents the review lists are fixed: CURRENT.md,
   docs/NATIVE_RECORDING_UX.md and the Swift plan's step 17. The work ends with the list of
   what needs a check on the Mac.
+
+## D-059 — Explanations behind info tips; a hideable sidebar; a compact library header
+
+Recorded 2026-11-02, from the owner's two messages of that day, relayed by the owner session.
+The plan, its inventory and its progress are in
+[docs/design/INFO-TIPS.md](docs/design/INFO-TIPS.md).
+
+- **A less cluttered desktop app** (`apps/desktop`). Every explanatory or secondary text on
+  every page and pane either stays visible, moves behind an info icon (ⓘ) or is dropped as
+  redundant. The ⓘ's popover shows on hover after a short delay, on a click and from the
+  keyboard (Space or Return; Esc closes it).
+- **What stays visible.** Anything needed during a recording or inside the minimal loop (open
+  Record → Prompts, record, stop, Save & Next) stays visible. The loop gains no click, no
+  focus trap and no key conflict. Status that changes, such as the sync badge, blockers and
+  flags, stays visible, and only its explanation moves.
+- **Record → Prompts.**
+  - The left sidebar hides and reappears as an overlay when the pointer is at the very top-left
+    of the window: below the title bar, never over the traffic lights. ⌃⌘S stays.
+  - In the library's header, a filter icon (funnel) as compact as the search field replaces
+    Show. It shows when a filter is active and offers Clear.
+  - The catalog line and the library's source line are hidden by default, behind an ⓘ.
+- **The components are scshafe-qt's.** The ⓘ, the hideable sidebar and the compact
+  search-plus-filter header come from scshafe-qt 0.10.0, which the owner asked its agent for.
+  The app bumps to it and adopts them; it does not build them.
+- **The Swift reference app** (`apps/macos`) changes only where it already shows the same thing.
+- **The order.** The inventory and the plan come first. Then one small PR per page, each with
+  tests, CI green before each merge. The Mac's checks join the list in
+  [docs/design/RECORDING-LOOP.md](docs/design/RECORDING-LOOP.md).

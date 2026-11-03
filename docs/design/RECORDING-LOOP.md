@@ -129,3 +129,20 @@ Filled in by each PR; the last one hands the whole list to the owner.
 - **Where you left off (12).** Quit mid-session and relaunch: the same prompt, window frame and
   filter, with zero clicks before R; again after a reboot. The window's title is the prompt's
   id.
+- **Info tips, the sidebar and the library header (D-059,
+  [INFO-TIPS.md](INFO-TIPS.md)).** As each page adopts scshafe-qt 0.10's components:
+  1. hovering an ⓘ shows its popover after about a third of a second; moving on to the next
+     ⓘ opens that one at once; moving away closes it. A click pins it open. A click elsewhere
+     closes it and still does what it was pressed on;
+  2. with Full Keyboard Access on, Tab reaches each ⓘ, Space or Return opens it and Esc closes
+     it; VoiceOver reads its name and then the explanation;
+  3. on Record → Prompts, with a popover open by hover or by a click, R, R and Return still
+     record, stop and save, and the focus stays where it was;
+  4. ⌃⌘S hides the left sidebar; the pointer at the window's top-left (below the title bar,
+     clear of the traffic lights) shows it as an overlay, which goes when the pointer leaves;
+     ⌃⌘S brings it back, and the choice survives a relaunch;
+  5. the library header is the search and the funnel. The funnel shows a filter is on, and
+     Clear resets Show and the labels. R and Return typed in the search neither record nor save;
+  6. each page reads less cluttered and nothing is lost: every moved text is in its ⓘ (the
+     owner judges this in the build);
+  7. the Swift app's filter menu chooses Show and the labels as its picker and menu did.
