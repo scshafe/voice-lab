@@ -90,7 +90,7 @@ Nothing needs a microphone, a speaker, the network or the real server:
 
 ## scshafe-qt
 
-scshafe-qt comes from PyPI (`scshafe-qt>=0.2.0,<0.3`; trusted publishing with PEP 740
+scshafe-qt comes from PyPI (`scshafe-qt>=0.10.0,<0.11`; trusted publishing with PEP 740
 attestations), pinned with its sha256 in `uv.lock`. When it releases a component that a
 stand-in in `qml/VoiceLab/StandIn/` stands for, adopt it in one change: raise the floor,
 `uv lock --upgrade-package scshafe-qt`, delete the stand-in and its qmldir line, and run the

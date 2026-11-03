@@ -59,8 +59,8 @@ One small PR each. CI must be green before each merge, and each deploy is watche
 2. **Drops and stale wording.** These need no component; each is marked *drop* or *stale*
    below. "On the Status screen" now reads "in Settings (⌘,)": Settings is its own window
    since D-058.
-3. **scshafe-qt 0.10.** This bumps `pyproject.toml` and the Mac's hash-locked requirements, with
-   no visible change.
+3. **scshafe-qt 0.10.** This bumps both `pyproject.toml`s and `apps/desktop/uv.lock`, from which
+   the Mac bundle's hash-locked closure is exported. There is no visible change.
 4. **Record → Prompts.**
    - The library header: the search plus the funnel, which holds Show and Labels, with Clear.
    - The catalog and source lines go behind an ⓘ.
@@ -91,7 +91,9 @@ Each page's PR adds tests:
   Settings"), Measurement's distance, its level message when it matches the pin and its
   empty state's first sentence, the Practice why chips and goals line, the legacy screen's
   three; the Uploads banner keeps its title while the approval row says why.
-- [ ] 3–11. Wait for scshafe-qt 0.10.
+- [x] 3. scshafe-qt 0.10.0 (`SuiInfoTip`, `SuiListHeader`, and `SuiAppShell`'s hideable
+  sidebar). The lock's sha256s match the release's `SHA256SUMS`.
+- [ ] 4–11.
 
 ## Open question for the owner
 
