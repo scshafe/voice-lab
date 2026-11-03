@@ -20,7 +20,8 @@ ScreenPage {
             visible: !uploads.ready && uploads.readiness !== ""
             tone: "warn"
             title: "This machine cannot upload yet"
-            text: uploads.readiness
+            // The approval row below says why, and offers Approve (D-059): not twice.
+            text: approval.needed ? "" : uploads.readiness
         }
         SuiText {
             objectName: "uploadsReadiness"

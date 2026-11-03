@@ -57,7 +57,7 @@ Card {
         objectName: "goalsEmpty"
         Layout.fillWidth: true
         visible: practice.goals.length === 0
-        text: "No goals yet — declare one below and it starts counting from your next take."
+        text: "No goals yet — declare one below."
         variant: "caption"
         wrapMode: Text.Wrap
     }

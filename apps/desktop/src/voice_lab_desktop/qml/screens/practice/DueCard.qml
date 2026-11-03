@@ -40,8 +40,10 @@ Card {
             Flow {
                 Layout.fillWidth: true
                 spacing: SuiTheme.spaceXs
+                // The coach's first two reasons are the last-sung and takes columns'; the
+                // chips say only the rest (the same-song index, eligibility; D-059).
                 Repeater {
-                    model: due.modelData.why
+                    model: due.modelData.why.slice(2)
                     delegate: SuiChip {
                         required property var modelData
                         objectName: "whyChip"

@@ -10,8 +10,7 @@ SuiEmptyState {
     Layout.fillHeight: true
     iconName: app.configured ? "user" : "info"
     title: app.configured ? "Sign in to see " + what : "Set up the server first"
-    description: app.configured
-        ? "The app reads the voice-lab server with your Pocket ID sign-in."
-        : "Set the voice-lab server and the Pocket ID issuer on the Status screen."
+    // Signed out, the title says it all (D-059); not set up, where the settings are.
+    description: app.configured ? "" : "Set the voice-lab server and the Pocket ID issuer in Settings."
     SuiButton { text: "Go to Status"; variant: "primary"; onClicked: app.navigate("status") }
 }
