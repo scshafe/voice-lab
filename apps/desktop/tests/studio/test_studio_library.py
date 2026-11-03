@@ -88,16 +88,31 @@ def test_labels_are_in_effective_order_and_titled_verbatim() -> None:
         "Reference Candidate",
         "Holdout",
     ]
-    assert presentation.labels_menu_title(()) == "Labels: Any"
-    assert presentation.labels_menu_title(("arctic",)) == "Labels: Arctic"
-    assert presentation.labels_menu_title(("arctic", "holdout")) == "Labels: Arctic, Holdout"
-    assert presentation.labels_menu_title(("a1", "b2", "c3")) == "Labels: 3 selected"
-    assert presentation.labels_button_text(()) == "Any"
-    assert presentation.labels_button_text(("arctic", "holdout")) == "Arctic, Holdout"
-    assert presentation.labels_button_text(("reference-candidate", "technical")) == "2 selected"
     options = presentation.label_options(views())
     assert options[:3] == ("room-tone", "reference", "reference-candidate")
     assert len(options) == len(set(options))
+    # The library header's filters (D-059): Show (one choice; none is all prompts), then the
+    # labels as titles, in catalog order.
+    filters = library.filters(options[:2])
+    assert filters[0] == {
+        "key": "show:missing",
+        "text": "Missing",
+        "section": "Show",
+        "exclusive": True,
+    }
+    assert [f["key"] for f in filters] == [
+        "show:missing", "show:attention", "show:flagged", "show:failed", "show:drafts",
+        "label:room-tone", "label:reference",
+    ]  # fmt: skip
+    assert filters[-2] == {"key": "label:room-tone", "text": "Room Tone", "section": "Labels"}
+    assert library.active_filters("all", ()) == []
+    assert library.active_filters("missing", ("arctic", "holdout")) == [
+        "show:missing", "label:arctic", "label:holdout",
+    ]  # fmt: skip
+    # Back from the header's keys: in the catalog's order, unknown keys left out.
+    keys = ["label:reference-candidate", "show:drafts", "label:room-tone"]
+    assert library.chosen(keys, options) == ("drafts", ["room-tone", "reference-candidate"])
+    assert library.chosen(["show:all", "show:nonsense", "label:nonsense"], options) == ("all", [])
 
 
 def test_search_matches_title_id_text_instructions_guidance_and_labels() -> None:

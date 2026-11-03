@@ -87,6 +87,8 @@ def test_the_next_start_is_where_you_left_off(
                 "neutral",
                 28,
             )
+            assert window.find("studioSearch").property("text") == "neutral"
+            assert window.find("studioLibraryHeader").property("activeFilters") == ["show:missing"]
             root = window.root
             assert (root.width(), root.height()) == (1100, 700)
             assert root.property("title") == ids[5]

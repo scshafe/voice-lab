@@ -47,6 +47,8 @@ NEXT_PROMPT_KEY: Final = "Ctrl+Down"
 CONTINUE_MISSING_KEY: Final = "Ctrl+J"
 NEXT_FLAGGED_KEY: Final = "Ctrl+Shift+J"
 SHORTCUTS_KEY: Final = "Ctrl+/"
+#: The library header's own (SuiListHeader's focusShortcut, D-059): shown, not bound here.
+SEARCH_KEY: Final = "Ctrl+F"
 BIGGER_KEY: Final = "Ctrl+="
 SMALLER_KEY: Final = "Ctrl+-"
 STANDARD_SIZE_KEY: Final = "Ctrl+0"
@@ -270,6 +272,11 @@ def shortcut_rows() -> list[dict[str, Any]]:
             "keys": [key_text(PREVIOUS_PROMPT_KEY), key_text(NEXT_PROMPT_KEY)],
             "separator": " / ",
             "description": "Previous or next prompt in the list, without saving",
+        },
+        {
+            "group": "Prompts",
+            "keys": [key_text(SEARCH_KEY)],
+            "description": "Search the library (Esc clears the search)",
         },
         {
             "group": "Waveform (when it has the focus)",

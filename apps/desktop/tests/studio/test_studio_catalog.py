@@ -9,9 +9,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import info_tips
 from corpus_rig import PC, client
 from corpus_take_fixtures import run_catalog
 from studio_fakes import StudioRecorder
+from voice_lab_desktop.corpus.library import LIBRARY_FILE
 from voice_lab_desktop.corpus.status import NO_CATALOG
 
 from cole_voice_lab.models import COLE_SUBJECT
@@ -48,6 +50,39 @@ def test_offline_without_a_cached_catalog_nothing_is_recorded(
             wait_phase(qtbot, studio, "ready")
             assert studio.rowCount == 34 and studio.promptId == prompt_ids(pc)[0]
             assert studio.catalogText == "cole-corpus · v1"
+    finally:
+        model.shutdown()
+
+
+def test_without_the_pcs_library_the_count_is_this_machines_and_says_so(
+    qtbot: Any, data_dir: Path, tmp_path: Path, pc: PC, recorder: StudioRecorder
+) -> None:
+    """The count stands for this machine's takes alone until the PC's library is read: it is
+    tinted, and the library's ⓘ says why (D-059)."""
+    earlier = client(data_dir, pc)
+    earlier.run_pass()  # an earlier run fetched the catalog and the library
+    (earlier.library.root / LIBRARY_FILE).unlink()  # the library's cache is lost
+    pc.stop()
+    model = studio_app(data_dir, tmp_path, pc, recorder)
+    try:
+        with open_studio(qtbot, model, tmp_path) as window:
+            qtbot.waitExposed(window.root)
+            studio = model.studio
+            qtbot.waitUntil(lambda: studio.phase == "ready" and studio.deviceOk, timeout=10000)
+            qtbot.waitUntil(lambda: studio.coverageSource != "", timeout=10000)
+            assert studio.coverageSource == (
+                "This machine's takes only: the PC's library has not been read yet"
+            )
+            assert studio.coveragePartial and studio.coverageText == "0 / 34"
+            assert window.find("studioCoverage").property("tone") == "warn"
+            tip = window.find("studioLibraryInfo")
+            assert info_tips.body(tip) == "cole-corpus · v1\n" + studio.coverageSource
+            # The PC answers: its library counts, and the tint goes.
+            pc.start()
+            studio.syncNow()
+            qtbot.waitUntil(lambda: not studio.coveragePartial, timeout=10000)
+            assert studio.coverageSource.startswith("The PC's library (read ")
+            assert window.find("studioCoverage").property("tone") == "muted"
     finally:
         model.shutdown()
 

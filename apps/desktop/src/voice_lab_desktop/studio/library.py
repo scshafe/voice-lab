@@ -39,7 +39,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from cole_voice_lab.api.corpus_contracts import CorpusLibrary
 from cole_voice_lab.canonical import canonical_sha256
@@ -47,7 +47,7 @@ from cole_voice_lab.corpus_read_model import LibraryRow, LibraryTake
 from cole_voice_lab.recording_contracts import CatalogSnapshot
 
 from ..corpus.spool import SpooledTake
-from .presentation import PromptView
+from .presentation import PromptView, label_title
 
 type Status = Literal["missing", "draft", "kept", "needs-attention"]
 type Show = Literal["all", "missing", "attention", "flagged", "failed", "drafts"]
@@ -64,6 +64,9 @@ SHOW_OPTIONS: Final = (
     {"value": "failed", "label": "Failed PC QC"},
     {"value": "drafts", "label": "Drafts only"},
 )
+#: The library header's filter keys (D-059): ``show:missing``, ``label:technical``.
+SHOW_KEY: Final = "show:"
+LABEL_KEY: Final = "label:"
 STATUS_TITLES: Final[dict[str, str]] = {
     "missing": "Missing",
     "draft": "Draft",
@@ -212,6 +215,41 @@ def prompt_states(
 
 def covered(states: dict[str, PromptState]) -> int:
     return sum(1 for state in states.values() if state.recorded)
+
+
+def filters(labels: Sequence[str]) -> list[dict[str, Any]]:
+    """The library header's filters (D-059), in its menu's order: Show, one choice at most (none
+    is all prompts), then the catalog's ``labels`` (OR among themselves) as titles."""
+    return [
+        *(
+            {
+                "key": SHOW_KEY + option["value"],
+                "text": option["label"],
+                "section": "Show",
+                "exclusive": True,
+            }
+            for option in SHOW_OPTIONS
+            if option["value"] != "all"
+        ),
+        *(
+            {"key": LABEL_KEY + token, "text": label_title(token), "section": "Labels"}
+            for token in labels
+        ),
+    ]
+
+
+def active_filters(show: str, labels: Iterable[str]) -> list[str]:
+    """The header's active filters for ``show`` and the selected ``labels``."""
+    return ([SHOW_KEY + show] if show != "all" else []) + [LABEL_KEY + token for token in labels]
+
+
+def chosen(keys: Iterable[str], labels: Sequence[str]) -> tuple[str, list[str]]:
+    """The Show and the labels (of the catalog's ``labels``, in their order) that the header's
+    active ``keys`` choose; a key it does not know is left out."""
+    active = set(keys)
+    values = [option["value"] for option in SHOW_OPTIONS if option["value"] != "all"]
+    show = next((value for value in values if SHOW_KEY + value in active), "all")
+    return show, [token for token in labels if LABEL_KEY + token in active]
 
 
 def shows(

@@ -254,7 +254,7 @@ def test_corpus_select_filters(qtbot: Any, window: Window) -> None:
 @pytest.mark.checklist("C-08")
 def test_corpus_clear_filters(qtbot: Any, window: Window) -> None:
     corpus = open_corpus(qtbot, window)
-    clear = window.find("clearFilters")
+    clear = window.find("corpusClearFilters")
     assert not corpus.anyFilter and not clear.property("visible")
     wait_reload(qtbot, corpus, lambda: corpus.setFilter("year", "2020"))
     wait_reload(qtbot, corpus, lambda: corpus.setFilter("q", "clean"))

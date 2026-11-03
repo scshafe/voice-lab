@@ -116,9 +116,9 @@ def test_keys_are_ignored_while_typing_in_menus_dialogs_and_elsewhere(
     search.textEdited.emit()
     studio_window.find("studioWave").forceActiveFocus()
     qtbot.waitUntil(lambda: screen.property("keysEnabled"), timeout=5000)
-    # A menu open: the Labels menu, the take list.
+    # A menu open: the library's filters, the take list.
     for opener, popup in (
-        ("studioLabels", "studioLabelsPopup"),
+        ("filterButton", "filterMenu"),
         ("studioTakeSelect", "studioHistoryPopup"),
     ):
         if opener == "studioTakeSelect":
@@ -158,3 +158,59 @@ def test_keys_are_ignored_while_typing_in_menus_dialogs_and_elsewhere(
     qtbot.waitUntil(lambda: screen.property("keysEnabled"), timeout=5000)
     key(studio_window, Qt.Key.Key_R)
     qtbot.waitUntil(lambda: len(recorder.takes) == count + 1, timeout=5000)
+
+
+def test_an_info_tip_leaves_the_keys_to_the_studio(
+    qtbot: Any, studio_window: Window, recorder: StudioRecorder
+) -> None:
+    """An ⓘ (D-059) never takes the loop's keys: a click opens it and leaves the focus, so R,
+    Space and Return go on working. Only with the focus (Tab) are Space and Return its own,
+    and R still records."""
+    studio, takes = studio_window.model.studio, studio_window.model.studio.takes
+    screen = studio_window.find("studioScreen")
+    tip = studio_window.find("studioLibraryInfo")
+    click(studio_window, "studioLibraryInfo")
+    qtbot.waitUntil(lambda: tip.property("opened"), timeout=5000)
+    assert not tip.property("activeFocus") and screen.property("keysEnabled")
+    key(studio_window, Qt.Key.Key_R)
+    qtbot.waitUntil(lambda: len(recorder.takes) == 1, timeout=5000)
+    recorder.last.advance(4_800)
+    wait_phase(qtbot, studio, "recording")
+    key(studio_window, Qt.Key.Key_Space)
+    wait_phase(qtbot, studio, "review")
+    qtbot.waitUntil(lambda: takes.canPlay, timeout=5000)
+    key(studio_window, Qt.Key.Key_Space)
+    qtbot.waitUntil(lambda: takes.playing, timeout=5000)
+    key(studio_window, Qt.Key.Key_Space)
+    qtbot.waitUntil(lambda: not takes.playing, timeout=5000)
+    click(studio_window, "studioLibraryInfo")
+    qtbot.waitUntil(lambda: not tip.property("opened"), timeout=5000)
+    # With the focus: Space and Return open and close it, and play and save nothing.
+    tip.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    qtbot.waitUntil(lambda: tip.property("activeFocus"), timeout=5000)
+    key(studio_window, Qt.Key.Key_Space)
+    qtbot.waitUntil(lambda: tip.property("opened"), timeout=5000)
+    key(studio_window, Qt.Key.Key_Return)
+    qtbot.waitUntil(lambda: not tip.property("opened"), timeout=5000)
+    assert not takes.playing and studio.phase == "review"
+    # R is still the studio's: Retake.
+    key(studio_window, Qt.Key.Key_R)
+    qtbot.waitUntil(lambda: len(recorder.takes) == 2, timeout=5000)
+
+
+def test_ctrl_f_searches_the_library(
+    qtbot: Any, studio_window: Window, recorder: StudioRecorder
+) -> None:
+    """⌘F (Ctrl+F) focuses the library's search from anywhere on the page (the list header's,
+    D-059): the letters are the search's; Esc clears it."""
+    studio = studio_window.model.studio
+    screen = studio_window.find("studioScreen")
+    search = studio_window.find("studioSearch")
+    key(studio_window, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+    qtbot.waitUntil(lambda: search.property("activeFocus"), timeout=5000)
+    assert screen.property("typing") and not screen.property("keysEnabled")
+    key(studio_window, Qt.Key.Key_R)
+    assert search.property("text") == "r" and studio.searchText == "r"
+    assert recorder.takes == []
+    key(studio_window, Qt.Key.Key_Escape)
+    assert search.property("text") == "" and studio.searchText == ""
