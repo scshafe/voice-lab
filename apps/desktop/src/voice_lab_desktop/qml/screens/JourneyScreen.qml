@@ -4,6 +4,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
+import VoiceLab.Controls
 import VoiceLab.StandIn
 import "journey"
 
@@ -37,7 +38,11 @@ ScreenPage {
         visible: app.signedIn && journey.state === "loaded" && !journey.available
         tone: "info"
         title: "No voice trends yet"
-        text: journey.notice
+        InfoTip {
+            objectName: "journeyNoticeInfo"
+            title: "No voice trends yet"
+            text: journey.notice
+        }
     }
 
     // ---- the stat band and the toggle (J-02, J-03) -----------------------------------------
@@ -73,12 +78,20 @@ ScreenPage {
             }
         }
     }
-    SuiCheckBox {
-        objectName: "includeFlagged"
+    RowLayout {
         visible: page.ready
-        text: "include the flagged low-reliability takes (hollow in scatters)"
-        checked: journey.includeFlagged
-        onToggled: journey.setIncludeFlagged(checked)
+        spacing: SuiTheme.spaceXs
+        SuiCheckBox {
+            objectName: "includeFlagged"
+            text: "include the flagged low-reliability takes"
+            checked: journey.includeFlagged
+            onToggled: journey.setIncludeFlagged(checked)
+        }
+        InfoTip {
+            objectName: "includeFlaggedInfo"
+            title: "Flagged takes"
+            text: "Included, they show hollow in the scatters."
+        }
     }
 
     // ---- the subject tabs (J-04) --------------------------------------------------------------
@@ -105,7 +118,7 @@ ScreenPage {
         objectName: "verdictCard"
         visible: page.ready && journey.subject === "verdict"
         heading: "The Verdict — same-song controlled"
-        subheading: "Slopes per year measured inside recurring songs (Theil–Sen per song, bootstrap 95% CI across songs). The strictest lens this archive allows: you, compared only to yourself, on the same material."
+        info: "Slopes per year measured inside recurring songs (Theil–Sen per song, bootstrap 95% CI across songs). The strictest lens this archive allows: you, compared only to yourself, on the same material."
         Repeater {
             model: journey.verdictRows
             delegate: RowLayout {
@@ -120,12 +133,23 @@ ScreenPage {
                 SuiChip { objectName: "verdictChip"; text: modelData.verdict; tone: modelData.tone }
             }
         }
-        SuiText {
-            objectName: "verdictSummary"
+        // The counts show; how to read them is behind the ⓘ (D-059).
+        RowLayout {
             Layout.fillWidth: true
-            text: journey.verdictSummary
-            variant: "caption"
-            wrapMode: Text.Wrap
+            spacing: SuiTheme.spaceXs
+            SuiText {
+                objectName: "verdictSummary"
+                Layout.fillWidth: true
+                text: journey.verdictLine
+                variant: "caption"
+                wrapMode: Text.Wrap
+            }
+            InfoTip {
+                objectName: "verdictReadingInfo"
+                visible: text !== ""
+                title: "Reading the verdict"
+                text: journey.verdictReading
+            }
         }
     }
 
@@ -134,7 +158,9 @@ ScreenPage {
         objectName: "rangeCard"
         visible: page.ready && journey.subject === "range"
         heading: "The Range River"
-        subheading: journey.rangeHeadline
+        // The headline shows once there is one; the description is the ⓘ's (D-059).
+        subheading: journey.rangeHeadline !== journey.rangeAbout ? journey.rangeHeadline : ""
+        info: journey.rangeAbout
         SuiChart {
             objectName: "rangeChart"
             Layout.fillWidth: true
@@ -149,10 +175,17 @@ ScreenPage {
                 delegate: Swatch {
                     required property var modelData
                     objectName: "rangeLegendItem"
-                    text: modelData.text
+                    text: modelData.name
                     tone: modelData.tone
                     fill: modelData.opacity
                 }
+            }
+            // The percentiles and the register strip's bounds (D-059).
+            InfoTip {
+                objectName: "rangeLegendInfo"
+                title: "The legend"
+                text: journey.rangeLegend.filter((item) => item.detail !== item.name)
+                                         .map((item) => item.detail).join("\n")
             }
         }
         DataTable {
@@ -167,7 +200,7 @@ ScreenPage {
         objectName: "practiceCard"
         visible: page.ready && journey.subject === "practice"
         heading: "Cause & Effect"
-        subheading: "Practice cadence above; what it buys below. Shaded bands are your high-practice eras, derived from the cadence itself; the panels share one time axis, so alignment does the arguing."
+        info: "Practice cadence above; what it buys below. Shaded bands are your high-practice eras, derived from the cadence itself; the panels share one time axis, so alignment does the arguing."
         SuiChart {
             objectName: "causeChart"
             Layout.fillWidth: true
@@ -189,6 +222,14 @@ ScreenPage {
                     onClicked: journey.playEra(modelData.index)
                 }
             }
+            // Why the eras cannot play, while they cannot (D-059).
+            InfoTip {
+                objectName: "eraInfo"
+                readonly property var off: journey.eras.filter((era) => !era.enabled)
+                visible: off.length > 0
+                title: "Hearing an era"
+                text: off.length > 0 ? off[0].tooltip : ""
+            }
         }
         DataTable {
             objectName: "causeTable"
@@ -202,18 +243,20 @@ ScreenPage {
         objectName: "vibratoCard"
         visible: page.ready && journey.subject === "vibrato"
         heading: "The Vibrato Story"
-        subheading: "Median pitch-modulation per quarter with interquartile bands. The blue zone marks settled classical vibrato (5–6 Hz) — the trainable gap."
+        info: "Median pitch-modulation per quarter with interquartile bands. The blue zone marks settled classical vibrato (5–6 Hz) — the trainable gap."
         SuiChart {
             objectName: "vibratoChart"
             Layout.fillWidth: true
             spec: page.ready && journey.subject === "vibrato" ? journey.vibratoSpec : null
         }
-        SuiText { text: "The fingerprint — every take, walking home"; variant: "subheading" }
-        SuiText {
-            Layout.fillWidth: true
-            text: "One dot per take: extent across, rate up, brighter = more recent. Click a dot to inspect that take."
-            variant: "caption"
-            wrapMode: Text.Wrap
+        RowLayout {
+            spacing: SuiTheme.spaceXs
+            SuiText { text: "The fingerprint — every take, walking home"; variant: "subheading" }
+            InfoTip {
+                objectName: "fingerprintInfo"
+                title: "The fingerprint"
+                text: "One dot per take: extent across, rate up, brighter = more recent. Click a dot to inspect that take."
+            }
         }
         SuiChart {
             objectName: "fingerprintChart"
@@ -244,7 +287,7 @@ ScreenPage {
         objectName: "trustCard"
         visible: page.ready && journey.subject === "trust"
         heading: "What Not To Trust"
-        subheading: "Two measures of \"voice quality\" that disagree — on purpose. CPPS is robust to recording conditions and tracks your practice arc; HNR falls monotonically because your microphones and rooms changed across seven years, not your voice."
+        info: "Two measures of \"voice quality\" that disagree — on purpose. CPPS is robust to recording conditions and tracks your practice arc; HNR falls monotonically because your microphones and rooms changed across seven years, not your voice."
         GridLayout {
             Layout.fillWidth: true
             columns: page.width > 1100 ? 3 : 1
@@ -265,13 +308,27 @@ ScreenPage {
             implicitHeight: tuningText.implicitHeight + 2 * SuiTheme.spaceMd
             radius: SuiTheme.radiusMd
             color: SuiTheme.tint
-            SuiText {
-                id: tuningText
-                objectName: "tuningTileText"
+            // The title and the reading show; the method, or where it comes from, is the ⓘ's.
+            RowLayout {
                 anchors.fill: parent
                 anchors.margins: SuiTheme.spaceMd
-                text: journey.tuningTile.title + " " + journey.tuningTile.text
-                wrapMode: Text.Wrap
+                spacing: SuiTheme.spaceXs
+                SuiText {
+                    id: tuningText
+                    objectName: "tuningTileText"
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignTop
+                    text: [journey.tuningTile.title, journey.tuningTile.line]
+                          .filter((part) => !!part).join(" ")
+                    wrapMode: Text.Wrap
+                }
+                InfoTip {
+                    objectName: "tuningTileInfo"
+                    Layout.alignment: Qt.AlignTop
+                    visible: !!journey.tuningTile.more
+                    title: "Tuning"
+                    text: journey.tuningTile.more || ""
+                }
             }
         }
     }
@@ -281,7 +338,7 @@ ScreenPage {
         objectName: "songsCard"
         visible: page.ready && journey.subject === "songs"
         heading: "Song Scorecards"
-        subheading: "The songs with enough history to judge (≥6 reliable takes across ≥1.5 years), ranked by takes. Slopes are per year within that song; the sparkline is note-core tuning error by year (down is better)."
+        info: "The songs with enough history to judge (≥6 reliable takes across ≥1.5 years), ranked by takes. Slopes are per year within that song; the sparkline is note-core tuning error by year (down is better)."
         Repeater {
             model: journey.scorecards
             delegate: RowLayout {
@@ -333,7 +390,7 @@ ScreenPage {
         objectName: "threadsCard"
         visible: page.ready && journey.subject === "threads"
         heading: "Repertoire Threads"
-        subheading: "Your eight biggest recurring songs across the years — dot area is takes that year. Click a thread to open its takes in the Corpus table. Labels are privacy-generic; no lyric text exists in any manifest."
+        info: "Your eight biggest recurring songs across the years — dot area is takes that year. Click a thread to open its takes in the Corpus table. Labels are privacy-generic; no lyric text exists in any manifest."
         SuiChart {
             objectName: "threadsChart"
             Layout.fillWidth: true
@@ -342,14 +399,42 @@ ScreenPage {
         }
     }
 
-    // ---- the education card (J-21) -------------------------------------------------------------
+    // ---- the education card (J-21): too long for a popover, so a disclosure, closed until you
+    // open it (D-059) ---------------------------------------------------------------------------
     Card {
+        id: educationCard
         objectName: "educationCard"
+        property bool expanded: false
         visible: page.ready && !!journey.education
-        heading: journey.education ? journey.education.title : ""
-        subheading: journey.education ? journey.education.intro : ""
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: SuiTheme.spaceXs
+            SuiText {
+                objectName: "educationTitle"
+                Layout.fillWidth: true
+                text: journey.education ? journey.education.title : ""
+                variant: "heading"
+            }
+            SuiButton {
+                objectName: "educationDisclosure"
+                text: educationCard.expanded ? "Hide" : "Show"
+                variant: "ghost"
+                Accessible.name: (educationCard.expanded ? "Hide " : "Show ")
+                                 + (journey.education ? journey.education.title : "")
+                Accessible.role: Accessible.Button
+                onClicked: educationCard.expanded = !educationCard.expanded
+            }
+        }
+        SuiText {
+            objectName: "educationIntro"
+            Layout.fillWidth: true
+            visible: educationCard.expanded && text !== ""
+            text: journey.education ? journey.education.intro : ""
+            variant: "caption"
+            wrapMode: Text.Wrap
+        }
         Repeater {
-            model: journey.education ? journey.education.sections : []
+            model: educationCard.expanded && journey.education ? journey.education.sections : []
             delegate: ColumnLayout {
                 required property var modelData
                 Layout.fillWidth: true

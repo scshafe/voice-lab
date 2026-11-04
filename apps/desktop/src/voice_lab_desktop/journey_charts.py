@@ -560,10 +560,14 @@ def range_river(quarters: Sequence[Mapping[str, Any]]) -> Spec | None:
     }
 
 
+#: The Range River's own description, and its headline while there is no working top.
+RANGE_ABOUT: Final = "Where your voice lives, quarter by quarter."
+
+
 def range_headline(trends: Mapping[str, Any]) -> str:
     top = _get(trends, "headline", "workingTop")
     if not top:
-        return "Where your voice lives, quarter by quarter."
+        return RANGE_ABOUT
     return (
         f"Working top: {note_name(top['baselineTopHz'])} ({top['baselineYear']}) → "
         f"{note_name(top['peakTopHz'])} ({top['peakYear']}) · "
