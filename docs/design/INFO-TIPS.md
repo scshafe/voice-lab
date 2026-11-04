@@ -133,7 +133,25 @@ Each page's PR adds tests:
       an ⓘ beside its state. The cause stays.
   - The placeholder's how-to when the app is not set up.
   - The player's reason when playback is off.
-- [ ] 7–11.
+- [x] 7. Measurement.
+  - Each message keeps the state and what to do visible, and puts why behind its card's ⓘ:
+    - Microphone: "No UMIK-1 found: plug in the miniDSP UMIK-1." shows; the device policy and
+      what was seen are the ⓘ's. A device found: its chain is the ⓘ's, with nothing under
+      the chip.
+    - Input level: not pinned shows through "then press Pin level."; that a re-pin is a
+      logged chain era event is the ⓘ's. Moved, the levels show; why a moved slider matters
+      is the ⓘ's.
+    - Calibration file: the file and serial, or "No cal file imported: sessions are recorded
+      uncalibrated.", show; the whole digest, or that calFileSha256 is null, is the ⓘ's.
+  - The ritual's own messages (`pin.py`, `devices.py`) are unchanged: `controller.py` splits
+    them at sentence boundaries.
+  - Session: the distance shows; "Same corner, same distance, every session." is the ⓘ's.
+  - The ritual's steps are behind the empty state's ⓘ.
+  - The abort and re-pin dialogs stay whole (ME10).
+- [x] 8. Corpus: nothing left. Its tagline (CO1), sign-in placeholder (CO2) and the detail's
+  player reason (CO6) moved in step 6. The rest stays visible, and the table's tooltips were
+  already on hover.
+- [ ] 9–11.
 
 `InfoTip` is `SuiInfoTip` with plain text by default (a tip often shows server or catalog
 strings) and Space and Return claimed while it has the focus. `SuiInfoTip` takes them as key
