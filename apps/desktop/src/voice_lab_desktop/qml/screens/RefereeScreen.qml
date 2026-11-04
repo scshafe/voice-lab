@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
 import VoiceLab.StandIn
+import VoiceLab.Controls
 
 ScreenPage {
     id: page
@@ -48,13 +49,20 @@ ScreenPage {
         tone: "warn"
         title: "Playback is off on the server"
         text: referee.gateText
+        // Why: the server's playback approval (D-059).
+        InfoTip {
+            objectName: "refereeGateInfo"
+            title: "Playback is off on the server"
+            text: "The referee needs release-gated playback. The server plays blind trials only"
+                  + " with its recorded playback approval (serve --playback-approval)."
+        }
     }
 
     Card {
         objectName: "trialCard"
         visible: app.signedIn && referee.enabled
         heading: "This pair"
-        subheading: referee.hasPair || referee.revealed
+        info: referee.hasPair || referee.revealed
             ? "Listen to both, then call it. “Not the same song” also helps — it flags a chained cluster for repair. Playback is loudness-matched and band-limited (8 kHz) to blunt recording-chain tells."
             : ""
 
@@ -135,7 +143,7 @@ ScreenPage {
         objectName: "resultsCard"
         visible: app.signedIn && referee.hasResults
         heading: "Perceived quality by year"
-        subheading: "Bradley–Terry strengths from your judgments, log2 relative to the earliest judged year. Positive means those years win your blind ear."
+        info: "Bradley–Terry strengths from your judgments, log2 relative to the earliest judged year. Positive means those years win your blind ear."
 
         SuiChart {
             objectName: "btChart"
@@ -163,13 +171,22 @@ ScreenPage {
             variant: "caption"
             wrapMode: Text.Wrap
         }
-        SuiText {
-            objectName: "flagsLine"
+        RowLayout {
             Layout.fillWidth: true
             visible: referee.flagsText !== ""
-            text: referee.flagsText
-            tone: "warn"
-            wrapMode: Text.Wrap
+            spacing: SuiTheme.spaceXs
+            SuiText {
+                objectName: "flagsLine"
+                Layout.fillWidth: true
+                text: referee.flagsText
+                tone: "warn"
+                wrapMode: Text.Wrap
+            }
+            InfoTip {
+                objectName: "flagsInfo"
+                title: "Chained-cluster flags"
+                text: "These feed the cluster repair pass."
+            }
         }
     }
 }

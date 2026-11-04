@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+import info_tips
 import numpy as np
 import pytest
 from conftest import AppRig, Window, make_rig, open_window
@@ -87,8 +88,13 @@ def test_referee_gate_notice(qtbot: Any, tmp_path: Path, synthetic_root: Path) -
         qtbot.waitUntil(lambda: referee.hasResults, timeout=10000)
         assert referee.gated and not referee.enabled and not referee.hasPair
         assert referee.gateText == gate_text(pool)
-        assert f"{pool:,} blind pairs are waiting" in referee.gateText
-        assert "Existing results still show below." in referee.gateText
+        assert referee.gateText == (
+            f"{pool:,} blind pairs are waiting. Existing results still show below."
+        )
+        # Why, the server's playback approval, is behind the gate's ⓘ (D-059).
+        why = window.find("refereeGateInfo")
+        assert why.isVisible() and "(serve --playback-approval)" in why.property("text")
+        info_tips.opens_on_hover_click_and_keys(qtbot, window, why)
         gate = window.find("refereeGate")
         assert gate.property("visible") and gate.property("text") == referee.gateText
         assert not window.find("trialCard").property("visible")
@@ -294,9 +300,9 @@ def test_referee_results(qtbot: Any, window: Window) -> None:
     flagged = seeded[3]["clusterId"]
     flags = window.find("flagsLine")
     assert flags.property("visible")
-    assert flags.property("text") == (
-        f"Chained-cluster flags: {flagged} ×1 — these feed the cluster repair pass."
-    )
+    assert flags.property("text") == f"Chained-cluster flags: {flagged} ×1"
+    # What they feed is behind their ⓘ (D-059).
+    assert window.find("flagsInfo").property("text") == "These feed the cluster repair pass."
 
 
 def test_results_helpers_follow_the_spa() -> None:

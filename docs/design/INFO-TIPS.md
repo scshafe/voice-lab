@@ -170,7 +170,17 @@ Each page's PR adds tests:
   - The SPA-ported texts (`journey_charts.py`) are unchanged: `journey.py` derives what shows
     and what moves (`verdictLine`/`verdictReading`, the tile's `line`/`more`, the legend's
     `name`/`detail`, `rangeAbout`).
-- [ ] 10–11.
+- [x] 10. Practice and Referee.
+  - Each card's explanation is the ⓘ beside its heading: Due for a take, Frontier, Goals,
+    This pair, and the results.
+  - "Nothing due — go sing something new." shows; the coach's window is its ⓘ's.
+  - "No frontier flags right now." shows; why they come and go is its ⓘ's.
+  - The Referee's gate shows its title and the pairs waiting; why (the server's playback
+    approval) is its ⓘ's.
+  - The chained-cluster flags show; what they feed is their ⓘ's.
+- [x] 11. The legacy sessions screen. Its tagline moved in step 6. New session's line, and the
+  review's note that the trim is kept as a recipe, are behind the ⓘs beside their headings.
+  The set-aside dialog stays whole (LG8).
 
 `InfoTip` is `SuiInfoTip` with plain text by default (a tip often shows server or catalog
 strings) and Space and Return claimed while it has the focus. `SuiInfoTip` takes them as key

@@ -61,6 +61,11 @@ def test_the_screen_starts_a_session_over_the_chosen_prompts(
 ) -> None:
     prompts = prompts_window.model.prompts
     assert prompts_window.find("promptsScreen").property("visible")
+    # What the card is for is the ⓘ beside "New session" (D-059).
+    setup = prompts_window.find("setupCard")
+    assert setup.property("subheading") == ""
+    tip = prompts_window.find("setupCardInfo")
+    assert tip.property("text") == "Choose a catalog and the prompts to record."
     assert prompts.catalogValue == "builtin:pilot-v2.json"
     assert prompts.deviceLabel == recorder.device
     assert len(prompts.catalogPrompts) == 36

@@ -3,12 +3,13 @@ import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
 import VoiceLab.StandIn
+import VoiceLab.Controls
 import ".."
 
 Card {
     objectName: "frontierCard"
     heading: "The frontier"
-    subheading: "One step away, measured: songs sitting just under a threshold, each flag carrying the numbers that say so. These are the takes where tonight's practice moves a chart."
+    info: "One step away, measured: songs sitting just under a threshold, each flag carrying the numbers that say so. These are the takes where tonight's practice moves a chart."
 
     Repeater {
         objectName: "frontierRows"
@@ -50,12 +51,21 @@ Card {
             }
         }
     }
-    SuiText {
-        objectName: "frontierEmpty"
+    // No flags: the line shows; why they come and go is behind its ⓘ (D-059).
+    RowLayout {
         Layout.fillWidth: true
         visible: practice.frontier.length === 0
-        text: "No frontier flags right now — thresholds move as you do; check back after the next ingest."
-        variant: "caption"
-        wrapMode: Text.Wrap
+        spacing: SuiTheme.spaceXs
+        SuiText {
+            objectName: "frontierEmpty"
+            text: "No frontier flags right now."
+            variant: "caption"
+        }
+        InfoTip {
+            objectName: "frontierEmptyInfo"
+            title: "Frontier flags"
+            text: "Thresholds move as you do; check back after the next ingest."
+        }
+        Item { Layout.fillWidth: true }
     }
 }

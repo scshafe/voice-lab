@@ -79,12 +79,10 @@ def due_rows(coach: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def due_empty_text(coach: Mapping[str, Any]) -> str:
+    """Why nothing is due, behind the empty line's ⓘ (D-059): the coach's window."""
     days = _map(coach.get("params")).get("dueAfterDays")
     window = text(days) if days is not None else "90"
-    return (
-        f"Nothing due — every recurring song has a take inside the {window}-day window. "
-        "Go sing something new."
-    )
+    return f"Every recurring song has a take inside the {window}-day window."
 
 
 def frontier_rows(coach: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -201,6 +199,7 @@ class PracticeModel(ViewModel):
     state = qproperty(str, "state", changed)  # idle | loading | loaded | failed
     error = qproperty(str, "error", changed)
     dueSongs = qproperty("QVariantList", "dueSongs", changed)
+    #: Why nothing is due (the coach's window), behind the ⓘ beside "Nothing due".
     dueEmptyText = qproperty(str, "dueEmptyText", changed)
     frontier = qproperty("QVariantList", "frontier", changed)
     # goals (P-04)
