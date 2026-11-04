@@ -93,7 +93,7 @@ Each page's PR adds tests:
   three; the Uploads banner keeps its title while the approval row says why.
 - [x] 3. scshafe-qt 0.10.0 (`SuiInfoTip`, `SuiListHeader`, and `SuiAppShell`'s hideable
   sidebar). The lock's sha256s match the release's `SHA256SUMS`.
-- [ ] 4. Record → Prompts.
+- [x] 4. Record → Prompts.
   - [x] The library header (`SuiListHeader`): the search (⌘F) and the funnel, which holds Show
     and Labels, with Clear filters. Clear leaves the search.
   - [x] The library's ⓘ (`InfoTip`, `VoiceLab.Controls`): the catalog line and the count's
@@ -183,9 +183,10 @@ Each page's PR adds tests:
   The set-aside dialog stays whole (LG8).
 
 `InfoTip` is `SuiInfoTip` with plain text by default (a tip often shows server or catalog
-strings) and Space and Return claimed while it has the focus. `SuiInfoTip` takes them as key
-presses. A window `Shortcut` gets those first unless the focused item claims them as a
-shortcut override, and the studio's Space and Return are window shortcuts. A click never focuses
+strings), Space and Return claimed while it has the focus, and Escape while it is open.
+`SuiInfoTip` takes them as key presses. A window `Shortcut` gets those first unless the focused
+item claims them as a shortcut override: the studio's Space and Return are window shortcuts,
+and so is the Settings window's Escape, which closes it. A click never focuses
 the tip, so this costs the loop nothing. The funnel (`SuiListHeader`'s filter button) claims
 nothing: after a mouse choice the focus returns to it, and Space and Return must stay the
 studio's. From the keyboard, ↓ opens it.
