@@ -69,12 +69,9 @@ def _count(value: Any) -> int:
 
 
 def gate_text(pool_size: int) -> str:
-    """The SPA's gate notice, naming the server's playback approval instead of a relaunch."""
-    return (
-        "The referee needs release-gated playback. The server plays blind trials only with "
-        f"its recorded playback approval (serve --playback-approval); {pool_size:,} blind "
-        "pairs are waiting. Existing results still show below."
-    )
+    """What the gate shows: the pairs waiting. Why (the SPA's notice, naming the server's
+    playback approval instead of a relaunch) is behind the gate's ⓘ (D-059)."""
+    return f"{pool_size:,} blind pairs are waiting. Existing results still show below."
 
 
 def progress_text(judged: int, pool_size: int) -> str:
@@ -123,11 +120,11 @@ def choices_text(by_choice: Mapping[str, Any]) -> str:
 
 
 def flags_text(flags: Sequence[Mapping[str, Any]]) -> str:
-    """The chained-cluster flags ("" when there are none)."""
+    """The chained-cluster flags ("" when there are none); what they feed is behind their ⓘ."""
     if not flags:
         return ""
     listed = ", ".join(f"{text(f.get('clusterId'))} ×{text(f.get('count'))}" for f in flags)
-    return f"Chained-cluster flags: {listed} — these feed the cluster repair pass."
+    return f"Chained-cluster flags: {listed}"
 
 
 def bradley_terry_spec(years: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

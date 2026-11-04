@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import info_tips
 import pytest
 from conftest import AppRig, Window, make_rig, open_window
 from journey_browser_fixtures import write_manifests
@@ -207,10 +208,16 @@ def test_practice_empty_due_and_frontier(qtbot: Any, clusterless_rig: AppRig) ->
         assert practice.dueSongs == [] and practice.frontier == []
         empty = one(window, "dueEmpty")
         assert empty.isVisible() and empty.property("text") == (
-            "Nothing due — every recurring song has a take inside the 90-day window. "
-            "Go sing something new."
+            "Nothing due — go sing something new."
         )
-        assert one(window, "frontierEmpty").isVisible()
+        # The coach's window is behind the line's ⓘ (D-059); so is why flags come and go.
+        window_tip = one(window, "dueEmptyInfo")
+        assert window_tip.property("text") == (
+            "Every recurring song has a take inside the 90-day window."
+        )
+        info_tips.opens_on_hover_click_and_keys(qtbot, window, window_tip)
+        assert one(window, "frontierEmpty").property("text") == "No frontier flags right now."
+        assert one(window, "frontierEmptyInfo").property("text").startswith("Thresholds move")
         assert practice.scopeOptions == [{"value": "", "label": "Whole corpus"}]
     assert due_empty_text({}) == due_empty_text({"params": {"dueAfterDays": 90}})
     assert "inside the 30-day window" in due_empty_text({"params": {"dueAfterDays": 30}})

@@ -10,7 +10,7 @@ Card {
     id: card
     objectName: "goalsCard"
     heading: "Goals — pre-registered experiments"
-    subheading: "Declare the metric, target, and sample size before you sing; the first N qualifying takes after creation decide the verdict — no optional stopping, no peeking. Textbook Part VII, running in production."
+    info: "Declare the metric, target, and sample size before you sing; the first N qualifying takes after creation decide the verdict — no optional stopping, no peeking. Textbook Part VII, running in production."
 
     SuiBanner {
         objectName: "goalsError"

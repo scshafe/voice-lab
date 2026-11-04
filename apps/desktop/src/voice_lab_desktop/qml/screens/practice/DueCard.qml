@@ -3,12 +3,13 @@ import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
 import VoiceLab.StandIn
+import VoiceLab.Controls
 import ".."
 
 Card {
     objectName: "dueCard"
     heading: "Due for a take"
-    subheading: "Spaced re-recording for the same-song engine: recurring songs whose next take buys the most evidence — stale threads, judged songs whose span a take today extends, songs one clean take from eligibility. Always framed as adding data, never as chasing a verdict."
+    info: "Spaced re-recording for the same-song engine: recurring songs whose next take buys the most evidence — stale threads, judged songs whose span a take today extends, songs one clean take from eligibility. Always framed as adding data, never as chasing a verdict."
 
     Repeater {
         objectName: "dueRows"
@@ -53,12 +54,21 @@ Card {
             }
         }
     }
-    SuiText {
-        objectName: "dueEmpty"
+    // Nothing due: the line shows; the coach's window is behind its ⓘ (D-059).
+    RowLayout {
         Layout.fillWidth: true
         visible: practice.dueSongs.length === 0
-        text: practice.dueEmptyText
-        variant: "caption"
-        wrapMode: Text.Wrap
+        spacing: SuiTheme.spaceXs
+        SuiText {
+            objectName: "dueEmpty"
+            text: "Nothing due — go sing something new."
+            variant: "caption"
+        }
+        InfoTip {
+            objectName: "dueEmptyInfo"
+            title: "Nothing due"
+            text: practice.dueEmptyText
+        }
+        Item { Layout.fillWidth: true }
     }
 }
