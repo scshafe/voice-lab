@@ -14,13 +14,15 @@ or launch the frozen macOS service, carry ``requires_macos`` skips instead.
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 
+import coverage_files
 import pytest
 
 from cole_voice_lab import runtime
@@ -41,6 +43,31 @@ def pytest_configure(config: pytest.Config) -> None:
         runtime._current_recording_python_environment_identity = (  # type: ignore[assignment]
             _test_stand_in_environment_identity
         )
+
+
+@pytest.hookimpl(wrapper=True, trylast=True)
+def pytest_runtestloop(session: pytest.Session) -> Generator[None, object, object]:
+    """Before pytest-cov combines (its wrapper is outside this one): drop the coverage data
+    files a process left without a schema (``coverage_files``). Only the controller does it,
+    once every worker and test process has finished, never an xdist worker."""
+    result = yield
+    data_file = _coverage_data_file(session.config)
+    if data_file is not None and not hasattr(session.config, "workerinput"):
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        for path in coverage_files.drop_unreadable(data_file):
+            if reporter is not None:
+                reporter.write_line(f"coverage: dropped {path.name}, a data file with no schema")
+    return result
+
+
+def _coverage_data_file(config: pytest.Config) -> Path | None:
+    """pytest-cov's data file, when it measures this run (its controller's ``topdir`` is the
+    directory it combines in; under xdist only the workers set ``COV_CORE_DATAFILE``)."""
+    controller = getattr(config.pluginmanager.get_plugin("_cov"), "cov_controller", None)
+    cov = getattr(controller, "cov", None)
+    if cov is None:
+        return None
+    return Path(getattr(controller, "topdir", os.getcwd())) / cov.config.data_file
 
 
 def _filesystem(path: Path) -> str:
