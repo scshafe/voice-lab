@@ -55,7 +55,9 @@ def metaobject(model: Any) -> int:
     return int(shiboken6.getCppPointer(model.metaObject())[0])
 
 
-def test_every_model_qml_reads_keeps_its_class_metaobject(tmp_path: Path) -> None:
+def test_every_model_qml_reads_keeps_its_class_metaobject(qapp: Any, tmp_path: Path) -> None:
+    # The app (``qapp``) comes first: the studio writes its key hints in the platform's own
+    # text, which crashes Qt with no QGuiApplication (a worker that ran this test first).
     first, second = app(tmp_path, "first"), app(tmp_path, "second")
     try:
         assert metaobject(first) == metaobject(second)
