@@ -14,6 +14,7 @@ app's one player.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -47,6 +48,33 @@ type Json = dict[str, Any]
 type Index = QModelIndex | QPersistentModelIndex
 
 
+_SENTENCE = re.compile(r"(?<=\.)\s+(?=[A-Z])")
+
+
+def first_sentence(text: str) -> tuple[str, str]:
+    """``text``'s first sentence, shown, and the rest, behind an ⓘ (D-059)."""
+    parts = _SENTENCE.split(text.strip(), maxsplit=1)
+    return parts[0], parts[1] if len(parts) > 1 else ""
+
+
+def legend_item(item: Mapping[str, Any]) -> Json:
+    """A Range River swatch with its short name, shown ("reach"), and the whole of it, for
+    the legend's ⓘ ("reach (p05–p95 envelope)")."""
+    text = str(item["text"])
+    return {**item, "name": re.split(r" \(|: ", text, maxsplit=1)[0], "detail": text}
+
+
+def tuning_tile(journeys: Mapping[str, Any] | None, overall: Mapping[str, Any]) -> Json:
+    """The SPA's tuning tile, with ``line`` (shown after the title: the reading) and ``more``
+    (its ⓘ: the method, or where the scoring comes from)."""
+    tile = charts.tuning_tile(journeys, overall)
+    if journeys and overall.get("median") is not None:
+        line, more = first_sentence(tile["text"])
+    else:
+        line, more = "", tile["text"]
+    return {**tile, "line": line, "more": more}
+
+
 class JourneyModel(ViewModel):
     changed = Signal()
     viewChanged = Signal()
@@ -63,8 +91,13 @@ class JourneyModel(ViewModel):
     statTiles = qproperty("QVariantList", "statTiles", viewChanged)
     verdictRows = qproperty("QVariantList", "verdictRows", viewChanged)
     verdictSummary = qproperty(str, "verdictSummary", viewChanged)
+    #: The summary's first sentence (the counts), shown; the rest, its ⓘ's (D-059).
+    verdictLine = qproperty(str, "verdictLine", viewChanged)
+    verdictReading = qproperty(str, "verdictReading", viewChanged)
     rangeSpec = qproperty("QVariant", "rangeSpec", viewChanged)
     rangeHeadline = qproperty(str, "rangeHeadline", viewChanged)
+    #: The Range River's description (its ⓘ): the headline while there is no working top.
+    rangeAbout = qproperty(str, "rangeAbout", viewChanged)
     rangeLegend = qproperty("QVariantList", "rangeLegend", viewChanged)
     causeSpec = qproperty("QVariant", "causeSpec", viewChanged)
     eras = qproperty("QVariantList", "eras", viewChanged)
@@ -209,8 +242,11 @@ class JourneyModel(ViewModel):
             "statTiles": [],
             "verdictRows": [],
             "verdictSummary": "",
+            "verdictLine": "",
+            "verdictReading": "",
             "rangeSpec": None,
             "rangeHeadline": "",
+            "rangeAbout": charts.RANGE_ABOUT,
             "rangeLegend": [],
             "causeSpec": None,
             "eras": [],
@@ -218,7 +254,7 @@ class JourneyModel(ViewModel):
             "fingerprintSpec": None,
             "yearLegend": [],
             "trustPanels": [],
-            "tuningTile": {"title": "", "text": ""},
+            "tuningTile": {"title": "", "text": "", "line": "", "more": ""},
             "scorecards": [],
             "threadsSpec": None,
             "education": None,
@@ -237,6 +273,8 @@ class JourneyModel(ViewModel):
         self._range_table.replace(charts.range_table(quarters))
         self._cause_table.replace(charts.cause_table(quarters))
         tuning = charts.tuning_pseudo_quarters(journeys)
+        summary = charts.verdict_summary(journeys) if journeys else ""
+        overall = charts.note_core_overall(journeys)
         return {
             **empty,
             "subject": subject,
@@ -245,17 +283,18 @@ class JourneyModel(ViewModel):
             ],
             "statTiles": charts.stat_tiles(trends),
             "verdictRows": charts.verdict_rows(journeys) if journeys else [],
-            "verdictSummary": charts.verdict_summary(journeys) if journeys else "",
+            "verdictSummary": summary,
+            **dict(zip(("verdictLine", "verdictReading"), first_sentence(summary), strict=True)),
             "rangeSpec": charts.range_river(quarters),
             "rangeHeadline": charts.range_headline(trends),
-            "rangeLegend": [dict(item) for item in charts.RANGE_LEGEND],
+            "rangeLegend": [legend_item(item) for item in charts.RANGE_LEGEND],
             "causeSpec": charts.cause_effect(trends.get("monthlyCadence") or [], quarters, eras),
             "eras": charts.era_buttons(eras, bool(self._v.get("playbackEnabled"))),
             "vibratoSpec": charts.vibrato_triptych(quarters),
             "fingerprintSpec": charts.fingerprint(charts.fingerprint_takes(trends, include), span),
             "yearLegend": charts.year_legend(charts.fingerprint_years(trends), span),
             "trustPanels": charts.trust_panels(quarters, tuning, journeys),
-            "tuningTile": charts.tuning_tile(journeys, charts.note_core_overall(journeys)),
+            "tuningTile": tuning_tile(journeys, overall),
             "scorecards": charts.scorecard_rows(journeys, clusters) if journeys else [],
             "threadsSpec": charts.threads(clusters),
             "education": card(subject),

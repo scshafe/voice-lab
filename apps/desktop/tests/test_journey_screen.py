@@ -597,6 +597,12 @@ def test_journey_eras_are_silent_without_playback(qtbot: Any, tmp_path: Path) ->
         assert not model.playbackEnabled and model.eras[0]["enabled"] is False
         model.playEra(0)
         assert rig.model.player.state == "idle" and rig.output.played == []
+        # Why, behind an ⓘ beside the eras while they cannot play (D-059).
+        model.selectSubject("practice")
+        tip = w.find("eraInfo")
+        assert tip.isVisible() and tip.property("text") == (
+            "Playback needs the release-gated launch (corpus root + approval)"
+        )
 
 
 # ---- J-14 to J-17: the Vibrato Story and the take inspector ---------------------------------
@@ -835,6 +841,14 @@ def test_journey_education_cards(qtbot: Any, journey_window: Window) -> None:
         assert journey_window.find("educationCard").property("visible")
     model.selectSubject("verdict")
     assert model.education["title"] == "Understanding the Verdict"
+    # Too long for a popover: a disclosure, closed until opened (D-059).
+    assert texts(journey_window, "educationHeading") == []
+    assert not journey_window.find("educationIntro").isVisible()
+    disclosure = journey_window.find("educationDisclosure")
+    assert disclosure.property("text") == "Show"
+    disclosure.clicked.emit()
+    assert journey_window.find("educationIntro").isVisible()
+    assert disclosure.property("text") == "Hide"
     headings = texts(journey_window, "educationHeading")
     assert headings == [
         "Why compare only within the same song",
@@ -943,3 +957,60 @@ def test_journey_number_rules() -> None:
     assert charts.truthy(float("nan")) is False and charts.truthy([]) is True
     assert charts.year_span(None) == (0, 0) and charts.fingerprint_years(None) == []
     assert charts.active_quarters({"available": False}, True) == []
+
+
+def test_journey_explanations_are_info_tips(qtbot: Any, journey_window: Window) -> None:
+    """D-059: each card's method is the ⓘ beside its heading; what changes (the counts, the
+    headline, the swatches' names, the tuning's reading) shows."""
+    import info_tips
+
+    model = journey_window.model.journey
+    model.selectSubject("verdict")
+    assert model.verdictLine == "1 improving · 1 flat · 0 declining across 2 songs."
+    assert model.verdictReading == "Individual songs vary — see the scorecards."
+    assert journey_window.find("verdictSummary").property("text") == model.verdictLine
+    method = journey_window.find("verdictCardInfo")
+    assert info_tips.body(method).startswith("Slopes per year measured inside recurring songs")
+    reading = journey_window.find("verdictReadingInfo")
+    assert info_tips.body(reading) == model.verdictReading
+    for tip in (method, reading):
+        info_tips.opens_on_hover_click_and_keys(qtbot, journey_window, tip)
+    model.selectSubject("range")
+    card = journey_window.find("rangeCard")
+    assert card.property("subheading") == model.rangeHeadline != model.rangeAbout
+    assert info_tips.body(journey_window.find("rangeCardInfo")) == charts.RANGE_ABOUT
+    assert texts(journey_window, "rangeLegendItem") == [
+        "reach",
+        "typical",
+        "median",
+        "register strip",
+    ]
+    legend = info_tips.body(journey_window.find("rangeLegendInfo")).splitlines()
+    assert legend == [
+        "reach (p05–p95 envelope)",
+        "typical (p25–p75)",
+        "register strip: high ≥300 Hz · mid · low <200 Hz",
+    ]
+    model.selectSubject("trust")
+    assert model.tuningTile["line"].startswith("72 takes scored on stable note medians only")
+    assert journey_window.find("tuningTileText").property("text") == (
+        "Tuning — now measured on note cores. " + model.tuningTile["line"]
+    )
+    assert info_tips.body(journey_window.find("tuningTileInfo")).startswith(
+        "The green panel above is the real instrument"
+    )
+    model.selectSubject("vibrato")
+    assert info_tips.body(journey_window.find("fingerprintInfo")).startswith("One dot per take")
+    flagged = journey_window.find("includeFlagged")
+    assert flagged.property("text") == "include the flagged low-reliability takes"
+    assert info_tips.body(journey_window.find("includeFlaggedInfo")) == (
+        "Included, they show hollow in the scatters."
+    )
+    for name in ("practiceCard", "vibratoCard", "trustCard", "songsCard", "threadsCard"):
+        assert journey_window.find(name).property("subheading") == "", name
+        assert journey_window.find(name).property("info") != "", name
+    # A tuning tile with nothing scored yet: the title shows, the pipeline is the ⓘ's.
+    from voice_lab_desktop.screens.journey import tuning_tile
+
+    pending = tuning_tile(None, {"median": None})
+    assert pending["line"] == "" and pending["more"].startswith("Note-core scoring arrives")

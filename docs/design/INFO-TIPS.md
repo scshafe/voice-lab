@@ -151,7 +151,26 @@ Each page's PR adds tests:
 - [x] 8. Corpus: nothing left. Its tagline (CO1), sign-in placeholder (CO2) and the detail's
   player reason (CO6) moved in step 6. The rest stays visible, and the table's tooltips were
   already on hover.
-- [ ] 9–11.
+- [x] 9. Journey.
+  - Each card's method is the ⓘ beside its heading: the Verdict, Cause & Effect, the Vibrato
+    Story, What Not To Trust, Song Scorecards and Repertoire Threads.
+  - The Verdict: the counts show, and how to read them is behind an ⓘ beside the summary.
+  - The Range River: its headline shows once there is a working top, and its description is
+    the ⓘ's. The swatches show their short names ("reach", "typical", "median", "register
+    strip"); the percentiles and the strip's bounds are behind the legend's ⓘ.
+  - The tuning tile: the title and the reading show; the method, or where the scoring comes
+    from, is the ⓘ's.
+  - Smaller moves:
+    - the fingerprint's caption is behind an ⓘ;
+    - "(hollow in scatters)" is behind an ⓘ beside the toggle;
+    - "No voice trends yet" keeps its title, with the notice behind an ⓘ;
+    - while the eras cannot play, why is behind an ⓘ beside them.
+  - The education card is a disclosure (Show / Hide), closed until opened: too long for a
+    popover.
+  - The SPA-ported texts (`journey_charts.py`) are unchanged: `journey.py` derives what shows
+    and what moves (`verdictLine`/`verdictReading`, the tile's `line`/`more`, the legend's
+    `name`/`detail`, `rangeAbout`).
+- [ ] 10–11.
 
 `InfoTip` is `SuiInfoTip` with plain text by default (a tip often shows server or catalog
 strings) and Space and Return claimed while it has the focus. `SuiInfoTip` takes them as key
