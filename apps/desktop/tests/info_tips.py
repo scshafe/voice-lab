@@ -9,6 +9,7 @@ from typing import Any
 
 from conftest import Window
 from PySide6.QtCore import QObject, QPoint, QPointF, Qt
+from PySide6.QtQuick import QQuickWindow  # noqa: F401  (root objects come back as QQuickWindow)
 from PySide6.QtTest import QTest
 
 
@@ -37,6 +38,22 @@ def shown_texts(item: Any) -> list[str]:
     return found
 
 
+def _reveal(tip: Any) -> None:
+    """Scroll the page ``tip`` is on (its nearest flickable) until it is in view, as a person
+    would before pointing at it."""
+    item = tip.parentItem()
+    while item is not None and item.property("contentY") is None:
+        item = item.parentItem()
+    if item is None:
+        return
+    top = tip.mapToItem(item, QPointF(0, 0)).y()
+    if 0 <= top and top + tip.height() <= item.height():
+        return
+    content_y = item.property("contentY") + top - item.height() / 2
+    furthest = max(0.0, item.property("contentHeight") - item.height())
+    item.setProperty("contentY", min(max(0.0, content_y), furthest))
+
+
 def _centre(tip: Any) -> QPoint:
     return tip.mapToScene(QPointF(tip.width() / 2, tip.height() / 2)).toPoint()
 
@@ -48,7 +65,10 @@ def opens_on_hover_click_and_keys(qtbot: Any, window: Window | Any, tip: Any) ->
     window's ``Window``, or the window the tip is in (Settings, say)."""
     root = window.root if isinstance(window, Window) else window
     assert tip.isVisible() and tip.isEnabled() and body(tip) != ""
-    # Laid out first: a page that just showed may not have placed the tip yet.
+    # Laid out first: a page that just showed may not have placed the tip yet; then in view.
+    with qtbot.waitSignal(root.frameSwapped, timeout=5000):
+        root.update()
+    _reveal(tip)
     with qtbot.waitSignal(root.frameSwapped, timeout=5000):
         root.update()
     was = root.activeFocusItem()
