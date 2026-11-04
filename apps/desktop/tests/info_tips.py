@@ -9,6 +9,7 @@ from typing import Any
 
 from conftest import Window
 from PySide6.QtCore import QObject, QPoint, QPointF, Qt
+from PySide6.QtQuick import QQuickWindow  # noqa: F401  (root objects come back as QQuickWindow)
 from PySide6.QtTest import QTest
 
 
@@ -37,22 +38,43 @@ def shown_texts(item: Any) -> list[str]:
     return found
 
 
+def _reveal(tip: Any) -> None:
+    """Scroll the page ``tip`` is on (its nearest flickable) until it is in view, as a person
+    would before pointing at it."""
+    item = tip.parentItem()
+    while item is not None and item.property("contentY") is None:
+        item = item.parentItem()
+    if item is None:
+        return
+    top = tip.mapToItem(item, QPointF(0, 0)).y()
+    if 0 <= top and top + tip.height() <= item.height():
+        return
+    content_y = item.property("contentY") + top - item.height() / 2
+    furthest = max(0.0, item.property("contentHeight") - item.height())
+    item.setProperty("contentY", min(max(0.0, content_y), furthest))
+
+
 def _centre(tip: Any) -> QPoint:
     return tip.mapToScene(QPointF(tip.width() / 2, tip.height() / 2)).toPoint()
 
 
-def _key(window: Window, which: Qt.Key) -> None:
-    QTest.keyClick(window.root, which)
-
-
-def opens_on_hover_click_and_keys(qtbot: Any, window: Window, tip: Any) -> None:
+def opens_on_hover_click_and_keys(qtbot: Any, window: Window | Any, tip: Any) -> None:
     """``tip`` opens on hover and closes when the pointer leaves; a click pins it open and
     leaves the focus where it was; with the focus (Tab), Space and Return open it and Esc
-    closes it. It ends closed, with the focus back where it was."""
-    root = window.root
+    closes it. It ends closed, with the focus back where it was. ``window``: the main
+    window's ``Window``, or the window the tip is in (Settings, say)."""
+    root = window.root if isinstance(window, Window) else window
     assert tip.isVisible() and tip.isEnabled() and body(tip) != ""
+    # Laid out first: a page that just showed may not have placed the tip yet; then in view.
+    with qtbot.waitSignal(root.frameSwapped, timeout=5000):
+        root.update()
+    _reveal(tip)
+    with qtbot.waitSignal(root.frameSwapped, timeout=5000):
+        root.update()
     was = root.activeFocusItem()
-    # Hover.
+    # Hover. Qt drops a move to where the pointer already is (a test before this one in the
+    # same worker may have left it on this very tip): step off it first.
+    QTest.mouseMove(root, _centre(tip) + QPoint(0, int(tip.height())))
     QTest.mouseMove(root, _centre(tip))
     qtbot.waitUntil(lambda: tip.property("opened"), timeout=3000)
     QTest.mouseMove(root, QPoint(2, root.height() - 2))
@@ -70,9 +92,9 @@ def opens_on_hover_click_and_keys(qtbot: Any, window: Window, tip: Any) -> None:
     qtbot.waitUntil(lambda: tip.property("activeFocus"), timeout=3000)
     keys = ((Qt.Key.Key_Space, Qt.Key.Key_Escape), (Qt.Key.Key_Return, Qt.Key.Key_Return))
     for opens, closes in keys:
-        _key(window, opens)
+        QTest.keyClick(root, opens)
         qtbot.waitUntil(lambda: tip.property("opened"), timeout=3000)
-        _key(window, closes)
+        QTest.keyClick(root, closes)
         qtbot.waitUntil(lambda: not tip.property("opened"), timeout=3000)
     if was is not None:
         was.forceActiveFocus()
