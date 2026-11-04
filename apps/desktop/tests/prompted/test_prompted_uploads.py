@@ -90,7 +90,8 @@ def test_prompted_packages_are_held_until_prompted_uploads_are_on(
         uploads.activate()
         row = rows(model)[session_id]
         assert row["state"] == "held" and row["stateLabel"] == "held here"
-        assert "until spike S-1 passes" in row["detail"] and "prompted_uploads" in row["detail"]
+        assert row["detail"] == "Prompted session, held here."  # why, and how: its ⓘ (D-059)
+        assert "until spike S-1 passes" in row["more"] and "prompted_uploads" in row["more"]
         assert uploads.heldCount == 1 and uploads.pendingCount == 0
         # Status counts it apart from what waits for a receipt.
         status = model.status
@@ -132,7 +133,7 @@ def test_a_prompted_package_lands_in_raw_labelled_portaudio(
         state = store.upload_state(session_id)
         assert state["receipt"]["packageSessionId"] == session_id
         assert state["receipt"]["approvalId"] == "pc-home-host"
-        assert f"Package {session_id}, manifest " in rows(model)[session_id]["detail"]
+        assert rows(model)[session_id]["more"].startswith(f"Package {session_id}, manifest ")
         assert model.status.spoolText == "Every local session has been accepted by the server."
         events = [entry.event for entry, _ in HomeHostLedger(home.library).entries()]
         assert events == ["upload-started", "upload-completed"]
@@ -155,7 +156,7 @@ def test_an_approval_without_capture_holds_prompted_packages(
             uploads.activate()
             row = rows(model)[session_id]
             assert row["state"] == "held"
-            assert "does not cover prompted sessions (capture packages)" in row["detail"]
+            assert "does not cover prompted sessions (capture packages)" in row["more"]
             assert uploads.ready  # measurement sessions could still go
             # Straight through the uploader, the class is checked before anything is sent.
             from voice_lab_desktop.measurement import home_host

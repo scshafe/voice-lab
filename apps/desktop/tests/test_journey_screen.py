@@ -242,6 +242,7 @@ def test_journey_needs_a_sign_in(qtbot: Any, tmp_path: Path, synthetic_root: Pat
         # screen for settings, which are their own window.
         assert needs.property("title") == "Sign in to see the journey"
         assert needs.property("description") == ""
+        assert not needs.findChild(QObject, "needsServerInfo").isVisible()
 
 
 # ---- J-02, J-03: the stat band and include-flagged -----------------------------------------

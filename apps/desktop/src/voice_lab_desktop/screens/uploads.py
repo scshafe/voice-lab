@@ -49,24 +49,29 @@ def _mb(size: int) -> str:
     return f"{size / 1048576:.1f} MB"
 
 
-def _detail(upload: dict[str, Any], state: str) -> str:
-    """What an uploadable session's row says about its upload."""
+def _detail(upload: dict[str, Any], state: str) -> tuple[str, str]:
+    """What an uploadable session's row says about its upload, and what its ⓘ adds (D-059:
+    the receipt's digests, the resume note)."""
     if state == "accepted":
         detail = f"Accepted at {upload.get('acceptedAt', '?')} by {upload.get('server', '?')}."
         receipt = upload.get("receipt")
         if isinstance(receipt, dict) and receipt.get("manifestSha256"):
             digest = str(receipt["manifestSha256"])
-            detail += f" Package {receipt.get('packageSessionId', '?')}, manifest {digest[:12]}…"
-        return detail
+            return (
+                detail,
+                f"Package {receipt.get('packageSessionId', '?')}, manifest {digest[:12]}…",
+            )
+        return detail, ""
     if state == "failed":
-        return f"Refused at {upload.get('failedAt', '?')}: {upload.get('lastError') or '?'}"
+        return f"Refused at {upload.get('failedAt', '?')}: {upload.get('lastError') or '?'}", ""
     if upload.get("attempts"):
         last = upload.get("lastError") or "interrupted"
-        return f"{upload['attempts']} attempt(s); the last: {last}. It resumes where it stopped."
-    return "Not sent yet."
+        return f"{upload['attempts']} attempt(s); the last: {last}.", "It resumes where it stopped."
+    return "Not sent yet.", ""
 
 
-def _row(session_id: str, state: str, detail: str, kind: str) -> dict[str, Any]:
+def _row(session_id: str, state: str, detail: str, kind: str, more: str = "") -> dict[str, Any]:
+    """A row: ``detail`` (its cause) shows; ``more`` is behind the ⓘ beside its state."""
     label, tone = STATE_LABELS.get(state, (state, "neutral"))
     return {
         "sessionId": session_id,
@@ -74,6 +79,7 @@ def _row(session_id: str, state: str, detail: str, kind: str) -> dict[str, Any]:
         "stateLabel": label,
         "tone": tone,
         "detail": detail,
+        "more": more,
         "canRetry": state == "failed",
         "kind": kind,
     }
@@ -82,13 +88,14 @@ def _row(session_id: str, state: str, detail: str, kind: str) -> dict[str, Any]:
 def session_row(session: LocalSession, uploading: str = "") -> dict[str, Any]:
     """A measurement session as the Uploads list shows it."""
     state = "uploading" if session.session_id == uploading else session.upload_state
+    more = ""
     if session.status == "aborted":
         detail = "Aborted: kept here, never uploaded."
     elif session.status != "completed":
         detail = "Interrupted before it was saved: never uploaded."
     else:
-        detail = _detail(session.upload, state)
-    return _row(session.session_id, state, detail, "measurement")
+        detail, more = _detail(session.upload, state)
+    return _row(session.session_id, state, detail, "measurement", more)
 
 
 def prompted_row(
@@ -100,9 +107,9 @@ def prompted_row(
     if package.session_id == uploading:
         state = "uploading"
     elif state == "pending" and held:
-        return _row(package.session_id, "held", f"Prompted session. {held}", "prompted")
-    detail = "Prompted session. " + _detail(package.upload, state)
-    return _row(package.session_id, state, detail, "prompted")
+        return _row(package.session_id, "held", "Prompted session, held here.", "prompted", held)
+    detail, more = _detail(package.upload, state)
+    return _row(package.session_id, state, "Prompted session. " + detail, "prompted", more)
 
 
 class UploadsModel(ViewModel):

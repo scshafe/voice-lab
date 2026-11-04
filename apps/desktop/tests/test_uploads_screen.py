@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import info_tips
 import pytest
 from conftest import AppRig, RecordingOutput, Window, offline_corpus, open_window
 from helpers import new_ritual, record_segment, record_session
@@ -96,7 +97,9 @@ def test_uploads_say_when_this_machine_cannot_upload(
 ) -> None:
     uploads = uploads_window.model.uploads
     assert uploads.ready and "pc-home-host" in uploads.readiness
-    assert "voice-lab.example.ts.net" in uploads_window.find("uploadsReadiness").property("text")
+    # Where uploads go is the Spool's ⓘ (D-059).
+    tip = uploads_window.find("uploadsSpoolCardInfo")
+    assert tip.isVisible() and "voice-lab.example.ts.net" in info_tips.body(tip)
     # Unbound: nothing can be sent, and the screen says how to approve the home host.
     binding = data_dir / "library" / "provenance" / "home-host" / "binding.json"
     binding.chmod(0o600)
@@ -112,6 +115,12 @@ def test_uploads_say_when_this_machine_cannot_upload(
     qtbot.waitUntil(lambda: approval.needed, timeout=5000)
     assert uploads_window.find("uploadsApproval").property("visible")
     assert uploads_window.find("uploadsNotReady").property("text") == ""
+    # The whole cause, with the CLI's way, is the banner's ⓘ (D-059), and the Spool's ⓘ is
+    # gone with the approval.
+    tip = uploads_window.find("uploadsNotReadyInfo")
+    assert tip.isVisible() and info_tips.body(tip) == uploads.readiness
+    assert not uploads_window.find("uploadsSpoolCardInfo").isVisible()
+    info_tips.opens_on_hover_click_and_keys(qtbot, uploads_window, tip)
 
 
 @pytest.mark.checklist("U-02", "U-04")
@@ -140,7 +149,11 @@ def test_uploads_progress_and_receipt(
     row = uploads.rows[0]
     assert row["stateLabel"] == "accepted" and row["tone"] == "ok"
     assert row["detail"].startswith("Accepted at ") and SERVER_URL in row["detail"]
-    assert f"Package vj-{recorded.session_id}, manifest " in row["detail"]
+    # The receipt's digests are behind the row's ⓘ (D-059).
+    assert row["more"].startswith(f"Package vj-{recorded.session_id}, manifest ")
+    (more,) = [t for t in uploads_window.items("sessionMore") if t.isVisible()]
+    assert info_tips.body(more) == row["more"]
+    info_tips.opens_on_hover_click_and_keys(qtbot, uploads_window, more)
 
 
 @pytest.mark.checklist("U-03")
@@ -179,7 +192,7 @@ def test_uploads_resume_and_retry(
     qtbot.waitUntil(lambda: not uploads.busy and len(starts) == 2, timeout=30000)
     row = uploads.rows[0]
     assert row["state"] == "pending"
-    assert "1 attempt(s)" in row["detail"] and "It resumes where it stopped." in row["detail"]
+    assert "1 attempt(s)" in row["detail"] and row["more"] == "It resumes where it stopped."
     uploads.client_factory = home.client_factory()
     uploads.uploadAll()
     qtbot.waitUntil(

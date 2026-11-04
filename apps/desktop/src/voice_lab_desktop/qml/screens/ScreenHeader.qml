@@ -1,21 +1,21 @@
-// A screen's title and tagline (the SPA's per-view header, checklist A-03).
+// A screen's title, and its tagline behind an ⓘ beside it (the SPA's per-view header,
+// checklist A-03; D-059).
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
-import VoiceLab.StandIn
+import VoiceLab.Controls
 
-ColumnLayout {
+RowLayout {
     property string title: ""
     property string tagline: ""
     Layout.fillWidth: true
-    spacing: 2
+    spacing: SuiTheme.spaceXs
     SuiText { objectName: "screenTitle"; text: parent.title; variant: "title" }
-    SuiText {
+    InfoTip {
         objectName: "screenTagline"
-        Layout.fillWidth: true
-        text: parent.tagline
-        variant: "caption"
-        wrapMode: Text.Wrap
         visible: text !== ""
+        title: parent.title
+        text: parent.tagline
     }
+    Item { Layout.fillWidth: true }
 }
