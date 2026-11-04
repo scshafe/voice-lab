@@ -8,7 +8,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Scshafe.Ui
-import VoiceLab.StandIn
+import VoiceLab.Controls
 
 ScreenPage {
     id: page
@@ -61,7 +61,9 @@ ScreenPage {
             spacing: SuiTheme.spaceMd
 
             Card {
+                objectName: "measurementMicrophoneCard"
                 heading: "Microphone"
+                info: measurement.deviceInfo
                 RowLayout {
                     Layout.fillWidth: true
                     SuiChip {
@@ -83,7 +85,9 @@ ScreenPage {
             }
 
             Card {
+                objectName: "measurementLevelCard"
                 heading: "Input level"
+                info: measurement.levelInfo
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: SuiTheme.spaceSm
@@ -117,7 +121,9 @@ ScreenPage {
             }
 
             Card {
+                objectName: "measurementCalCard"
                 heading: "Calibration file"
+                info: measurement.calInfo
                 Note { objectName: "calText"; text: measurement.calText; tone: measurement.calOk ? "muted" : "warn" }
                 RowLayout {
                     Layout.fillWidth: true
@@ -139,10 +145,12 @@ ScreenPage {
             }
 
             Card {
+                objectName: "measurementSessionCard"
                 heading: "Session"
+                info: "Same corner, same distance, every session."
                 Note {
                     objectName: "distanceText"
-                    text: "Mouth to capsule: " + measurement.distanceCm + " cm (Settings). Same corner, same distance, every session."
+                    text: "Mouth to capsule: " + measurement.distanceCm + " cm (Settings)."
                 }
                 Flow {
                     Layout.fillWidth: true
@@ -190,7 +198,13 @@ ScreenPage {
                 visible: measurement.phase === "setup" || measurement.phase === "starting"
                 iconName: "info"
                 title: "No session yet"
-                description: "The ritual: room silence, (calibrator), /a/ soft and loud, a glide, the anchor song, free practice."
+                // The ritual's steps, behind an ⓘ (D-059).
+                InfoTip {
+                    objectName: "ritualInfo"
+                    title: "The ritual"
+                    text: "Room silence, (calibrator), /a/ soft and loud, a glide, the anchor song,"
+                          + " free practice."
+                }
             }
 
             ColumnLayout {

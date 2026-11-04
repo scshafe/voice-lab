@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import info_tips
 import pytest
 from conftest import AppRig, RecordingOutput, Window, offline_corpus, open_window
 from PySide6.QtCore import Qt
@@ -150,8 +151,14 @@ def test_without_a_umik_nothing_records(
         controller = window.model.measurement
         qtbot.waitUntil(lambda: "No UMIK-1 found" in controller.deviceMessage, timeout=10000)
         assert window.find("deviceChip").property("text") == "No UMIK-1"
+        # What is wrong and what to do show; the policy and what was seen are the ⓘ's (D-059).
         message = window.find("deviceMessage").property("text")
-        assert "built-in and other microphones are refused" in message
+        assert message == "No UMIK-1 found: plug in the miniDSP UMIK-1."
+        tip = window.find("measurementMicrophoneCardInfo")
+        assert tip.isVisible() and info_tips.body(tip) == controller.deviceInfo
+        assert "built-in and other microphones are refused" in controller.deviceInfo
+        assert controller.deviceInfo.endswith(f"Seen: {BUILT_IN.name}.")
+        info_tips.opens_on_hover_click_and_keys(qtbot, window, tip)
         assert not window.find("startButton").property("enabled")
         blocker = window.find("startBlocker").property("text")
         assert blocker == "Plug in the UMIK-1 (see Microphone)."
@@ -182,6 +189,10 @@ def test_pin_then_start(
         controller = window.model.measurement
         qtbot.waitUntil(lambda: controller.levelState == "unpinned", timeout=10000)
         assert window.find("startBlocker").property("text") == "Pin the input level first."
+        # The state and what to do show; why a re-pin matters is the ⓘ's (D-059).
+        assert controller.levelMessage.endswith("then press Pin level.")
+        assert controller.levelInfo == "Re-pinning later is a logged chain era event."
+        assert info_tips.body(window.find("measurementLevelCardInfo")) == controller.levelInfo
         assert window.find("pinButton").property("enabled")
         controller.pinLevel()
         assert controller.levelState == "ok" and controller.canStart
@@ -190,6 +201,8 @@ def test_pin_then_start(
         # The setup poll sees it while the screen is shown.
         qtbot.waitUntil(lambda: controller.levelState == "moved", timeout=10000)
         assert window.find("pinButton").property("text") == "Re-pin…"
+        assert controller.levelMessage.startswith("the input level is 80%")
+        assert controller.levelInfo.startswith("A moved slider invalidates the SPL reference")
         assert not controller.canStart
 
 
@@ -389,6 +402,7 @@ def test_the_cal_file_is_imported_from_the_screen(qtbot: Any, ui: Window, tmp_pa
     toasts: list[tuple[str, str]] = []
     controller.toast.connect(lambda text, tone: toasts.append((text, tone)))
     assert controller.calOk is False and "uncalibrated" in controller.calText
+    assert controller.calInfo == "An uncalibrated session records calFileSha256 as null."
     junk = tmp_path / "junk.txt"
     junk.write_text("nope")
     controller.importCalFile(str(junk))
@@ -400,7 +414,10 @@ def test_the_cal_file_is_imported_from_the_screen(qtbot: Any, ui: Window, tmp_pa
     controller.importCalFile("   ")  # nothing to import: nothing happens
     controller.importCalFile(cal.as_uri())  # a dropped file's URL works too
     assert toasts[-1] == ("Cal file 7012345.txt imported.", "ok")
-    assert controller.calOk and "serial 7012345" in ui.find("calText").property("text")
+    assert controller.calOk and ui.find("calText").property("text") == "7012345.txt, serial 7012345"
+    # The digest, whole, is the ⓘ's (D-059).
+    tip = ui.find("measurementCalCardInfo")
+    assert info_tips.body(tip).startswith("sha256 ") and len(controller.calInfo) == 7 + 64
 
 
 def test_pinning_refuses_what_it_cannot_read_and_logs_a_re_pin(
@@ -461,3 +478,17 @@ def test_a_too_short_segment_is_recorded_again(qtbot: Any, ui: Window, backend: 
     assert controller.currentIndex == 1  # the same segment, to record again
     controller.setCalTone(True)  # options are fixed during a session
     assert controller.calTone is False
+
+
+def test_the_sessions_advice_and_the_ritual_are_info_tips(qtbot: Any, ui: Window) -> None:
+    """D-059: the distance shows; "same corner, same distance" and the ritual's steps are ⓘs.
+    A device found: its chain is the Microphone ⓘ's, with nothing under the chip."""
+    controller = ui.model.measurement
+    assert ui.find("distanceText").property("text") == "Mouth to capsule: 35 cm (Settings)."
+    session = ui.find("measurementSessionCardInfo")
+    assert info_tips.body(session) == "Same corner, same distance, every session."
+    ritual = ui.find("ritualInfo")
+    assert info_tips.body(ritual).startswith("Room silence, (calibrator), /a/ soft and loud")
+    for tip in (session, ritual):
+        info_tips.opens_on_hover_click_and_keys(qtbot, ui, tip)
+    assert controller.deviceMessage == "" and controller.deviceInfo.endswith("(chain umik1).")

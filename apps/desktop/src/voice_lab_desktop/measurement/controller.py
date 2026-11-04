@@ -20,6 +20,7 @@ is loaded the first time the screen is shown; when it cannot be, the screen says
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,17 @@ from .pin import CalFileError, GuardError, LevelMoved, LevelMuted, NotPinned, St
 from .ritual import Ritual, RitualError
 from .store import SessionStore
 from .wav import METER_FLOOR_DB, meter_dbfs
+
+_SENTENCE = re.compile(r"(?<=\.)\s+(?=[A-Z(])")
+
+
+def _split(message: str, shown: int) -> tuple[str, str]:
+    """``message``'s first ``shown`` sentences (the state and what to do: visible) and the rest
+    (why: behind the ⓘ, D-059). The ritual's own messages (``pin.py``, ``devices.py``) stay as
+    voice-journey-capture wrote them."""
+    sentences = _SENTENCE.split(message.strip())
+    return " ".join(sentences[:shown]), " ".join(sentences[shown:])
+
 
 METER_MS = 50
 LEVEL_POLL_MS = 1000
@@ -56,13 +68,19 @@ class Controller(ViewModel):
     deviceName = qproperty(str, "deviceName", setupChanged)
     deviceOk = qproperty(bool, "deviceOk", setupChanged)
     deviceMessage = qproperty(str, "deviceMessage", setupChanged)
+    #: Behind the ⓘ beside "Microphone" (D-059): the device policy, the found device's chain.
+    deviceInfo = qproperty(str, "deviceInfo", setupChanged)
     # ok | unpinned | moved | muted | unreadable | unknown
     levelState = qproperty(str, "levelState", setupChanged)
     levelText = qproperty(str, "levelText", setupChanged)
     levelMessage = qproperty(str, "levelMessage", setupChanged)
+    #: Behind the ⓘ beside "Input level": why a re-pin or a moved slider matters.
+    levelInfo = qproperty(str, "levelInfo", setupChanged)
     pinnedText = qproperty(str, "pinnedText", setupChanged)
     calOk = qproperty(bool, "calOk", setupChanged)
     calText = qproperty(str, "calText", setupChanged)
+    #: Behind the ⓘ beside "Calibration file": the digest, or what an uncalibrated session records.
+    calInfo = qproperty(str, "calInfo", setupChanged)
     canStart = qproperty(bool, "canStart", setupChanged)
     startBlocker = qproperty(str, "startBlocker", setupChanged)
     busy = qproperty(bool, "busy", setupChanged)
@@ -104,12 +122,15 @@ class Controller(ViewModel):
                 "deviceName": "",
                 "deviceOk": False,
                 "deviceMessage": "Looking for the UMIK-1…",
+                "deviceInfo": "",
                 "levelState": "unknown",
                 "levelText": "",
                 "levelMessage": "",
+                "levelInfo": "",
                 "pinnedText": "",
                 "calOk": False,
                 "calText": "",
+                "calInfo": "",
                 "canStart": False,
                 "startBlocker": "",
                 "busy": False,
@@ -198,7 +219,7 @@ class Controller(ViewModel):
         try:
             self.backend = self._make_backend()
         except DeviceError as exc:
-            self._set(self.setupChanged, deviceName="", deviceOk=False, deviceMessage=str(exc))
+            self._set_device_error(exc)
             self._update_can_start()
             return False
         return True
@@ -236,9 +257,7 @@ class Controller(ViewModel):
                 self.device = None
                 if not isinstance(error, DeviceError):
                     error = DeviceError(f"listing input devices failed ({type(error).__name__})")
-                self._set(
-                    self.setupChanged, deviceName="", deviceOk=False, deviceMessage=str(error)
-                )
+                self._set_device_error(error)
                 self._apply_level(None, None)
                 return
             assert result is not None
@@ -248,11 +267,19 @@ class Controller(ViewModel):
                 self.setupChanged,
                 deviceName=device.name,
                 deviceOk=True,
-                deviceMessage=f"{chain.LABEL} via {device.host_api}",
+                deviceMessage="",
+                deviceInfo=f"{chain.LABEL} via {device.host_api} (chain {chain.CHAIN_ID}).",
             )
             self._apply_level(level, level_error)
 
         self._submit(work, done)
+
+    def _set_device_error(self, error: BaseException) -> None:
+        """No device: what is wrong and what to do show; the policy is the ⓘ's."""
+        message, info = _split(str(error), 1)
+        self._set(
+            self.setupChanged, deviceName="", deviceOk=False, deviceMessage=message, deviceInfo=info
+        )
 
     def _read_level(self, device: InputDevice) -> tuple[InputLevel | None, str | None]:
         try:
@@ -272,6 +299,7 @@ class Controller(ViewModel):
             if pin
             else "not pinned"
         )
+        info = ""
         if self.device is None:
             state, text, message = "unknown", "", ""
         elif level is None:
@@ -290,35 +318,39 @@ class Controller(ViewModel):
             except LevelMuted as exc:
                 state, message = "muted", str(exc)
             except NotPinned as exc:
-                state, message = "unpinned", str(exc)
+                state, (message, info) = "unpinned", _split(str(exc), 2)
             except LevelMoved as exc:
-                state, message = "moved", str(exc)
+                state, (message, info) = "moved", _split(str(exc), 1)
             except GuardError as exc:
                 state, message = "unreadable", str(exc)
-        cal_text, cal_ok = self._cal_status()
+        cal_text, cal_ok, cal_info = self._cal_status()
         self._set(
             self.setupChanged,
             levelState=state,
             levelText=text,
             levelMessage=message,
+            levelInfo=info,
             pinnedText=pinned,
             calText=cal_text,
             calOk=cal_ok,
+            calInfo=cal_info,
         )
         self._update_can_start()
 
-    def _cal_status(self) -> tuple[str, bool]:
+    def _cal_status(self) -> tuple[str, bool, str]:
+        """The cal file's line, whether one is imported, and its ⓘ's text."""
         try:
             cal, _digest = self.state.current_cal_sha256()
         except (CalFileError, GuardError) as exc:
-            return str(exc), False
+            return str(exc), False, ""
         if cal is None:
             return (
-                "No cal file imported: sessions are recorded uncalibrated (calFileSha256 null).",
+                "No cal file imported: sessions are recorded uncalibrated.",
                 False,
+                "An uncalibrated session records calFileSha256 as null.",
             )
         serial = f", serial {cal.serial}" if cal.serial else ""
-        return f"{cal.name}{serial} (sha256 {cal.sha256[:12]}…)", True
+        return f"{cal.name}{serial}", True, f"sha256 {cal.sha256}"
 
     def _update_can_start(self) -> None:
         blocker = ""
@@ -391,8 +423,8 @@ class Controller(ViewModel):
             self.toast.emit(f"Cal file not imported: {exc}", "danger")
             return
         self.toast.emit(f"Cal file {cal.name} imported.", "ok")
-        cal_text, cal_ok = self._cal_status()
-        self._set(self.setupChanged, calText=cal_text, calOk=cal_ok)
+        cal_text, cal_ok, cal_info = self._cal_status()
+        self._set(self.setupChanged, calText=cal_text, calOk=cal_ok, calInfo=cal_info)
 
     @Slot(bool)
     def setCalTone(self, on: bool) -> None:  # noqa: N802
