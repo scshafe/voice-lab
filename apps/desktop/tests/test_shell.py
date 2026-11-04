@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -60,6 +61,51 @@ def test_sidebar_reaches_every_screen(qtbot: Any, window: Any) -> None:
         if item.isVisible()
     )
     assert [text for _y, text in shown] == ["Lab", "Record", "Corpus", "Analysis", "Referee"]
+
+
+def test_the_screens_list_hides_like_notes_sidebar(qtbot: Any, window: Any) -> None:
+    """D-059: the screens list (not the prompt library) hides with its pin or View → Hide
+    Screens List; hidden, the pointer resting at the window's top-left shows it over the
+    content, which does not move, until the pointer leaves. The choice is kept."""
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtTest import QTest
+
+    model, root = window.model, window.root
+    shell = window.find("shell")
+    stack = window.find("screens")
+    pin = window.find("sidebarPin")
+    data = window.rig.model.context.config.data_dir / "window.json"
+    assert model.screensShown and shell.property("sidebarOpen") and pin.property("checked")
+    docked = stack.mapToScene(QPointF(0, 0)).x()
+    assert docked > 0
+
+    def centre(item: Any) -> QPoint:
+        return item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
+
+    # The pin hides it; the screens take the room.
+    QTest.mouseClick(root, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre(pin))
+    qtbot.waitUntil(lambda: not model.screensShown, timeout=5000)
+    qtbot.waitUntil(lambda: stack.mapToScene(QPointF(0, 0)).x() == 0, timeout=5000)
+    assert json.loads(data.read_text())["screens"] is False
+    # The pointer resting at the top-left shows it over the screens, which stay put.
+    zone = window.find("sidebarRevealZone")
+    assert zone.isVisible() and zone.mapToScene(QPointF(0, 0)).toPoint() == QPoint(0, 0)
+    QTest.mouseMove(root, centre(zone))
+    qtbot.waitUntil(lambda: shell.property("sidebarRevealed"), timeout=5000)
+    sidebar_list = window.find("sidebarList")
+    qtbot.waitUntil(lambda: sidebar_list.mapToScene(QPointF(0, 0)).x() >= 0, timeout=5000)
+    assert stack.mapToScene(QPointF(0, 0)).x() == 0 and not model.screensShown
+    # It goes once the pointer leaves it.
+    QTest.mouseMove(root, QPoint(root.width() - 10, root.height() - 10))
+    qtbot.waitUntil(lambda: not shell.property("sidebarRevealed"), timeout=5000)
+    # View → Show Screens List docks it again.
+    menu = window.engine.menus.actions["screens"]
+    assert menu.text() == "Show Screens List"
+    menu.trigger()
+    qtbot.waitUntil(lambda: shell.property("sidebarOpen"), timeout=5000)
+    assert model.screensShown and pin.property("checked") and menu.text() == "Hide Screens List"
+    qtbot.waitUntil(lambda: stack.mapToScene(QPointF(0, 0)).x() == docked, timeout=5000)
+    assert json.loads(data.read_text())["screens"] is True
 
 
 @pytest.mark.checklist("A-03")

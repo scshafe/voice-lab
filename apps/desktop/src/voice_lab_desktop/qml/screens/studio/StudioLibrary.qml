@@ -38,23 +38,36 @@ Rectangle {
         anchors.rightMargin: SuiTheme.spaceLg + 1
         spacing: SuiTheme.spaceSm
 
-        RowLayout {
+        // Headed as Notes heads its note list (D-059): the name, bold, with its ⓘ; the count,
+        // muted, under it.
+        ColumnLayout {
             Layout.fillWidth: true
-            spacing: SuiTheme.spaceXs
-            SuiText { text: "Library"; variant: "title" }
-            Item { Layout.fillWidth: true }
+            spacing: 0
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: SuiTheme.spaceXs
+                SuiText {
+                    objectName: "studioLibraryTitle"
+                    text: "Library"
+                    variant: "title"
+                    font.weight: SuiTheme.fontWeightBold
+                }
+                InfoTip {
+                    objectName: "studioLibraryInfo"
+                    title: "Library"
+                    text: [library.rec.catalogText, library.rec.coverageSource].filter(line => line !== "").join("\n")
+                }
+                Item { Layout.fillWidth: true }
+            }
             // Warn: the count is this machine's takes only, or the PC is rebuilding its library.
             SuiText {
                 objectName: "studioCoverage"
-                text: library.rec.coverageText
+                Layout.fillWidth: true
+                text: library.rec.coverageSpoken
+                variant: "caption"
                 tabular: true
                 tone: library.rec.coveragePartial ? "warn" : "muted"
-                Accessible.name: library.rec.coverageSpoken
-            }
-            InfoTip {
-                objectName: "studioLibraryInfo"
-                title: "Library"
-                text: [library.rec.catalogText, library.rec.coverageSource].filter(line => line !== "").join("\n")
+                elide: Text.ElideRight
             }
         }
         StudioKeyButton {

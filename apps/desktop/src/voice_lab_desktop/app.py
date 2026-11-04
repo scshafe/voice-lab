@@ -15,7 +15,8 @@ the pane last used (``settingsPane``, kept in ``<data dir>/window.json``), with 
 (``setCorpusSync``) beside the server and Pocket ID. Signed in, with a catalog cached, the app
 opens on Record → Prompts where you left off (D-058, item 7), in the window's last frame
 (``windowGeometry``, kept by ``saveWindow`` as the window closes); the window is titled with
-the prompt's id there, and with the screen's name elsewhere (``windowTitle``).
+the prompt's id there, and with the screen's name elsewhere (``windowTitle``). The screens
+list hides like Notes' sidebar (D-059: ``screensShown``, kept in ``window.json`` too).
 """
 
 from __future__ import annotations
@@ -62,8 +63,8 @@ from .viewmodel import AppContext, ViewModel, qproperty
 SCREENS: Final = (
     ("status", "Lab", "Status", "user"),
     ("uploads", "Lab", "Uploads", "inbox"),
-    ("prompts", "Record", "Prompts", "dot"),
-    ("measurement", "Record", "Measurement", "dot"),
+    ("prompts", "Record", "Prompts", "waveform"),
+    ("measurement", "Record", "Measurement", "chart"),
     ("corpus", "Corpus", "Corpus", "archive"),
     ("journey", "Analysis", "Journey", "clock"),
     ("practice", "Analysis", "Practice", "tag"),
@@ -120,6 +121,9 @@ class AppModel(ViewModel):
     settingsPane = qproperty(str, "settingsPane", paneChanged)
     #: The window's last frame: {x, y, width, height, maximized}, or {} (D-058, item 7).
     windowGeometry = qproperty("QVariantMap", "windowGeometry", paneChanged)
+    #: The screens list is docked (D-059: hidden, it comes back over the content while the
+    #: pointer rests at the window's top-left); kept for the next start.
+    screensShown = qproperty(bool, "screensShown", paneChanged)
     screenTitle = qproperty(str, "screenTitle", navigationChanged)
     settingsSource = qproperty(str, "settingsSource", settingsChanged)
     lockedSettings = qproperty("QVariantList", "lockedSettings", settingsChanged)
@@ -254,6 +258,7 @@ class AppModel(ViewModel):
             sidebar=[],
             version=__version__,
             settingsPane=self._load_pane(),
+            screensShown=self._read_window().get("screens") is not False,
             windowGeometry=self._load_window(),
         )
         self._apply_config(config)
@@ -569,6 +574,19 @@ class AppModel(ViewModel):
         """The window's frame as it closes, for the next start."""
         frame = {"x": x, "y": y, "width": width, "height": height, "maximized": bool(maximized)}
         self._write_window(frame=frame)
+
+    @Slot(bool)
+    def setScreensShown(self, shown: bool) -> None:  # noqa: N802
+        """The screens list docked or hidden (its pin, View → Hide Screens List), and so at the
+        next start."""
+        if shown == self._v["screensShown"]:
+            return
+        self._set(self.paneChanged, screensShown=shown)
+        self._write_window(screens=shown)
+
+    @Slot()
+    def toggleScreens(self) -> None:  # noqa: N802
+        self.setScreensShown(not self._v["screensShown"])
 
     @Slot(str)
     def setSettingsPane(self, pane: str) -> None:  # noqa: N802

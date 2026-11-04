@@ -352,7 +352,21 @@ class MenuBar(QObject):
                 ),
             )
         view_menu = self.bar.addMenu("View")
+        # The screens list, on every screen (D-059: it hides like Notes' sidebar; no key, as
+        # ⌃⌘S is the library's).
+        self._fill(
+            view_menu,
+            [
+                Command(
+                    "screens",
+                    lambda: "Hide Screens List" if model.screensShown else "Show Screens List",
+                    model.toggleScreens,
+                    lambda: True,
+                ),
+            ],
+        )
         if studio is not None:
+            view_menu.addSeparator()
             self._fill(view_menu, view_commands(studio))
             recording = self.bar.addMenu("Recording")
             self._fill(recording, recording_commands(studio))
@@ -398,6 +412,7 @@ class MenuBar(QObject):
             ]
         else:
             self._signals = []
+        self._signals.append(model.paneChanged)
         for signal in self._signals:
             signal.connect(self._update)
         self._update()

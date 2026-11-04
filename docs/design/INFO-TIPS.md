@@ -104,7 +104,13 @@ Each page's PR adds tests:
     "Flags"; the sync's message behind the ⓘ beside "Sync") and Check Input (what it does,
     beside its title; the match line, beside its checkbox).
   - [ ] The Swift app's filter menu.
-  - [ ] The screens list hides, Notes-like (the owner's answer, below).
+  - [x] The screens list hides, Notes-like (the owner's answer, below).
+    - `sidebarHideable`, with the pin, View → Hide Screens List (no key: ⌃⌘S is the
+      library's) and the top-left hover. It is kept in `window.json`.
+    - On macOS, the content runs under the title bar: the list is full height, and the screens
+      start at the safe area.
+    - Prompts and Measurement have icons of their own (`waveform`, `chart`).
+    - The library is headed "Library" in bold, with its count muted under it.
 - [ ] 5–11.
 
 `InfoTip` is `SuiInfoTip` with plain text by default (a tip often shows server or catalog

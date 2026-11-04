@@ -93,8 +93,10 @@ def test_the_workspace_loads_the_pinned_catalog_and_its_coverage(
             studio = model.studio
             qtbot.waitUntil(lambda: studio.coverageText == "2 / 34", timeout=5000)
             assert window.find("studioScreen").property("visible")
-            assert window.find("studioCoverage").property("text") == "2 / 34"
+            # Under the bold "Library", muted, as Notes counts its notes (D-059).
             assert studio.coverageSpoken == "2 of 34 prompts recorded"
+            assert window.find("studioCoverage").property("text") == studio.coverageSpoken
+            assert window.find("studioLibraryTitle").property("font").bold()
             assert studio.coverageSource.startswith("The PC's library (read ")
             assert studio.catalogText == "cole-corpus · v1" and studio.switchText == ""
             # Every prompt of the pinned version, in catalog order, with its status.
