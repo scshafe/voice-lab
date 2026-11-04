@@ -223,6 +223,13 @@ symbol otherwise. This replaces the diagram's category subtitle and single scrip
 block; quiet room tone's "clearly labeled silence instructions" and "no spoken
 transcript" are its banner, its missing Prompt section and its Instructions section.
 
+**Amended 2026-11-03 (D-059):** the Show picker and the Labels menu are one filter menu
+(`library.filters`), a funnel beside the search field. It holds Show (All prompts, Missing,
+Needs attention), the labels' toggles and **Clear filters**, which resets Show and the labels
+and never the search. The funnel is filled while a filter is on; its help and accessibility
+value say which ("Show: Missing · Labels: Room Tone, Test", or "No filters"). The rest of the
+paragraph below stands: the labels' order, OR and AND, the verbatim titles.
+
 **Amended 2026-09-14 — library filters and Continue Missing (`docs/PROMPT_CATALOG_V2.md`
 §6.4):** The sidebar reads, top to bottom: the Library title with the covered count; a
 prominent full-width **Continue Missing** button (identifier `library.continueMissing`,

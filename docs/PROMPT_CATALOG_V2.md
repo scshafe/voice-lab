@@ -515,7 +515,7 @@ The `script` region frame is unchanged; only its internal layout changes, which 
 - **Predicate:** `searchMatches ∧ statusMatches ∧ (selectedLabels.isEmpty ∨ ¬selectedLabels.isDisjoint(effectiveLabels))`.
   - An empty selection shows all prompts. Labels combine with OR; labels, status and search combine with AND.
   - `statusMatches` is unchanged, and `currentPromptFilteredOut` uses the same predicate.
-- **Control.** A menu of toggles with identifier `library.labels`, not an editable field; the transport harness treats the first editable field as search (`RecordingHarness/RecordingHarness.swift:139-145`). The menu title reads "Labels: Any", "Labels: Room Tone, Test" (up to two titles) or "Labels: 3 selected". A "Show all labels" item empties the selection.
+- **Control.** A menu of toggles with identifier `library.labels`, not an editable field; the transport harness treats the first editable field as search (`RecordingHarness/RecordingHarness.swift:139-145`). The menu title reads "Labels: Any", "Labels: Room Tone, Test" (up to two titles) or "Labels: 3 selected". A "Show all labels" item empties the selection. *(Since D-059, 2026-11-03, the labels' toggles sit in one filter menu with Show, `library.filters`, beside the search; its accessibility value carries the labels' title, and **Clear filters** empties the selection and resets Show.)*
 - **Scope.** Filters never affect Continue Missing, Save & Next or the covered count. Continue Missing's help text reads "Selects the next missing prompt in catalog order; ignores search and filters."
 
 ## 7. Operator consequences and runbook

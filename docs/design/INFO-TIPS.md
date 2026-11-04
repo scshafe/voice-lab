@@ -103,7 +103,9 @@ Each page's PR adds tests:
     caption), the inspector (the flags by name; why and the levels behind the ⓘ beside
     "Flags"; the sync's message behind the ⓘ beside "Sync") and Check Input (what it does,
     beside its title; the match line, beside its checkbox).
-  - [ ] The Swift app's filter menu.
+  - [x] The Swift app's filter menu (`library.filters`): Show and the labels in one menu behind a
+    funnel beside the search, with Clear filters. This machine has no Swift toolchain: the Mac
+    builds it and runs `swift test` (check 7).
   - [x] The screens list hides, Notes-like (the owner's answer, below).
     - `sidebarHideable`, with the pin, View → Hide Screens List (no key: ⌃⌘S is the
       library's) and the top-left hover. It is kept in `window.json`.
