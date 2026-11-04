@@ -72,7 +72,9 @@ def opens_on_hover_click_and_keys(qtbot: Any, window: Window | Any, tip: Any) ->
     with qtbot.waitSignal(root.frameSwapped, timeout=5000):
         root.update()
     was = root.activeFocusItem()
-    # Hover.
+    # Hover. Qt drops a move to where the pointer already is (a test before this one in the
+    # same worker may have left it on this very tip): step off it first.
+    QTest.mouseMove(root, _centre(tip) + QPoint(0, int(tip.height())))
     QTest.mouseMove(root, _centre(tip))
     qtbot.waitUntil(lambda: tip.property("opened"), timeout=3000)
     QTest.mouseMove(root, QPoint(2, root.height() - 2))
