@@ -34,7 +34,7 @@ ema-pytorch==0.8.3
 encodec==0.1.1
 f5-tts==1.1.22
 fastapi==0.141.1
-filelock==3.32.6
+filelock==4.2.1
 fonttools==4.65.0
 frozendict==2.4.7
 frozenlist==1.8.0
