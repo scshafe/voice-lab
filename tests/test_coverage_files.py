@@ -4,12 +4,13 @@ pytest-cov combines them (``coverage_files``); a file with data is never touched
 from __future__ import annotations
 
 import sqlite3
+import warnings
 from contextlib import closing
 from pathlib import Path
 
 import coverage_files
-import pytest
 from coverage import Coverage, CoverageData
+from coverage.exceptions import CoverageWarning
 
 
 def test_only_the_files_left_without_a_schema_are_dropped(tmp_path: Path) -> None:
@@ -29,9 +30,14 @@ def test_only_the_files_left_without_a_schema_are_dropped(tmp_path: Path) -> Non
     garbage.write_bytes(b"not sqlite at all, but sixteen-plus bytes long")
     unrelated = tmp_path / "coverage.host.pid5"
     unrelated.write_bytes(b"")
-    # Left there, the read-only empty file stops the combine (pytest-cov's INTERNALERROR).
-    with pytest.raises(sqlite3.OperationalError, match="readonly database"):
-        Coverage(data_file=str(data_file)).combine([str(empty)], keep=True)
+    # Left there, the read-only empty file stopped the combine up to coverage 7.17.2 (pytest-cov's
+    # INTERNALERROR); 7.17.3 skips it with a warning.
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", CoverageWarning)
+            Coverage(data_file=str(data_file)).combine([str(empty)], keep=True)
+    except sqlite3.OperationalError as error:
+        assert "readonly database" in str(error)
     assert [p.name for p in coverage_files.drop_unreadable(data_file)] == [
         empty.name,
         schemaless.name,

@@ -3113,7 +3113,7 @@ FINETUNE_ROCM_RUNTIME_PYTHON: Final = (
     "/opt/voice-lab/python/cpython-3.12.14-linux-x86_64-gnu/bin/python3.12"
 )
 # The hash-locked build tools (setuptools, wheel) the three sdists of the ROCm lock build with.
-# Their setuptools is the lock's own (84.0.0, a dependency of torch): both files bind the same
+# Their setuptools is the lock's own (84.1.0, a dependency of torch): both files bind the same
 # wheel, so the lock's pip run keeps the one the tools installed.
 FINETUNE_BUILD_REQUIREMENTS: Final = "requirements/development-build.txt"
 # PyTorch's indexes beside PyPI, named by the ROCm lock itself (its header's option lines,
