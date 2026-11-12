@@ -78,7 +78,7 @@ The five ideas ranked highest (section 4 has all of them, with effort and risks)
 | Deploy lane | B+ | Verify, deploy, health check, rollback; 40 green deploys in a row |
 | Security posture | B+ | Layered auth, least-privilege units, pinned images; stale SECURITY.md |
 | Journey integration | B- | Faithful port, live for reads; cutover half-done for a month |
-| Tests and verify | A- | See section 3.9 |
+| Tests and verify | B+ | Broad and strict; the desktop suite can hang for days with nothing to stop it (3.9) |
 | Plan execution | B | Agent-side plans land; real-hardware acceptance and phase 5 trail |
 | Documentation accuracy | C | Logs and decisions true; entry points stale |
 | Documentation navigability | D+ | No single current-state page, no single gate list |
@@ -90,7 +90,7 @@ documents against the Git history; speech, release, fine-tuning and evaluation; 
 clients; storage, vault, deploy and security; the other projects' public repositories
 (parley, embedded-house-panel, lexinet, voice-journey); and the open-weight model landscape
 on the web. I read the top-level documents and the decisions the ideas rest on, collected the
-size and CI numbers, ran `scripts/verify`, and checked the claims this document leads with
+size and CI numbers, ran `scripts/verify` on `main`, and checked the claims this document leads with
 against the files myself (the citations in section 1, the release checks, the sentence
 splitter, the digest cache, the missing exception hook, the vault units, the API server
 class).
@@ -391,7 +391,7 @@ entrance and in the structure:
 
 ### 3.9 Tests and verify
 
-**Grade: A-.** `scripts/verify` on the PC, `main` at `b8d36c5`, 2026-11-09: passed in
+**Grade: B+.** `scripts/verify` on the PC, `main` at `b8d36c5`, 2026-11-09: passed in
 7 min 38 s. Backend: 6,996 tests passed (6,963 in the parallel pass, 33 serial), 151 skipped
 (the macOS-only tests), 94.42% branch-aware coverage. Desktop: 655 passed, 91.88%. Ruff,
 strict mypy on 224 source files, both wheel builds, the schema and contract-bundle checks and
@@ -404,10 +404,26 @@ Qt or QML warning fails the desktop suite; four TODO-class comments in the whole
 CI over the last 200 runs: 174 green, 26 red, of which 9 are the Dependabot lock mismatch and
 4 were on `main`.
 
-What holds the grade below A:
+**Verify hung while this review was being written.** After the document was added, verify
+was run again on this branch (a documentation-only change). The first run was cut off after
+the backend suites passed. The second hung in the desktop pytest step
+(`apps/desktop/tests`, `pytest -n auto`) for about 2.7 days until the owner's oversight
+session killed it. It was not rerun, so this branch has no completed verify; the passing run
+above is of `main` the same day. The cause was not investigated. The known PySide collection
+hang (a pool thread waiting for the GIL while the collector frees Qt objects) fits, and is
+unconfirmed. Two things are certain and worth fixing whatever the cause:
 
-- **Two known flakes with unfixed causes**: the PySide collection hang, and CI-only races on
-  slow runners.
+- **Nothing bounds a verify run.** `faulthandler_timeout = 300`
+  (`apps/desktop/pyproject.toml:73`) dumps tracebacks and lets the test continue; there is no
+  per-test or whole-suite timeout, so a hang costs the one-at-a-time verify slot until a
+  person notices. A hard limit in `scripts/verify` (for example `timeout` around each pytest
+  step, failing with the faulthandler dump) would turn days into minutes.
+- **The same hang on the deploy runner would hold the deploy queue** up to its 60-minute
+  job limit, and on a developer's machine it holds indefinitely.
+
+What holds the grade below A, beyond that:
+
+- **A second flake with an unfixed cause**: CI-only races on slow runners.
 - **The suite pays for retired code.** Legacy capture, audition, references and datasets keep
   thousands of test lines running in every verify and every deploy.
 - **Nothing in verify touches real audio or a real model**, by design. That makes the Mac
@@ -431,6 +447,7 @@ the microphone. Nothing here makes voice-lab record on its own.
 | Q3 | **Spoken-text normalization and an abbreviation-safe splitter.** Numbers, dates, units, abbreviations, URLs, Markdown and emoji become speakable text before segmentation; the rule and its test vectors ship in a contract so parley deletes its copy. | Fewer misread replies in every parley turn, at no GPU cost. | S to M | Changes the audio for a given text, so the rule needs a version in the render fingerprint. Small owner decision: where the lexicon of exceptions lives. |
 | Q4 | **A transcript check of every take.** Run the speech recognizer the journey code already has (`src/cole_voice_lab/journey/stt.py`) over accepted takes on the PC and flag takes whose words differ from the prompt. | Catches misreadings before they are trained on. The cheapest quality gain per take. | M | CPU only. Needs the journey analysis runtime hash-locked. A flag for review, never an automatic rejection. |
 | Q5 | **Studio hardening.** An exception hook that shows the error and resets the phase; prune uploaded takes from the spool; read the take once in Save & Next; fix the two stale strings. | Removes the one way the studio can freeze mid-recording, and the slowest step of the loop. | S each | Pruning removes local copies, so it must wait for the PC's acceptance and stay opt-in (working agreement: non-destructive by default). |
+| Q5b | **Bound every verify step.** A hard timeout around each pytest step in `scripts/verify`, failing with the faulthandler dump; then find the desktop hang's cause (3.9). | A hung run costs minutes, not days, and leaves evidence. | S, then M for the cause | None for the timeout. The cause may sit in PySide itself. |
 | Q6 | **API server limits.** Request timeouts and a thread cap, as the vault server has; an index of unfinished jobs so a pass does not scan 30 days of history. | Availability and steady latency as use grows. | S | None of note. |
 | Q7 | **Serve `ogg-opus`.** Encode finished segments beside the WAV, which stays the ledgered artifact. | A phone download of a reply drops by about ten times. | M | An encoder inside the runner's sandbox. Parley changes too. |
 | Q8 | **A `speech-caller.v1` contract bundle and fixture server**, as `contracts/corpus-client.v1` does for the panel. | Parley drops a 477-line hand-kept fake and three guessed error shapes; the next caller starts from a contract. | M | A second bundle to keep frozen. |
@@ -591,7 +608,7 @@ can build:
 | 6 | Q3 spoken-text normalization and splitter | Quick win |
 | 7 | Q2 vault alerting and the journey class | Quick win |
 | 8 | Q4 transcript check of takes | Quick win |
-| 9 | Q5 studio hardening | Quick win |
+| 9 | Q5 studio hardening; Q5b a bound on every verify step | Quick wins |
 | 10 | B4 corpus fit (register pack, lexinet vocabulary, coverage) | Big bet |
 | 11 | B3 phrase cache and interactive lane | Big bet, in slices |
 | 12 | Q6, Q9 server limits and retry semantics | Quick wins |
