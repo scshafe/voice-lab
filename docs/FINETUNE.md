@@ -117,18 +117,26 @@ The ROCm lock is compiled by uv from
 torch family to PyTorch's `rocm7.2` and `cpu` indexes) with the versions of every other package
 as constraints (`requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2/constraints.txt`: spike
 S-2's, which were the Mac lock's until 2026-10-19, with multidict at 6.9.1 and aiohttp at
-3.14.4 since); its header has the exact command, and its body is that command's unchanged
-output. It installs in two steps, both `--require-hashes`: the hash-locked build tools
-(`requirements/development-build.txt`, `--build-requirements`), then the lock without build
+3.14.4 since, and, since 2026-11-12, brotli, certifi, hydra-core, msgpack, the opentelemetry
+packages, pyasn1 and setuptools at their advisories' fixes); its header has the exact command,
+and its body is that command's unchanged output. It installs in two steps, both
+`--require-hashes`: the hash-locked build tools (`requirements/development-build.txt`,
+`--build-requirements`), then the lock without build
 isolation and wheels only, except the three packages that publish none
 (`antlr4-python3-runtime`, `encodec`, `transformers-stream-generator`), which build from their
-hash-bound sdists with those tools (their setuptools is the lock's own 84.0.0, a dependency of
+hash-bound sdists with those tools (their setuptools is the lock's own 84.1.0, a dependency of
 torch, so the lock's run keeps it). Both runs are `--isolated` (no `PIP_*`
 variables, no `pip.conf`) and `--no-cache-dir`. The lock names its own indexes in its
 header, PyPI first, then PyTorch's two: pip replaces the index list of its command line with a
 requirements file's `--index-url`, so indexes given on the command line would be dropped (and
 an `--extra-index-url` written before the `--index-url` too). pip takes from PyTorch's indexes
 only files whose hashes the lock names.
+
+Two advisories are held in both locks (2026-11-12). filelock stays at 3.32.6: its fix, 4.2.1,
+is outside the filelock<4.0 of cached-path 1.8.10, the newest, which f5-tts needs. pillow stays at
+12.3.0: 13.0.0 needs gradio 6.32.0 (f5-tts needs gradio), released the same day. A changed lock
+changes no runtime already provisioned: provision it again (deploy/speech/README.md, step 1) to
+install its versions.
 
 The default interpreter names infra's `HOST_PYTHON` patch release, and a venv links to the
 interpreter it was made with. When infra installs another 3.12 and prunes the old one, the

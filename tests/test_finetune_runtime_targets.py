@@ -492,6 +492,36 @@ def test_the_rocm_lock_keeps_its_constraints_beside_its_torch() -> None:
     # GHSA-5wr8-gcqf-gqf3, GHSA-2g87-pp6c-29x5 and GHSA-494j-54xm-rwp3 (aiohttp to 3.14.3).
     assert constrained["multidict"] == "6.9.1"
     assert constrained["aiohttp"] == "3.14.4"
+    # The advisories fixed on 2026-11-12, in the Mac's lock too. filelock (cached-path caps it
+    # below its fix) and pillow (its fix needs a newer gradio) are held (docs/FINETUNE.md).
+    fixed = {
+        "brotli": "1.2.1",
+        "certifi": "2026.10.18",
+        "hydra-core": "1.3.8",
+        "msgpack": "1.2.3",
+        "opentelemetry-api": "1.45.1",
+        "pyasn1": "0.6.5",
+        "setuptools": "84.1.0",
+    }
+    mac = {
+        _canonical(pin.group(1)): pin.group(2)
+        for line in MPS_LOCK.read_text().splitlines()
+        if (pin := _PIN.match(line.strip()))
+    }
+    assert {name: constrained[name] for name in fixed} == fixed
+    assert {name: mac[name] for name in fixed} == fixed
+
+
+def test_the_build_tools_setuptools_is_the_rocm_locks_own() -> None:
+    # The source builds run without build isolation on the build tools' setuptools, which the
+    # lock's own pip run must keep: the same version, and a wheel hash the lock binds.
+    _, packages, _ = _lock(ROCM_LOCK.read_text())
+    (line,) = [
+        line for line in BUILD_TOOLS.read_text().splitlines() if line.startswith("setuptools==")
+    ]
+    pin, _, digest = line.partition(" --hash=sha256:")
+    assert pin == f"setuptools=={packages['setuptools'][0]}"
+    assert digest in packages["setuptools"][1]
 
 
 def test_the_lock_input_routes_only_the_torch_family_to_pytorchs_indexes() -> None:
