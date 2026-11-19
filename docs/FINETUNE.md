@@ -118,7 +118,8 @@ torch family to PyTorch's `rocm7.2` and `cpu` indexes) with the versions of ever
 as constraints (`requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2/constraints.txt`: spike
 S-2's, which were the Mac lock's until 2026-10-19, with multidict at 6.9.1 and aiohttp at
 3.14.4 since, and, since 2026-11-12, brotli, certifi, hydra-core, msgpack, the opentelemetry
-packages, pyasn1 and setuptools at their advisories' fixes); its header has the exact command,
+packages, pyasn1 and setuptools at their advisories' fixes, and pillow at its fix since
+2026-11-19, with the gradio that allows it); its header has the exact command,
 and its body is that command's unchanged output. It installs in two steps, both
 `--require-hashes`: the hash-locked build tools (`requirements/development-build.txt`,
 `--build-requirements`), then the lock without build
@@ -132,9 +133,10 @@ requirements file's `--index-url`, so indexes given on the command line would be
 an `--extra-index-url` written before the `--index-url` too). pip takes from PyTorch's indexes
 only files whose hashes the lock names.
 
-Two advisories are held in both locks (2026-11-12). filelock stays at 3.32.6: its fix, 4.2.1,
-is outside the filelock<4.0 of cached-path 1.8.10, the newest, which f5-tts needs. pillow stays at
-12.3.0: 13.0.0 needs gradio 6.32.0 (f5-tts needs gradio), released the same day. A changed lock
+filelock's advisories are held in both locks (since 2026-11-12). filelock stays at 3.32.6: its
+fix, 4.2.1, is outside the filelock<4.0 of cached-path 1.8.10, the newest, which f5-tts needs.
+pillow, held with it until 2026-11-19, is at its fix, 13.0.0, since: f5-tts needs gradio, and
+gradio 6.32.0 (with gradio-client 2.7.2) is the first that allows pillow 13. A changed lock
 changes no runtime already provisioned: provision it again (deploy/speech/README.md, step 1) to
 install its versions.
 
