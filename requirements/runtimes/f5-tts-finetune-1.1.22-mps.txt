@@ -6,7 +6,8 @@
 # 2026-10-19 (3.14.3 before; GHSA-5wr8-gcqf-gqf3, GHSA-2g87-pp6c-29x5, GHSA-494j-54xm-rwp3); since
 # 2026-11-12, for their advisories, the PC lock's bumps: brotli 1.2.1, certifi 2026.10.18,
 # hydra-core 1.3.8, msgpack 1.2.3, pyasn1 0.6.5, setuptools 84.1.0 and the opentelemetry
-# packages at 1.45.1 (two new 0.66b1 ones beside them); filelock and pillow are held as there.
+# packages at 1.45.1 (two new 0.66b1 ones beside them); since 2026-11-19, pillow 13.0.0 with
+# gradio 6.32.0 and gradio_client 2.7.2, as there. filelock is held as there.
 # The set still resolves to exactly these pins for macOS 14 arm64.
 accelerate==1.15.0
 aiohappyeyeballs==2.7.1
@@ -50,8 +51,8 @@ google-cloud-storage==3.14.1
 google-crc32c==1.8.0
 google-resumable-media==2.10.2
 googleapis-common-protos==1.75.3
-gradio==6.27.0
-gradio_client==2.7.0
+gradio==6.32.0
+gradio_client==2.7.2
 groovy==0.1.2
 h11==0.16.0
 hf-gradio==0.4.1
@@ -93,7 +94,7 @@ opentelemetry-semantic-conventions==0.66b1
 orjson==3.12.0
 packaging==26.3
 pandas==3.0.5
-pillow==12.3.0
+pillow==13.0.0
 platformdirs==4.11.8
 pooch==1.9.0
 propcache==0.5.3
