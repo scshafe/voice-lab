@@ -492,9 +492,9 @@ def test_the_rocm_lock_keeps_its_constraints_beside_its_torch() -> None:
     # GHSA-5wr8-gcqf-gqf3, GHSA-2g87-pp6c-29x5 and GHSA-494j-54xm-rwp3 (aiohttp to 3.14.3).
     assert constrained["multidict"] == "6.9.1"
     assert constrained["aiohttp"] == "3.14.4"
-    # The advisories fixed on 2026-11-12, and pillow's on 2026-11-19 with the first gradio that
-    # allows it, in the Mac's lock too. filelock is held: cached-path caps it below its fix
-    # (docs/FINETUNE.md).
+    # The advisories fixed on 2026-11-12, and on 2026-11-19 pillow's (with the first gradio that
+    # allows it) and opentelemetry-api's newer one (GHSA-mf5v-w3w3-f6cg), in the Mac's lock too.
+    # filelock is held: cached-path caps it below its fix (docs/FINETUNE.md).
     fixed = {
         "brotli": "1.2.1",
         "certifi": "2026.10.18",
@@ -502,7 +502,7 @@ def test_the_rocm_lock_keeps_its_constraints_beside_its_torch() -> None:
         "gradio-client": "2.7.2",
         "hydra-core": "1.3.8",
         "msgpack": "1.2.3",
-        "opentelemetry-api": "1.45.1",
+        "opentelemetry-api": "1.45.2",
         "pillow": "13.0.0",
         "pyasn1": "0.6.5",
         "setuptools": "84.1.0",

@@ -118,9 +118,10 @@ torch family to PyTorch's `rocm7.2` and `cpu` indexes) with the versions of ever
 as constraints (`requirements/runtimes/f5-tts-finetune-1.1.22-rocm7.2/constraints.txt`: spike
 S-2's, which were the Mac lock's until 2026-10-19, with multidict at 6.9.1 and aiohttp at
 3.14.4 since, and, since 2026-11-12, brotli, certifi, hydra-core, msgpack, the opentelemetry
-packages, pyasn1 and setuptools at their advisories' fixes, and pillow at its fix since
-2026-11-19, with the gradio that allows it); its header has the exact command,
-and its body is that command's unchanged output. It installs in two steps, both
+packages, pyasn1 and setuptools at their advisories' fixes, and since 2026-11-19 pillow at its
+fix, with the gradio that allows it, and the opentelemetry packages at a newer advisory's fix);
+its header has the exact command, and its body is that command's unchanged output. It installs
+in two steps, both
 `--require-hashes`: the hash-locked build tools (`requirements/development-build.txt`,
 `--build-requirements`), then the lock without build
 isolation and wheels only, except the three packages that publish none
