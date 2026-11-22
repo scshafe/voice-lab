@@ -701,15 +701,38 @@ def test_actual_service_eof_cancels_startup_commit_and_restart_recovers(
     assert sha256_file(receipt.parent / "original.wav") == before
 
 
+# One identity page, alone in a fresh interpreter: tracemalloc's peak counts every thread of its
+# process, and a test worker may still run another test's threads, whose allocations would land in
+# this page's peak whenever they happen to overlap it.
+_IDENTITY_PAGE_PEAK = """
+import json, sys, time, tracemalloc
+from pathlib import Path
+from cole_voice_lab.paths import AssetLayout
+from cole_voice_lab.recording_takes import RecordingTakeStore
+
+store = RecordingTakeStore(AssetLayout.validate(Path(sys.argv[1])))
+tracemalloc.start()
+started = time.monotonic()
+identifiers = store.iter_take_ids_for_projection(after_take_id="take-memory-04999", limit=50)
+elapsed = time.monotonic() - started
+_, peak = tracemalloc.get_traced_memory()
+tracemalloc.stop()
+print(json.dumps({"identifiers": identifiers, "peak": peak, "elapsed": elapsed}))
+"""
+
+
 def test_recovery_identity_page_has_bounded_allocation_for_ten_thousand_directories(
     rig: Rig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     import json
-    import tracemalloc
+    import os
+    import subprocess
+    import sys
 
     directory = rig.layout.root / "provenance/recording-takes"
     for number in range(10_000):
         (directory / f"take-memory-{number:05d}").mkdir(mode=0o700)
+    expected = tuple(f"take-memory-{number:05d}" for number in range(5000, 5050))
     original = Path.iterdir
 
     def no_eager_listing(path: Path):  # type: ignore[no-untyped-def]
@@ -717,21 +740,33 @@ def test_recovery_identity_page_has_bounded_allocation_for_ten_thousand_director
         return original(path)
 
     monkeypatch.setattr(Path, "iterdir", no_eager_listing)
-    tracemalloc.start()
-    started = time.monotonic()
     identifiers = rig.store.iter_take_ids_for_projection(
         after_take_id="take-memory-04999", limit=50
     )
-    elapsed = time.monotonic() - started
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    assert identifiers == tuple(f"take-memory-{number:05d}" for number in range(5000, 5050))
+    assert identifiers == expected
+    # The allocation bound is measured in a child that runs nothing but the page, outside the
+    # coverage hooks (which would add their own allocations to it).
+    child = subprocess.run(
+        [sys.executable, "-I", "-c", _IDENTITY_PAGE_PEAK, str(rig.layout.root)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith(("COV_CORE_", "COVERAGE_"))
+        },
+    )
+    measured = json.loads(child.stdout)
+    assert tuple(measured["identifiers"]) == expected
+    peak = measured["peak"]
     assert peak < 262_144
     report = {
         "synthetic_directory_count": 10_000,
         "requested_page_size": 50,
         "peak_traced_bytes": peak,
-        "elapsed_seconds": elapsed,
+        "elapsed_seconds": measured["elapsed"],
         "historical_wav_opens": 0,
     }
     evidence = tmp_path / "recovery-page-allocation.json"
