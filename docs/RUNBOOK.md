@@ -3,7 +3,7 @@
 ## 0. Core verification
 
 ```bash
-cd ~/Projects/voice-lab  # your checkout (the Air's is ~/Projects/cole-voice-lab)
+cd ~/Projects/voice-lab  # your checkout (the Air's too)
 scripts/verify
 .venv/bin/voice-lab doctor
 ```

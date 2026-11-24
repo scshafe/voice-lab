@@ -124,7 +124,7 @@ Mac only the host name in the key comment changes.
 
 ```sh
 brew install rsync python@3.12                    # rsync 3.x at /opt/homebrew/bin/rsync
-REPO=~/src/voice-lab                              # a checkout, used only to install from
+REPO=~/Projects/voice-lab                         # a checkout, used only to install from
 VLM=~/.local/share/voice-lab-mirror
 mkdir -p "$VLM/bin" ~/.local/state/voice-lab-mirror ~/Library/Logs
 
